@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "apps/kestrel",
+    "crates/kestrel-core",
+]
+resolver = "2"

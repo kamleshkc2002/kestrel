@@ -1,0 +1,9 @@
+[package]
+name = "kestrel-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Core feature and capability model for Kestrel"
+
+[lib]
+path = "src/lib.rs"
