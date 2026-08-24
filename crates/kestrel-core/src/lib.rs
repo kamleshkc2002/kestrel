@@ -36,11 +36,7 @@ pub struct FeatureSpec {
 
 impl FeatureSpec {
     /// Builds a feature descriptor whose runtime status is supplied by a backend probe.
-    pub fn new(
-        id: &'static str,
-        label: &'static str,
-        capability: CapabilityStatus,
-    ) -> Self {
+    pub fn new(id: &'static str, label: &'static str, capability: CapabilityStatus) -> Self {
         Self {
             id,
             label,
@@ -55,11 +51,7 @@ mod tests {
 
     #[test]
     fn feature_spec_preserves_its_capability_status() {
-        let feature = FeatureSpec::new(
-            "audio.mixer",
-            "Audio mixer",
-            CapabilityStatus::Supported,
-        );
+        let feature = FeatureSpec::new("audio.mixer", "Audio mixer", CapabilityStatus::Supported);
 
         assert_eq!(feature.id, "audio.mixer");
         assert_eq!(feature.capability, CapabilityStatus::Supported);
