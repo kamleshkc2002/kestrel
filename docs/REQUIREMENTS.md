@@ -37,6 +37,49 @@ rather than summarized as a single portability percentage.
   desktop-specific integrations.
 - **Independent identity:** Kestrel has its own name, logo, application ID, visual
   identity, repository, and release artifacts.
+### 2.1 Positioning and differentiation
+
+Kestrel is a **human-facing, local-first utility host for Linux desktops**. It gives
+users a unified command surface and clear feature status while adapting to the
+portals, services, hardware, and compositor APIs available in their session.
+
+The comparison is about product boundaries, not feature-count parity. Kestrel will
+not attempt to replace the depth of every specialist tool or the shell owned by a
+desktop environment.
+
+| Product category | Primary orientation | Typical desktop boundary | Kestrel distinction |
+|---|---|---|---|
+| Desktop-native utility suites | Cohesive utilities for one desktop environment | Own or closely couple with the desktop's settings, panel, notifications, and compositor APIs | Integrates with the user's existing desktop instead of replacing it; publishes support by tested desktop/session capability. |
+| Specialist utilities | Deep workflow for one domain such as capture, clipboard, audio, or monitoring | One application and configuration model per workflow | Provides common entry points and cross-module workflows while keeping the first release deliberately narrower than specialist feature depth. |
+| Wayland shells, bars, and docks | A unified visual shell for selected compositors | Often owns the panel, launcher, notification daemon, dock, or compositor configuration | Runs as a conventional application and optional command/status surface; it must not require a shell replacement or compositor configuration takeover. |
+| Desktop automation platforms and hardware-abstraction layers | Programmatic control for agents, testing, or remote desktop workflows | Broad APIs, daemons, and sometimes input-injection privileges | Prioritizes human utility workflows, consent-aware actions, and narrow privileges; automation interfaces are not the product center. |
+| **Kestrel** | Capability-aware, local-first desktop utility workflows | Existing desktop, portals, session services, and optional compositor adapters | Makes available, limited, permission-gated, missing-dependency, and unsupported states visible before the user relies on a feature. |
+
+#### Marketing-safe differentiators
+
+Marketing and product messaging must be backed by the release support matrix and
+runtime evidence. Subject to that evidence, Kestrel's differentiators are:
+
+- **Capability transparency:** every feature reports whether it is supported,
+  limited, permission-gated, dependency-gated, or unavailable, with the selected
+  backend and an actionable explanation.
+- **Cross-desktop without shell replacement:** Kestrel aims to work alongside
+  existing desktops, panels, launchers, notification services, and compositor
+  settings rather than taking ownership of them.
+- **One human-facing utility surface:** a shared command and status experience
+  connects monitoring, audio, clipboard, capture, and automation-adjacent tasks.
+- **Progressive enhancement:** a useful core remains available when optional
+  compositor, portal, hardware, or package-manager integrations are absent.
+- **Local-first privacy:** no required account or telemetry; clipboard, media, and
+  diagnostics data follow explicit retention, exclusion, consent, and redaction
+  policies.
+- **Explicit support contract:** release claims name the tested desktop,
+  compositor, portal backend, package format, and feature scope instead of
+  claiming uniform compatibility across Linux.
+
+Kestrel must not claim universal Linux support, feature parity with specialist
+tools, or deep window/input control on environments where the relevant compositor
+or portal contract is not verified.
 
 ---
 
