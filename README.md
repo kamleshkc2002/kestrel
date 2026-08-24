@@ -42,11 +42,19 @@ sudo apt update
 sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libdbus-1-dev libpipewire-0.3-dev
 ```
 
+
 Install Rust if `cargo --version` is unavailable:
 
 ```bash
 sudo apt install rustup
+source "$HOME/.cargo/env"
 rustup default stable
+rustup component add rustfmt clippy
+```
+If `cargo` is unavailable in a shell after installation, load Rustup's
+environment before running the commands:
+
+```bash
 source "$HOME/.cargo/env"
 ```
 
@@ -55,14 +63,17 @@ Open a new shell after the Rust setup completes, then verify the toolchain:
 ```bash
 rustc --version
 cargo --version
+rustfmt --version
+cargo clippy --version
 ```
 
 ### Validate the workspace
 
 ```bash
-cargo check
-cargo test
-cargo run -p kestrel
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace --all-targets
+cargo test --workspace --all-targets
 ```
 
 ## License
