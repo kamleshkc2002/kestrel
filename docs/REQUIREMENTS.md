@@ -603,6 +603,3 @@ the product's core and cheap on Linux), but **integrate with `Espanso`** for sni
 - [ ] Run Phase 0 spike #1: SNI tray icon on GNOME + KDE.
 - [ ] Define the initial capability-status schema and support matrix.
 - [ ] Decide which features are native, integrated, shell-backed, or intentionally excluded.
-
-
-\n

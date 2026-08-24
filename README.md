@@ -67,4 +67,4 @@ cargo run -p kestrel
 
 ## License
 
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+MIT. See [`LICENSE`](LICENSE).
