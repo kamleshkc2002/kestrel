@@ -1,23 +1,47 @@
 # Kestrel
 
-Kestrel is a local-first Linux utility suite for monitoring, audio controls,
-clipboard workflows, capture tools, automation, and optional desktop-specific
-integrations.
+Kestrel is a local-first, capability-aware utility host for Linux desktops. It
+is designed to bring monitoring, audio, clipboard, capture, and automation
+workflows into one human-facing application while working alongside an existing
+desktop environment.
 
-It targets a portable Wayland-first core with X11 compatibility and
-capability-driven integrations for individual desktops, compositors, and hardware.
+Kestrel targets a Wayland-first core with X11 compatibility. Its integrations
+are capability-driven: each feature reports whether the current desktop,
+compositor, portal, service, dependency, hardware, and permission state can
+support it.
 
 ## Status
 
-Early architecture scaffold. The requirements baseline and support contract are in
-[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md).
+Kestrel is an early architecture scaffold; its feature integrations are not yet
+implemented. The project is validating a portable foundation before making
+release support claims.
+
+- [Requirements and support contract](docs/REQUIREMENTS.md)
+- [Initial architecture](docs/ARCHITECTURE.md)
+
+## Scope
+
+Kestrel aims to provide:
+
+- a unified command and status surface for local desktop utility workflows;
+- transparent feature availability, limitations, and remediation steps;
+- progressive enhancement through portals, user-session services, and narrow
+  desktop or compositor adapters;
+- local-first operation without required accounts or telemetry.
+
+Kestrel is not a replacement desktop shell, panel, dock, launcher,
+notification daemon, or compositor configuration. It also does not promise
+uniform feature support across every Linux desktop; release claims will name
+the tested desktop, session capability, and feature scope.
 
 ## Workspace
 
 - `apps/kestrel`: application entry point.
 - `crates/kestrel-core`: UI-agnostic feature and capability model.
-- `docs/REQUIREMENTS.md`: product, architecture, security, packaging, and delivery
-  requirements.
+- `docs/REQUIREMENTS.md`: product boundary, support contract, security, packaging,
+  and delivery requirements.
+- `docs/ARCHITECTURE.md`: initial process model, crate boundaries, capability
+  reporting, and Phase 0 validation strategy.
 
 ## Principles
 
@@ -25,7 +49,7 @@ Early architecture scaffold. The requirements baseline and support contract are 
 - User-session operation without a root daemon.
 - Feature modules that report supported, limited, permission-gated, dependency-gated,
   or unsupported status.
-- Explicit platform support instead of claiming uniform behavior across Linux desktops.
+- Explicit tested support instead of claiming uniform behavior across Linux desktops.
 
 ## Development
 
