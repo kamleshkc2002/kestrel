@@ -478,13 +478,21 @@ fn mutation_report(pactl: &Path, discovery: &Discovery) -> Value {
         );
     }
 
-    let restored = discover(pactl)
-        .ok()
-        .and_then(|current| find_sink(&current, &sink_name).cloned())
-        .is_some_and(|sink| {
+    let restored = match discover(pactl) {
+        Ok(current) => find_sink(&current, &sink_name).is_some_and(|sink| {
             sink.get("mute").and_then(Value::as_bool) == Some(original_mute)
-                && uniform_raw_volume(&sink) == Some(original_volume)
-        });
+                && uniform_raw_volume(sink) == Some(original_volume)
+        }),
+        Err(verification_error) => {
+            let detail = format!("post-restore verification: {}", verification_error.detail);
+            error = Some(
+                error
+                    .map(|current| format!("{current}; {detail}"))
+                    .unwrap_or(detail),
+            );
+            false
+        }
+    };
 
     json!({
         "mode": "attempted",
@@ -616,7 +624,10 @@ fn arguments() -> (bool, Option<PathBuf>) {
         if argument == "--exercise-mutation" {
             exercise_mutation = true;
         } else if argument == "--pactl" {
-            pactl = args.next().map(PathBuf::from);
+            pactl = Some(PathBuf::from(args.next().unwrap_or_else(|| {
+                eprintln!("--pactl requires a path");
+                std::process::exit(2);
+            })));
         } else {
             eprintln!("usage: kestrel-audio-spike [--exercise-mutation] [--pactl PATH]");
             std::process::exit(2);

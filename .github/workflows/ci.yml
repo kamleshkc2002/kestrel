@@ -34,3 +34,24 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --all-targets
+
+  phase-0-spikes:
+    name: Phase 0 spikes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Compile system-monitor probe
+        run: rustc --edition 2021 -D warnings spikes/system-monitor/probe.rs -o /tmp/kestrel-system-monitor-probe
+
+      - name: Validate audio spike
+        run: |
+          cargo fmt --manifest-path spikes/audio/Cargo.toml --check
+          cargo clippy --manifest-path spikes/audio/Cargo.toml -- -D warnings
+          cargo test --manifest-path spikes/audio/Cargo.toml
