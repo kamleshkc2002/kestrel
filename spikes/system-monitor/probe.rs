@@ -498,6 +498,20 @@ fn probe_hwmon(ctx: &mut Ctx) -> Json {
         let index = h.file_name().unwrap().to_string_lossy().into_owned();
         let name = read_opt(&h.join("name"));
         let device = canonical_device(h);
+        let stable_identity = match (&name, &device) {
+            (Some(chip_name), Some(device_path)) => {
+                Some(format!("{}/{}", chip_name, device_path))
+            }
+            _ => {
+                ctx.issue(
+                    &h.to_string_lossy(),
+                    "unresolved",
+                    "hwmon stable identity requires both name and canonical device path".into(),
+                    "do not persist this chip's sensor identity; use it only for the current probe result",
+                );
+                None
+            }
+        };
         let mut sensors = Vec::new();
         let mut fan_present = false;
         let mut pwm_present = false;
@@ -523,14 +537,17 @@ fn probe_hwmon(ctx: &mut Ctx) -> Json {
                             "report the sensor as unknown rather than 0",
                         );
                     }
+                    let sensor_identity = label.clone().unwrap_or(base);
                     sensors.push(obj(vec![
                         ("sensor".to_string(), s(fname)),
                         ("label".to_string(), label.clone().map(s).unwrap_or(Json::Null)),
-                        ("stable_key".to_string(), s(format!(
-                            "hwmon/{}/{}",
-                            name.clone().unwrap_or_else(|| "unknown".into()),
-                            label.clone().unwrap_or(base)
-                        ))),
+                        (
+                            "stable_key".to_string(),
+                            stable_identity
+                                .as_ref()
+                                .map(|chip| s(format!("hwmon/{}/{}", chip, sensor_identity)))
+                                .unwrap_or(Json::Null),
+                        ),
                         ("temp_millidegC".to_string(), value.map(i).unwrap_or(Json::Null)),
                         ("temp_celsius".to_string(), value.map(|v| f(v as f64 / 1000.0)).unwrap_or(Json::Null)),
                     ]));
@@ -552,6 +569,10 @@ fn probe_hwmon(ctx: &mut Ctx) -> Json {
             ("index".to_string(), s(index)),
             ("name".to_string(), name.map(s).unwrap_or(Json::Null)),
             ("device".to_string(), device.map(s).unwrap_or(Json::Null)),
+            (
+                "stable_identity".to_string(),
+                stable_identity.map(s).unwrap_or(Json::Null),
+            ),
             ("temp_sensor_count".to_string(), i(sensors.len() as i64)),
             ("fan_speed_present".to_string(), b(fan_present)),
             ("pwm_present".to_string(), b(pwm_present)),
