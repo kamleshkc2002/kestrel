@@ -55,3 +55,9 @@ jobs:
           cargo fmt --manifest-path spikes/audio/Cargo.toml --check
           cargo clippy --manifest-path spikes/audio/Cargo.toml -- -D warnings
           cargo test --manifest-path spikes/audio/Cargo.toml
+
+      - name: Validate clipboard spike
+        run: |
+          cargo fmt --manifest-path spikes/clipboard/Cargo.toml --check
+          cargo clippy --manifest-path spikes/clipboard/Cargo.toml -- -D warnings
+          cargo test --manifest-path spikes/clipboard/Cargo.toml
