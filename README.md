@@ -12,9 +12,10 @@ support it.
 
 ## Status
 
-Phase 0 capability validation is complete. Phase 1 is establishing the
-production workspace foundation before feature integrations are implemented or
-release support claims are made.
+Phase 0 capability validation is complete. Phase 1 now has a production
+workspace, a versioned non-sensitive configuration boundary, and a normal
+GTK/libadwaita command window. Concrete feature integrations are introduced
+in their individual Phase 1 slices.
 
 - [Requirements and support contract](docs/REQUIREMENTS.md)
 - [Initial architecture](docs/ARCHITECTURE.md)
@@ -36,7 +37,8 @@ the tested desktop, session capability, and feature scope.
 
 ## Workspace
 
-- `apps/kestrel`: application entry point.
+- `apps/kestrel`: GTK/libadwaita composition root, XDG configuration I/O, and
+  normal command-surface window.
 - `crates/kestrel-core`: UI-agnostic feature and capability model.
 - `crates/kestrel-platform`: future platform-adapter boundary; no concrete OS
   adapter is committed yet.
@@ -55,13 +57,21 @@ the tested desktop, session capability, and feature scope.
   or unsupported status.
 - Explicit tested support instead of claiming uniform behavior across Linux desktops.
 
+## Configuration
+
+Kestrel stores only versioned, non-sensitive preferences in
+`$XDG_CONFIG_HOME/kestrel/config.toml` (or `~/.config/kestrel/config.toml`).
+Per-feature enablement is keyed by stable feature IDs. Invalid feature settings
+are ignored individually and reported in the normal window, so they do not
+prevent other features or the command surface from starting.
+
 ## Development
 
 ### Prerequisites
 
 Kestrel is a Rust workspace. Install a current stable Rust toolchain with `rustup`.
-The initial scaffold has no native dependencies; the planned GTK4/libadwaita, D-Bus, and
-PipeWire integrations will need the corresponding Linux development packages.
+The application requires GTK4 and libadwaita development packages; future D-Bus
+and PipeWire integrations will need their corresponding Linux development packages.
 
 On Debian/Ubuntu-derived distributions:
 

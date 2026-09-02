@@ -1,5 +1,9 @@
 //! UI-agnostic primitives shared by Kestrel services and front ends.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 /// The runtime status of a feature on the current Linux session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityStatus {
@@ -39,6 +43,99 @@ impl CapabilityEvidence {
             key: key.into(),
             value: value.into(),
         }
+    }
+}
+
+/// The current version of Kestrel's non-sensitive configuration schema.
+pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 1;
+
+/// Non-sensitive, per-feature preferences persisted by the application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FeatureConfiguration {
+    /// Whether the user has opted into starting this feature.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Versioned, portable application configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplicationConfiguration {
+    /// The schema version from which the configuration was loaded.
+    pub schema_version: u32,
+    /// Preferences keyed by stable, namespaced feature IDs.
+    #[serde(default)]
+    pub features: BTreeMap<String, FeatureConfiguration>,
+}
+
+impl Default for ApplicationConfiguration {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_CONFIGURATION_SCHEMA_VERSION,
+            features: BTreeMap::new(),
+        }
+    }
+}
+
+impl ApplicationConfiguration {
+    /// Returns whether a known feature should be started by default.
+    pub fn feature_enabled(&self, feature_id: &str) -> bool {
+        self.features
+            .get(feature_id)
+            .is_some_and(|configuration| configuration.enabled)
+    }
+
+    /// Records a user's enablement preference for a stable feature ID.
+    pub fn set_feature_enabled(
+        &mut self,
+        feature_id: impl Into<String>,
+        enabled: bool,
+    ) -> Result<(), ConfigurationError> {
+        let feature_id = feature_id.into();
+        validate_feature_id(&feature_id)?;
+        self.features
+            .insert(feature_id, FeatureConfiguration { enabled });
+        Ok(())
+    }
+
+    /// Validates schema and stable feature identifiers without performing I/O.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if self.schema_version != CURRENT_CONFIGURATION_SCHEMA_VERSION {
+            return Err(ConfigurationError::UnsupportedSchemaVersion {
+                version: self.schema_version,
+            });
+        }
+
+        for feature_id in self.features.keys() {
+            validate_feature_id(feature_id)?;
+        }
+
+        Ok(())
+    }
+}
+
+/// An invalid portable configuration contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigurationError {
+    UnsupportedSchemaVersion { version: u32 },
+    InvalidFeatureId { feature_id: String },
+}
+
+/// Validates a stable namespaced identifier without depending on a UI or platform.
+pub fn validate_feature_id(feature_id: &str) -> Result<(), ConfigurationError> {
+    let valid = !feature_id.is_empty()
+        && feature_id.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || character == '_' || character == '-'
+                })
+        });
+
+    if valid {
+        Ok(())
+    } else {
+        Err(ConfigurationError::InvalidFeatureId {
+            feature_id: feature_id.to_owned(),
+        })
     }
 }
 
@@ -118,7 +215,10 @@ impl FeatureSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{CapabilityEvidence, CapabilityReport, CapabilityStatus, FeatureSpec};
+    use super::{
+        ApplicationConfiguration, CapabilityEvidence, CapabilityReport, CapabilityStatus,
+        ConfigurationError, FeatureSpec, CURRENT_CONFIGURATION_SCHEMA_VERSION,
+    };
 
     #[test]
     fn feature_spec_preserves_its_capability_status() {
@@ -148,5 +248,37 @@ mod tests {
             Some("Enable history after configuring retention bounds.")
         );
         assert_eq!(report.evidence[0].key, "clipboard_content_read");
+    }
+
+    #[test]
+    fn configuration_tracks_enablement_by_stable_feature_id() {
+        let mut configuration = ApplicationConfiguration::default();
+
+        configuration
+            .set_feature_enabled("audio.mixer", true)
+            .expect("valid feature ID");
+
+        assert!(configuration.feature_enabled("audio.mixer"));
+        assert!(!configuration.feature_enabled("clipboard.history"));
+        assert_eq!(
+            configuration.schema_version,
+            CURRENT_CONFIGURATION_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn configuration_rejects_malformed_feature_ids() {
+        let mut configuration = ApplicationConfiguration::default();
+
+        let error = configuration
+            .set_feature_enabled("not a feature", true)
+            .expect_err("spaces are not valid in stable feature IDs");
+
+        assert_eq!(
+            error,
+            ConfigurationError::InvalidFeatureId {
+                feature_id: "not a feature".to_string(),
+            }
+        );
     }
 }
