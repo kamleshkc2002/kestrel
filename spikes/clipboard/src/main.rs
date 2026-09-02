@@ -384,11 +384,15 @@ fn lifecycle_report(backend: Backend) -> Value {
     let available_after_owner_exit = child_status(&["--internal-match", backend.name(), &marker])
         .map(|status| status.success())
         .unwrap_or(false);
-    let cleanup = child_status(&["--internal-clear-if-match", backend.name(), &marker]);
-    let cleanup_result = match cleanup {
-        Ok(status) if status.success() => "cleared_generated_marker",
-        Ok(_) => "preserved_newer_or_unreadable_selection",
-        Err(_) => "cleanup_failed",
+    let selection_empty_before_cleanup = selection_is_empty(backend).unwrap_or(false);
+    let cleanup_result = if selection_empty_before_cleanup {
+        "not_required_selection_already_empty"
+    } else {
+        match child_status(&["--internal-clear-if-match", backend.name(), &marker]) {
+            Ok(status) if status.success() => "cleared_generated_marker",
+            Ok(_) => "preserved_newer_or_unreadable_selection",
+            Err(_) => "cleanup_failed",
+        }
     };
     let empty_after_cleanup = selection_is_empty(backend).unwrap_or(false);
 
@@ -399,6 +403,7 @@ fn lifecycle_report(backend: Backend) -> Value {
         "available_while_owner_alive": available_while_owner_alive,
         "writer_exited_cleanly": writer_exited_cleanly,
         "available_after_owner_exit": available_after_owner_exit,
+        "selection_empty_before_cleanup": selection_empty_before_cleanup,
         "cleanup": cleanup_result,
         "empty_after_cleanup": empty_after_cleanup,
         "preexisting_clipboard_content_read": false,
