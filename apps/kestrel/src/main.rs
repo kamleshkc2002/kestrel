@@ -11,9 +11,9 @@ fn main() {
         .transpose()
         .unwrap_or_else(|error| {
             eprintln!("Kestrel could not load its configuration: {error}");
-            Ok(LoadedConfiguration::default())
+            Some(LoadedConfiguration::default())
         })
-        .expect("fallback configuration is available");
+        .unwrap_or_default();
     let mut runtime =
         ApplicationRuntime::new(&loaded.configuration).expect("built-in features have valid IDs");
     runtime.start();
