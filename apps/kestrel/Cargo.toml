@@ -7,3 +7,5 @@ description = "Kestrel Linux utility suite"
 
 [dependencies]
 kestrel-core = { path = "../../crates/kestrel-core" }
+kestrel-platform = { path = "../../crates/kestrel-platform" }
+kestrel-services = { path = "../../crates/kestrel-services" }

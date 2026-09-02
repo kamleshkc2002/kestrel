@@ -2,5 +2,7 @@
 members = [
     "apps/kestrel",
     "crates/kestrel-core",
+    "crates/kestrel-platform",
+    "crates/kestrel-services",
 ]
 resolver = "2"
