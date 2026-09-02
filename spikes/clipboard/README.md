@@ -47,6 +47,29 @@ An eligible lifecycle test compares only the probe's generated marker in memory
 to protect against that race. It reports this fact separately and does not emit,
 persist, or inspect pre-existing clipboard data.
 
+## Clean-session validation
+
+`run-clean-session-lifecycle.sh` provides repeatable, non-interactive lifecycle
+evidence without accessing a user's desktop session:
+
+- X11 runs on a fresh Xvfb display;
+- Wayland runs on headless Sway with a private `XDG_RUNTIME_DIR`;
+- neither environment starts a clipboard manager.
+
+Both runs require the generated marker to be available while its owner lives,
+unavailable after that owner exits, and absent at the end. A marker that
+disappears after owner exit is the expected no-manager result. It establishes
+that Kestrel cannot rely on a third-party clipboard manager for persistence:
+an opt-in history service must hold the data and selection ownership for its
+own lifetime. When the selection is already empty after exit, the report
+records cleanup as `not_required_selection_already_empty`.
+
+Run locally only where `Xvfb` and `sway` are installed:
+
+```sh
+bash spikes/clipboard/run-clean-session-lifecycle.sh
+```
+
 ## Initial lifecycle and storage contract
 
 The future `clipboard` service must:
