@@ -12,9 +12,9 @@ support it.
 
 ## Status
 
-Kestrel is an early architecture scaffold; its feature integrations are not yet
-implemented. The project is validating a portable foundation before making
-release support claims.
+Phase 0 capability validation is complete. Phase 1 is establishing the
+production workspace foundation before feature integrations are implemented or
+release support claims are made.
 
 - [Requirements and support contract](docs/REQUIREMENTS.md)
 - [Initial architecture](docs/ARCHITECTURE.md)
@@ -38,6 +38,10 @@ the tested desktop, session capability, and feature scope.
 
 - `apps/kestrel`: application entry point.
 - `crates/kestrel-core`: UI-agnostic feature and capability model.
+- `crates/kestrel-platform`: future platform-adapter boundary; no concrete OS
+  adapter is committed yet.
+- `crates/kestrel-services`: feature registry and lifecycle boundary; no
+  concrete feature service is committed yet.
 - `docs/REQUIREMENTS.md`: product boundary, support contract, security, packaging,
   and delivery requirements.
 - `docs/ARCHITECTURE.md`: initial process model, crate boundaries, capability

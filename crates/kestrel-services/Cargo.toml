@@ -1,0 +1,10 @@
+[package]
+name = "kestrel-services"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Feature service lifecycle and registry boundaries for Kestrel"
+
+[dependencies]
+kestrel-core = { path = "../kestrel-core" }
+kestrel-platform = { path = "../kestrel-platform" }

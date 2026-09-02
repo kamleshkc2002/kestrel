@@ -7,8 +7,25 @@ name = "kestrel"
 version = "0.1.0"
 dependencies = [
  "kestrel-core",
+ "kestrel-platform",
+ "kestrel-services",
 ]
 
 [[package]]
 name = "kestrel-core"
 version = "0.1.0"
+
+[[package]]
+name = "kestrel-platform"
+version = "0.1.0"
+dependencies = [
+ "kestrel-core",
+]
+
+[[package]]
+name = "kestrel-services"
+version = "0.1.0"
+dependencies = [
+ "kestrel-core",
+ "kestrel-platform",
+]
