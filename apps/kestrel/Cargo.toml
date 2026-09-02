@@ -4,8 +4,20 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Kestrel Linux utility suite"
+[features]
+default = ["gui"]
+gui = ["dep:adw", "dep:gtk"]
+
+[[bin]]
+name = "kestrel"
+path = "src/main.rs"
+required-features = ["gui"]
 
 [dependencies]
+adw = { package = "libadwaita", version = "0.7", optional = true }
+gtk = { package = "gtk4", version = "0.9", optional = true }
 kestrel-core = { path = "../../crates/kestrel-core" }
 kestrel-platform = { path = "../../crates/kestrel-platform" }
 kestrel-services = { path = "../../crates/kestrel-services" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

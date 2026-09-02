@@ -23,6 +23,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install GTK development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libadwaita-1-dev libgtk-4-dev
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
