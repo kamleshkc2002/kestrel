@@ -1,4 +1,7 @@
 /target/
+/build/
+/dist/
+/squashfs-root/
 *.swp
 *.swo
 .direnv/

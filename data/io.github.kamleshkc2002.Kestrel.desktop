@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Kestrel
+Comment=Capability-aware utility host for Linux desktops
+Exec=kestrel
+Icon=io.github.kamleshkc2002.Kestrel
+Terminal=false
+Categories=Utility;System;
+Keywords=utility;system;audio;clipboard;monitor;
+StartupNotify=true
+StartupWMClass=io.github.kamleshkc2002.Kestrel
