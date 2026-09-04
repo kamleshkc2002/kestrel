@@ -7,6 +7,8 @@
 use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::CapabilityProbe;
 
+pub mod system_monitor;
+
 /// The current lifecycle stage of a registered feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceLifecycle {
