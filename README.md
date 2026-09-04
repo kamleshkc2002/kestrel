@@ -65,6 +65,18 @@ Per-feature enablement is keyed by stable feature IDs. Invalid feature settings
 are ignored individually and reported in the normal window, so they do not
 prevent other features or the command surface from starting.
 
+## AppImage preview
+
+Tagged versions are published as x86_64 AppImage previews on the repository's
+GitHub Releases page. AppImages are built on Ubuntu 24.04 and bundle the
+GTK4/libadwaita runtime; the corresponding `.sha256` file verifies the download.
+
+Build the artifact in a compatible environment with:
+
+```bash
+bash scripts/build-appimage.sh 0.1.0
+```
+
 ## Development
 
 ### Prerequisites

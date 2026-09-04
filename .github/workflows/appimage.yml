@@ -1,0 +1,89 @@
+name: AppImage
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build AppImage (x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
+            libglib2.0-bin libgtk-4-dev librsvg2-dev patchelf xvfb
+
+      - name: Validate desktop metadata
+        run: desktop-file-validate data/io.github.kamleshkc2002.Kestrel.desktop
+
+      - name: Build AppImage
+        env:
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.0-preview' }}
+        run: |
+          version="${VERSION#v}"
+          bash scripts/build-appimage.sh "$version"
+
+      - name: Inspect bundled artifact
+        run: |
+          appimage="$(find dist -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          test -x "$appimage"
+          file "$appimage" | grep -q 'ELF 64-bit'
+          "$appimage" --appimage-extract >/dev/null
+          test -x squashfs-root/usr/bin/kestrel
+          test -f squashfs-root/io.github.kamleshkc2002.Kestrel.desktop
+          test -f squashfs-root/io.github.kamleshkc2002.Kestrel.svg
+          grep -q 'libadwaita' <(ldd squashfs-root/usr/bin/kestrel)
+          (
+            cd dist
+            sha256sum --check "$(basename "$appimage").sha256"
+          )
+
+      - name: Smoke-test application startup
+        run: |
+          appimage="$(find dist -maxdepth 1 -name '*.AppImage' -print -quit)"
+          set +e
+          timeout 10s xvfb-run -a "$appimage" --appimage-extract-and-run
+          status=$?
+          set -e
+          test "$status" -eq 0 -o "$status" -eq 124
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kestrel-x86_64-AppImage
+          path: |
+            dist/*.AppImage
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub prerelease
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.AppImage dist/*.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Kestrel ${GITHUB_REF_NAME#v} preview" \
+            --generate-notes \
+            --prerelease \
+            --verify-tag
