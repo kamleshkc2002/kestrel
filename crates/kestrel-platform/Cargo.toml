@@ -7,3 +7,6 @@ description = "Platform adapter boundaries for Kestrel"
 
 [dependencies]
 kestrel-core = { path = "../kestrel-core" }
+
+[dev-dependencies]
+tempfile = "3"

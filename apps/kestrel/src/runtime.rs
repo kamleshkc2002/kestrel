@@ -1,10 +1,20 @@
 use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec};
-use kestrel_platform::StaticCapabilityProbe;
-use kestrel_services::{FeatureRegistry, RegistryError, ServiceRegistration};
+use kestrel_platform::{
+    system_monitor::{ProcSysMonitor, FEATURE_ID as SYSTEM_MONITOR_ID},
+    StaticCapabilityProbe,
+};
+use kestrel_services::{
+    system_monitor::{
+        RefreshOutcome, SystemMonitorService, SystemSnapshot, DEFAULT_REFRESH_INTERVAL,
+    },
+    FeatureRegistry, RegistryError, ServiceRegistration,
+};
+use std::time::Duration;
 
 /// UI-independent composition root for startup, enablement, and capability refresh.
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
+    system_monitor: SystemMonitorService<ProcSysMonitor>,
 }
 
 impl ApplicationRuntime {
@@ -30,6 +40,17 @@ impl ApplicationRuntime {
             ),
         )?;
 
+        let system_monitor = FeatureSpec::new(
+            SYSTEM_MONITOR_ID,
+            "System monitor",
+            CapabilityStatus::Supported,
+        );
+        let monitor_source = ProcSysMonitor::default();
+        registry.register_probe(
+            system_monitor,
+            configuration.feature_enabled(SYSTEM_MONITOR_ID),
+            monitor_source.clone(),
+        )?;
         let global_shortcuts = FeatureSpec::new(
             "global.shortcuts",
             "Global shortcuts",
@@ -53,13 +74,19 @@ impl ApplicationRuntime {
                 ),
             ),
         )?;
-
-        Ok(Self { registry })
+        Ok(Self {
+            registry,
+            system_monitor: SystemMonitorService::new(monitor_source, DEFAULT_REFRESH_INTERVAL)
+                .expect("the built-in monitor refresh interval is valid"),
+        })
     }
 
     /// Starts only the entries that are enabled and currently available.
     pub fn start(&mut self) {
         self.registry.start_enabled();
+        if self.system_monitor_is_running() {
+            self.system_monitor.refresh(Duration::ZERO);
+        }
     }
 
     /// Refreshes every cached capability report through its feature-specific probe.
@@ -79,12 +106,33 @@ impl ApplicationRuntime {
     pub fn registrations(&self) -> impl Iterator<Item = &ServiceRegistration> {
         self.registry.registrations()
     }
+
+    /// Samples monitor metrics when the feature is running and its interval elapsed.
+    pub fn refresh_system_monitor(&mut self, observed_at: Duration) -> RefreshOutcome {
+        if self.system_monitor_is_running() {
+            self.system_monitor.refresh(observed_at)
+        } else {
+            RefreshOutcome::Skipped
+        }
+    }
+
+    /// Returns the latest immutable monitor snapshot, if sampling has started.
+    pub fn system_monitor_snapshot(&self) -> Option<&SystemSnapshot> {
+        self.system_monitor.latest()
+    }
+
+    fn system_monitor_is_running(&self) -> bool {
+        self.registry.registrations().any(|registration| {
+            registration.feature.id == SYSTEM_MONITOR_ID && registration.running
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ApplicationRuntime;
     use kestrel_core::ApplicationConfiguration;
+    use kestrel_platform::system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID;
 
     #[test]
     fn startup_keeps_unavailable_features_visible() {
@@ -96,9 +144,23 @@ mod tests {
             .expect("static capability refreshes");
 
         let registrations = runtime.registrations().collect::<Vec<_>>();
-        assert_eq!(registrations.len(), 2);
+        assert_eq!(registrations.len(), 3);
         assert!(registrations[0].running);
-        assert!(!registrations[1].available);
-        assert!(registrations[1].capability.remediation.is_some());
+        assert_eq!(registrations[1].feature.id, SYSTEM_MONITOR_ID);
+        assert!(!registrations[2].available);
+        assert!(registrations[2].capability.remediation.is_some());
+    }
+
+    #[test]
+    fn enabled_monitor_starts_with_a_non_failing_live_snapshot() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(SYSTEM_MONITOR_ID, true)
+            .expect("feature ID is valid");
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+
+        runtime.start();
+
+        assert!(runtime.system_monitor_snapshot().is_some());
     }
 }

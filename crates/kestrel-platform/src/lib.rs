@@ -6,6 +6,8 @@
 
 use kestrel_core::CapabilityReport;
 
+pub mod system_monitor;
+
 /// Produces a non-interactive capability report for one feature adapter.
 ///
 /// Concrete implementations may inspect a user session only when their
