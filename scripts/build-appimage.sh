@@ -50,6 +50,16 @@ env DEPLOY_GTK_VERSION=4 \
 # and GTK should select Wayland or X11 from the user's current session.
 sed -i '/^export GTK_THEME=/d; /^export GDK_BACKEND=/d' \
   "$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
+cat >>"$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh" <<'EOF'
+
+# Do not force a host-selected input method that is absent from the bundle.
+# GTK will select its built-in fallback instead of warning and disabling input.
+if [ -n "${GTK_IM_MODULE:-}" ] &&
+  ! find "$APPDIR/usr/lib/gtk-4.0" -type f -name "libim-${GTK_IM_MODULE}.so" -print -quit |
+    grep -q .; then
+  unset GTK_IM_MODULE
+fi
+EOF
 find "$appdir/usr/lib/gtk-4.0" -name 'libmedia-gstreamer.so' -delete 2>/dev/null || true
 
 env ARCH="$architecture" VERSION="$version" \

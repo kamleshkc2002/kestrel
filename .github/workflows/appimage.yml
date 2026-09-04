@@ -60,10 +60,12 @@ jobs:
         run: |
           appimage="$(find dist -maxdepth 1 -name '*.AppImage' -print -quit)"
           set +e
-          timeout 10s xvfb-run -a "$appimage" --appimage-extract-and-run
+          GTK_IM_MODULE=ibus timeout 10s xvfb-run -a \
+            "$appimage" --appimage-extract-and-run 2>appimage-smoke.log
           status=$?
           set -e
           test "$status" -eq 0 -o "$status" -eq 124
+          ! grep -q 'No IM module matching' appimage-smoke.log
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
