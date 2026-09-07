@@ -82,14 +82,15 @@ bash scripts/build-appimage.sh 0.1.0
 ### Prerequisites
 
 Kestrel is a Rust workspace. Install a current stable Rust toolchain with `rustup`.
-The application requires GTK4 and libadwaita development packages; future D-Bus
-and PipeWire integrations will need their corresponding Linux development packages.
+The application requires GTK4, libadwaita, and PulseAudio development packages;
+future D-Bus and native PipeWire integrations will need their corresponding Linux
+development packages.
 
 On Debian/Ubuntu-derived distributions:
 
 ```bash
 sudo apt update
-sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libdbus-1-dev libpipewire-0.3-dev
+sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libdbus-1-dev libpipewire-0.3-dev libpulse-dev
 ```
 
 
