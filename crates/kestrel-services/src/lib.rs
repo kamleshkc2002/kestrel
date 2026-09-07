@@ -6,6 +6,7 @@
 
 use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::CapabilityProbe;
+pub mod audio;
 
 pub mod system_monitor;
 

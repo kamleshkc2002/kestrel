@@ -1,9 +1,11 @@
 use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::{
+    audio::{PulseAudioBackend, FEATURE_ID as AUDIO_MIXER_ID},
     system_monitor::{ProcSysMonitor, FEATURE_ID as SYSTEM_MONITOR_ID},
     StaticCapabilityProbe,
 };
 use kestrel_services::{
+    audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioSnapshot},
     system_monitor::{
         RefreshOutcome, SystemMonitorService, SystemSnapshot, DEFAULT_REFRESH_INTERVAL,
     },
@@ -14,6 +16,7 @@ use std::time::Duration;
 /// UI-independent composition root for startup, enablement, and capability refresh.
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
+    audio_mixer: AudioMixerService<PulseAudioBackend>,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
 }
 
@@ -51,6 +54,14 @@ impl ApplicationRuntime {
             configuration.feature_enabled(SYSTEM_MONITOR_ID),
             monitor_source.clone(),
         )?;
+        let audio_mixer =
+            FeatureSpec::new(AUDIO_MIXER_ID, "Audio mixer", CapabilityStatus::Supported);
+        let audio_backend = PulseAudioBackend::new();
+        registry.register_probe(
+            audio_mixer,
+            configuration.feature_enabled(AUDIO_MIXER_ID),
+            audio_backend,
+        )?;
         let global_shortcuts = FeatureSpec::new(
             "global.shortcuts",
             "Global shortcuts",
@@ -76,6 +87,7 @@ impl ApplicationRuntime {
         )?;
         Ok(Self {
             registry,
+            audio_mixer: AudioMixerService::new(audio_backend),
             system_monitor: SystemMonitorService::new(monitor_source, DEFAULT_REFRESH_INTERVAL)
                 .expect("the built-in monitor refresh interval is valid"),
         })
@@ -86,6 +98,9 @@ impl ApplicationRuntime {
         self.registry.start_enabled();
         if self.system_monitor_is_running() {
             self.system_monitor.refresh(Duration::ZERO);
+        }
+        if self.audio_mixer_is_running() {
+            let _ = self.audio_mixer.refresh();
         }
     }
 
@@ -120,6 +135,22 @@ impl ApplicationRuntime {
     pub fn system_monitor_snapshot(&self) -> Option<&SystemSnapshot> {
         self.system_monitor.latest()
     }
+    /// Returns the latest audio snapshot, including structured unavailable/empty states.
+    pub fn audio_snapshot(&self) -> &AudioSnapshot {
+        self.audio_mixer.latest()
+    }
+
+    /// Applies an audio command only while the opt-in mixer service is running.
+    pub fn execute_audio_command(&mut self, command: AudioCommand) -> Option<AudioCommandResult> {
+        self.audio_mixer_is_running()
+            .then(|| self.audio_mixer.execute(command))
+    }
+
+    fn audio_mixer_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == AUDIO_MIXER_ID && registration.running)
+    }
 
     fn system_monitor_is_running(&self) -> bool {
         self.registry.registrations().any(|registration| {
@@ -132,7 +163,10 @@ impl ApplicationRuntime {
 mod tests {
     use super::ApplicationRuntime;
     use kestrel_core::ApplicationConfiguration;
-    use kestrel_platform::system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID;
+    use kestrel_platform::{
+        audio::FEATURE_ID as AUDIO_MIXER_ID, system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
+    };
+    use kestrel_services::audio::{AudioAvailability, AudioCommand};
 
     #[test]
     fn startup_keeps_unavailable_features_visible() {
@@ -144,11 +178,13 @@ mod tests {
             .expect("static capability refreshes");
 
         let registrations = runtime.registrations().collect::<Vec<_>>();
-        assert_eq!(registrations.len(), 3);
+        assert_eq!(registrations.len(), 4);
         assert!(registrations[0].running);
         assert_eq!(registrations[1].feature.id, SYSTEM_MONITOR_ID);
-        assert!(!registrations[2].available);
-        assert!(registrations[2].capability.remediation.is_some());
+        assert_eq!(registrations[2].feature.id, AUDIO_MIXER_ID);
+        assert!(!registrations[2].running);
+        assert!(!registrations[3].available);
+        assert!(registrations[3].capability.remediation.is_some());
     }
 
     #[test]
@@ -162,5 +198,23 @@ mod tests {
         runtime.start();
 
         assert!(runtime.system_monitor_snapshot().is_some());
+    }
+
+    #[test]
+    fn disabled_audio_service_does_not_accept_commands() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+
+        assert_eq!(
+            runtime.audio_snapshot().availability,
+            AudioAvailability::Unavailable
+        );
+        assert!(runtime
+            .execute_audio_command(AudioCommand::SetStreamMute {
+                stream_id: 1,
+                muted: true,
+            })
+            .is_none());
     }
 }

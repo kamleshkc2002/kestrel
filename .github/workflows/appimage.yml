@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
-            libglib2.0-bin libgtk-4-dev librsvg2-dev patchelf xvfb
+            libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb
 
       - name: Validate desktop metadata
         run: desktop-file-validate data/io.github.kamleshkc2002.Kestrel.desktop
