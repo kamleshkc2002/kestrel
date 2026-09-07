@@ -5,6 +5,7 @@
 //! display-server, D-Bus, portal, audio, or async-runtime implementation.
 
 use kestrel_core::CapabilityReport;
+pub mod audio;
 
 pub mod system_monitor;
 
