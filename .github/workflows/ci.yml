@@ -71,5 +71,5 @@ jobs:
       - name: Validate clipboard lifecycle in clean sessions
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y sway xvfb
+          sudo apt-get install --no-install-recommends -y libpulse-dev sway xvfb
           KESTREL_REQUIRE_CLEAN_SESSION=1 bash spikes/clipboard/run-clean-session-lifecycle.sh
