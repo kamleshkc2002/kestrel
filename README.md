@@ -40,10 +40,8 @@ the tested desktop, session capability, and feature scope.
 - `apps/kestrel`: GTK/libadwaita composition root, XDG configuration I/O, and
   normal command-surface window.
 - `crates/kestrel-core`: UI-agnostic feature and capability model.
-- `crates/kestrel-platform`: future platform-adapter boundary; no concrete OS
-  adapter is committed yet.
-- `crates/kestrel-services`: feature registry and lifecycle boundary; no
-  concrete feature service is committed yet.
+- `crates/kestrel-platform`: capability probes and narrow OS/session adapters.
+- `crates/kestrel-services`: feature registry and bounded worker lifecycles.
 - `docs/REQUIREMENTS.md`: product boundary, support contract, security, packaging,
   and delivery requirements.
 - `docs/ARCHITECTURE.md`: initial process model, crate boundaries, capability
@@ -64,6 +62,19 @@ Kestrel stores only versioned, non-sensitive preferences in
 Per-feature enablement is keyed by stable feature IDs. Invalid feature settings
 are ignored individually and reported in the normal window, so they do not
 prevent other features or the command surface from starting.
+
+### Clipboard history
+
+`clipboard.history` is disabled by default and starts only after explicit
+per-feature opt-in and a successful capability probe. Retained UTF-8 text is
+memory-only and bounded to 100 items, 1 MiB per item, and 24 hours. Wipe,
+lock, sleep, shutdown, and service stop zero and drop retained buffers; Kestrel
+clears the live selection only when it still matches content Kestrel owns.
+
+Wayland uses the data-control protocol when available, with X11 `CLIPBOARD` as
+the compatibility path. No external clipboard-manager command is required.
+Generic source-application exclusions are unavailable because these clipboard
+interfaces do not provide verifiable source-application identity.
 
 ## AppImage preview
 

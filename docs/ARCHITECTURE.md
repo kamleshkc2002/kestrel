@@ -376,9 +376,12 @@ Persistent data belongs under the relevant XDG data and state directories.
 Features define retention, maximum item size, and clear behavior before
 persisting sensitive content.
 
-Clipboard history is disabled by default until a user enables it. Its service
-must support item-size limits, retention bounds, immediate wipe, and
-per-application exclusions before it is considered an MVP-complete feature.
+Clipboard history is disabled by default until a user enables it. Its initial
+service retains UTF-8 text only in zeroizing process memory with fixed item-size,
+count, and age bounds. Immediate wipe, lock, sleep, shutdown, and service stop
+clear retained buffers and release only a selection still owned by Kestrel.
+Generic per-application exclusions are explicitly unavailable unless a future
+desktop interface supplies verifiable source-application identity.
 
 Capture, OCR, and recording workflows remain local by default. Any future
 upload provider is a separately enabled feature with a visible destination and

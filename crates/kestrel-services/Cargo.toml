@@ -8,3 +8,4 @@ description = "Feature service lifecycle and registry boundaries for Kestrel"
 [dependencies]
 kestrel-core = { path = "../kestrel-core" }
 kestrel-platform = { path = "../kestrel-platform" }
+zeroize = "1.8"

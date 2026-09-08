@@ -24,20 +24,20 @@ fn main() {
     let application = adw::Application::builder()
         .application_id("io.github.kamleshkc2002.Kestrel")
         .build();
-    let feature_rows = runtime
-        .registrations()
-        .map(|registration| {
-            (
-                registration.feature.label.to_string(),
-                format!("{:?}", registration.lifecycle()),
-                registration.capability.summary.clone(),
-                registration.capability.remediation.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
     let warnings = loaded.warnings;
 
     application.connect_activate(move |application| {
+        let feature_rows = runtime
+            .registrations()
+            .map(|registration| {
+                (
+                    registration.feature.label.to_string(),
+                    format!("{:?}", registration.lifecycle()),
+                    registration.capability.summary.clone(),
+                    registration.capability.remediation.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
         build_window(application, &feature_rows, &warnings);
     });
     application.run();

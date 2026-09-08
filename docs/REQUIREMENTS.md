@@ -443,9 +443,11 @@ specific remediation rather than simply hiding a feature without explanation.
 - **Sandboxing:** a Flatpak build is the end state; it must declare portal, D-Bus, and
   device access explicitly. Some hardware/input features may intentionally remain native
   package features rather than weakening the sandbox.
-- **Clipboard privacy:** provide retention limits, per-application ignore rules, maximum
-  item sizes, clear-on-lock/sleep, and a way to remove all history immediately. Do not
-  persist clipboard contents by default until the user enables history.
+- **Clipboard privacy:** history is disabled by default and retains content only in
+  bounded, zeroizing process memory after opt-in. Enforce maximum item size, count, and
+  age; clear on lock/sleep; release owned selections on stop; and provide immediate
+  wipe. Per-application ignore rules must not be claimed unless a desktop interface
+  supplies verifiable source-application identity.
 - **Media privacy:** screenshots, recordings, camera frames, OCR text, and QR results
   stay local by default. Upload or temporary sharing must be an explicit, separately
   enabled provider action with a reviewable destination and retention policy.

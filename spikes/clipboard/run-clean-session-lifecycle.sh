@@ -19,6 +19,7 @@ done
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 manifest="$script_dir/Cargo.toml"
+workspace_manifest="$script_dir/../../Cargo.toml"
 artifacts_dir="$(mktemp -d "${TMPDIR:-/tmp}/kestrel-clipboard-lifecycle.XXXXXX")"
 wayland_runtime_dir=""
 xvfb_pid=""
@@ -101,6 +102,11 @@ env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u XDG_SESSION_TYPE \
   DISPLAY=:99 XDG_SESSION_TYPE=x11 \
   cargo run --quiet --manifest-path "$manifest" -- --exercise-lifecycle x11 >"$x11_report"
 assert_lifecycle x11 "$x11_report"
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
+  DISPLAY=:99 XDG_SESSION_TYPE=x11 KESTREL_EXPECT_CLIPBOARD_PROVIDER=x11 \
+  cargo test --quiet --manifest-path "$workspace_manifest" -p kestrel-services \
+    --test clipboard_production_lifecycle -- --exact \
+    production_backend_reowns_and_releases_a_clean_session_selection
 cat "$x11_report"
 
 wayland_runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/kestrel-wayland-runtime.XXXXXX")"
@@ -121,4 +127,12 @@ env -u DISPLAY -u WAYLAND_SOCKET \
   XDG_SESSION_TYPE=wayland \
   cargo run --quiet --manifest-path "$manifest" -- --exercise-lifecycle wayland >"$wayland_report"
 assert_lifecycle wayland "$wayland_report"
+env -u DISPLAY -u WAYLAND_SOCKET \
+  XDG_RUNTIME_DIR="$wayland_runtime_dir" \
+  WAYLAND_DISPLAY="$wayland_display" \
+  XDG_SESSION_TYPE=wayland \
+  KESTREL_EXPECT_CLIPBOARD_PROVIDER=wayland \
+  cargo test --quiet --manifest-path "$workspace_manifest" -p kestrel-services \
+    --test clipboard_production_lifecycle -- --exact \
+    production_backend_reowns_and_releases_a_clean_session_selection
 cat "$wayland_report"
