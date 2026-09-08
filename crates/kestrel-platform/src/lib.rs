@@ -6,6 +6,7 @@
 
 use kestrel_core::CapabilityReport;
 pub mod audio;
+pub mod clipboard;
 
 pub mod system_monitor;
 
