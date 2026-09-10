@@ -1,7 +1,8 @@
 use adw::prelude::*;
 use gtk::{Align, Orientation};
 use kestrel::{
-    configuration_path, load, ApplicationRuntime, ApplicationViewModel, LoadedConfiguration,
+    configuration_path, load, ApplicationRuntime, ApplicationViewModel, CapabilityKindViewModel,
+    FeatureViewModel, LoadedConfiguration, RemediationViewModel,
 };
 
 fn main() {
@@ -66,49 +67,7 @@ fn build_window(application: &adw::Application, view_model: &ApplicationViewMode
     let features = gtk::ListBox::new();
     features.add_css_class("boxed-list");
     for feature in &view_model.features {
-        let row_content = gtk::Box::new(Orientation::Vertical, 4);
-        row_content.set_margin_top(10);
-        row_content.set_margin_bottom(10);
-        row_content.set_margin_start(12);
-        row_content.set_margin_end(12);
-        let title = gtk::Label::new(Some(&format!(
-            "{} — {}",
-            feature.label,
-            feature.lifecycle.label()
-        )));
-        title.set_halign(Align::Start);
-        title.add_css_class("heading");
-        row_content.append(&title);
-        let capability = gtk::Label::new(Some(feature.capability.status.label));
-        capability.set_halign(Align::Start);
-        capability.add_css_class("caption");
-        row_content.append(&capability);
-        let detail = gtk::Label::new(Some(&feature.capability.summary));
-        detail.set_halign(Align::Start);
-        detail.set_wrap(true);
-        row_content.append(&detail);
-        if let Some(status_detail) = &feature.capability.status.detail {
-            let status_detail = gtk::Label::new(Some(status_detail));
-            status_detail.set_halign(Align::Start);
-            status_detail.set_wrap(true);
-            status_detail.add_css_class("dim-label");
-            row_content.append(&status_detail);
-        }
-        if let Some(backend) = &feature.capability.selected_backend {
-            let backend = gtk::Label::new(Some(&format!("Backend: {backend}")));
-            backend.set_halign(Align::Start);
-            backend.set_wrap(true);
-            backend.add_css_class("dim-label");
-            row_content.append(&backend);
-        }
-        if let Some(remediation) = &feature.capability.remediation {
-            let remediation = gtk::Label::new(Some(remediation));
-            remediation.set_halign(Align::Start);
-            remediation.set_wrap(true);
-            remediation.add_css_class("dim-label");
-            row_content.append(&remediation);
-        }
-        features.append(&row_content);
+        features.append(&build_feature_view(feature));
     }
     content.append(&features);
 
@@ -125,4 +84,107 @@ fn build_window(application: &adw::Application, view_model: &ApplicationViewMode
 
     window.set_content(Some(&content));
     window.present();
+}
+
+fn build_feature_view(feature: &FeatureViewModel) -> gtk::Box {
+    let content = gtk::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_tooltip_text(Some(&feature.id));
+
+    let header = gtk::Box::new(Orientation::Horizontal, 8);
+    let title = gtk::Label::new(Some(&feature.label));
+    title.set_halign(Align::Start);
+    title.set_hexpand(true);
+    title.add_css_class("heading");
+    header.append(&title);
+
+    let lifecycle = gtk::Label::new(Some(feature.lifecycle.label()));
+    lifecycle.set_valign(Align::Center);
+    lifecycle.add_css_class("dim-label");
+    header.append(&lifecycle);
+
+    let status = gtk::Label::new(Some(feature.capability.status.label));
+    status.set_valign(Align::Center);
+    status.add_css_class("pill");
+    status.add_css_class(capability_css_class(feature.capability.status.kind));
+    header.append(&status);
+    content.append(&header);
+
+    let summary = gtk::Label::new(Some(&feature.capability.summary));
+    configure_wrapping_label(&summary);
+    content.append(&summary);
+
+    if let Some(detail) = &feature.capability.status.detail {
+        content.append(&build_labeled_value("Capability detail", detail));
+    }
+    if let Some(backend) = &feature.capability.selected_backend {
+        content.append(&build_labeled_value("Selected backend", backend));
+    }
+    if let Some(remediation) = &feature.capability.remediation {
+        content.append(&build_remediation_view(remediation));
+    }
+
+    content
+}
+
+fn build_labeled_value(label: &str, value: &str) -> gtk::Box {
+    let content = gtk::Box::new(Orientation::Vertical, 2);
+    let heading = gtk::Label::new(Some(label));
+    heading.set_halign(Align::Start);
+    heading.add_css_class("caption-heading");
+    content.append(&heading);
+
+    let value = gtk::Label::new(Some(value));
+    configure_wrapping_label(&value);
+    value.add_css_class("dim-label");
+    content.append(&value);
+    content
+}
+
+fn build_remediation_view(remediation: &RemediationViewModel) -> gtk::Box {
+    let card = gtk::Box::new(Orientation::Horizontal, 10);
+    card.add_css_class("card");
+    card.set_margin_top(4);
+
+    let icon = gtk::Image::from_icon_name("dialog-information-symbolic");
+    icon.set_valign(Align::Start);
+    icon.set_margin_top(10);
+    icon.set_margin_start(10);
+    icon.add_css_class("accent");
+    card.append(&icon);
+
+    let content = gtk::Box::new(Orientation::Vertical, 2);
+    content.set_hexpand(true);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_end(10);
+    let heading = gtk::Label::new(Some(remediation.title));
+    heading.set_halign(Align::Start);
+    heading.add_css_class("heading");
+    content.append(&heading);
+    let message = gtk::Label::new(Some(&remediation.message));
+    configure_wrapping_label(&message);
+    content.append(&message);
+    card.append(&content);
+    card
+}
+
+fn configure_wrapping_label(label: &gtk::Label) {
+    label.set_halign(Align::Start);
+    label.set_wrap(true);
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+}
+
+fn capability_css_class(kind: CapabilityKindViewModel) -> &'static str {
+    match kind {
+        CapabilityKindViewModel::Supported => "success",
+        CapabilityKindViewModel::Limited
+        | CapabilityKindViewModel::NeedsPermission
+        | CapabilityKindViewModel::MissingDependency => "warning",
+        CapabilityKindViewModel::Unsupported => "error",
+    }
 }

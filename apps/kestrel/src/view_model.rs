@@ -24,6 +24,22 @@ impl ApplicationViewModel {
         }
     }
 }
+/// A distinct action users can take to improve a capability state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationViewModel {
+    pub title: &'static str,
+    pub message: String,
+}
+
+fn remediation_title(status: &CapabilityStatus) -> &'static str {
+    match status {
+        CapabilityStatus::NeedsPermission { .. } => "Permission required",
+        CapabilityStatus::MissingDependency { .. } => "Dependency required",
+        CapabilityStatus::Unsupported { .. } => "Alternative action",
+        CapabilityStatus::Limited { .. } => "Improve support",
+        CapabilityStatus::Supported => "Suggested action",
+    }
+}
 
 /// Presentation state for one registered feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +60,12 @@ impl From<&ServiceRegistration> for FeatureViewModel {
                 status: CapabilityStatusViewModel::from(&registration.capability.status),
                 summary: registration.capability.summary.clone(),
                 selected_backend: registration.capability.selected_backend.clone(),
-                remediation: registration.capability.remediation.clone(),
+                remediation: registration.capability.remediation.as_ref().map(|message| {
+                    RemediationViewModel {
+                        title: remediation_title(&registration.capability.status),
+                        message: message.clone(),
+                    }
+                }),
             },
         }
     }
@@ -87,36 +108,51 @@ pub struct CapabilityViewModel {
     pub status: CapabilityStatusViewModel,
     pub summary: String,
     pub selected_backend: Option<String>,
-    pub remediation: Option<String>,
+    pub remediation: Option<RemediationViewModel>,
 }
 
 /// Stable, user-facing capability status and its optional detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityStatusViewModel {
+    pub kind: CapabilityKindViewModel,
     pub label: &'static str,
     pub detail: Option<String>,
+}
+/// Semantic capability state used by presentation layers without string matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityKindViewModel {
+    Supported,
+    Limited,
+    NeedsPermission,
+    MissingDependency,
+    Unsupported,
 }
 
 impl From<&CapabilityStatus> for CapabilityStatusViewModel {
     fn from(status: &CapabilityStatus) -> Self {
         match status {
             CapabilityStatus::Supported => Self {
+                kind: CapabilityKindViewModel::Supported,
                 label: "Supported",
                 detail: None,
             },
             CapabilityStatus::Limited { reason } => Self {
+                kind: CapabilityKindViewModel::Limited,
                 label: "Limited",
                 detail: Some(reason.clone()),
             },
             CapabilityStatus::NeedsPermission { permission } => Self {
+                kind: CapabilityKindViewModel::NeedsPermission,
                 label: "Needs permission",
                 detail: Some(permission_label(*permission).to_string()),
             },
             CapabilityStatus::MissingDependency { name } => Self {
+                kind: CapabilityKindViewModel::MissingDependency,
                 label: "Missing dependency",
                 detail: Some(name.clone()),
             },
             CapabilityStatus::Unsupported { reason } => Self {
+                kind: CapabilityKindViewModel::Unsupported,
                 label: "Unsupported",
                 detail: Some(reason.clone()),
             },
@@ -157,8 +193,8 @@ mod tests {
     use kestrel_services::ServiceRegistration;
 
     use super::{
-        ApplicationViewModel, CapabilityStatusViewModel, FeatureLifecycleViewModel,
-        FeatureViewModel,
+        ApplicationViewModel, CapabilityKindViewModel, CapabilityStatusViewModel,
+        FeatureLifecycleViewModel, FeatureViewModel,
     };
     use crate::ConfigurationWarning;
 
@@ -179,6 +215,10 @@ mod tests {
         assert_eq!(view_model.id, "test.feature");
         assert_eq!(view_model.lifecycle, FeatureLifecycleViewModel::Registered);
         assert_eq!(view_model.lifecycle.label(), "Disabled");
+        assert_eq!(
+            view_model.capability.status.kind,
+            CapabilityKindViewModel::Supported
+        );
         assert_eq!(view_model.capability.status.label, "Supported");
         assert_eq!(
             view_model.capability.selected_backend.as_deref(),
@@ -209,14 +249,25 @@ mod tests {
         let view_model = FeatureViewModel::from(&registration);
 
         assert_eq!(view_model.lifecycle, FeatureLifecycleViewModel::Unavailable);
+        assert_eq!(
+            view_model.capability.status.kind,
+            CapabilityKindViewModel::NeedsPermission
+        );
         assert_eq!(view_model.capability.status.label, "Needs permission");
         assert_eq!(
             view_model.capability.status.detail.as_deref(),
             Some("Global shortcut")
         );
         assert_eq!(
-            view_model.capability.remediation.as_deref(),
-            Some("Grant access or use the normal window.")
+            view_model
+                .capability
+                .remediation
+                .as_ref()
+                .map(|value| (value.title, value.message.as_str())),
+            Some((
+                "Permission required",
+                "Grant access or use the normal window."
+            ))
         );
     }
 
@@ -227,6 +278,7 @@ mod tests {
                 reason: "Only one provider is available.".to_string(),
             }),
             CapabilityStatusViewModel {
+                kind: CapabilityKindViewModel::Limited,
                 label: "Limited",
                 detail: Some("Only one provider is available.".to_string()),
             }
@@ -236,6 +288,7 @@ mod tests {
                 name: "example-service".to_string(),
             }),
             CapabilityStatusViewModel {
+                kind: CapabilityKindViewModel::MissingDependency,
                 label: "Missing dependency",
                 detail: Some("example-service".to_string()),
             }

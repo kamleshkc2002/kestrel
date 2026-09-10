@@ -10,6 +10,7 @@ pub use config::{
 };
 pub use runtime::ApplicationRuntime;
 pub use view_model::{
-    ApplicationViewModel, CapabilityStatusViewModel, CapabilityViewModel,
+    ApplicationViewModel, CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel,
     ConfigurationWarningViewModel, FeatureLifecycleViewModel, FeatureViewModel,
+    RemediationViewModel,
 };
