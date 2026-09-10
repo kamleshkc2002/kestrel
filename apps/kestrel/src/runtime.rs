@@ -1,3 +1,4 @@
+use crate::{ApplicationViewModel, ConfigurationWarning};
 use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::{
     audio::{PulseAudioBackend, FEATURE_ID as AUDIO_MIXER_ID},
@@ -144,6 +145,10 @@ impl ApplicationRuntime {
     /// Returns UI-independent registration snapshots for the active session.
     pub fn registrations(&self) -> impl Iterator<Item = &ServiceRegistration> {
         self.registry.registrations()
+    }
+    /// Extracts owned presentation state without exposing live service resources.
+    pub fn view_model(&self, warnings: &[ConfigurationWarning]) -> ApplicationViewModel {
+        ApplicationViewModel::new(self.registrations(), warnings)
     }
 
     /// Samples monitor metrics when the feature is running and its interval elapsed.

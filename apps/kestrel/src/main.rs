@@ -1,7 +1,8 @@
 use adw::prelude::*;
 use gtk::{Align, Orientation};
 use kestrel::{
-    configuration_path, load, ApplicationRuntime, ConfigurationWarning, LoadedConfiguration,
+    configuration_path, load, ApplicationRuntime, ApplicationViewModel, CapabilityKindViewModel,
+    FeatureViewModel, LoadedConfiguration, RemediationViewModel,
 };
 
 fn main() {
@@ -27,27 +28,13 @@ fn main() {
     let warnings = loaded.warnings;
 
     application.connect_activate(move |application| {
-        let feature_rows = runtime
-            .registrations()
-            .map(|registration| {
-                (
-                    registration.feature.label.to_string(),
-                    format!("{:?}", registration.lifecycle()),
-                    registration.capability.summary.clone(),
-                    registration.capability.remediation.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        build_window(application, &feature_rows, &warnings);
+        let view_model = runtime.view_model(&warnings);
+        build_window(application, &view_model);
     });
     application.run();
 }
 
-fn build_window(
-    application: &adw::Application,
-    feature_rows: &[(String, String, String, Option<String>)],
-    warnings: &[ConfigurationWarning],
-) {
+fn build_window(application: &adw::Application, view_model: &ApplicationViewModel) {
     let window = adw::ApplicationWindow::builder()
         .application(application)
         .title("Kestrel")
@@ -79,35 +66,15 @@ fn build_window(
 
     let features = gtk::ListBox::new();
     features.add_css_class("boxed-list");
-    for (label, lifecycle, summary, remediation) in feature_rows {
-        let row_content = gtk::Box::new(Orientation::Vertical, 4);
-        row_content.set_margin_top(10);
-        row_content.set_margin_bottom(10);
-        row_content.set_margin_start(12);
-        row_content.set_margin_end(12);
-        let title = gtk::Label::new(Some(&format!("{label} — {lifecycle}")));
-        title.set_halign(Align::Start);
-        title.add_css_class("heading");
-        row_content.append(&title);
-        let detail = gtk::Label::new(Some(summary));
-        detail.set_halign(Align::Start);
-        detail.set_wrap(true);
-        row_content.append(&detail);
-        if let Some(remediation) = remediation {
-            let remediation = gtk::Label::new(Some(remediation));
-            remediation.set_halign(Align::Start);
-            remediation.set_wrap(true);
-            remediation.add_css_class("dim-label");
-            row_content.append(&remediation);
-        }
-        features.append(&row_content);
+    for feature in &view_model.features {
+        features.append(&build_feature_view(feature));
     }
     content.append(&features);
 
-    for warning in warnings {
+    for warning in &view_model.warnings {
         let warning = gtk::Label::new(Some(&format!(
             "Configuration warning for {}: {}",
-            warning.feature_id, warning.reason
+            warning.feature_id, warning.message
         )));
         warning.set_halign(Align::Start);
         warning.set_wrap(true);
@@ -117,4 +84,107 @@ fn build_window(
 
     window.set_content(Some(&content));
     window.present();
+}
+
+fn build_feature_view(feature: &FeatureViewModel) -> gtk::Box {
+    let content = gtk::Box::new(Orientation::Vertical, 8);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_tooltip_text(Some(&feature.id));
+
+    let header = gtk::Box::new(Orientation::Horizontal, 8);
+    let title = gtk::Label::new(Some(&feature.label));
+    title.set_halign(Align::Start);
+    title.set_hexpand(true);
+    title.add_css_class("heading");
+    header.append(&title);
+
+    let lifecycle = gtk::Label::new(Some(feature.lifecycle.label()));
+    lifecycle.set_valign(Align::Center);
+    lifecycle.add_css_class("dim-label");
+    header.append(&lifecycle);
+
+    let status = gtk::Label::new(Some(feature.capability.status.label));
+    status.set_valign(Align::Center);
+    status.add_css_class("pill");
+    status.add_css_class(capability_css_class(feature.capability.status.kind));
+    header.append(&status);
+    content.append(&header);
+
+    let summary = gtk::Label::new(Some(&feature.capability.summary));
+    configure_wrapping_label(&summary);
+    content.append(&summary);
+
+    if let Some(detail) = &feature.capability.status.detail {
+        content.append(&build_labeled_value("Capability detail", detail));
+    }
+    if let Some(backend) = &feature.capability.selected_backend {
+        content.append(&build_labeled_value("Selected backend", backend));
+    }
+    if let Some(remediation) = &feature.capability.remediation {
+        content.append(&build_remediation_view(remediation));
+    }
+
+    content
+}
+
+fn build_labeled_value(label: &str, value: &str) -> gtk::Box {
+    let content = gtk::Box::new(Orientation::Vertical, 2);
+    let heading = gtk::Label::new(Some(label));
+    heading.set_halign(Align::Start);
+    heading.add_css_class("caption-heading");
+    content.append(&heading);
+
+    let value = gtk::Label::new(Some(value));
+    configure_wrapping_label(&value);
+    value.add_css_class("dim-label");
+    content.append(&value);
+    content
+}
+
+fn build_remediation_view(remediation: &RemediationViewModel) -> gtk::Box {
+    let card = gtk::Box::new(Orientation::Horizontal, 10);
+    card.add_css_class("card");
+    card.set_margin_top(4);
+
+    let icon = gtk::Image::from_icon_name("dialog-information-symbolic");
+    icon.set_valign(Align::Start);
+    icon.set_margin_top(10);
+    icon.set_margin_start(10);
+    icon.add_css_class("accent");
+    card.append(&icon);
+
+    let content = gtk::Box::new(Orientation::Vertical, 2);
+    content.set_hexpand(true);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_end(10);
+    let heading = gtk::Label::new(Some(remediation.title));
+    heading.set_halign(Align::Start);
+    heading.add_css_class("heading");
+    content.append(&heading);
+    let message = gtk::Label::new(Some(&remediation.message));
+    configure_wrapping_label(&message);
+    content.append(&message);
+    card.append(&content);
+    card
+}
+
+fn configure_wrapping_label(label: &gtk::Label) {
+    label.set_halign(Align::Start);
+    label.set_wrap(true);
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+}
+
+fn capability_css_class(kind: CapabilityKindViewModel) -> &'static str {
+    match kind {
+        CapabilityKindViewModel::Supported => "success",
+        CapabilityKindViewModel::Limited
+        | CapabilityKindViewModel::NeedsPermission
+        | CapabilityKindViewModel::MissingDependency => "warning",
+        CapabilityKindViewModel::Unsupported => "error",
+    }
 }
