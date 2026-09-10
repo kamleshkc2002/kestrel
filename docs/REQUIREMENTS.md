@@ -6,6 +6,9 @@ Scope: Requirements and architecture for Kestrel, a generic Linux utility suite.
 
 > This document is Kestrel's requirements baseline. It defines the product boundary,
 > support contract, architecture, security model, packaging modes, and delivery phases.
+> Actionable delivery stories, dependencies, priorities, and status are maintained in the
+> public [Kestrel roadmap](https://github.com/users/kamleshkc2002/projects/1), which is the
+> execution source of truth for this baseline.
 
 ---
 
@@ -117,6 +120,10 @@ Difficulty legend: ✅ straightforward · 🟡 moderate/partial · 🔶 hard or 
 | Temporary sharing | 🟡 | Explicit upload provider, local-only by default | user-configured service |
 | Display control / sleep Bluetooth | 🟡/🔶 | DRM/DDC/sysfs, BlueZ and power-management APIs | `brightnessctl`, `ddcutil` |
 | Cleaning mode / scratchpad | ✅ | Fullscreen input-blocking overlay; local GTK storage | n/a |
+| Mouse and keyboard shaping | 🟡/🔶 | libinput settings, compositor APIs, XInput/XTest, guarded uinput | `input-remapper`, `xremap` |
+| Focus-follows-mouse / app lifecycle guards | 🔶 | X11 EWMH or compositor-specific window identity and control | WM-native rules |
+| Process inspector / termination | ✅/🟡 | `/proc`, pidfds, cgroups, systemd user units | `Mission Center`, `btop` |
+| Feature hub, presets, energy disclosure | ✅ | Kestrel registry, configuration, measured/static cost metadata | n/a |
 
 Net: the high-value, low-risk core (monitor, audio, clipboard, toggles, screenshots,
 snippets) is all clean. The advanced desktop features (window control via Accessibility,
@@ -474,9 +481,100 @@ specific remediation rather than simply hiding a feature without explanation.
 
 ---
 
-## 11. MVP roadmap (phased)
+## 11. Product roadmap (phased)
 
-### Phase 0 — Feasibility spikes (validate assumptions, throwaway code)
+### 11.1 Reference-feature coverage contract
+
+The product roadmap is audited against the Vorssaint feature catalog at commit
+`29bd174` (v3.3.5 plus its current unreleased changes). This is a product-scope
+ledger, not a promise of identical implementation or uniform Linux support.
+Every reference feature must be either scheduled, translated to an appropriate
+Linux workflow, or explicitly excluded with a reason.
+Repeat this identifier audit when the reference catalog changes, recording the
+new reference commit so roadmap drift remains reviewable.
+
+- **Windows and task switching:** app/window switcher, window layout and edge
+  snapping, maximize-without-fullscreen, move/restore across displays, live
+  previews where capture APIs permit them, quit-on-last-window, and quit/close
+  protection. Dock preview and Dock-click behavior translate to optional
+  taskbar/overview integrations; Kestrel does not provide or replace a Dock.
+- **Mouse and keyboard:** vertical/horizontal scroll inversion, smooth scrolling,
+  pointer-acceleration policy, focus-follows-mouse, back/forward navigation,
+  arbitrary extra-button shortcuts and gestures, middle click, click and key
+  debounce, text snippets, a configurable Super-key layer, per-application
+  exceptions where reliable identity exists, conflict-aware shortcut editing,
+  and keyboard-backlight actions where hardware exposes them.
+- **Clipboard, files, and links:** bounded clipboard history; later text, image,
+  and file entries; pins, search, multi-select, preview/edit and quick paste;
+  independent timed/lock/sleep clipboard clearing; paste as plain text; a drag
+  shelf; file-manager cut/move, rename and image-to-file actions through
+  supported file-manager interfaces; URL cleanup; and package/image installation
+  handoff. Finder-specific behavior and macOS disk-image installation are not
+  portable contracts.
+- **Sound:** master and per-stream volume, mute and routing; values above 100%
+  with safe limiting; output cycling and disconnect policy; preferred input and
+  global microphone mute; and capability-gated suppression of unwanted media-app
+  autostart.
+- **Energy and displays:** timed and indefinite keep-awake sessions; automation
+  based on power, external displays and selected applications; pause-on-lock;
+  optional display-sleep and closed-lid policy where logind permits it; internal
+  and DDC/CI brightness; per-display power where supported; hardware-gated HDR
+  headroom; keyboard backlight controls; and Bluetooth-off-during-sleep with
+  ownership-safe restoration.
+- **System and power monitoring:** CPU, GPU where exposed, memory/cache/swap,
+  network rates/totals and speed test, disk capacity, temperatures, battery
+  charge/health/time/cycles/power, peripheral batteries, per-process resource
+  use, history graphs, configurable menu/panel readouts, sustained alerts, and
+  hardware-gated fan RPM/control.
+- **Everyday tools:** quick launcher and command bar; quick toggles; radial menu;
+  screenshots, screen recording, OCR/QR and color sampling; recent captures;
+  camera preview; scratchpad; cleaning mode; process termination; media
+  conversion/editing; cleaner; application/package update aggregation;
+  package-manager actions; reviewed application cleanup/uninstall workflows; and
+  metadata-verified organization/retention of downloads from supported messaging
+  clients.
+- **Product shell:** install/uninstall semantics for feature modules, first-run
+  presets, honest idle/input/polling energy-cost labels, permission/capability
+  transparency, configurable panel sections and layout, settings search,
+  import/export that excludes sensitive or machine-specific data, independent
+  appearance, localization, autostart, and safe self-update/uninstall behavior.
+
+Depth within a feature remains phased. For example, an initial portal screenshot
+does not complete scrolling capture, editing, redaction, pinned/recent captures,
+or explicit temporary sharing; those capabilities stay visible as later roadmap
+work rather than being treated as implicitly delivered.
+
+The stable reference identifiers map to the phases below:
+
+- **Phase 1:** `clipboardHistory`, `mixer`, `soundOutputSwitcher`, `keepAwake`,
+  `brightness`, `quickToggles`, `monitorCPU`, `monitorGPU`, `monitorMemory`,
+  `monitorNetwork`, `monitorDisk`, and `monitorPower`.
+- **Phase 2:** `textSnippets`, `pastePlain`, `micMute`, `quickLauncher`,
+  `colorPicker`, `screenOCR`, `screenshot`, `screenRecorder`, `cameraPreview`,
+  `scratchpad`, `commandBar`, and `killProcess`.
+- **Phase 3:** `windowMaximizer`, `windowLayout`, `finderCutPaste`,
+  `finderRename`, `shelf`, `urlCleaner`, `diskImageInstaller`,
+  `bluetoothSleep`, `radialMenu`, `cleaningMode`, `mediaTools`, `cleaner`,
+  `uninstaller`, `homebrew`, `appUpdates`, and `fanControl`.
+- **Phase 4:** `switcher`, `dockPreview`, `dockClick`, `autoQuit`,
+  `scrollInverter`, `focusFollowsMouse`, `smoothScroll`, `mouseAcceleration`,
+  `mouseNavigation`, `mouseButtonShortcuts`, `middleClick`,
+  `mouseClickDebounce`, `keyboardDebounce`, `superKey`,
+  `quitWindowProtection`, `musicBlock`, and `extraBrightness`.
+
+Identifiers retain their reference spelling only for auditability. Kestrel uses
+its own namespaced IDs and Linux-native product language; `dockPreview`,
+`dockClick`, Finder actions, `diskImageInstaller`, `homebrew`, and Apple display
+behavior are translated or capability-gated as described below rather than
+promised literally.
+
+The reference product permits very large or unlimited clipboard retention.
+Kestrel deliberately does not: retention remains bounded. Persistent history or
+pinned favorites require a separate threat model, private file permissions,
+atomic recovery, migration and immediate secure-clear design, and must be a
+second explicit opt-in; memory-only history remains the default.
+
+### 11.2 Phase 0 — Feasibility spikes (validate assumptions, throwaway code)
 1. Show a tray icon on GNOME + KDE + a Wayland bar (SNI works; GNOME extension caveat).
 2. Read CPU/RAM from `/proc` and temps from `/sys/class/hwmon` (hardware probe).
 3. Enumerate PipeWire/PulseAudio streams and set per-app volume.
@@ -488,35 +586,101 @@ specific remediation rather than simply hiding a feature without explanation.
 - **Exit criteria:** each spike works on at least 2 DEs or has a documented capability
   limitation; decide final stack, crates, process boundary, and support contract.
 
-### Phase 1 — MVP (the high-value, low-risk core)
+### 11.3 Phase 1 — MVP (the high-value, low-risk core)
 - Tray icon + tabbed popover panel (System / Mixer / Controls / Utilities).
-- System monitor: CPU, RAM, temps, network, battery + keep-awake toggle.
-- Per-app volume mixer + output device switching.
-- Clipboard history (persistent manager).
-- Quick toggles: brightness, Bluetooth, WiFi, keep-awake, battery alerts.
-- Settings window + config file + autostart.
+- Feature hub with independent installed/enabled/available/running states,
+  capability and permission explanations, conservative energy-cost labels, and
+  small first-run presets.
+- System monitor: CPU, RAM/cache/swap, temperatures, network, disk, battery,
+  bounded history, core alerts, and keep-awake toggle. GPU, peripheral battery
+  and per-process depth may report unavailable until their adapters land.
+- Per-app volume mixer, mute/routing, output switching, and safe boosted volume.
+- Clipboard history foundation: opt-in ownership, bounded text retention,
+  immediate wipe, and lock/sleep cleanup.
+- Quick toggles: appearance, brightness, keyboard light where available,
+  Bluetooth, WiFi, keep-awake, empty Trash, eject eligible disks with
+  exclusions, hidden-file and desktop-icon visibility, screen lock, and battery
+  alerts. Each action is independently capability-reported and confirmed when
+  destructive.
+- Settings search, configurable panel visibility/order, config import/export
+  with sensitive fields excluded, appearance choice, and autostart.
 - **Exit criteria:** installable native package and AppImage preview; runs on GNOME and
   KDE Wayland plus one X11 environment; no root daemon required.
+### 11.4 Phase 2 — Utility expansion
+- Text snippets with folders, search, date/time and clipboard variables, plus
+  capability-gated X11/Wayland injection.
+- Command bar / launcher with apps, files in user-selected roots, feature
+  commands, math, units, dates, URLs, emoji, local scripts, row shortcuts, and
+  privacy-bounded result learning. Window and application-menu actions remain
+  backend-gated.
+- Clipboard search, pins, deletion/multi-select, preview/edit, quick paste,
+  image/file entries where ownership is safe, independent auto-clear, and
+  paste-as-plain-text. Optional sensitive-pattern filters must document false
+  positives and never replace hard retention bounds.
+- Portal screenshots and recording; annotation/redaction, quick preview, recent
+  captures, OCR/QR, color picker, camera preview, and a tabbed scratchpad.
+- Microphone mute/input preference, network speed test, process inspector with
+  confirmed terminate/restart actions, and expanded monitor alerts/readouts.
+- Quick panel/toggles and radial-menu foundations with configurable actions.
 
-### Phase 2 — Utility expansion
-- Text snippets (X11 + Wayland injection).
-- Command bar / launcher (file search, commands, math, unit conversion).
-- Screenshots with annotation; screen recording via portal.
-- OCR, QR recognition, color picker, camera preview, scratchpad, and paste-as-plain-text.
-
-### Phase 3 — Hard / optional (DE-dependent)
-- Window snapping (X11 first; per-compositor on Wayland).
-- App switcher with window previews.
+### 11.5 Phase 3 — Advanced workflows
+- Window snapping/layout (X11 first; per-compositor on Wayland), configurable
+  gaps, edge previews, pointer move/resize, restore history, display movement,
+  and maximize-without-fullscreen.
+- App/window switcher with search, grouping, minimized/multi-window entries,
+  display filtering, per-app rules, and previews only through verified capture
+  paths.
 - Fan control (opt-in, hardware-guarded).
-- Radial menu and file shelf (custom UI).
+- Radial-menu profiles and a file/text/link shelf with reviewed persistence and
+  sharing handoff.
+- Optional persistent clipboard entries and pins only after the separate
+  encrypted/private-storage threat model is accepted; unbounded retention stays
+  unsupported.
 - Display/DDC controls, Bluetooth-on-sleep, URL cleanup, package-provider actions,
-  media tools, temporary sharing, and cleaning mode.
+  application updates, reviewed cleanup/uninstall, media conversion, cleaning
+  mode, and optional temporary sharing with visible destination and expiry.
+- Keep-awake automation for power/display/application conditions, pause-on-lock,
+  display-sleep policy, keyboard-backlight actions, and closed-lid controls only
+  where logind, hardware and policy permit them.
+- Metadata-verified messaging-download review, retention and organization
+  adapters; unsupported clients remain unavailable and cleanup defaults to
+  recoverable trash operations.
+- Advanced capture: scrolling screenshots, pinning, reusable annotations and
+  backgrounds, recording audio tracks, trim/cut, pointer smoothing/zoom,
+  text/image overlays, timed blur, GIF/export compression, presets, and
+  failure-safe source preservation.
+- File-manager adapters for cut/move, rename and copied-image export where a
+  documented interface exists; otherwise these remain explicitly unavailable.
 
-### Explicitly out of scope (Linux has no equivalent)
-- Dock previews (no Dock).
-- A Finder-style Dock integration and macOS-specific disk-image installation workflow.
-  Package removal and cleanup may still be offered through explicit APT/Flatpak/Snap
-  providers, but they are not one universal uninstaller.
+### 11.6 Phase 4 — Capability-gated desktop and input integrations
+
+- Scroll inversion/smoothing, pointer acceleration, focus-follows-mouse,
+  back/forward navigation, extra-button mappings and gestures, middle click,
+  click/key debounce, Super-key layers, and per-app exceptions. These require
+  narrow compositor, libinput, X11 or guarded virtual-input support and must not
+  justify unrestricted input-device access.
+- Quit-on-last-window and quit/close protection where application and window
+  identity plus input interception are reliable.
+- Optional taskbar/overview preview and click behaviors for desktops exposing a
+  maintained extension or API; no generic Dock claim.
+- Keyboard-backlight shortcuts, extra-brightness/HDR controls, media-app launch
+  suppression, closed-lid behavior, and fan curves only on verified hardware or
+  service backends.
+- Deeper command-bar integration with application menus, selected text, settings
+  panels and compositor window actions, each independently capability-reported.
+- Localization expansion and accessibility review across all shipped surfaces.
+
+### 11.7 Explicitly out of scope or translated for Linux
+- Shipping a Kestrel-owned Dock or replacing the desktop shell. Preview/click
+  behavior is optional integration with an existing taskbar or overview.
+- Finder-specific automation and macOS disk-image installation. Linux file
+  actions use documented file-manager interfaces, and installation delegates to
+  explicit package, Flatpak, Snap, AppImage or distribution providers.
+- Homebrew as the universal application-management model. Kestrel may expose a
+  Homebrew-on-Linux provider, but it is one provider among others.
+- Apple-only SMC/XDR behavior or a promise of universal fan, HDR, closed-lid,
+  input interception, window control, or application identity. Unsupported
+  hardware and desktop paths remain visible capability states.
 
 ---
 
@@ -526,7 +690,7 @@ specific remediation rather than simply hiding a feature without explanation.
 
 | Risk | Likelihood | Severity | Mitigation |
 |---|---|---|---|
-| Wayland window-management APIs stay fragmented | High | Medium (Phase 3 only) | Defer to Phase 3; per-compositor backends |
+| Wayland window-management APIs stay fragmented | High | Medium (Phases 3–4) | Defer layout and switching depth; use per-compositor backends |
 | GNOME tray requires extension | High | Medium (adoption) | Document; offer fallback/extension |
 | Fan/hwmon support varies by laptop | High | Low (optional feature) | Opt-in, probe-driven |
 | Flatpak permissions hurt system features | Medium | Medium | Ship native binary first, Flatpak later |
