@@ -4,8 +4,8 @@ use std::{
 };
 
 use kestrel_platform::clipboard::{
-    discover_provider, ArboardClipboardBackend, ClipboardBackend, ClipboardError,
-    ClipboardProvider, PrivacyEventSource,
+    ArboardClipboardBackend, ClipboardBackend, ClipboardError, ClipboardProvider,
+    PrivacyEventSource, discover_provider,
 };
 use kestrel_services::clipboard::{ClipboardHistoryService, ClipboardLifecycle, ClipboardPolicy};
 

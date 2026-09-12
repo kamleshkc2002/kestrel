@@ -216,8 +216,8 @@ impl FeatureSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationConfiguration, CapabilityEvidence, CapabilityReport, CapabilityStatus,
-        ConfigurationError, FeatureSpec, CURRENT_CONFIGURATION_SCHEMA_VERSION,
+        ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION, CapabilityEvidence,
+        CapabilityReport, CapabilityStatus, ConfigurationError, FeatureSpec,
     };
 
     #[test]

@@ -5,12 +5,12 @@ use std::{env, error::Error, fmt, time::Duration};
 use arboard::Clipboard;
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 use wl_clipboard_rs::paste::{
-    get_mime_types, ClipboardType as WaylandClipboardType, Error as WaylandError,
-    Seat as WaylandSeat,
+    ClipboardType as WaylandClipboardType, Error as WaylandError, Seat as WaylandSeat,
+    get_mime_types,
 };
 use x11rb::{protocol::xproto::ConnectionExt, rust_connection::RustConnection};
 use zbus::{
-    blocking::{connection::Builder as BusConnectionBuilder, Connection as BusConnection, Proxy},
+    blocking::{Connection as BusConnection, Proxy, connection::Builder as BusConnectionBuilder},
     zvariant::OwnedObjectPath,
 };
 
@@ -250,7 +250,7 @@ pub fn discover_provider() -> Result<ClipboardProvider, ClipboardError> {
     if env::var_os("WAYLAND_DISPLAY").is_some() {
         match get_mime_types(WaylandClipboardType::Regular, WaylandSeat::Unspecified) {
             Ok(_) | Err(WaylandError::ClipboardEmpty) => {
-                return Ok(ClipboardProvider::WaylandDataControl)
+                return Ok(ClipboardProvider::WaylandDataControl);
             }
             Err(WaylandError::MissingProtocol { .. })
             | Err(WaylandError::NoSeats)
@@ -352,7 +352,7 @@ mod tests {
     use kestrel_core::CapabilityStatus;
 
     use super::{
-        capability_report, ClipboardError, ClipboardErrorKind, ClipboardProvider, FEATURE_ID,
+        ClipboardError, ClipboardErrorKind, ClipboardProvider, FEATURE_ID, capability_report,
     };
 
     #[test]
@@ -361,10 +361,11 @@ mod tests {
 
         assert_eq!(report.feature_id, FEATURE_ID);
         assert_eq!(report.status, CapabilityStatus::Supported);
-        assert!(report
-            .evidence
-            .iter()
-            .any(|item| item.key == "source_application_identity" && item.value == "unavailable"));
+        assert!(
+            report.evidence.iter().any(
+                |item| item.key == "source_application_identity" && item.value == "unavailable"
+            )
+        );
         assert!(!report.summary.contains("WAYLAND_DISPLAY"));
     }
 

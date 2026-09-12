@@ -136,7 +136,7 @@ impl ProcSysMonitor {
                 return Metric::Unavailable(SourceIssue::new(
                     source,
                     "aggregate CPU counters are malformed",
-                ))
+                ));
             }
         };
         let total = values.iter().copied().fold(0_u64, u64::saturating_add);

@@ -510,8 +510,8 @@ pub fn capability_for_discovery(
 #[cfg(test)]
 mod tests {
     use super::{
-        capability_for_discovery, volume_percent, AudioBackend, AudioDiscovery, AudioErrorKind,
-        AudioServer, OutputDevice, PulseAudioBackend,
+        AudioBackend, AudioDiscovery, AudioErrorKind, AudioServer, OutputDevice, PulseAudioBackend,
+        capability_for_discovery, volume_percent,
     };
     use kestrel_core::CapabilityStatus;
     use libpulse_binding::volume::Volume;

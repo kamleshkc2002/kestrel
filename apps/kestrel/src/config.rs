@@ -4,8 +4,8 @@ use std::{
 };
 
 use kestrel_core::{
-    validate_feature_id, ApplicationConfiguration, ConfigurationError, FeatureConfiguration,
-    CURRENT_CONFIGURATION_SCHEMA_VERSION,
+    ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError,
+    FeatureConfiguration, validate_feature_id,
 };
 use serde::Deserialize;
 

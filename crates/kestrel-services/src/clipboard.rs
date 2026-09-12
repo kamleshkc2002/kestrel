@@ -5,8 +5,8 @@ use std::{
     error::Error,
     fmt,
     sync::{
-        mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
