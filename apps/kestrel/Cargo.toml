@@ -14,10 +14,12 @@ path = "src/main.rs"
 required-features = ["gui"]
 
 [dependencies]
-adw = { package = "libadwaita", version = "0.7", optional = true }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_4"], optional = true }
+async-channel = "2"
 gtk = { package = "gtk4", version = "0.9", optional = true }
 kestrel-core = { path = "../../crates/kestrel-core" }
 kestrel-platform = { path = "../../crates/kestrel-platform" }
 kestrel-services = { path = "../../crates/kestrel-services" }
+ksni = { version = "0.3.6", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

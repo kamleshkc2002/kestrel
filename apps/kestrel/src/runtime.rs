@@ -1,24 +1,27 @@
-use crate::{ApplicationViewModel, ConfigurationWarning};
+use crate::{
+    ApplicationViewModel, ConfigurationWarning,
+    status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
+};
 use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::{
-    audio::{PulseAudioBackend, FEATURE_ID as AUDIO_MIXER_ID},
-    clipboard::{
-        discover_provider, ArboardClipboardBackend, ClipboardCapabilityProbe, LogindPrivacyMonitor,
-        FEATURE_ID as CLIPBOARD_HISTORY_ID,
-    },
-    system_monitor::{ProcSysMonitor, FEATURE_ID as SYSTEM_MONITOR_ID},
     StaticCapabilityProbe,
+    audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
+    clipboard::{
+        ArboardClipboardBackend, ClipboardCapabilityProbe, FEATURE_ID as CLIPBOARD_HISTORY_ID,
+        LogindPrivacyMonitor, discover_provider,
+    },
+    system_monitor::{FEATURE_ID as SYSTEM_MONITOR_ID, ProcSysMonitor},
 };
 use kestrel_services::{
+    FeatureRegistry, RegistryError, ServiceRegistration,
     audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioSnapshot},
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardPolicy, ClipboardServiceError,
         ClipboardSnapshot,
     },
     system_monitor::{
-        RefreshOutcome, SystemMonitorService, SystemSnapshot, DEFAULT_REFRESH_INTERVAL,
+        DEFAULT_REFRESH_INTERVAL, RefreshOutcome, SystemMonitorService, SystemSnapshot,
     },
-    FeatureRegistry, RegistryError, ServiceRegistration,
 };
 use std::time::Duration;
 
@@ -31,8 +34,19 @@ pub struct ApplicationRuntime {
 }
 
 impl ApplicationRuntime {
-    /// Registers the entry surfaces known before concrete feature services land.
+    /// Builds the runtime without requiring a tray host.
     pub fn new(configuration: &ApplicationConfiguration) -> Result<Self, RegistryError> {
+        Self::new_with_status_notifier(
+            configuration,
+            unavailable_capability("StatusNotifierItem registration was not attempted."),
+        )
+    }
+
+    /// Builds the runtime with the result of the optional StatusNotifierItem registration.
+    pub fn new_with_status_notifier(
+        configuration: &ApplicationConfiguration,
+        status_notifier_capability: CapabilityReport,
+    ) -> Result<Self, RegistryError> {
         let mut registry = FeatureRegistry::default();
 
         let command_surface = FeatureSpec::new(
@@ -51,6 +65,21 @@ impl ApplicationRuntime {
                 )
                 .with_selected_backend("GTK/libadwaita normal window"),
             ),
+        )?;
+
+        let status_notifier_available = matches!(
+            &status_notifier_capability.status,
+            CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
+        );
+        let status_notifier = FeatureSpec::new(
+            STATUS_NOTIFIER_ID,
+            "Tray integration",
+            status_notifier_capability.status.clone(),
+        );
+        registry.register_probe(
+            status_notifier,
+            status_notifier_available,
+            StaticCapabilityProbe::new(status_notifier_capability),
         )?;
 
         let system_monitor = FeatureSpec::new(
@@ -218,7 +247,8 @@ impl ApplicationRuntime {
 #[cfg(test)]
 mod tests {
     use super::ApplicationRuntime;
-    use kestrel_core::ApplicationConfiguration;
+    use crate::STATUS_NOTIFIER_ID;
+    use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
         audio::FEATURE_ID as AUDIO_MIXER_ID, clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
         system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
@@ -238,15 +268,60 @@ mod tests {
             .expect("static capability refreshes");
 
         let registrations = runtime.registrations().collect::<Vec<_>>();
-        assert_eq!(registrations.len(), 5);
-        assert!(registrations[0].running);
-        assert_eq!(registrations[1].feature.id, SYSTEM_MONITOR_ID);
-        assert_eq!(registrations[2].feature.id, AUDIO_MIXER_ID);
-        assert!(!registrations[2].running);
-        assert_eq!(registrations[3].feature.id, CLIPBOARD_HISTORY_ID);
-        assert!(!registrations[3].running);
-        assert!(!registrations[4].available);
-        assert!(registrations[4].capability.remediation.is_some());
+        assert_eq!(registrations.len(), 6);
+        assert!(
+            registrations
+                .iter()
+                .any(
+                    |registration| registration.feature.id == "app.command-surface"
+                        && registration.running
+                )
+        );
+        for feature_id in [AUDIO_MIXER_ID, CLIPBOARD_HISTORY_ID, STATUS_NOTIFIER_ID] {
+            let registration = registrations
+                .iter()
+                .find(|registration| registration.feature.id == feature_id)
+                .expect("feature remains visible");
+            assert!(!registration.running);
+        }
+        assert!(
+            registrations
+                .iter()
+                .any(|registration| registration.feature.id == SYSTEM_MONITOR_ID)
+        );
+        assert!(
+            registrations
+                .iter()
+                .filter(|registration| !registration.available)
+                .all(|registration| registration.capability.remediation.is_some())
+        );
+    }
+
+    #[test]
+    fn successful_status_notifier_registration_is_reported_as_running() {
+        let report = CapabilityReport::new(
+            STATUS_NOTIFIER_ID,
+            CapabilityStatus::Supported,
+            "The tray host accepted Kestrel.",
+        )
+        .with_selected_backend("StatusNotifierItem");
+        let mut runtime = ApplicationRuntime::new_with_status_notifier(
+            &ApplicationConfiguration::default(),
+            report,
+        )
+        .expect("runtime builds");
+
+        runtime.start();
+
+        let tray = runtime
+            .registrations()
+            .find(|registration| registration.feature.id == STATUS_NOTIFIER_ID)
+            .expect("tray integration remains visible");
+        assert!(tray.running);
+        assert_eq!(
+            tray.capability.selected_backend.as_deref(),
+            Some("StatusNotifierItem")
+        );
     }
 
     #[test]
@@ -272,12 +347,14 @@ mod tests {
             runtime.audio_snapshot().availability,
             AudioAvailability::Unavailable
         );
-        assert!(runtime
-            .execute_audio_command(AudioCommand::SetStreamMute {
-                stream_id: 1,
-                muted: true,
-            })
-            .is_none());
+        assert!(
+            runtime
+                .execute_audio_command(AudioCommand::SetStreamMute {
+                    stream_id: 1,
+                    muted: true,
+                })
+                .is_none()
+        );
     }
 
     #[test]
@@ -290,8 +367,10 @@ mod tests {
             runtime.clipboard_snapshot().lifecycle,
             ClipboardLifecycle::Stopped
         );
-        assert!(runtime
-            .execute_clipboard_command(ClipboardCommand::Wipe)
-            .is_none());
+        assert!(
+            runtime
+                .execute_clipboard_command(ClipboardCommand::Wipe)
+                .is_none()
+        );
     }
 }
