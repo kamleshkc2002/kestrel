@@ -14,7 +14,7 @@ pub mod system_monitor;
 ///
 /// Concrete implementations may inspect a user session only when their
 /// feature-specific Phase 1 work has selected and validated that adapter.
-pub trait CapabilityProbe {
+pub trait CapabilityProbe: Send {
     fn probe(&self) -> CapabilityReport;
 }
 

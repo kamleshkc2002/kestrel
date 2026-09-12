@@ -261,7 +261,7 @@ mod tests {
         SystemMonitorSource,
     };
 
-    use super::{RefreshOutcome, SystemMonitorService, MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL};
+    use super::{MAX_REFRESH_INTERVAL, MIN_REFRESH_INTERVAL, RefreshOutcome, SystemMonitorService};
 
     struct FakeSource {
         samples: RefCell<VecDeque<RawSystemSample>>,
@@ -304,20 +304,24 @@ mod tests {
 
     #[test]
     fn validates_refresh_interval_bounds() {
-        assert!(SystemMonitorService::new(
-            FakeSource {
-                samples: RefCell::new(VecDeque::new())
-            },
-            MIN_REFRESH_INTERVAL - Duration::from_millis(1)
-        )
-        .is_err());
-        assert!(SystemMonitorService::new(
-            FakeSource {
-                samples: RefCell::new(VecDeque::new())
-            },
-            MAX_REFRESH_INTERVAL + Duration::from_millis(1)
-        )
-        .is_err());
+        assert!(
+            SystemMonitorService::new(
+                FakeSource {
+                    samples: RefCell::new(VecDeque::new())
+                },
+                MIN_REFRESH_INTERVAL - Duration::from_millis(1)
+            )
+            .is_err()
+        );
+        assert!(
+            SystemMonitorService::new(
+                FakeSource {
+                    samples: RefCell::new(VecDeque::new())
+                },
+                MAX_REFRESH_INTERVAL + Duration::from_millis(1)
+            )
+            .is_err()
+        );
     }
 
     #[test]

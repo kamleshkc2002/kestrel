@@ -4,7 +4,7 @@
 //! PulseAudio-compatible protocol through pactl's structured JSON output; it
 //! is not a production audio adapter.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::{
     env,
     io::{self, Read},

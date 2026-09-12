@@ -2,8 +2,8 @@
 
 use kestrel_core::{CapabilityReport, CapabilityStatus};
 use kestrel_platform::audio::{
-    capability_for_discovery, AudioBackend, AudioDiscovery, AudioError, AudioServer, OutputDevice,
-    PlaybackStream,
+    AudioBackend, AudioDiscovery, AudioError, AudioServer, OutputDevice, PlaybackStream,
+    capability_for_discovery,
 };
 
 pub const MIN_VOLUME_PERCENT: u8 = 0;
@@ -212,8 +212,8 @@ mod tests {
     use std::collections::VecDeque;
 
     use kestrel_platform::audio::{
-        AudioBackend, AudioDiscovery, AudioError, AudioErrorKind, AudioServer, OutputDevice,
-        PlaybackStream, FEATURE_ID,
+        AudioBackend, AudioDiscovery, AudioError, AudioErrorKind, AudioServer, FEATURE_ID,
+        OutputDevice, PlaybackStream,
     };
 
     use super::{

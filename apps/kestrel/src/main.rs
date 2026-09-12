@@ -1,9 +1,124 @@
-use adw::prelude::*;
-use gtk::{Align, Orientation};
-use kestrel::{
-    configuration_path, load, ApplicationRuntime, ApplicationViewModel, CapabilityKindViewModel,
-    FeatureViewModel, LoadedConfiguration, RemediationViewModel,
+mod window;
+
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::{Arc, Mutex},
+    thread,
 };
+
+use adw::{glib, prelude::*};
+use async_channel::{Receiver, Sender};
+use kestrel::{
+    ApplicationCommand, ApplicationRuntime, ApplicationViewModel, ConfigurationWarning,
+    LoadedConfiguration, StatusNotifierIntegration, configuration_path, load,
+};
+
+use window::WindowView;
+
+type RefreshResult = Result<ApplicationViewModel, String>;
+
+struct ApplicationController {
+    runtime: Arc<Mutex<ApplicationRuntime>>,
+    warnings: Arc<Vec<ConfigurationWarning>>,
+    window: RefCell<Option<WindowView>>,
+    refreshing: Cell<bool>,
+    refresh_results: Sender<RefreshResult>,
+}
+
+impl ApplicationController {
+    fn new(
+        runtime: ApplicationRuntime,
+        warnings: Vec<ConfigurationWarning>,
+        refresh_results: Sender<RefreshResult>,
+    ) -> Rc<Self> {
+        Rc::new(Self {
+            runtime: Arc::new(Mutex::new(runtime)),
+            warnings: Arc::new(warnings),
+            window: RefCell::new(None),
+            refreshing: Cell::new(false),
+            refresh_results,
+        })
+    }
+
+    fn present(self: &Rc<Self>, application: &adw::Application) {
+        let existing = self
+            .window
+            .borrow()
+            .as_ref()
+            .map(|view| view.window.clone());
+        if let Some(window) = existing {
+            window.present();
+            return;
+        }
+
+        let view_model = self.current_view_model();
+        let view = WindowView::new(application, &view_model);
+        let weak_controller = Rc::downgrade(self);
+        view.window.connect_close_request(move |_| {
+            if let Some(controller) = weak_controller.upgrade() {
+                controller.window.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        view.window.present();
+        self.window.replace(Some(view));
+    }
+
+    fn request_refresh(&self) {
+        if self.refreshing.replace(true) {
+            return;
+        }
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_refreshing(true);
+        }
+
+        let runtime = Arc::clone(&self.runtime);
+        let warnings = Arc::clone(&self.warnings);
+        let results = self.refresh_results.clone();
+        let worker = thread::Builder::new()
+            .name("kestrel-capability-refresh".to_owned())
+            .spawn(move || {
+                let mut runtime = runtime
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = runtime
+                    .refresh_capabilities()
+                    .map(|()| runtime.view_model(&warnings))
+                    .map_err(|error| format!("Capability refresh failed: {error:?}"));
+                let _ = results.send_blocking(result);
+            });
+
+        if let Err(error) = worker {
+            self.finish_refresh(Err(format!(
+                "Could not start the capability refresh worker: {error}"
+            )));
+        }
+    }
+
+    fn finish_refresh(&self, result: RefreshResult) {
+        self.refreshing.set(false);
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        view.set_refreshing(false);
+        match result {
+            Ok(view_model) => {
+                view.set_view_model(&view_model);
+                view.show_message("Capability status refreshed");
+            }
+            Err(message) => view.show_message(&message),
+        }
+    }
+
+    fn current_view_model(&self) -> ApplicationViewModel {
+        self.runtime
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .view_model(&self.warnings)
+    }
+}
 
 fn main() {
     let loaded = configuration_path()
@@ -15,176 +130,104 @@ fn main() {
             Some(LoadedConfiguration::default())
         })
         .unwrap_or_default();
-    let mut runtime =
-        ApplicationRuntime::new(&loaded.configuration).expect("built-in features have valid IDs");
+
+    let application = adw::Application::builder()
+        .application_id("io.github.kamleshkc2002.Kestrel")
+        .build();
+    let (commands, command_receiver) = async_channel::unbounded();
+    let status_notifier = StatusNotifierIntegration::start(commands.clone());
+
+    let mut runtime = ApplicationRuntime::new_with_status_notifier(
+        &loaded.configuration,
+        status_notifier.capability(),
+    )
+    .expect("built-in features have valid IDs");
     runtime.start();
     runtime
         .refresh_capabilities()
         .expect("built-in capability probes are internally consistent");
 
-    let application = adw::Application::builder()
-        .application_id("io.github.kamleshkc2002.Kestrel")
-        .build();
-    let warnings = loaded.warnings;
+    let (refresh_results, refresh_receiver) = async_channel::unbounded();
+    let controller = ApplicationController::new(runtime, loaded.warnings, refresh_results);
+    install_command_actions(&application, commands);
+    dispatch_commands(&application, &controller, command_receiver);
+    dispatch_refresh_results(&controller, refresh_receiver);
 
+    let weak_controller = Rc::downgrade(&controller);
     application.connect_activate(move |application| {
-        let view_model = runtime.view_model(&warnings);
-        build_window(application, &view_model);
+        if let Some(controller) = weak_controller.upgrade() {
+            controller.present(application);
+        }
     });
+
     application.run();
+    drop(status_notifier);
 }
 
-fn build_window(application: &adw::Application, view_model: &ApplicationViewModel) {
-    let window = adw::ApplicationWindow::builder()
-        .application(application)
-        .title("Kestrel")
-        .default_width(720)
-        .default_height(520)
-        .build();
-    let content = gtk::Box::new(Orientation::Vertical, 18);
-    content.set_margin_top(24);
-    content.set_margin_bottom(24);
-    content.set_margin_start(24);
-    content.set_margin_end(24);
-
-    let heading = gtk::Label::new(Some("Kestrel command surface"));
-    heading.add_css_class("title-1");
-    heading.set_halign(Align::Start);
-    content.append(&heading);
-
-    let description = gtk::Label::new(Some(
-        "Use this normal window when tray or global shortcuts are unavailable.",
-    ));
-    description.set_halign(Align::Start);
-    description.set_wrap(true);
-    content.append(&description);
-
-    let commands = gtk::SearchEntry::new();
-    commands.set_placeholder_text(Some("Search commands and feature status"));
-    commands.set_hexpand(true);
-    content.append(&commands);
-
-    let features = gtk::ListBox::new();
-    features.add_css_class("boxed-list");
-    for feature in &view_model.features {
-        features.append(&build_feature_view(feature));
-    }
-    content.append(&features);
-
-    for warning in &view_model.warnings {
-        let warning = gtk::Label::new(Some(&format!(
-            "Configuration warning for {}: {}",
-            warning.feature_id, warning.message
-        )));
-        warning.set_halign(Align::Start);
-        warning.set_wrap(true);
-        warning.add_css_class("warning");
-        content.append(&warning);
-    }
-
-    window.set_content(Some(&content));
-    window.present();
+fn install_command_actions(application: &adw::Application, commands: Sender<ApplicationCommand>) {
+    add_command_action(
+        application,
+        "present-window",
+        ApplicationCommand::PresentWindow,
+        &commands,
+    );
+    add_command_action(
+        application,
+        "refresh-capabilities",
+        ApplicationCommand::RefreshCapabilities,
+        &commands,
+    );
+    add_command_action(application, "quit", ApplicationCommand::Quit, &commands);
+    application.set_accels_for_action("app.refresh-capabilities", &["<Primary>r"]);
+    application.set_accels_for_action("app.quit", &["<Primary>q"]);
 }
 
-fn build_feature_view(feature: &FeatureViewModel) -> gtk::Box {
-    let content = gtk::Box::new(Orientation::Vertical, 8);
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
-    content.set_tooltip_text(Some(&feature.id));
-
-    let header = gtk::Box::new(Orientation::Horizontal, 8);
-    let title = gtk::Label::new(Some(&feature.label));
-    title.set_halign(Align::Start);
-    title.set_hexpand(true);
-    title.add_css_class("heading");
-    header.append(&title);
-
-    let lifecycle = gtk::Label::new(Some(feature.lifecycle.label()));
-    lifecycle.set_valign(Align::Center);
-    lifecycle.add_css_class("dim-label");
-    header.append(&lifecycle);
-
-    let status = gtk::Label::new(Some(feature.capability.status.label));
-    status.set_valign(Align::Center);
-    status.add_css_class("pill");
-    status.add_css_class(capability_css_class(feature.capability.status.kind));
-    header.append(&status);
-    content.append(&header);
-
-    let summary = gtk::Label::new(Some(&feature.capability.summary));
-    configure_wrapping_label(&summary);
-    content.append(&summary);
-
-    if let Some(detail) = &feature.capability.status.detail {
-        content.append(&build_labeled_value("Capability detail", detail));
-    }
-    if let Some(backend) = &feature.capability.selected_backend {
-        content.append(&build_labeled_value("Selected backend", backend));
-    }
-    if let Some(remediation) = &feature.capability.remediation {
-        content.append(&build_remediation_view(remediation));
-    }
-
-    content
+fn add_command_action(
+    application: &adw::Application,
+    name: &str,
+    command: ApplicationCommand,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let action = adw::gio::SimpleAction::new(name, None);
+    let commands = commands.clone();
+    action.connect_activate(move |_, _| {
+        let _ = commands.try_send(command);
+    });
+    application.add_action(&action);
 }
 
-fn build_labeled_value(label: &str, value: &str) -> gtk::Box {
-    let content = gtk::Box::new(Orientation::Vertical, 2);
-    let heading = gtk::Label::new(Some(label));
-    heading.set_halign(Align::Start);
-    heading.add_css_class("caption-heading");
-    content.append(&heading);
-
-    let value = gtk::Label::new(Some(value));
-    configure_wrapping_label(&value);
-    value.add_css_class("dim-label");
-    content.append(&value);
-    content
+fn dispatch_commands(
+    application: &adw::Application,
+    controller: &Rc<ApplicationController>,
+    receiver: Receiver<ApplicationCommand>,
+) {
+    let application = application.clone();
+    let controller = Rc::downgrade(controller);
+    glib::spawn_future_local(async move {
+        while let Ok(command) = receiver.recv().await {
+            let Some(controller) = controller.upgrade() else {
+                break;
+            };
+            match command {
+                ApplicationCommand::PresentWindow => controller.present(&application),
+                ApplicationCommand::RefreshCapabilities => controller.request_refresh(),
+                ApplicationCommand::Quit => application.quit(),
+            }
+        }
+    });
 }
 
-fn build_remediation_view(remediation: &RemediationViewModel) -> gtk::Box {
-    let card = gtk::Box::new(Orientation::Horizontal, 10);
-    card.add_css_class("card");
-    card.set_margin_top(4);
-
-    let icon = gtk::Image::from_icon_name("dialog-information-symbolic");
-    icon.set_valign(Align::Start);
-    icon.set_margin_top(10);
-    icon.set_margin_start(10);
-    icon.add_css_class("accent");
-    card.append(&icon);
-
-    let content = gtk::Box::new(Orientation::Vertical, 2);
-    content.set_hexpand(true);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-    content.set_margin_end(10);
-    let heading = gtk::Label::new(Some(remediation.title));
-    heading.set_halign(Align::Start);
-    heading.add_css_class("heading");
-    content.append(&heading);
-    let message = gtk::Label::new(Some(&remediation.message));
-    configure_wrapping_label(&message);
-    content.append(&message);
-    card.append(&content);
-    card
-}
-
-fn configure_wrapping_label(label: &gtk::Label) {
-    label.set_halign(Align::Start);
-    label.set_wrap(true);
-    label.set_xalign(0.0);
-    label.set_hexpand(true);
-}
-
-fn capability_css_class(kind: CapabilityKindViewModel) -> &'static str {
-    match kind {
-        CapabilityKindViewModel::Supported => "success",
-        CapabilityKindViewModel::Limited
-        | CapabilityKindViewModel::NeedsPermission
-        | CapabilityKindViewModel::MissingDependency => "warning",
-        CapabilityKindViewModel::Unsupported => "error",
-    }
+fn dispatch_refresh_results(
+    controller: &Rc<ApplicationController>,
+    receiver: Receiver<RefreshResult>,
+) {
+    let controller = Rc::downgrade(controller);
+    glib::spawn_future_local(async move {
+        while let Ok(result) = receiver.recv().await {
+            let Some(controller) = controller.upgrade() else {
+                break;
+            };
+            controller.finish_refresh(result);
+        }
+    });
 }

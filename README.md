@@ -12,10 +12,10 @@ support it.
 
 ## Status
 
-Phase 0 capability validation is complete. Phase 1 now has a production
-workspace, a versioned non-sensitive configuration boundary, and a normal
-GTK/libadwaita command window. Concrete feature integrations are introduced
-in their individual Phase 1 slices.
+Phase 0 capability validation is complete. Phase 1 has a production workspace,
+versioned non-sensitive configuration, and a responsive GTK/libadwaita capability
+window. Optional StatusNotifierItem integration adds tray activation and actions
+when the desktop provides a compatible host; the normal window remains independent.
 
 - [Requirements and support contract](docs/REQUIREMENTS.md)
 - [Initial architecture](docs/ARCHITECTURE.md)
@@ -63,6 +63,19 @@ Per-feature enablement is keyed by stable feature IDs. Invalid feature settings
 are ignored individually and reported in the normal window, so they do not
 prevent other features or the command surface from starting.
 
+### Desktop integration
+
+Kestrel always provides a normal application window. Its optional
+StatusNotifierItem (SNI) registers only when the user session has a compatible
+tray host; registration failure is shown as a capability limitation and never
+prevents the window from opening. Tray activation opens the same window, and the
+tray menu forwards refresh and quit actions to the application.
+
+KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars commonly
+provide a host. GNOME does not display SNI items by default; it requires an
+extension such as **AppIndicator and KStatusNotifierItem Support**. Kestrel does
+not treat that extension or any tray icon as its sole entry point.
+
 ### Clipboard history
 
 `clipboard.history` is disabled by default and starts only after explicit
@@ -92,10 +105,11 @@ bash scripts/build-appimage.sh 0.1.0
 
 ### Prerequisites
 
-Kestrel is a Rust workspace. Install a current stable Rust toolchain with `rustup`.
-The application requires GTK4, libadwaita, and PulseAudio development packages;
-future D-Bus and native PipeWire integrations will need their corresponding Linux
-development packages.
+Kestrel is a Rust workspace pinned to Rust 1.98.0 by `rust-toolchain.toml`.
+Rustup selects the pinned compiler, rustfmt, and Clippy components automatically
+inside the repository. The application requires GTK4, libadwaita, and PulseAudio
+development packages; future D-Bus and native PipeWire integrations will need
+their corresponding Linux development packages.
 
 On Debian/Ubuntu-derived distributions:
 
@@ -109,9 +123,8 @@ Install Rust if `cargo --version` is unavailable:
 
 ```bash
 sudo apt install rustup
-source "$HOME/.cargo/env"
-rustup default stable
-rustup component add rustfmt clippy
+rustup toolchain install 1.98.0 --profile minimal \
+  --component rustfmt --component clippy
 ```
 If `cargo` is unavailable in a shell after installation, load Rustup's
 environment before running the commands:

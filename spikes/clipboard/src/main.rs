@@ -4,7 +4,7 @@
 //! mode only operates when the target selection is proven empty and reports
 //! booleans rather than clipboard data.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     env,
     process::{Child, Command, ExitStatus, Stdio},
@@ -12,8 +12,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use wl_clipboard_rs::paste::{
-    get_mime_types, ClipboardType as WaylandClipboardType, Error as WaylandPasteError,
-    Seat as WaylandSeat,
+    ClipboardType as WaylandClipboardType, Error as WaylandPasteError, Seat as WaylandSeat,
+    get_mime_types,
 };
 use x11rb::{protocol::xproto::ConnectionExt, rust_connection::RustConnection};
 
@@ -139,7 +139,9 @@ fn wayland_capability() -> Value {
             "Unsupported",
             "The compositor does not expose ext-data-control or wlr-data-control.",
             "Wayland data-control",
-            Some("Use a compositor with a supported data-control protocol, or use the X11 compatibility backend when available."),
+            Some(
+                "Use a compositor with a supported data-control protocol, or use the X11 compatibility backend when available.",
+            ),
             json!({ "error_category": "missing_data_control_protocol" }),
         ),
         Err(error_category) => capability(
@@ -147,7 +149,9 @@ fn wayland_capability() -> Value {
             "Unsupported",
             "Wayland clipboard inspection could not establish a usable session connection.",
             "Wayland data-control",
-            Some("Run Kestrel in the active graphical session and re-probe after the compositor is available."),
+            Some(
+                "Run Kestrel in the active graphical session and re-probe after the compositor is available.",
+            ),
             json!({ "error_category": error_category }),
         ),
     }
@@ -190,7 +194,9 @@ fn x11_capability() -> Value {
             "Unsupported",
             "The X11 clipboard compatibility path is unavailable.",
             "X11 selection",
-            Some("Run Kestrel with access to an Xorg or XWayland DISPLAY, or rely on a supported Wayland data-control path."),
+            Some(
+                "Run Kestrel with access to an Xorg or XWayland DISPLAY, or rely on a supported Wayland data-control path.",
+            ),
             json!({ "error_category": error_category }),
         ),
     }
@@ -203,7 +209,9 @@ fn privacy_capabilities() -> Vec<Value> {
             "Limited",
             "Clipboard history must remain disabled until the user explicitly enables it.",
             "Kestrel policy",
-            Some("Enable history only after configuring item-size, retention, immediate-wipe, and lock/sleep-clear policies."),
+            Some(
+                "Enable history only after configuring item-size, retention, immediate-wipe, and lock/sleep-clear policies.",
+            ),
             json!({
                 "history_default": "disabled",
                 "persistent_storage_default": false,
@@ -220,7 +228,9 @@ fn privacy_capabilities() -> Vec<Value> {
             "Limited",
             "Standard Wayland and X11 clipboard protocols do not reliably disclose the source application or enforce history exclusion.",
             "Protocol privacy boundary",
-            Some("Expose per-application exclusions only where a desktop-specific, verifiable source identity is available; otherwise label them unavailable."),
+            Some(
+                "Expose per-application exclusions only where a desktop-specific, verifiable source identity is available; otherwise label them unavailable.",
+            ),
             json!({
                 "standard_source_application_identity": false,
                 "history_manager_exclusion_enforcement": false,
@@ -232,7 +242,9 @@ fn privacy_capabilities() -> Vec<Value> {
             "Unsupported",
             "No standard clipboard portal is selected as a Kestrel backend in this session.",
             "None",
-            Some("Use Wayland data-control or the X11 compatibility backend; portal availability must be probed separately if a desktop adds a clipboard-specific interface."),
+            Some(
+                "Use Wayland data-control or the X11 compatibility backend; portal availability must be probed separately if a desktop adds a clipboard-specific interface.",
+            ),
             json!({ "portal_permission_requested": false }),
         ),
     ]
@@ -466,7 +478,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{requested_backends, Backend};
+    use super::{Backend, requested_backends};
 
     #[test]
     fn parses_requested_backends() {

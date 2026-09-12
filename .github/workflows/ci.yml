@@ -18,9 +18,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
 
       - name: Install native development packages
@@ -48,9 +49,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.98.0
           components: rustfmt, clippy
 
       - name: Compile system-monitor probe
