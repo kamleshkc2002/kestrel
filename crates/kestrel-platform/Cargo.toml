@@ -6,6 +6,7 @@ license = "MIT"
 description = "Platform adapter boundaries for Kestrel"
 
 [dependencies]
+gio = "0.20"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 kestrel-core = { path = "../kestrel-core" }
 libpulse-binding = "2.30.1"

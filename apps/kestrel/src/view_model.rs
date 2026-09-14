@@ -1,5 +1,11 @@
 use kestrel_core::{CapabilityStatus, Permission};
-use kestrel_services::{ServiceLifecycle, ServiceRegistration};
+use kestrel_platform::quick_toggles::{
+    MutationConfirmation, QuickToggleControl, QuickToggleId, ToggleAction,
+};
+use kestrel_services::{
+    ServiceLifecycle, ServiceRegistration,
+    quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
+};
 
 use crate::ConfigurationWarning;
 
@@ -7,20 +13,153 @@ use crate::ConfigurationWarning;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplicationViewModel {
     pub features: Vec<FeatureViewModel>,
+    pub quick_toggles: Vec<QuickToggleViewModel>,
     pub warnings: Vec<ConfigurationWarningViewModel>,
 }
 
 impl ApplicationViewModel {
     pub(crate) fn new<'a>(
         registrations: impl Iterator<Item = &'a ServiceRegistration>,
+        quick_toggles: impl Iterator<Item = &'a QuickToggleSnapshot>,
         warnings: &[ConfigurationWarning],
     ) -> Self {
+        let registrations = registrations.collect::<Vec<_>>();
         Self {
-            features: registrations.map(FeatureViewModel::from).collect(),
+            features: registrations
+                .iter()
+                .map(|registration| FeatureViewModel::from(*registration))
+                .collect(),
+            quick_toggles: quick_toggles
+                .map(|snapshot| {
+                    let registration = registrations
+                        .iter()
+                        .find(|registration| registration.feature.id == snapshot.id.feature_id())
+                        .copied();
+                    QuickToggleViewModel::from_snapshot(snapshot, registration)
+                })
+                .collect(),
             warnings: warnings
                 .iter()
                 .map(ConfigurationWarningViewModel::from)
                 .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickToggleViewModel {
+    pub id: QuickToggleId,
+    pub feature_id: &'static str,
+    pub label: &'static str,
+    pub requirement: &'static str,
+    pub available: bool,
+    pub detail: String,
+    pub source: &'static str,
+    pub control: Option<QuickToggleControlViewModel>,
+    pub error: Option<String>,
+}
+
+impl QuickToggleViewModel {
+    fn from_snapshot(
+        snapshot: &QuickToggleSnapshot,
+        registration: Option<&ServiceRegistration>,
+    ) -> Self {
+        let detail = snapshot
+            .observation
+            .as_ref()
+            .map(|observation| observation.detail.clone())
+            .or_else(|| snapshot.error.as_ref().map(|error| error.message.clone()))
+            .or_else(|| registration.map(|registration| registration.capability.summary.clone()))
+            .unwrap_or_else(|| "No capability report is available.".to_owned());
+        Self {
+            id: snapshot.id,
+            feature_id: snapshot.id.feature_id(),
+            label: snapshot.label,
+            requirement: snapshot.requirement,
+            available: registration.is_some_and(|registration| registration.running)
+                && snapshot.observation.is_some(),
+            detail,
+            source: match snapshot.source {
+                ToggleStateSource::KestrelOwned => "Kestrel-owned state",
+                ToggleStateSource::ProviderObserved => "Provider-observed state",
+                ToggleStateSource::ChangedElsewhere => "Changed outside Kestrel",
+            },
+            control: snapshot
+                .observation
+                .as_ref()
+                .map(|observation| QuickToggleControlViewModel::from(&observation.control)),
+            error: snapshot
+                .observation
+                .as_ref()
+                .and(snapshot.error.as_ref())
+                .map(|error| error.message.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickToggleControlViewModel {
+    Switch {
+        enabled: bool,
+        confirmation: Option<ConfirmationViewModel>,
+    },
+    Level {
+        percentage: u8,
+    },
+    Actions(Vec<QuickToggleActionViewModel>),
+}
+
+impl From<&QuickToggleControl> for QuickToggleControlViewModel {
+    fn from(control: &QuickToggleControl) -> Self {
+        match control {
+            QuickToggleControl::Switch {
+                enabled,
+                confirmation,
+            } => Self::Switch {
+                enabled: *enabled,
+                confirmation: confirmation.as_ref().map(ConfirmationViewModel::from),
+            },
+            QuickToggleControl::Level { percentage } => Self::Level {
+                percentage: *percentage,
+            },
+            QuickToggleControl::Actions(actions) => Self::Actions(
+                actions
+                    .iter()
+                    .map(QuickToggleActionViewModel::from)
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmationViewModel {
+    pub scope: String,
+    pub token: String,
+}
+
+impl From<&MutationConfirmation> for ConfirmationViewModel {
+    fn from(confirmation: &MutationConfirmation) -> Self {
+        Self {
+            scope: confirmation.scope.clone(),
+            token: confirmation.token.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickToggleActionViewModel {
+    pub target: Option<String>,
+    pub label: String,
+    pub confirmation: ConfirmationViewModel,
+}
+
+impl From<&ToggleAction> for QuickToggleActionViewModel {
+    fn from(action: &ToggleAction) -> Self {
+        Self {
+            target: action.target.clone(),
+            label: action.label.clone(),
+            confirmation: ConfirmationViewModel::from(&action.confirmation),
         }
     }
 }
@@ -166,6 +305,11 @@ fn permission_label(permission: Permission) -> &'static str {
         Permission::GlobalShortcut => "Global shortcut",
         Permission::InputInjection => "Input injection",
         Permission::HardwareControl => "Hardware control",
+        Permission::SessionControl => "Session control",
+        Permission::DesktopSettings => "Desktop settings",
+        Permission::NetworkControl => "Network control",
+        Permission::FileDeletion => "File deletion",
+        Permission::RemovableMedia => "Removable media",
         Permission::Camera => "Camera",
         Permission::Notifications => "Notifications",
     }
@@ -190,7 +334,11 @@ impl From<&ConfigurationWarning> for ConfigurationWarningViewModel {
 #[cfg(test)]
 mod tests {
     use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec, Permission};
-    use kestrel_services::ServiceRegistration;
+    use kestrel_platform::quick_toggles::QuickToggleId;
+    use kestrel_services::{
+        ServiceRegistration,
+        quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
+    };
 
     use super::{
         ApplicationViewModel, CapabilityKindViewModel, CapabilityStatusViewModel,
@@ -296,13 +444,50 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_quick_toggle_uses_its_capability_summary() {
+        let id = QuickToggleId::Brightness;
+        let status = CapabilityStatus::Unsupported {
+            reason: "No internal backlight was found.".to_owned(),
+        };
+        let report = CapabilityReport::new(
+            id.feature_id(),
+            status.clone(),
+            "No backlight adapter exists.",
+        );
+        let feature = FeatureSpec::new(id.feature_id(), id.label(), status);
+        let registration =
+            ServiceRegistration::new(feature, report, true).expect("matching feature IDs");
+        let snapshot = QuickToggleSnapshot {
+            id,
+            label: id.label(),
+            requirement: id.requirement(),
+            observation: None,
+            source: ToggleStateSource::ProviderObserved,
+            error: None,
+        };
+
+        let view_model = ApplicationViewModel::new(
+            std::iter::once(&registration),
+            std::iter::once(&snapshot),
+            &[],
+        );
+
+        assert!(!view_model.quick_toggles[0].available);
+        assert_eq!(
+            view_model.quick_toggles[0].detail,
+            "No backlight adapter exists."
+        );
+    }
+
+    #[test]
     fn copies_configuration_warnings_into_owned_presentation_state() {
         let warnings = vec![ConfigurationWarning {
             feature_id: "audio.mixer".to_string(),
             reason: "Invalid volume preference.".to_string(),
         }];
 
-        let view_model = ApplicationViewModel::new(std::iter::empty(), &warnings);
+        let view_model =
+            ApplicationViewModel::new(std::iter::empty(), std::iter::empty(), &warnings);
 
         assert!(view_model.features.is_empty());
         assert_eq!(view_model.warnings[0].feature_id, "audio.mixer");

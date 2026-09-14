@@ -7,8 +7,10 @@
 use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::CapabilityProbe;
 pub mod audio;
+pub mod battery_alerts;
 pub mod clipboard;
 
+pub mod quick_toggles;
 pub mod system_monitor;
 
 /// The current lifecycle stage of a registered feature.
