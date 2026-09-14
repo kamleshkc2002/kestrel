@@ -16,7 +16,7 @@ use kestrel::{
 
 use window::WindowView;
 
-type RefreshResult = Result<ApplicationViewModel, String>;
+type RefreshResult = Result<(ApplicationViewModel, String), String>;
 
 struct ApplicationController {
     runtime: Arc<Mutex<ApplicationRuntime>>,
@@ -24,6 +24,7 @@ struct ApplicationController {
     window: RefCell<Option<WindowView>>,
     refreshing: Cell<bool>,
     refresh_results: Sender<RefreshResult>,
+    commands: Sender<ApplicationCommand>,
 }
 
 impl ApplicationController {
@@ -31,6 +32,7 @@ impl ApplicationController {
         runtime: ApplicationRuntime,
         warnings: Vec<ConfigurationWarning>,
         refresh_results: Sender<RefreshResult>,
+        commands: Sender<ApplicationCommand>,
     ) -> Rc<Self> {
         Rc::new(Self {
             runtime: Arc::new(Mutex::new(runtime)),
@@ -38,6 +40,7 @@ impl ApplicationController {
             window: RefCell::new(None),
             refreshing: Cell::new(false),
             refresh_results,
+            commands,
         })
     }
 
@@ -53,7 +56,7 @@ impl ApplicationController {
         }
 
         let view_model = self.current_view_model();
-        let view = WindowView::new(application, &view_model);
+        let view = WindowView::new(application, &view_model, self.commands.clone());
         let weak_controller = Rc::downgrade(self);
         view.window.connect_close_request(move |_| {
             if let Some(controller) = weak_controller.upgrade() {
@@ -84,7 +87,12 @@ impl ApplicationController {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let result = runtime
                     .refresh_capabilities()
-                    .map(|()| runtime.view_model(&warnings))
+                    .map(|()| {
+                        (
+                            runtime.view_model(&warnings),
+                            "Capability and toggle state refreshed".to_owned(),
+                        )
+                    })
                     .map_err(|error| format!("Capability refresh failed: {error:?}"));
                 let _ = results.send_blocking(result);
             });
@@ -92,6 +100,46 @@ impl ApplicationController {
         if let Err(error) = worker {
             self.finish_refresh(Err(format!(
                 "Could not start the capability refresh worker: {error}"
+            )));
+        }
+    }
+
+    fn request_quick_toggle(&self, command: kestrel::QuickToggleCommand) {
+        if self.refreshing.replace(true) {
+            if let Some(view) = self.window.borrow().as_ref() {
+                view.show_message("Another Kestrel operation is still running");
+            }
+            return;
+        }
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_refreshing(true);
+        }
+        let runtime = Arc::clone(&self.runtime);
+        let warnings = Arc::clone(&self.warnings);
+        let results = self.refresh_results.clone();
+        let label = command.id.label();
+        let worker = thread::Builder::new()
+            .name("kestrel-quick-toggle".to_owned())
+            .spawn(move || {
+                let mut runtime = runtime
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = match runtime.execute_quick_toggle_command(command) {
+                    Some(Ok(_)) => Ok((runtime.view_model(&warnings), format!("{label} updated"))),
+                    Some(Err(error)) => Ok((
+                        runtime.view_model(&warnings),
+                        format!("{label} failed: {error}"),
+                    )),
+                    None => Ok((
+                        runtime.view_model(&warnings),
+                        format!("{label} is not available"),
+                    )),
+                };
+                let _ = results.send_blocking(result);
+            });
+        if let Err(error) = worker {
+            self.finish_refresh(Err(format!(
+                "Could not start the quick-toggle worker: {error}"
             )));
         }
     }
@@ -104,9 +152,9 @@ impl ApplicationController {
         };
         view.set_refreshing(false);
         match result {
-            Ok(view_model) => {
+            Ok((view_model, message)) => {
                 view.set_view_model(&view_model);
-                view.show_message("Capability status refreshed");
+                view.show_message(&message);
             }
             Err(message) => view.show_message(&message),
         }
@@ -148,7 +196,8 @@ fn main() {
         .expect("built-in capability probes are internally consistent");
 
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
-    let controller = ApplicationController::new(runtime, loaded.warnings, refresh_results);
+    let controller =
+        ApplicationController::new(runtime, loaded.warnings, refresh_results, commands.clone());
     install_command_actions(&application, commands);
     dispatch_commands(&application, &controller, command_receiver);
     dispatch_refresh_results(&controller, refresh_receiver);
@@ -191,7 +240,7 @@ fn add_command_action(
     let action = adw::gio::SimpleAction::new(name, None);
     let commands = commands.clone();
     action.connect_activate(move |_, _| {
-        let _ = commands.try_send(command);
+        let _ = commands.try_send(command.clone());
     });
     application.add_action(&action);
 }
@@ -211,6 +260,9 @@ fn dispatch_commands(
             match command {
                 ApplicationCommand::PresentWindow => controller.present(&application),
                 ApplicationCommand::RefreshCapabilities => controller.request_refresh(),
+                ApplicationCommand::QuickToggle(command) => {
+                    controller.request_quick_toggle(command)
+                }
                 ApplicationCommand::Quit => application.quit(),
             }
         }

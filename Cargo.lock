@@ -811,6 +811,7 @@ name = "kestrel-platform"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "gio",
  "kestrel-core",
  "libpulse-binding",
  "tempfile",

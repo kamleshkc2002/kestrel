@@ -26,6 +26,11 @@ pub enum Permission {
     GlobalShortcut,
     InputInjection,
     HardwareControl,
+    SessionControl,
+    DesktopSettings,
+    NetworkControl,
+    FileDeletion,
+    RemovableMedia,
     Camera,
     Notifications,
 }

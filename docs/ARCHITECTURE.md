@@ -338,6 +338,17 @@ sequenceDiagram
 A permission denial or missing dependency is a normal result path. The UI must
 show remediation and preserve the previous state rather than reporting an
 unstructured failure.
+Quick toggles follow the same command path but remain separate registry entries:
+each namespaced toggle has its own probe, enablement gate, requirement text, and
+snapshot. Destructive or disruptive adapters publish an exact scope and token;
+the platform adapter recomputes that token immediately before mutation, so
+stale Trash, removable-drive, session, or radio state cannot bypass
+confirmation. Refresh compares provider observations with the last published
+snapshot: commands mark state as Kestrel-owned, while later provider changes
+are marked as external. The battery-alert service owns its bounded polling
+thread and joins it on disable or shutdown; the platform layer only reads
+battery state and sends notifications.
+
 
 ### 8.3 Capability refresh
 

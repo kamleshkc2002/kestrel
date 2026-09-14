@@ -10,15 +10,21 @@ use kestrel_platform::{
         ArboardClipboardBackend, ClipboardCapabilityProbe, FEATURE_ID as CLIPBOARD_HISTORY_ID,
         LogindPrivacyMonitor, discover_provider,
     },
+    quick_toggles::{
+        ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleError,
+        QuickToggleId, QuickToggleMutation,
+    },
     system_monitor::{FEATURE_ID as SYSTEM_MONITOR_ID, ProcSysMonitor},
 };
 use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
     audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioSnapshot},
+    battery_alerts::{BatteryAlertService, DEFAULT_POLL_INTERVAL as BATTERY_POLL_INTERVAL},
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardPolicy, ClipboardServiceError,
         ClipboardSnapshot,
     },
+    quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
     system_monitor::{
         DEFAULT_REFRESH_INTERVAL, RefreshOutcome, SystemMonitorService, SystemSnapshot,
     },
@@ -31,6 +37,8 @@ pub struct ApplicationRuntime {
     audio_mixer: AudioMixerService<PulseAudioBackend>,
     clipboard_history: ClipboardHistoryService,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
+    battery_alerts: BatteryAlertService<LinuxQuickToggleBackend>,
+    quick_toggles: QuickToggleService,
 }
 
 impl ApplicationRuntime {
@@ -134,6 +142,19 @@ impl ApplicationRuntime {
                 ),
             ),
         )?;
+        let quick_toggle_backend = LinuxQuickToggleBackend::new();
+        for id in ALL_QUICK_TOGGLES {
+            let enabled = configuration
+                .features
+                .get(id.feature_id())
+                .map(|feature| feature.enabled)
+                .unwrap_or(true);
+            registry.register_probe(
+                FeatureSpec::new(id.feature_id(), id.label(), CapabilityStatus::Supported),
+                enabled,
+                QuickToggleCapabilityProbe::new(quick_toggle_backend.clone(), id),
+            )?;
+        }
         Ok(Self {
             registry,
             audio_mixer: AudioMixerService::new(audio_backend),
@@ -141,6 +162,11 @@ impl ApplicationRuntime {
                 .expect("the built-in clipboard policy is valid"),
             system_monitor: SystemMonitorService::new(monitor_source, DEFAULT_REFRESH_INTERVAL)
                 .expect("the built-in monitor refresh interval is valid"),
+            battery_alerts: BatteryAlertService::new(
+                quick_toggle_backend.clone(),
+                BATTERY_POLL_INTERVAL,
+            ),
+            quick_toggles: QuickToggleService::new(quick_toggle_backend),
         })
     }
 
@@ -156,6 +182,7 @@ impl ApplicationRuntime {
         if self.clipboard_history_is_running() {
             let _ = self.start_clipboard_history();
         }
+        self.refresh_quick_toggles();
     }
 
     /// Refreshes every cached capability report through its feature-specific probe.
@@ -168,6 +195,7 @@ impl ApplicationRuntime {
         for feature_id in feature_ids {
             self.registry.refresh_capability(feature_id)?;
         }
+        self.refresh_quick_toggles();
         Ok(())
     }
 
@@ -177,7 +205,11 @@ impl ApplicationRuntime {
     }
     /// Extracts owned presentation state without exposing live service resources.
     pub fn view_model(&self, warnings: &[ConfigurationWarning]) -> ApplicationViewModel {
-        ApplicationViewModel::new(self.registrations(), warnings)
+        ApplicationViewModel::new(
+            self.registrations(),
+            self.quick_toggles.snapshots(),
+            warnings,
+        )
     }
 
     /// Samples monitor metrics when the feature is running and its interval elapsed.
@@ -216,6 +248,73 @@ impl ApplicationRuntime {
         self.clipboard_history_is_running()
             .then(|| self.clipboard_history.execute(command))
     }
+    /// Returns owned state for every independently capability-gated quick toggle.
+    pub fn quick_toggle_snapshots(&self) -> impl Iterator<Item = &QuickToggleSnapshot> {
+        self.quick_toggles.snapshots()
+    }
+
+    /// Applies a quick-toggle command only while its independent adapter is running.
+    pub fn execute_quick_toggle_command(
+        &mut self,
+        command: QuickToggleCommand,
+    ) -> Option<Result<QuickToggleSnapshot, QuickToggleError>> {
+        if !self.quick_toggle_is_running(command.id) {
+            return None;
+        }
+        let battery_enabled = if command.id == QuickToggleId::BatteryAlerts {
+            match &command.mutation {
+                QuickToggleMutation::SetEnabled(enabled) => Some(*enabled),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let result = self.quick_toggles.execute(command).cloned();
+        match (battery_enabled, result) {
+            (Some(true), Ok(snapshot)) => match self.battery_alerts.start() {
+                Ok(()) => Some(Ok(snapshot)),
+                Err(error) => {
+                    let _ = self.quick_toggles.execute(QuickToggleCommand {
+                        id: QuickToggleId::BatteryAlerts,
+                        mutation: QuickToggleMutation::SetEnabled(false),
+                        confirmation_token: None,
+                    });
+                    Some(Err(error))
+                }
+            },
+            (Some(true), Err(error)) => Some(Err(error)),
+            (Some(false), result) => {
+                self.battery_alerts.stop();
+                Some(result)
+            }
+            (None, result) => Some(result),
+        }
+    }
+
+    fn refresh_quick_toggles(&mut self) {
+        for id in ALL_QUICK_TOGGLES {
+            if self.quick_toggle_is_running(id) {
+                self.quick_toggles.refresh(id);
+                if id == QuickToggleId::BatteryAlerts {
+                    self.quick_toggles
+                        .set_runtime_error(id, self.battery_alerts.last_error());
+                }
+            } else if id == QuickToggleId::BatteryAlerts && self.battery_alerts.is_running() {
+                self.battery_alerts.stop();
+                let _ = self.quick_toggles.execute(QuickToggleCommand {
+                    id,
+                    mutation: QuickToggleMutation::SetEnabled(false),
+                    confirmation_token: None,
+                });
+            }
+        }
+    }
+
+    fn quick_toggle_is_running(&self, id: QuickToggleId) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == id.feature_id() && registration.running)
+    }
 
     fn start_clipboard_history(&mut self) -> Result<(), ClipboardServiceError> {
         let provider = discover_provider().map_err(ClipboardServiceError::Backend)?;
@@ -251,7 +350,7 @@ mod tests {
     use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
         audio::FEATURE_ID as AUDIO_MIXER_ID, clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
-        system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
+        quick_toggles::ALL_QUICK_TOGGLES, system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
     };
     use kestrel_services::{
         audio::{AudioAvailability, AudioCommand},
@@ -268,7 +367,6 @@ mod tests {
             .expect("static capability refreshes");
 
         let registrations = runtime.registrations().collect::<Vec<_>>();
-        assert_eq!(registrations.len(), 6);
         assert!(
             registrations
                 .iter()
@@ -284,17 +382,30 @@ mod tests {
                 .expect("feature remains visible");
             assert!(!registration.running);
         }
+        for id in ALL_QUICK_TOGGLES {
+            assert!(
+                registrations
+                    .iter()
+                    .any(|registration| registration.feature.id == id.feature_id()),
+                "{} remains visible",
+                id.feature_id()
+            );
+        }
         assert!(
             registrations
                 .iter()
                 .any(|registration| registration.feature.id == SYSTEM_MONITOR_ID)
         );
-        assert!(
-            registrations
-                .iter()
-                .filter(|registration| !registration.available)
-                .all(|registration| registration.capability.remediation.is_some())
-        );
+        for registration in registrations
+            .iter()
+            .filter(|registration| !registration.available)
+        {
+            assert!(
+                registration.capability.remediation.is_some(),
+                "{} must explain remediation when unavailable",
+                registration.feature.id
+            );
+        }
     }
 
     #[test]

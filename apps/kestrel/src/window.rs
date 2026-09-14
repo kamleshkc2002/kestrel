@@ -1,7 +1,10 @@
 use adw::prelude::*;
+use async_channel::Sender;
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
-    ApplicationViewModel, CapabilityKindViewModel, FeatureViewModel, RemediationViewModel,
+    ApplicationCommand, ApplicationViewModel, CapabilityKindViewModel, ConfirmationViewModel,
+    FeatureViewModel, QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation,
+    QuickToggleViewModel, RemediationViewModel,
 };
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
@@ -15,10 +18,15 @@ pub struct WindowView {
     content: gtk::ScrolledWindow,
     refresh_button: gtk::Button,
     toasts: adw::ToastOverlay,
+    commands: Sender<ApplicationCommand>,
 }
 
 impl WindowView {
-    pub fn new(application: &adw::Application, view_model: &ApplicationViewModel) -> Self {
+    pub fn new(
+        application: &adw::Application,
+        view_model: &ApplicationViewModel,
+        commands: Sender<ApplicationCommand>,
+    ) -> Self {
         let window = adw::ApplicationWindow::builder()
             .application(application)
             .title("Kestrel")
@@ -49,7 +57,7 @@ impl WindowView {
             .propagate_natural_height(false)
             .vexpand(true)
             .build();
-        content.set_child(Some(&build_page(view_model)));
+        content.set_child(Some(&build_page(view_model, &window, &commands)));
 
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&content));
@@ -64,11 +72,13 @@ impl WindowView {
             content,
             refresh_button,
             toasts,
+            commands,
         }
     }
 
     pub fn set_view_model(&self, view_model: &ApplicationViewModel) {
-        self.content.set_child(Some(&build_page(view_model)));
+        self.content
+            .set_child(Some(&build_page(view_model, &self.window, &self.commands)));
     }
 
     pub fn set_refreshing(&self, refreshing: bool) {
@@ -85,7 +95,11 @@ impl WindowView {
     }
 }
 
-fn build_page(view_model: &ApplicationViewModel) -> adw::Clamp {
+fn build_page(
+    view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::Clamp {
     let page = gtk::Box::new(Orientation::Vertical, 24);
     page.set_margin_top(24);
     page.set_margin_bottom(24);
@@ -109,6 +123,13 @@ fn build_page(view_model: &ApplicationViewModel) -> adw::Clamp {
     if !view_model.warnings.is_empty() {
         page.append(&build_warning_group(view_model));
     }
+    if !view_model.quick_toggles.is_empty() {
+        page.append(&build_quick_toggle_group(
+            &view_model.quick_toggles,
+            window,
+            commands,
+        ));
+    }
 
     for feature in &view_model.features {
         page.append(&build_feature_group(feature));
@@ -119,6 +140,173 @@ fn build_page(view_model: &ApplicationViewModel) -> adw::Clamp {
     clamp.set_tightening_threshold(MINIMUM_WINDOW_WIDTH);
     clamp.set_child(Some(&page));
     clamp
+}
+
+fn build_quick_toggle_group(
+    toggles: &[QuickToggleViewModel],
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Quick toggles")
+        .description(
+            "Each control uses an independent user-session adapter. Requirements and externally changed state remain visible.",
+        )
+        .build();
+
+    for toggle in toggles {
+        let subtitle = match &toggle.error {
+            Some(error) => format!(
+                "{}\nRequirement: {}\nState source: {}\nLast error: {}",
+                toggle.detail, toggle.requirement, toggle.source, error
+            ),
+            None => format!(
+                "{}\nRequirement: {}\nState source: {}",
+                toggle.detail, toggle.requirement, toggle.source
+            ),
+        };
+        let row = adw::ActionRow::builder()
+            .title(toggle.label)
+            .subtitle(subtitle)
+            .subtitle_lines(0)
+            .sensitive(toggle.available)
+            .build();
+
+        match &toggle.control {
+            Some(QuickToggleControlViewModel::Switch {
+                enabled,
+                confirmation,
+            }) => {
+                let control = gtk::Switch::builder()
+                    .active(*enabled)
+                    .valign(Align::Center)
+                    .build();
+                let sender = commands.clone();
+                let window = window.clone();
+                let id = toggle.id;
+                let label = toggle.label;
+                let confirmation = confirmation.clone();
+                control.connect_state_set(move |_, state| {
+                    let command = QuickToggleCommand {
+                        id,
+                        mutation: QuickToggleMutation::SetEnabled(state),
+                        confirmation_token: confirmation
+                            .as_ref()
+                            .map(|confirmation| confirmation.token.clone()),
+                    };
+                    send_with_confirmation(&window, label, confirmation.as_ref(), command, &sender);
+                    gtk::glib::Propagation::Stop
+                });
+                row.add_suffix(&control);
+                row.set_activatable_widget(Some(&control));
+            }
+            Some(QuickToggleControlViewModel::Level { percentage }) => {
+                let controls = gtk::Box::new(Orientation::Horizontal, 6);
+                controls.set_valign(Align::Center);
+                let decrease = gtk::Button::with_label("−");
+                decrease.set_tooltip_text(Some(&format!("Decrease {}", toggle.label)));
+                decrease.set_sensitive(*percentage > 0);
+                let value = gtk::Label::new(Some(&format!("{percentage}%")));
+                value.add_css_class("numeric");
+                let increase = gtk::Button::with_label("+");
+                increase.set_tooltip_text(Some(&format!("Increase {}", toggle.label)));
+                increase.set_sensitive(*percentage < 100);
+
+                let sender = commands.clone();
+                let id = toggle.id;
+                let next = percentage.saturating_sub(10);
+                decrease.connect_clicked(move |_| {
+                    let _ = sender.try_send(ApplicationCommand::QuickToggle(QuickToggleCommand {
+                        id,
+                        mutation: QuickToggleMutation::SetLevel(next),
+                        confirmation_token: None,
+                    }));
+                });
+                let sender = commands.clone();
+                let id = toggle.id;
+                let next = percentage.saturating_add(10).min(100);
+                increase.connect_clicked(move |_| {
+                    let _ = sender.try_send(ApplicationCommand::QuickToggle(QuickToggleCommand {
+                        id,
+                        mutation: QuickToggleMutation::SetLevel(next),
+                        confirmation_token: None,
+                    }));
+                });
+
+                controls.append(&decrease);
+                controls.append(&value);
+                controls.append(&increase);
+                row.add_suffix(&controls);
+            }
+            Some(QuickToggleControlViewModel::Actions(actions)) => {
+                let controls = gtk::Box::new(Orientation::Vertical, 6);
+                controls.set_valign(Align::Center);
+                for action in actions {
+                    let button = gtk::Button::with_label(&action.label);
+                    let sender = commands.clone();
+                    let window = window.clone();
+                    let label = toggle.label;
+                    let confirmation = action.confirmation.clone();
+                    let command = QuickToggleCommand {
+                        id: toggle.id,
+                        mutation: QuickToggleMutation::Activate {
+                            target: action.target.clone(),
+                        },
+                        confirmation_token: Some(confirmation.token.clone()),
+                    };
+                    button.connect_clicked(move |_| {
+                        send_with_confirmation(
+                            &window,
+                            label,
+                            Some(&confirmation),
+                            command.clone(),
+                            &sender,
+                        );
+                    });
+                    controls.append(&button);
+                }
+                row.add_suffix(&controls);
+            }
+            None => {}
+        }
+        let accessible_label = format!(
+            "{}. {} Requirement: {}. State source: {}.",
+            toggle.label, toggle.detail, toggle.requirement, toggle.source
+        );
+        row.update_property(&[Property::Label(&accessible_label)]);
+        group.add(&row);
+    }
+    group
+}
+
+fn send_with_confirmation(
+    window: &adw::ApplicationWindow,
+    label: &str,
+    confirmation: Option<&ConfirmationViewModel>,
+    command: QuickToggleCommand,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let Some(confirmation) = confirmation else {
+        let _ = commands.try_send(ApplicationCommand::QuickToggle(command));
+        return;
+    };
+    let dialog = adw::MessageDialog::builder()
+        .transient_for(window)
+        .heading(format!("Confirm {label}"))
+        .body(&confirmation.scope)
+        .build();
+    dialog.add_responses(&[("cancel", "Cancel"), ("confirm", "Continue")]);
+    dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "confirm" {
+            let _ = commands.try_send(ApplicationCommand::QuickToggle(command.clone()));
+        }
+        dialog.close();
+    });
+    dialog.present();
 }
 
 fn build_warning_group(view_model: &ApplicationViewModel) -> adw::PreferencesGroup {
