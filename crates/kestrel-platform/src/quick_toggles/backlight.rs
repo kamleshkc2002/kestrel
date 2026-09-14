@@ -69,7 +69,10 @@ pub(crate) fn capability(id: QuickToggleId, root: &Path, kind: DeviceKind) -> Ca
                 reason: format!("the brightness control cannot be opened: {error}"),
             },
             format!("{} cannot be controlled.", id.label()),
-        );
+        )
+        .with_remediation(format!(
+            "Inspect the detected backlight device and restore current-user access: {error}"
+        ));
     }
 
     supported(

@@ -396,12 +396,16 @@ mod tests {
                 .iter()
                 .any(|registration| registration.feature.id == SYSTEM_MONITOR_ID)
         );
-        assert!(
-            registrations
-                .iter()
-                .filter(|registration| !registration.available)
-                .all(|registration| registration.capability.remediation.is_some())
-        );
+        for registration in registrations
+            .iter()
+            .filter(|registration| !registration.available)
+        {
+            assert!(
+                registration.capability.remediation.is_some(),
+                "{} must explain remediation when unavailable",
+                registration.feature.id
+            );
+        }
     }
 
     #[test]

@@ -192,6 +192,9 @@ pub(crate) fn wifi_capability() -> CapabilityReport {
                 reason: "NetworkManager reports that no Wi-Fi hardware is enabled".to_owned(),
             },
             "No controllable Wi-Fi radio is available.",
+        )
+        .with_remediation(
+            "Enable the hardware Wi-Fi radio with the device switch or firmware controls.",
         ),
         Err(error) if error.kind == QuickToggleErrorKind::PermissionDenied => permission_denied(
             id,

@@ -128,6 +128,9 @@ pub(crate) fn battery_alerts_capability(sys_root: &Path) -> CapabilityReport {
                     reason: "no system battery is exposed by sysfs".to_owned(),
                 },
                 "Battery alerts are not applicable on this system.",
+            )
+            .with_remediation(
+                "Connect a supported battery exposed through /sys/class/power_supply, or leave battery alerts disabled on batteryless systems.",
             );
         }
         Err(error) => {
@@ -420,8 +423,24 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{empty_trash, observe_trash, trash_confirmation};
+    use super::{battery_alerts_capability, empty_trash, observe_trash, trash_confirmation};
     use crate::quick_toggles::{QuickToggleControl, QuickToggleMutation};
+    use kestrel_core::CapabilityStatus;
+
+    #[test]
+    fn batteryless_system_reports_actionable_remediation() {
+        let directory = TempDir::new().expect("temporary sysfs root");
+        fs::create_dir_all(directory.path().join("class/power_supply"))
+            .expect("power supply class");
+
+        let report = battery_alerts_capability(directory.path());
+
+        assert!(matches!(
+            report.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(report.remediation.is_some());
+    }
 
     #[test]
     fn trash_confirmation_changes_when_scope_changes() {
