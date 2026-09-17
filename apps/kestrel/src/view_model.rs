@@ -1,4 +1,7 @@
-use kestrel_core::{CapabilityStatus, Permission};
+use kestrel_core::{
+    AppearancePreference, ApplicationConfiguration, CapabilityStatus, CostLevel, PanelSection,
+    Permission, ResourceCost,
+};
 use kestrel_platform::quick_toggles::{
     MutationConfirmation, QuickToggleControl, QuickToggleId, ToggleAction,
 };
@@ -15,6 +18,10 @@ pub struct ApplicationViewModel {
     pub features: Vec<FeatureViewModel>,
     pub quick_toggles: Vec<QuickToggleViewModel>,
     pub warnings: Vec<ConfigurationWarningViewModel>,
+    pub appearance: AppearancePreference,
+    pub autostart: bool,
+    pub panel_sections: Vec<PanelSectionViewModel>,
+    pub can_undo: bool,
 }
 
 impl ApplicationViewModel {
@@ -22,12 +29,16 @@ impl ApplicationViewModel {
         registrations: impl Iterator<Item = &'a ServiceRegistration>,
         quick_toggles: impl Iterator<Item = &'a QuickToggleSnapshot>,
         warnings: &[ConfigurationWarning],
+        configuration: &ApplicationConfiguration,
+        can_undo: bool,
     ) -> Self {
         let registrations = registrations.collect::<Vec<_>>();
         Self {
             features: registrations
                 .iter()
-                .map(|registration| FeatureViewModel::from(*registration))
+                .map(|registration| {
+                    FeatureViewModel::from_registration(registration, configuration)
+                })
                 .collect(),
             quick_toggles: quick_toggles
                 .map(|snapshot| {
@@ -42,7 +53,69 @@ impl ApplicationViewModel {
                 .iter()
                 .map(ConfigurationWarningViewModel::from)
                 .collect(),
+            appearance: configuration.ui.appearance,
+            autostart: configuration.startup.autostart,
+            panel_sections: configuration
+                .ui
+                .panel_sections
+                .iter()
+                .map(PanelSectionViewModel::from)
+                .collect(),
+            can_undo,
         }
+    }
+}
+
+/// Presentation state for configured panel placement and visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelSectionViewModel {
+    pub section: PanelSection,
+    pub visible: bool,
+}
+
+impl From<&kestrel_core::PanelSectionConfiguration> for PanelSectionViewModel {
+    fn from(configuration: &kestrel_core::PanelSectionConfiguration) -> Self {
+        Self {
+            section: configuration.section,
+            visible: configuration.visible,
+        }
+    }
+}
+
+/// Conservative resource-use labels disclosed by the feature hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceCostViewModel {
+    pub idle: CostLevel,
+    pub interaction: CostLevel,
+    pub polling: CostLevel,
+}
+
+impl From<ResourceCost> for ResourceCostViewModel {
+    fn from(cost: ResourceCost) -> Self {
+        Self {
+            idle: cost.idle,
+            interaction: cost.interaction,
+            polling: cost.polling,
+        }
+    }
+}
+
+impl ResourceCostViewModel {
+    pub fn summary(self) -> String {
+        format!(
+            "Idle: {}; interaction: {}; polling: {}",
+            cost_label(self.idle),
+            cost_label(self.interaction),
+            cost_label(self.polling)
+        )
+    }
+}
+
+fn cost_label(cost: CostLevel) -> &'static str {
+    match cost {
+        CostLevel::None => "none",
+        CostLevel::Low => "low",
+        CostLevel::Moderate => "moderate",
     }
 }
 
@@ -185,15 +258,30 @@ fn remediation_title(status: &CapabilityStatus) -> &'static str {
 pub struct FeatureViewModel {
     pub id: String,
     pub label: String,
+    pub registered: bool,
+    pub enabled: bool,
+    pub available: bool,
+    pub running: bool,
+    pub configurable: bool,
+    pub cost: ResourceCostViewModel,
     pub lifecycle: FeatureLifecycleViewModel,
     pub capability: CapabilityViewModel,
 }
 
-impl From<&ServiceRegistration> for FeatureViewModel {
-    fn from(registration: &ServiceRegistration) -> Self {
+impl FeatureViewModel {
+    fn from_registration(
+        registration: &ServiceRegistration,
+        _configuration: &ApplicationConfiguration,
+    ) -> Self {
         Self {
             id: registration.feature.id.to_string(),
             label: registration.feature.label.to_string(),
+            registered: true,
+            enabled: registration.enabled,
+            available: registration.available,
+            running: registration.running,
+            configurable: registration.feature.configurable,
+            cost: registration.feature.cost.into(),
             lifecycle: registration.lifecycle().into(),
             capability: CapabilityViewModel {
                 status: CapabilityStatusViewModel::from(&registration.capability.status),
@@ -207,6 +295,12 @@ impl From<&ServiceRegistration> for FeatureViewModel {
                 }),
             },
         }
+    }
+}
+
+impl From<&ServiceRegistration> for FeatureViewModel {
+    fn from(registration: &ServiceRegistration) -> Self {
+        Self::from_registration(registration, &ApplicationConfiguration::default())
     }
 }
 
@@ -333,7 +427,9 @@ impl From<&ConfigurationWarning> for ConfigurationWarningViewModel {
 
 #[cfg(test)]
 mod tests {
-    use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec, Permission};
+    use kestrel_core::{
+        ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec, Permission,
+    };
     use kestrel_platform::quick_toggles::QuickToggleId;
     use kestrel_services::{
         ServiceRegistration,
@@ -361,6 +457,9 @@ mod tests {
         let view_model = FeatureViewModel::from(&registration);
 
         assert_eq!(view_model.id, "test.feature");
+        assert!(!view_model.enabled);
+        assert!(view_model.registered);
+        assert!(view_model.configurable);
         assert_eq!(view_model.lifecycle, FeatureLifecycleViewModel::Registered);
         assert_eq!(view_model.lifecycle.label(), "Disabled");
         assert_eq!(
@@ -466,12 +565,14 @@ mod tests {
             error: None,
         };
 
+        let configuration = ApplicationConfiguration::default();
         let view_model = ApplicationViewModel::new(
             std::iter::once(&registration),
             std::iter::once(&snapshot),
             &[],
+            &configuration,
+            false,
         );
-
         assert!(!view_model.quick_toggles[0].available);
         assert_eq!(
             view_model.quick_toggles[0].detail,
@@ -486,11 +587,52 @@ mod tests {
             reason: "Invalid volume preference.".to_string(),
         }];
 
-        let view_model =
-            ApplicationViewModel::new(std::iter::empty(), std::iter::empty(), &warnings);
+        let configuration = ApplicationConfiguration::default();
+        let view_model = ApplicationViewModel::new(
+            std::iter::empty(),
+            std::iter::empty(),
+            &warnings,
+            &configuration,
+            false,
+        );
 
         assert!(view_model.features.is_empty());
         assert_eq!(view_model.warnings[0].feature_id, "audio.mixer");
         assert_eq!(view_model.warnings[0].message, "Invalid volume preference.");
+    }
+
+    #[test]
+    fn exposes_presentation_preferences_and_reversible_state() {
+        use kestrel_core::{AppearancePreference, PanelSection, PanelSectionConfiguration};
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.ui.appearance = AppearancePreference::Dark;
+        configuration.startup.autostart = true;
+        configuration.ui.panel_sections = vec![
+            PanelSectionConfiguration {
+                section: PanelSection::FeatureHub,
+                visible: false,
+            },
+            PanelSectionConfiguration {
+                section: PanelSection::QuickControls,
+                visible: true,
+            },
+        ];
+        let view_model = ApplicationViewModel::new(
+            std::iter::empty(),
+            std::iter::empty(),
+            &[],
+            &configuration,
+            true,
+        );
+
+        assert_eq!(view_model.appearance, AppearancePreference::Dark);
+        assert!(view_model.autostart);
+        assert!(view_model.can_undo);
+        assert_eq!(
+            view_model.panel_sections[0].section,
+            PanelSection::FeatureHub
+        );
+        assert!(!view_model.panel_sections[0].visible);
     }
 }

@@ -63,6 +63,19 @@ Per-feature enablement is keyed by stable feature IDs. Invalid feature settings
 are ignored individually and reported in the normal window, so they do not
 prevent other features or the command surface from starting.
 
+The Feature Hub shows registered, enabled, available, and running state
+separately, together with capability remediation and conservative idle,
+interaction, and polling costs. Essentials, Balanced, and Everything presets
+change feature enablement as one reversible operation without discarding
+pre-existing per-feature choices.
+
+Settings search covers both controls and features. Quick Controls and the
+Feature Hub can be hidden or reordered independently; appearance and XDG
+autostart are separate preferences. Import validates each portable setting
+independently, while export contains only typed application-owned preferences,
+never clipboard content, runtime snapshots, credentials, or resolved executable
+paths.
+
 ### Desktop integration
 
 Kestrel always provides a normal application window. Its optional
