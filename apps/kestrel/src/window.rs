@@ -2,24 +2,24 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
-    ApplicationCommand, ApplicationViewModel, ConfirmationViewModel, FeatureViewModel,
-    PanelMoveDirection, QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation,
-    QuickToggleViewModel,
+    AlertKind, ApplicationCommand, ApplicationViewModel, ConfirmationViewModel, FeatureViewModel,
+    MonitorViewModel, PanelMoveDirection, PanelSection, QuickToggleCommand,
+    QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel,
 };
-use kestrel_core::{AppearancePreference, PanelSection};
+use kestrel_core::AppearancePreference;
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
 const DEFAULT_WINDOW_WIDTH: i32 = 760;
 const DEFAULT_WINDOW_HEIGHT: i32 = 640;
 const CONTENT_MAXIMUM_WIDTH: i32 = 760;
-
 pub struct WindowView {
     pub window: adw::ApplicationWindow,
     content: gtk::ScrolledWindow,
     refresh_button: gtk::Button,
     toasts: adw::ToastOverlay,
     commands: Sender<ApplicationCommand>,
+    monitor_container: std::cell::RefCell<Option<gtk::Box>>,
 }
 
 impl WindowView {
@@ -58,7 +58,8 @@ impl WindowView {
             .propagate_natural_height(false)
             .vexpand(true)
             .build();
-        content.set_child(Some(&build_page(view_model, &window, &commands)));
+        let page = build_page(view_model, &window, &commands);
+        content.set_child(Some(&page.clamp));
 
         let toasts = adw::ToastOverlay::new();
         toasts.set_child(Some(&content));
@@ -74,12 +75,24 @@ impl WindowView {
             refresh_button,
             toasts,
             commands,
+            monitor_container: std::cell::RefCell::new(page.monitor_container),
         }
     }
 
     pub fn set_view_model(&self, view_model: &ApplicationViewModel) {
-        self.content
-            .set_child(Some(&build_page(view_model, &self.window, &self.commands)));
+        let page = build_page(view_model, &self.window, &self.commands);
+        self.content.set_child(Some(&page.clamp));
+        *self.monitor_container.borrow_mut() = page.monitor_container;
+    }
+
+    pub fn set_monitor(&self, monitor: &MonitorViewModel) {
+        let Some(container) = self.monitor_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_monitor_group(monitor));
     }
 
     pub fn set_refreshing(&self, refreshing: bool) {
@@ -96,11 +109,16 @@ impl WindowView {
     }
 }
 
+struct PageBuild {
+    clamp: adw::Clamp,
+    monitor_container: Option<gtk::Box>,
+}
+
 fn build_page(
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
-) -> adw::Clamp {
+) -> PageBuild {
     let page = gtk::Box::new(Orientation::Vertical, 24);
     page.set_margin_top(24);
     page.set_margin_bottom(24);
@@ -129,7 +147,7 @@ fn build_page(
     if !view_model.warnings.is_empty() {
         page.append(&build_warning_group(view_model));
     }
-
+    let mut monitor_container = None;
     for panel in &view_model.panel_sections {
         if !panel.visible {
             continue;
@@ -149,6 +167,12 @@ fn build_page(
                     &search,
                 ));
             }
+            PanelSection::Monitoring => {
+                let container = gtk::Box::new(Orientation::Vertical, 0);
+                container.append(&build_monitor_group(&view_model.monitor));
+                page.append(&container);
+                monitor_container = Some(container);
+            }
             PanelSection::QuickControls => {}
         }
     }
@@ -157,7 +181,10 @@ fn build_page(
     clamp.set_maximum_size(CONTENT_MAXIMUM_WIDTH);
     clamp.set_tightening_threshold(MINIMUM_WINDOW_WIDTH);
     clamp.set_child(Some(&page));
-    clamp
+    PageBuild {
+        clamp,
+        monitor_container,
+    }
 }
 
 fn build_settings_group(
@@ -260,7 +287,7 @@ fn build_settings_group(
     let panel_group = adw::PreferencesGroup::builder()
         .title("Panel sections")
         .description(
-            "Choose visibility and keyboard-accessible order for Quick Controls and Feature Hub.",
+            "Choose visibility and keyboard-accessible order for Quick Controls, Feature Hub, and Monitoring.",
         )
         .build();
     for (index, panel) in view_model.panel_sections.iter().enumerate() {
@@ -326,6 +353,149 @@ fn build_settings_group(
     }
     group.add(&panel_group);
 
+    let readout_group = adw::PreferencesGroup::builder()
+        .title("Monitoring readouts")
+        .description("Choose visible readouts and their order in the Monitoring panel.")
+        .build();
+    for setting in &view_model.monitor.readout_settings {
+        let row = adw::ActionRow::builder()
+            .title(setting.label)
+            .subtitle(if setting.visible {
+                "Show this readout and move it in the configured order."
+            } else {
+                "Hidden; show it to include it in the Monitoring panel."
+            })
+            .build();
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let visibility = gtk::Switch::builder()
+            .active(setting.visible)
+            .valign(Align::Center)
+            .build();
+        let visibility_label = format!("Show {} monitoring readout", setting.label);
+        visibility.update_property(&[
+            Property::Label(&visibility_label),
+            Property::Description(&visibility_label),
+        ]);
+        visibility.set_tooltip_text(Some(&visibility_label));
+        let sender = commands.clone();
+        let readout = setting.readout;
+        visibility.connect_state_set(move |_, visible| {
+            let _ =
+                sender.try_send(ApplicationCommand::SetMonitorReadoutVisible { readout, visible });
+            gtk::glib::Propagation::Proceed
+        });
+        let up = gtk::Button::builder().icon_name("go-up-symbolic").build();
+        let up_label = format!("Move {} readout up", setting.label);
+        up.update_property(&[Property::Label(&up_label), Property::Description(&up_label)]);
+        up.set_tooltip_text(Some(&up_label));
+        up.set_sensitive(setting.can_move_up);
+        let sender = commands.clone();
+        up.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::MoveMonitorReadout {
+                readout,
+                direction: PanelMoveDirection::Up,
+            });
+        });
+        let down = gtk::Button::builder().icon_name("go-down-symbolic").build();
+        let down_label = format!("Move {} readout down", setting.label);
+        down.update_property(&[
+            Property::Label(&down_label),
+            Property::Description(&down_label),
+        ]);
+        down.set_tooltip_text(Some(&down_label));
+        down.set_sensitive(setting.can_move_down);
+        let sender = commands.clone();
+        down.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::MoveMonitorReadout {
+                readout,
+                direction: PanelMoveDirection::Down,
+            });
+        });
+        controls.append(&visibility);
+        controls.append(&up);
+        controls.append(&down);
+        row.add_suffix(&controls);
+        row.set_activatable_widget(Some(&visibility));
+        row.update_property(&[Property::Label(&format!(
+            "Monitoring readout {}",
+            setting.label
+        ))]);
+        readout_group.add(&row);
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("monitoring readouts {} order visibility", setting.label),
+        ));
+    }
+    group.add(&readout_group);
+
+    let alert_group = adw::PreferencesGroup::builder()
+        .title("Monitoring alerts")
+        .description("Enable sustained threshold alerts and choose each threshold.")
+        .build();
+    for rule in &view_model.monitor.alert_rules {
+        let row = adw::ActionRow::builder()
+            .title(format!("{} alerts", rule.label))
+            .subtitle(&rule.summary)
+            .build();
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let enabled = gtk::Switch::builder()
+            .active(rule.enabled)
+            .valign(Align::Center)
+            .build();
+        let enabled_label = format!("Enable {} alerts", rule.label);
+        enabled.update_property(&[
+            Property::Label(&enabled_label),
+            Property::Description(&enabled_label),
+        ]);
+        enabled.set_tooltip_text(Some(&enabled_label));
+        let sender = commands.clone();
+        let kind = rule.kind;
+        enabled.connect_state_set(move |_, value| {
+            let _ = sender.try_send(ApplicationCommand::SetAlertEnabled {
+                kind,
+                enabled: value,
+            });
+            gtk::glib::Propagation::Proceed
+        });
+        let maximum = if kind == AlertKind::Temperature {
+            150.0
+        } else {
+            100.0
+        };
+        let spin = adw::SpinRow::with_range(1.0, maximum, 1.0);
+        spin.set_value(rule.threshold);
+        let unit_label = gtk::Label::new(Some(rule.unit));
+        unit_label.set_valign(Align::Center);
+        spin.add_suffix(&unit_label);
+        spin.set_numeric(true);
+        spin.update_property(&[
+            Property::Label(&format!("{} alert threshold", rule.label)),
+            Property::Description(&rule.summary),
+        ]);
+        spin.set_tooltip_text(Some(&rule.summary));
+        let sender = commands.clone();
+        spin.connect_value_notify(move |spin| {
+            let _ = sender.try_send(ApplicationCommand::SetAlertThreshold {
+                kind,
+                threshold: spin.value(),
+            });
+        });
+        controls.append(&enabled);
+        row.add_suffix(&controls);
+        row.set_activatable_widget(Some(&enabled));
+        alert_group.add(&row);
+        alert_group.add(&spin);
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("monitoring alerts {} threshold", rule.label),
+        ));
+        filter_rows.push((
+            spin.clone().upcast(),
+            format!("monitoring alerts {} threshold", rule.label),
+        ));
+    }
+    group.add(&alert_group);
+
     let io_row = adw::ActionRow::builder()
         .title("Configuration files")
         .subtitle("Import or export configuration. Kestrel only emits the selected path command.")
@@ -358,6 +528,7 @@ fn panel_title(section: PanelSection) -> &'static str {
     match section {
         PanelSection::QuickControls => "Quick Controls",
         PanelSection::FeatureHub => "Feature Hub",
+        PanelSection::Monitoring => "Monitoring",
     }
 }
 
@@ -402,6 +573,80 @@ fn connect_file_chooser(
         });
         chooser.show();
     });
+}
+
+fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Monitoring")
+        .description(&monitor.status)
+        .build();
+    if monitor.readouts.is_empty() {
+        let row = adw::ActionRow::builder()
+            .title("No monitoring readouts configured")
+            .subtitle("Enable at least one readout in Settings → Monitoring readouts.")
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label("No monitoring readouts are configured")]);
+        group.add(&row);
+    } else {
+        for readout in &monitor.readouts {
+            let row = adw::ActionRow::builder()
+                .title(readout.label)
+                .subtitle(&readout.detail)
+                .subtitle_lines(0)
+                .sensitive(readout.value.is_some())
+                .build();
+            if let Some(value) = &readout.value {
+                let value_label = gtk::Label::new(Some(value));
+                value_label.add_css_class("numeric");
+                value_label.set_valign(Align::Center);
+                row.add_suffix(&value_label);
+            }
+            row.update_property(&[Property::Label(&format!(
+                "{}: {}",
+                readout.label,
+                readout.value.as_deref().unwrap_or("Unavailable")
+            ))]);
+            group.add(&row);
+        }
+    }
+    if !monitor.alerts.is_empty() || !monitor.delivery_failures.is_empty() {
+        let heading = adw::ActionRow::builder()
+            .title("Active alerts")
+            .subtitle("Sustained threshold alerts currently active or with delivery failures.")
+            .subtitle_lines(0)
+            .build();
+        heading.update_property(&[Property::Label("Active alerts")]);
+        group.add(&heading);
+        for alert in &monitor.alerts {
+            let row = adw::ActionRow::builder()
+                .title(alert.label)
+                .subtitle(&alert.message)
+                .subtitle_lines(0)
+                .build();
+            row.update_property(&[Property::Label(&format!(
+                "{} alert: {}",
+                alert.label, alert.message
+            ))]);
+            group.add(&row);
+        }
+        for (kind, message) in &monitor.delivery_failures {
+            let row = adw::ActionRow::builder()
+                .title(format!("{} alert delivery failed", kind.label()))
+                .subtitle(message)
+                .subtitle_lines(0)
+                .sensitive(false)
+                .build();
+            row.update_property(&[Property::Label(&format!(
+                "{} alert delivery failed: {}",
+                kind.label(),
+                message
+            ))]);
+            group.add(&row);
+        }
+    }
+
+    group
 }
 
 fn build_feature_hub_group(

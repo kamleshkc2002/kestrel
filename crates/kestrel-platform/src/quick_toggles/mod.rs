@@ -199,17 +199,6 @@ impl fmt::Display for QuickToggleError {
 }
 
 impl std::error::Error for QuickToggleError {}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatteryReading {
-    pub name: String,
-    pub capacity: Option<u8>,
-    pub status: Option<String>,
-}
-
-pub trait BatteryAlertSource: Send + Sync + 'static {
-    fn battery_readings(&self) -> Result<Vec<BatteryReading>, QuickToggleError>;
-    fn notify_low_battery(&self, summary: &str, body: &str) -> Result<(), QuickToggleError>;
-}
 
 pub trait QuickToggleBackend: Send {
     fn capability(&self, id: QuickToggleId) -> CapabilityReport;
@@ -291,16 +280,6 @@ impl LinuxQuickToggleBackend {
             }
             _ => Ok(()),
         }
-    }
-}
-
-impl BatteryAlertSource for LinuxQuickToggleBackend {
-    fn battery_readings(&self) -> Result<Vec<BatteryReading>, QuickToggleError> {
-        storage::batteries(&self.sys_root)
-    }
-
-    fn notify_low_battery(&self, summary: &str, body: &str) -> Result<(), QuickToggleError> {
-        storage::notify_low_battery(summary, body)
     }
 }
 

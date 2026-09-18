@@ -813,6 +813,7 @@ dependencies = [
  "arboard",
  "gio",
  "kestrel-core",
+ "libc",
  "libpulse-binding",
  "tempfile",
  "wl-clipboard-rs",

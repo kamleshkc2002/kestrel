@@ -6,23 +6,30 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
 use kestrel::{
-    AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
-    ConfigurationWarning, FeaturePreset, LoadedConfiguration, PanelMoveDirection, PanelSection,
-    StatusNotifierIntegration, configuration_path, disable as disable_autostart,
-    enable as enable_autostart, export_file, import_file, load, save,
+    AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
+    ConfigurationWarning, FeaturePreset, LoadedConfiguration, MonitorReadout, MonitorViewModel,
+    PanelMoveDirection, PanelSection, StatusNotifierIntegration, configuration_path,
+    disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
 };
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
 };
+use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
+use kestrel_services::alerts::notification_text;
 
 use window::WindowView;
 
+const MONITOR_TICK_INTERVAL: Duration = Duration::from_millis(250);
+
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
+/// `None` means the tick produced no new snapshot, so the window is left untouched.
+type MonitorResult = Option<MonitorViewModel>;
 
 type SharedState = Arc<Mutex<ControllerState>>;
 
@@ -41,6 +48,48 @@ impl ControllerState {
             self.preset_snapshot.is_some(),
         )
     }
+}
+
+/// Samples the monitor, delivers alert notifications, and reports owned monitoring
+/// presentation. The state mutex is held only for the sample and for recording
+/// delivery results, never across the blocking session-bus notification call.
+fn run_monitor_tick(
+    state: &SharedState,
+    notifier: &dyn AlertNotifier,
+    observed_at: Duration,
+) -> MonitorResult {
+    let (updated, alerts) = {
+        let mut guard = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tick = guard.runtime.sample_monitor(observed_at);
+        (
+            tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
+            tick.alerts,
+        )
+    };
+    if !updated {
+        return None;
+    }
+
+    let deliveries = alerts
+        .iter()
+        .map(|event| {
+            let (summary, body) = notification_text(event);
+            let result = notifier
+                .notify(&AlertNotification { summary, body })
+                .map_err(|error| error.to_string());
+            (event.kind(), result)
+        })
+        .collect::<Vec<_>>();
+
+    let mut guard = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (kind, result) in deliveries {
+        guard.runtime.record_alert_delivery(kind, result);
+    }
+    Some(guard.runtime.monitor_view_model(&guard.configuration))
 }
 
 enum ControllerOperation {
@@ -62,8 +111,33 @@ enum ControllerOperation {
         section: PanelSection,
         direction: PanelMoveDirection,
     },
+    SetMonitorReadoutVisible {
+        readout: MonitorReadout,
+        visible: bool,
+    },
+    MoveMonitorReadout {
+        readout: MonitorReadout,
+        direction: PanelMoveDirection,
+    },
+    SetAlertEnabled {
+        kind: AlertKind,
+        enabled: bool,
+    },
+    SetAlertThreshold {
+        kind: AlertKind,
+        threshold: f64,
+    },
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
+}
+
+/// Channels, paths, and adapters that the application loop hands to the controller.
+struct ControllerContext {
+    config_path: Option<PathBuf>,
+    refresh_results: Sender<RefreshResult>,
+    monitor_results: Sender<MonitorResult>,
+    commands: Sender<ApplicationCommand>,
+    notifier: Arc<dyn AlertNotifier>,
 }
 
 struct ApplicationController {
@@ -71,19 +145,30 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
     refreshing: Cell<bool>,
+    monitoring: Cell<bool>,
+    /// Mirrors the monitor registration so a disabled feature never spawns tick workers.
+    monitor_running: Cell<bool>,
+    monitor_started_at: Instant,
+    notifier: Arc<dyn AlertNotifier>,
     refresh_results: Sender<RefreshResult>,
+    monitor_results: Sender<MonitorResult>,
     commands: Sender<ApplicationCommand>,
 }
-
 impl ApplicationController {
     fn new(
         runtime: ApplicationRuntime,
         configuration: ApplicationConfiguration,
         warnings: Vec<ConfigurationWarning>,
-        config_path: Option<PathBuf>,
-        refresh_results: Sender<RefreshResult>,
-        commands: Sender<ApplicationCommand>,
+        context: ControllerContext,
     ) -> Rc<Self> {
+        let ControllerContext {
+            config_path,
+            refresh_results,
+            monitor_results,
+            commands,
+            notifier,
+        } = context;
+        let monitor_running = runtime.monitor_is_running();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
                 runtime,
@@ -94,7 +179,12 @@ impl ApplicationController {
             config_path,
             window: RefCell::new(None),
             refreshing: Cell::new(false),
+            monitoring: Cell::new(false),
+            monitor_running: Cell::new(monitor_running),
+            monitor_started_at: Instant::now(),
+            notifier,
             refresh_results,
+            monitor_results,
             commands,
         })
     }
@@ -174,13 +264,45 @@ impl ApplicationController {
         match result {
             Ok((view_model, message)) => {
                 apply_color_scheme(view_model.appearance);
+                self.monitor_running.set(view_model.monitor.running);
                 view.set_view_model(&view_model);
                 view.show_message(&message);
             }
             Err(message) => {
-                view.set_view_model(&self.current_view_model());
+                let view_model = self.current_view_model();
+                self.monitor_running.set(view_model.monitor.running);
+                view.set_view_model(&view_model);
                 view.show_message(&message);
             }
+        }
+    }
+    fn request_monitor_sample(&self) {
+        if self.refreshing.get() || !self.monitor_running.get() || self.monitoring.replace(true) {
+            return;
+        }
+        let state = Arc::clone(&self.state);
+        let notifier = Arc::clone(&self.notifier);
+        let results = self.monitor_results.clone();
+        let observed_at = self.monitor_started_at.elapsed();
+        let worker = thread::Builder::new()
+            .name("kestrel-monitor-sample".to_owned())
+            .spawn(move || {
+                let view_model = run_monitor_tick(&state, notifier.as_ref(), observed_at);
+                let _ = results.send_blocking(view_model);
+            });
+        if worker.is_err() {
+            self.monitoring.set(false);
+        }
+    }
+
+    fn finish_monitor_sample(&self, monitor: Option<MonitorViewModel>) {
+        self.monitoring.set(false);
+        let Some(monitor) = monitor else {
+            return;
+        };
+        self.monitor_running.set(monitor.running);
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_monitor(&monitor);
         }
     }
 
@@ -326,6 +448,64 @@ impl ControllerState {
 
                 "Panel order updated".to_owned()
             }
+            ControllerOperation::SetMonitorReadoutVisible { readout, visible } => {
+                let mut candidate = self.configuration.clone();
+                if visible {
+                    if !candidate.monitoring.readouts.contains(&readout) {
+                        candidate.monitoring.readouts.push(readout);
+                    }
+                } else {
+                    candidate
+                        .monitoring
+                        .readouts
+                        .retain(|entry| *entry != readout);
+                }
+                self.commit_monitoring_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "{} readout {}",
+                        readout.label(),
+                        if visible { "shown" } else { "hidden" }
+                    ),
+                )?
+            }
+            ControllerOperation::MoveMonitorReadout { readout, direction } => {
+                let mut candidate = self.configuration.clone();
+                if !move_monitor_readout(&mut candidate.monitoring.readouts, readout, direction) {
+                    return Ok((
+                        self.view_model(),
+                        format!("{} readout is already at that boundary", readout.label()),
+                    ));
+                }
+                self.commit_monitoring_configuration(
+                    candidate,
+                    config_path,
+                    "Monitor readout order updated".to_owned(),
+                )?
+            }
+            ControllerOperation::SetAlertEnabled { kind, enabled } => {
+                let mut candidate = self.configuration.clone();
+                candidate.monitoring.alerts.rule_mut(kind).enabled = enabled;
+                self.commit_monitoring_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "{} alerts {}",
+                        kind.label(),
+                        if enabled { "enabled" } else { "disabled" }
+                    ),
+                )?
+            }
+            ControllerOperation::SetAlertThreshold { kind, threshold } => {
+                let mut candidate = self.configuration.clone();
+                candidate.monitoring.alerts.rule_mut(kind).threshold = threshold;
+                self.commit_monitoring_configuration(
+                    candidate,
+                    config_path,
+                    format!("{} alert threshold updated", kind.label()),
+                )?
+            }
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -367,6 +547,29 @@ impl ControllerState {
             }
         };
         Ok((self.view_model(), message))
+    }
+    fn commit_monitoring_configuration(
+        &mut self,
+        candidate: ApplicationConfiguration,
+        config_path: Option<&Path>,
+        message: String,
+    ) -> Result<String, String> {
+        candidate
+            .validate()
+            .map_err(|error| format!("Invalid monitoring configuration: {error:?}"))?;
+        let old = self.configuration.clone();
+        self.runtime
+            .apply_configuration(&candidate)
+            .map_err(|error| {
+                self.restore_configuration(old.clone());
+                format!("Could not apply monitoring configuration: {error:?}")
+            })?;
+        if let Err(error) = persist(config_path, &candidate) {
+            self.restore_configuration(old);
+            return Err(format!("Monitoring change was not saved: {error}"));
+        }
+        self.configuration = candidate;
+        Ok(message)
     }
 
     fn restore_configuration(&mut self, configuration: ApplicationConfiguration) {
@@ -426,11 +629,28 @@ fn move_panel_section(
     sections.swap(index, target);
     true
 }
+fn move_monitor_readout(
+    readouts: &mut [MonitorReadout],
+    readout: MonitorReadout,
+    direction: PanelMoveDirection,
+) -> bool {
+    let Some(index) = readouts.iter().position(|entry| *entry == readout) else {
+        return false;
+    };
+    let target = match direction {
+        PanelMoveDirection::Up => index.checked_sub(1),
+        PanelMoveDirection::Down => (index + 1 < readouts.len()).then_some(index + 1),
+    };
+    let Some(target) = target else { return false };
+    readouts.swap(index, target);
+    true
+}
 
 fn panel_label(section: PanelSection) -> &'static str {
     match section {
         PanelSection::QuickControls => "Quick Controls",
         PanelSection::FeatureHub => "Feature Hub",
+        PanelSection::Monitoring => "Monitoring",
     }
 }
 
@@ -508,17 +728,31 @@ fn main() {
         .expect("built-in capability probes are internally consistent");
 
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
+    let (monitor_results, monitor_receiver) = async_channel::unbounded();
+    let notifier: Arc<dyn AlertNotifier> = Arc::new(DesktopNotifier::new());
     let controller = ApplicationController::new(
         runtime,
         loaded.configuration,
         loaded.warnings,
-        config_path,
-        refresh_results,
-        commands.clone(),
+        ControllerContext {
+            config_path,
+            refresh_results,
+            monitor_results,
+            commands: commands.clone(),
+            notifier,
+        },
     );
     install_command_actions(&application, commands);
     dispatch_commands(&application, &controller, command_receiver);
     dispatch_refresh_results(&controller, refresh_receiver);
+    dispatch_monitor_results(&controller, monitor_receiver);
+    let weak_monitor_controller = Rc::downgrade(&controller);
+    glib::timeout_add_local(MONITOR_TICK_INTERVAL, move || {
+        if let Some(controller) = weak_monitor_controller.upgrade() {
+            controller.request_monitor_sample();
+        }
+        glib::ControlFlow::Continue
+    });
 
     let weak_controller = Rc::downgrade(&controller);
     application.connect_startup(move |_| {
@@ -622,6 +856,26 @@ fn dispatch_commands(
                         ControllerOperation::MovePanelSection { section, direction },
                         "kestrel-panel-movement",
                     ),
+                ApplicationCommand::SetMonitorReadoutVisible { readout, visible } => controller
+                    .request_operation(
+                        ControllerOperation::SetMonitorReadoutVisible { readout, visible },
+                        "kestrel-monitor-readout-visibility",
+                    ),
+                ApplicationCommand::MoveMonitorReadout { readout, direction } => controller
+                    .request_operation(
+                        ControllerOperation::MoveMonitorReadout { readout, direction },
+                        "kestrel-monitor-readout-movement",
+                    ),
+                ApplicationCommand::SetAlertEnabled { kind, enabled } => controller
+                    .request_operation(
+                        ControllerOperation::SetAlertEnabled { kind, enabled },
+                        "kestrel-alert-enabled",
+                    ),
+                ApplicationCommand::SetAlertThreshold { kind, threshold } => controller
+                    .request_operation(
+                        ControllerOperation::SetAlertThreshold { kind, threshold },
+                        "kestrel-alert-threshold",
+                    ),
                 ApplicationCommand::ImportConfiguration(path) => controller.request_operation(
                     ControllerOperation::ImportConfiguration(path),
                     "kestrel-configuration-import",
@@ -650,11 +904,25 @@ fn dispatch_refresh_results(
         }
     });
 }
+fn dispatch_monitor_results(
+    controller: &Rc<ApplicationController>,
+    receiver: Receiver<MonitorResult>,
+) {
+    let controller = Rc::downgrade(controller);
+    glib::spawn_future_local(async move {
+        while let Ok(monitor) = receiver.recv().await {
+            let Some(controller) = controller.upgrade() else {
+                break;
+            };
+            controller.finish_monitor_sample(monitor);
+        }
+    });
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{load_startup_configuration, move_panel_section, persist};
-    use kestrel::PanelMoveDirection;
+    use super::{load_startup_configuration, move_monitor_readout, move_panel_section, persist};
+    use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, PanelSection, PanelSectionConfiguration};
 
     #[test]
@@ -684,6 +952,26 @@ mod tests {
         assert!(!move_panel_section(
             &mut sections,
             PanelSection::QuickControls,
+            PanelMoveDirection::Down
+        ));
+    }
+    #[test]
+    fn monitor_readout_movement_is_bounded_and_deterministic() {
+        let mut readouts = vec![MonitorReadout::Cpu, MonitorReadout::Memory];
+        assert!(!move_monitor_readout(
+            &mut readouts,
+            MonitorReadout::Cpu,
+            PanelMoveDirection::Up
+        ));
+        assert!(move_monitor_readout(
+            &mut readouts,
+            MonitorReadout::Cpu,
+            PanelMoveDirection::Down
+        ));
+        assert_eq!(readouts, vec![MonitorReadout::Memory, MonitorReadout::Cpu]);
+        assert!(!move_monitor_readout(
+            &mut readouts,
+            MonitorReadout::Cpu,
             PanelMoveDirection::Down
         ));
     }
@@ -720,5 +1008,82 @@ mod tests {
         );
 
         std::fs::remove_file(path).expect("invalid fixture can be removed");
+    }
+
+    /// A disabled monitor feature must not acquire sampling resources: no worker thread
+    /// is spawned and no result is published, so the acceptance criterion "uninstalled or
+    /// disabled features acquire no runtime resources" is directly observable here. The
+    /// enabled counterpart proves the same path still samples.
+    #[test]
+    fn monitor_ticks_are_inert_while_the_feature_is_disabled() {
+        use super::{ApplicationController, ControllerContext, MonitorResult};
+        use async_channel::Sender;
+        use kestrel::ApplicationRuntime;
+        use kestrel_platform::notifications::{
+            AlertNotification, AlertNotifier, NotificationError,
+        };
+        use kestrel_platform::system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID;
+        use std::rc::Rc;
+        use std::sync::Arc;
+
+        struct SilentNotifier;
+
+        impl AlertNotifier for SilentNotifier {
+            fn notify(&self, _: &AlertNotification) -> Result<(), NotificationError> {
+                Ok(())
+            }
+        }
+
+        fn controller_for(
+            configuration: &ApplicationConfiguration,
+            monitor_results: Sender<MonitorResult>,
+        ) -> Rc<ApplicationController> {
+            let mut runtime =
+                ApplicationRuntime::new(configuration).expect("built-in features have valid IDs");
+            runtime.start();
+            let (commands, _command_receiver) = async_channel::unbounded();
+            let (refresh_results, _refresh_receiver) = async_channel::unbounded();
+            ApplicationController::new(
+                runtime,
+                configuration.clone(),
+                Vec::new(),
+                ControllerContext {
+                    config_path: None,
+                    refresh_results,
+                    monitor_results,
+                    commands,
+                    notifier: Arc::new(SilentNotifier),
+                },
+            )
+        }
+
+        let (disabled_results, disabled_receiver) = async_channel::unbounded();
+        let disabled = controller_for(&ApplicationConfiguration::default(), disabled_results);
+        disabled.request_monitor_sample();
+        assert!(
+            !disabled.monitoring.get(),
+            "a disabled monitor must not start a sampling worker"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            disabled_receiver.try_recv().is_err(),
+            "a disabled monitor must not publish a sample"
+        );
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(SYSTEM_MONITOR_ID, true)
+            .expect("feature ID is valid");
+        let (enabled_results, enabled_receiver) = async_channel::unbounded();
+        let enabled = controller_for(&configuration, enabled_results);
+        enabled.request_monitor_sample();
+        assert!(
+            enabled.monitoring.get(),
+            "an enabled monitor samples on the next tick"
+        );
+        assert!(
+            enabled_receiver.recv_blocking().is_ok(),
+            "an enabled monitor publishes its tick result"
+        );
     }
 }
