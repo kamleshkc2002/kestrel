@@ -4,8 +4,12 @@ use std::{
 };
 
 use kestrel_core::{
-    AppearancePreference, ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION,
-    ConfigurationError, FeatureConfiguration, PanelSection, PanelSectionConfiguration,
+    AlertKind, AppearancePreference, ApplicationConfiguration,
+    CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError, FeatureConfiguration,
+    MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT,
+    MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
+    MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
+    MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout, PanelSection, PanelSectionConfiguration,
     StartupConfiguration, validate_feature_id,
 };
 use serde::Deserialize;
@@ -139,9 +143,50 @@ fn parse(contents: &str) -> Result<LoadedConfiguration, ConfigurationLoadError> 
     match schema_version {
         0 => migrate_v0(document),
         1 => migrate_v1(document),
-        CURRENT_CONFIGURATION_SCHEMA_VERSION => parse_v2(document),
+        2 => migrate_v2(document),
+        CURRENT_CONFIGURATION_SCHEMA_VERSION => parse_current(document),
         version => Err(ConfigurationLoadError::UnsupportedSchemaVersion(version)),
     }
+}
+
+fn migrate_v2(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
+    let source_has_monitoring = document
+        .get("ui")
+        .and_then(|value| value.as_table())
+        .and_then(|ui| ui.get("panel_sections"))
+        .and_then(|value| value.as_array())
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                PanelSectionConfiguration::deserialize(entry.clone())
+                    .map(|entry| entry.section == PanelSection::Monitoring)
+                    .unwrap_or(false)
+            })
+        });
+    let mut loaded = LoadedConfiguration::default();
+    parse_features(&mut loaded, document.get("features"));
+    parse_ui(&mut loaded, document.get("ui"));
+    parse_startup(&mut loaded, document.get("startup"));
+    if !source_has_monitoring
+        && !loaded.warnings.iter().any(|warning| {
+            warning.feature_id == "ui.panel_sections"
+                && warning.reason == "Missing Monitoring panel section; its default was restored."
+        })
+    {
+        loaded.warnings.push(warning(
+            "ui.panel_sections",
+            "Missing Monitoring panel section; its default was restored.",
+        ));
+    }
+    Ok(loaded)
+}
+
+fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
+    let mut loaded = LoadedConfiguration::default();
+    parse_features(&mut loaded, document.get("features"));
+    parse_ui(&mut loaded, document.get("ui"));
+    parse_startup(&mut loaded, document.get("startup"));
+    parse_monitoring(&mut loaded, document.get("monitoring"));
+    Ok(loaded)
 }
 
 fn migrate_v0(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
@@ -282,7 +327,7 @@ fn parse_panel_sections(loaded: &mut LoadedConfiguration, value: &toml::Value) {
         parsed.push(entry);
     }
 
-    for section in [PanelSection::QuickControls, PanelSection::FeatureHub] {
+    for section in PanelSection::ALL {
         if !parsed.iter().any(|entry| entry.section == section) {
             loaded.warnings.push(warning(
                 "ui.panel_sections",
@@ -317,6 +362,227 @@ fn parse_startup(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
     }
 }
 
+fn parse_monitoring(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(monitoring) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "monitoring",
+            "The monitoring value must be a TOML table.",
+        ));
+        return;
+    };
+
+    if let Some(refresh) = monitoring.get("refresh_interval_millis") {
+        match u64::deserialize(refresh.clone()) {
+            Ok(millis)
+                if (MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
+                    .contains(&millis) =>
+            {
+                loaded.configuration.monitoring.refresh_interval_millis = millis;
+            }
+            _ => loaded.warnings.push(warning(
+                "monitoring.refresh_interval_millis",
+                format!(
+                    "Refresh interval must be between {MIN_MONITOR_REFRESH_INTERVAL_MILLIS} and \
+                     {MAX_MONITOR_REFRESH_INTERVAL_MILLIS} milliseconds; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(history) = monitoring.get("history_samples") {
+        match u32::deserialize(history.clone()) {
+            Ok(samples) if samples > 0 && samples <= MAX_MONITOR_HISTORY_SAMPLES => {
+                loaded.configuration.monitoring.history_samples = samples;
+            }
+            _ => loaded.warnings.push(warning(
+                "monitoring.history_samples",
+                format!(
+                    "History samples must be between 1 and {MAX_MONITOR_HISTORY_SAMPLES}; \
+                     the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(readouts) = monitoring.get("readouts") {
+        let Some(entries) = readouts.as_array() else {
+            loaded.warnings.push(warning(
+                "monitoring.readouts",
+                "Monitor readouts must be an array; the default list was retained.",
+            ));
+            parse_monitoring_alerts(loaded, monitoring.get("alerts"));
+            return;
+        };
+        let mut parsed = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let location = format!("monitoring.readouts[{index}]");
+            let readout = match MonitorReadout::deserialize(entry.clone()) {
+                Ok(readout) => readout,
+                Err(error) => {
+                    loaded.warnings.push(warning(
+                        &location,
+                        format!("Monitor readout is unknown or invalid and was ignored: {error}"),
+                    ));
+                    continue;
+                }
+            };
+            if parsed.contains(&readout) {
+                loaded.warnings.push(warning(
+                    &location,
+                    "Duplicate monitor readout was ignored; the first entry was retained.",
+                ));
+                continue;
+            }
+            parsed.push(readout);
+        }
+        if parsed.is_empty() {
+            loaded.warnings.push(warning(
+                "monitoring.readouts",
+                "Monitor readouts were empty or invalid; the default list was retained.",
+            ));
+        } else {
+            loaded.configuration.monitoring.readouts = parsed;
+        }
+    }
+
+    parse_monitoring_alerts(loaded, monitoring.get("alerts"));
+}
+
+fn parse_monitoring_alerts(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(alerts) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "monitoring.alerts",
+            "The monitoring alerts value must be a TOML table; defaults were retained.",
+        ));
+        return;
+    };
+
+    for kind in AlertKind::ALL {
+        let name = alert_kind_name(kind);
+        if let Some(rule) = alerts.get(name) {
+            parse_alert_rule(loaded, kind, rule);
+        }
+    }
+    for name in alerts.keys() {
+        if !AlertKind::ALL
+            .iter()
+            .any(|kind| alert_kind_name(*kind) == name.as_str())
+        {
+            loaded.warnings.push(warning(
+                &format!("monitoring.alerts.{name}"),
+                "Unknown alert kind was ignored.",
+            ));
+        }
+    }
+}
+
+fn parse_alert_rule(loaded: &mut LoadedConfiguration, kind: AlertKind, value: &toml::Value) {
+    let location = format!("monitoring.alerts.{}", alert_kind_name(kind));
+    let Some(rule) = value.as_table() else {
+        loaded.warnings.push(warning(
+            &location,
+            "Alert rule must be a TOML table; defaults were retained.",
+        ));
+        return;
+    };
+
+    if let Some(enabled) = rule.get("enabled") {
+        match bool::deserialize(enabled.clone()) {
+            Ok(enabled) => {
+                loaded
+                    .configuration
+                    .monitoring
+                    .alerts
+                    .rule_mut(kind)
+                    .enabled = enabled
+            }
+            Err(error) => loaded.warnings.push(warning(
+                &format!("{location}.enabled"),
+                format!("Alert enabled value is invalid and the default was retained: {error}"),
+            )),
+        }
+    }
+
+    if let Some(threshold) = rule.get("threshold") {
+        let maximum = if kind == AlertKind::Temperature {
+            MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS
+        } else {
+            MAX_ALERT_THRESHOLD_PERCENT
+        };
+        match f64::deserialize(threshold.clone()) {
+            Ok(threshold) if threshold.is_finite() && threshold > 0.0 && threshold <= maximum => {
+                loaded
+                    .configuration
+                    .monitoring
+                    .alerts
+                    .rule_mut(kind)
+                    .threshold = threshold;
+            }
+            _ => loaded.warnings.push(warning(
+                &format!("{location}.threshold"),
+                format!(
+                    "Alert threshold must be finite, greater than zero, and no greater than \
+                     {maximum}; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(sustain) = rule.get("sustain_samples") {
+        match u32::deserialize(sustain.clone()) {
+            Ok(samples)
+                if (MIN_ALERT_SUSTAIN_SAMPLES..=MAX_ALERT_SUSTAIN_SAMPLES).contains(&samples) =>
+            {
+                loaded
+                    .configuration
+                    .monitoring
+                    .alerts
+                    .rule_mut(kind)
+                    .sustain_samples = samples;
+            }
+            _ => loaded.warnings.push(warning(
+                &format!("{location}.sustain_samples"),
+                format!(
+                    "Alert sustain samples must be between {MIN_ALERT_SUSTAIN_SAMPLES} and \
+                     {MAX_ALERT_SUSTAIN_SAMPLES}; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(cooldown) = rule.get("cooldown_seconds") {
+        match u64::deserialize(cooldown.clone()) {
+            Ok(seconds) if seconds <= MAX_ALERT_COOLDOWN_SECONDS => {
+                loaded
+                    .configuration
+                    .monitoring
+                    .alerts
+                    .rule_mut(kind)
+                    .cooldown_seconds = seconds;
+            }
+            _ => loaded.warnings.push(warning(
+                &format!("{location}.cooldown_seconds"),
+                format!(
+                    "Alert cooldown must be no greater than {MAX_ALERT_COOLDOWN_SECONDS} seconds; \
+                     the default was retained."
+                ),
+            )),
+        }
+    }
+}
+
+fn alert_kind_name(kind: AlertKind) -> &'static str {
+    match kind {
+        AlertKind::Cpu => "cpu",
+        AlertKind::Temperature => "temperature",
+        AlertKind::Memory => "memory",
+        AlertKind::Disk => "disk",
+        AlertKind::Battery => "battery",
+    }
+}
+
 fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
     ConfigurationWarning {
         feature_id: location.to_owned(),
@@ -338,7 +604,7 @@ mod tests {
     };
     use kestrel_core::{
         AppearancePreference, ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION,
-        PanelSection,
+        MonitorReadout, PanelSection, PanelSectionConfiguration,
     };
 
     #[test]
@@ -447,6 +713,156 @@ autostart = "yes"
     }
 
     #[test]
+    fn migrates_v2_with_monitoring_defaults_and_restored_panel() {
+        let loaded = parse(
+            r#"
+schema_version = 2
+[ui]
+[[ui.panel_sections]]
+section = "quick_controls"
+visible = false
+[[ui.panel_sections]]
+section = "feature_hub"
+visible = true
+"#,
+        )
+        .expect("v2 config migrates");
+        assert_eq!(
+            loaded.configuration.monitoring,
+            kestrel_core::MonitorConfiguration::default()
+        );
+        assert_eq!(
+            loaded
+                .configuration
+                .ui
+                .panel_sections
+                .last()
+                .map(|entry| entry.section),
+            Some(PanelSection::Monitoring)
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "ui.panel_sections"
+                    && warning.reason
+                        == "Missing Monitoring panel section; its default was restored.")
+        );
+    }
+
+    #[test]
+    fn malformed_monitoring_fields_are_isolated() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[monitoring]
+refresh_interval_millis = 500
+history_samples = 0
+readouts = ["network", "unknown", "network", "cpu"]
+[monitoring.alerts.cpu]
+enabled = false
+threshold = 101.0
+sustain_samples = 7
+cooldown_seconds = 42
+[monitoring.alerts.temperature]
+threshold = 125.0
+sustain_samples = "bad"
+"#,
+        )
+        .expect("document itself is valid TOML");
+        assert_eq!(loaded.configuration.monitoring.refresh_interval_millis, 500);
+        assert_eq!(
+            loaded.configuration.monitoring.history_samples,
+            kestrel_core::DEFAULT_MONITOR_HISTORY_SAMPLES
+        );
+        assert_eq!(
+            loaded.configuration.monitoring.readouts,
+            vec![MonitorReadout::Network, MonitorReadout::Cpu]
+        );
+        assert!(!loaded.configuration.monitoring.alerts.cpu.enabled);
+        assert_eq!(loaded.configuration.monitoring.alerts.cpu.threshold, 90.0);
+        assert_eq!(
+            loaded.configuration.monitoring.alerts.cpu.sustain_samples,
+            7
+        );
+        assert_eq!(
+            loaded.configuration.monitoring.alerts.cpu.cooldown_seconds,
+            42
+        );
+        assert_eq!(
+            loaded.configuration.monitoring.alerts.temperature.threshold,
+            125.0
+        );
+        assert_eq!(
+            loaded
+                .configuration
+                .monitoring
+                .alerts
+                .temperature
+                .sustain_samples,
+            3
+        );
+        for location in [
+            "monitoring.history_samples",
+            "monitoring.readouts[1]",
+            "monitoring.readouts[2]",
+            "monitoring.alerts.cpu.threshold",
+            "monitoring.alerts.temperature.sustain_samples",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location)
+            );
+        }
+    }
+
+    #[test]
+    fn readout_order_and_panel_visibility_survive_round_trip() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.monitoring.readouts = vec![
+            MonitorReadout::Gpu,
+            MonitorReadout::Cpu,
+            MonitorReadout::Network,
+        ];
+        configuration.ui.panel_sections = vec![
+            PanelSectionConfiguration {
+                section: PanelSection::FeatureHub,
+                visible: false,
+            },
+            PanelSectionConfiguration {
+                section: PanelSection::Monitoring,
+                visible: true,
+            },
+            PanelSectionConfiguration {
+                section: PanelSection::QuickControls,
+                visible: false,
+            },
+        ];
+        let exported = export_string(&configuration).expect("configuration exports");
+        let imported = import_string(&exported).expect("configuration imports");
+        assert_eq!(imported.configuration, configuration);
+    }
+
+    #[test]
+    fn alert_threshold_sustain_and_cooldown_survive_round_trip() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.monitoring.alerts.cpu.threshold = 77.5;
+        configuration.monitoring.alerts.cpu.sustain_samples = 12;
+        configuration.monitoring.alerts.cpu.cooldown_seconds = 1_234;
+        configuration.monitoring.alerts.temperature.threshold = 120.0;
+        configuration.monitoring.alerts.temperature.sustain_samples = 4;
+        configuration.monitoring.alerts.temperature.cooldown_seconds = 2_345;
+        let exported = export_string(&configuration).expect("configuration exports");
+        let imported = import_string(&exported).expect("configuration imports");
+        assert_eq!(
+            imported.configuration.monitoring.alerts,
+            configuration.monitoring.alerts
+        );
+    }
+
+    #[test]
     fn missing_file_uses_defaults() {
         let path =
             std::env::temp_dir().join(format!("kestrel-missing-config-{}", std::process::id()));
@@ -474,11 +890,11 @@ autostart = "yes"
             .expect("valid feature ID");
         configuration.ui.appearance = AppearancePreference::Light;
         let exported = export_string(&configuration).expect("configuration exports");
-        assert!(exported.contains("schema_version = 2"));
+        assert!(exported.contains("schema_version = 3"));
         assert!(exported.contains("[features.\"audio.mixer\"]"));
         assert!(exported.contains("[ui]"));
         assert!(exported.contains("[startup]"));
-        assert!(!exported.contains("token"));
+        assert!(exported.contains("[monitoring]"));
         assert_eq!(
             import_string(&exported)
                 .expect("export imports")
@@ -499,8 +915,34 @@ autostart = "yes"
         save(&path, &configuration).expect("configuration saves");
         let saved = std::fs::read_to_string(&path).expect("configuration is readable");
         std::fs::remove_dir_all(directory).expect("temporary directory is removable");
-        assert!(saved.contains("schema_version = 2"));
+        assert!(saved.contains("schema_version = 3"));
         assert!(saved.contains("[features.\"audio.mixer\"]"));
         assert!(!saved.contains("token"));
+    }
+    #[test]
+    fn export_excludes_machine_specific_paths() {
+        let configuration = ApplicationConfiguration::default();
+        let exported = export_string(&configuration).expect("configuration exports");
+        for path in ["/proc", "/sys", "/dev/", "/tmp/"] {
+            assert!(
+                !exported.contains(path),
+                "export unexpectedly contains {path}"
+            );
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy();
+            assert!(!exported.contains(home.as_ref()));
+        }
+        if let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") {
+            for mount_point in mounts
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(1))
+            {
+                assert!(
+                    !exported.contains(mount_point),
+                    "export unexpectedly contains mount point {mount_point}"
+                );
+            }
+        }
     }
 }

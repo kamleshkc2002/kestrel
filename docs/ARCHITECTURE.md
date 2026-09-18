@@ -235,6 +235,38 @@ The application runtime routes events through an internal event interface. The
 implementation may use async channels, but channel types do not escape
 `kestrel-services` or `apps/kestrel`.
 
+### 5.5 Monitoring sampling and alert policy
+
+`system.monitor` is a caller-driven service. The application schedules bounded
+ticks, and each tick asks the service for at most one sample; a tick that
+arrives before the configured interval has elapsed is skipped rather than
+queued, so sampling coalesces instead of accumulating work. Samples on the
+application side run on a named worker thread; the GTK main context only
+receives owned presentation state and never performs platform reads or
+notification delivery.
+
+The service retains the latest immutable `SystemSnapshot` plus a bounded ring
+of compact `HistorySample` values. The ring capacity is configuration, is
+capped by a core constant, and drops the oldest entry first; history is
+memory-only and is never written to disk. Unreadable metric families stay in
+the snapshot as explicit source issues, and the fixed issue order keeps issue
+lists stable for presentation.
+
+Alerts are pure policy in `kestrel-services`: an `AlertEngine` consumes an
+immutable snapshot and returns owned `AlertEvent` values. Rules are evaluated
+per kind and are independent — an unobservable or disabled kind never changes
+another kind's sustain counter, active state, or cooldown clock. A rule raises
+only after the threshold is crossed for the configured number of consecutive
+samples, re-arms only after the value recovers past a hysteresis margin, and
+repeats no faster than its cooldown. Delivering a notification is an
+application-layer side effect; delivery failures are recorded per kind and
+surfaced in the window instead of stopping evaluation.
+
+Per-process metrics are deliberately not collected. The monitor reports them as
+an unavailable capability rather than probing process identity or command
+lines, so snapshots, history, and diagnostics carry only system-level,
+non-identifying measurements.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:
@@ -393,6 +425,14 @@ succeeds and rolls back the presented configuration on failure. Presets similarl
 snapshot the complete feature map before applying enablement policy, so undo
 restores absent, disabled, and enabled entries exactly.
 
+The `[monitoring]` table follows the same rules: it carries only user intent —
+refresh interval, history capacity, readout selection and order, and one alert
+rule per kind (enabled flag, threshold, sustained samples, cooldown). It never
+stores observed values, device paths, mount points, or process data, so a
+configuration file stays portable between machines. `kestrel-core` owns the
+bounds, defaults, and validation for every field; `apps/kestrel` parses each
+field independently and keeps the default for a field it cannot accept.
+
 ### 9.2 Local data
 
 Persistent data belongs under the relevant XDG data and state directories.
@@ -416,6 +456,11 @@ Diagnostics use the same capability evidence that powers the UI. An exportable
 report must omit clipboard content, authentication material, session addresses,
 unnecessary file paths, and network identifiers. The diagnostic schema is
 versioned so support reports remain interpretable across releases.
+
+Monitoring diagnostics follow the same rule: capability evidence names source
+families and counts, never mount points, device nodes, or sampled values, and no
+process, command-line, or per-process resource data is collected or exported at
+all.
 
 ## 10. Security and failure boundaries
 

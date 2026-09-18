@@ -6,8 +6,8 @@
 
 use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::CapabilityProbe;
+pub mod alerts;
 pub mod audio;
-pub mod battery_alerts;
 pub mod clipboard;
 
 pub mod quick_toggles;

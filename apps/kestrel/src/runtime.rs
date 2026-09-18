@@ -1,9 +1,10 @@
 use crate::{
     ApplicationViewModel, ConfigurationWarning,
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
+    view_model::{MonitorPresentation, MonitorViewModel},
 };
 use kestrel_core::{
-    ApplicationConfiguration, CapabilityReport, CapabilityStatus, CostLevel,
+    AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, CostLevel,
     FeatureConfigurationSnapshot, FeatureSpec, ResourceCost,
 };
 use kestrel_platform::{
@@ -14,23 +15,21 @@ use kestrel_platform::{
         LogindPrivacyMonitor, discover_provider,
     },
     quick_toggles::{
-        ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleError,
-        QuickToggleId, QuickToggleMutation,
+        ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
+        QuickToggleError, QuickToggleId,
     },
     system_monitor::{FEATURE_ID as SYSTEM_MONITOR_ID, ProcSysMonitor},
 };
 use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
+    alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
     audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioSnapshot},
-    battery_alerts::{BatteryAlertService, DEFAULT_POLL_INTERVAL as BATTERY_POLL_INTERVAL},
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardPolicy, ClipboardServiceError,
         ClipboardSnapshot,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
-    system_monitor::{
-        DEFAULT_REFRESH_INTERVAL, RefreshOutcome, SystemMonitorService, SystemSnapshot,
-    },
+    system_monitor::{HistorySummary, RefreshOutcome, SystemMonitorService, SystemSnapshot},
 };
 /// A built-in enablement policy for the configurable features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +95,15 @@ pub struct ApplicationRuntime {
     audio_mixer: AudioMixerService<PulseAudioBackend>,
     clipboard_history: ClipboardHistoryService,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
-    battery_alerts: BatteryAlertService<LinuxQuickToggleBackend>,
+    alerts: AlertEngine,
+    /// The user's Battery-alert preference; the quick toggle can only narrow it.
+    battery_alert_configured: bool,
     quick_toggles: QuickToggleService,
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonitorTick {
+    pub outcome: RefreshOutcome,
+    pub alerts: Vec<AlertEvent>,
 }
 
 impl ApplicationRuntime {
@@ -157,7 +163,7 @@ impl ApplicationRuntime {
             "System monitor",
             CapabilityStatus::Supported,
         )
-        .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::Low));
+        .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::Moderate));
         let monitor_source = ProcSysMonitor::default();
         let audio_backend = PulseAudioBackend::new();
         registry.register_probe(
@@ -226,19 +232,25 @@ impl ApplicationRuntime {
                 QuickToggleCapabilityProbe::new(quick_toggle_backend.clone(), id),
             )?;
         }
-        Ok(Self {
+        let mut runtime = Self {
             registry,
             audio_mixer: AudioMixerService::new(audio_backend),
             clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::default())
                 .expect("the built-in clipboard policy is valid"),
-            system_monitor: SystemMonitorService::new(monitor_source, DEFAULT_REFRESH_INTERVAL)
-                .expect("the built-in monitor refresh interval is valid"),
-            battery_alerts: BatteryAlertService::new(
-                quick_toggle_backend.clone(),
-                BATTERY_POLL_INTERVAL,
-            ),
+            system_monitor: SystemMonitorService::new(
+                monitor_source,
+                Duration::from_millis(configuration.monitoring.refresh_interval_millis),
+                configuration.monitoring.history_samples,
+            )
+            .expect("the validated monitor configuration is valid"),
+            alerts: AlertEngine::new(AlertPolicy::from_configuration(
+                &configuration.monitoring.alerts,
+            )),
+            battery_alert_configured: configuration.monitoring.alerts.battery.enabled,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
-        })
+        };
+        runtime.sync_battery_alert_rule();
+        Ok(runtime)
     }
 
     /// Starts only the entries that are enabled and currently available.
@@ -274,6 +286,16 @@ impl ApplicationRuntime {
         &mut self,
         configuration: &ApplicationConfiguration,
     ) -> Result<(), RegistryError> {
+        self.system_monitor
+            .reconfigure(
+                Duration::from_millis(configuration.monitoring.refresh_interval_millis),
+                configuration.monitoring.history_samples,
+            )
+            .expect("the validated monitor configuration is valid");
+        self.alerts.set_policy(AlertPolicy::from_configuration(
+            &configuration.monitoring.alerts,
+        ));
+        self.battery_alert_configured = configuration.monitoring.alerts.battery.enabled;
         let desired = self
             .registry
             .registrations()
@@ -295,6 +317,7 @@ impl ApplicationRuntime {
         self.registry.start_enabled();
         self.reconcile_resources();
         self.refresh_quick_toggles();
+        self.sync_battery_alert_rule();
         Ok(())
     }
 
@@ -335,11 +358,11 @@ impl ApplicationRuntime {
         configuration.restore_feature_snapshot(snapshot);
         self.apply_configuration(configuration)
     }
-
     /// Returns UI-independent registration snapshots for the active session.
     pub fn registrations(&self) -> impl Iterator<Item = &ServiceRegistration> {
         self.registry.registrations()
     }
+
     /// Extracts owned presentation state without exposing live service resources.
     pub fn view_model(
         &self,
@@ -350,30 +373,71 @@ impl ApplicationRuntime {
         ApplicationViewModel::new(
             self.registrations(),
             self.quick_toggles.snapshots(),
+            MonitorPresentation {
+                snapshot: self.system_monitor.latest(),
+                history: self.system_monitor.history_summary(),
+                alerts: self.alerts.snapshot(),
+                running: self.system_monitor_is_running(),
+                policy: Some(self.alerts.policy()),
+            },
             warnings,
             configuration,
             can_undo,
         )
     }
 
-    /// Samples monitor metrics when the feature is running and its interval elapsed.
-    pub fn refresh_system_monitor(&mut self, observed_at: Duration) -> RefreshOutcome {
-        if self.system_monitor_is_running() {
-            self.system_monitor.refresh(observed_at)
-        } else {
-            RefreshOutcome::Skipped
+    pub fn sample_monitor(&mut self, observed_at: Duration) -> MonitorTick {
+        if !self.system_monitor_is_running() {
+            return MonitorTick {
+                outcome: RefreshOutcome::Skipped,
+                alerts: Vec::new(),
+            };
         }
+        let outcome = self.system_monitor.refresh(observed_at);
+        let alerts = match self.system_monitor.latest() {
+            Some(snapshot) if outcome == RefreshOutcome::Updated => self.alerts.evaluate(snapshot),
+            _ => Vec::new(),
+        };
+        MonitorTick { outcome, alerts }
+    }
+
+    pub fn alert_snapshot(&self) -> AlertSnapshot {
+        self.alerts.snapshot()
+    }
+
+    pub fn record_alert_delivery(&mut self, kind: AlertKind, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.alerts.clear_delivery_failure(kind),
+            Err(message) => self.alerts.record_delivery_failure(kind, message),
+        }
+    }
+
+    pub fn history_summary(&self) -> Option<HistorySummary> {
+        self.system_monitor.history_summary()
+    }
+
+    pub fn monitor_view_model(&self, configuration: &ApplicationConfiguration) -> MonitorViewModel {
+        MonitorViewModel::from_configuration(
+            &configuration.monitoring,
+            MonitorPresentation {
+                snapshot: self.system_monitor.latest(),
+                history: self.system_monitor.history_summary(),
+                alerts: self.alerts.snapshot(),
+                running: self.system_monitor_is_running(),
+                policy: Some(self.alerts.policy()),
+            },
+        )
     }
 
     /// Returns the latest immutable monitor snapshot, if sampling has started.
     pub fn system_monitor_snapshot(&self) -> Option<&SystemSnapshot> {
         self.system_monitor.latest()
     }
+
     /// Returns the latest audio snapshot, including structured unavailable/empty states.
     pub fn audio_snapshot(&self) -> &AudioSnapshot {
         self.audio_mixer.latest()
     }
-
     /// Applies an audio command only while the opt-in mixer service is running.
     pub fn execute_audio_command(&mut self, command: AudioCommand) -> Option<AudioCommandResult> {
         self.audio_mixer_is_running()
@@ -403,48 +467,21 @@ impl ApplicationRuntime {
         command: QuickToggleCommand,
     ) -> Option<Result<QuickToggleSnapshot, QuickToggleError>> {
         if !self.quick_toggle_is_running(command.id) {
+            self.sync_battery_alert_rule();
             return None;
         }
-        let battery_enabled = if command.id == QuickToggleId::BatteryAlerts {
-            match &command.mutation {
-                QuickToggleMutation::SetEnabled(enabled) => Some(*enabled),
-                _ => None,
-            }
-        } else {
-            None
-        };
         let result = self.quick_toggles.execute(command).cloned();
-        match (battery_enabled, result) {
-            (Some(true), Ok(snapshot)) => match self.battery_alerts.start() {
-                Ok(()) => Some(Ok(snapshot)),
-                Err(error) => {
-                    let _ = self.quick_toggles.execute(QuickToggleCommand {
-                        id: QuickToggleId::BatteryAlerts,
-                        mutation: QuickToggleMutation::SetEnabled(false),
-                        confirmation_token: None,
-                    });
-                    Some(Err(error))
-                }
-            },
-            (Some(true), Err(error)) => Some(Err(error)),
-            (Some(false), result) => {
-                self.battery_alerts.stop();
-                Some(result)
-            }
-            (None, result) => Some(result),
-        }
+        self.sync_battery_alert_rule();
+        Some(result)
     }
 
     fn refresh_quick_toggles(&mut self) {
         for id in ALL_QUICK_TOGGLES {
             if self.quick_toggle_is_running(id) {
                 self.quick_toggles.refresh(id);
-                if id == QuickToggleId::BatteryAlerts {
-                    self.quick_toggles
-                        .set_runtime_error(id, self.battery_alerts.last_error());
-                }
             }
         }
+        self.sync_battery_alert_rule();
     }
 
     fn reconcile_resources(&mut self) {
@@ -457,13 +494,30 @@ impl ApplicationRuntime {
         }
 
         if !self.quick_toggle_is_running(QuickToggleId::BatteryAlerts) {
-            self.battery_alerts.stop();
             self.quick_toggles.stop(QuickToggleId::BatteryAlerts);
         }
 
         if !self.quick_toggle_is_running(QuickToggleId::KeepAwake) {
             self.quick_toggles.stop(QuickToggleId::KeepAwake);
         }
+    }
+    /// The `power.battery-alerts` quick toggle can only narrow the user's configured
+    /// Battery-alert preference; it never re-enables a rule the user turned off.
+    fn sync_battery_alert_rule(&mut self) {
+        let toggle_enabled = self
+            .quick_toggles
+            .snapshots()
+            .find(|snapshot| snapshot.id == QuickToggleId::BatteryAlerts)
+            .and_then(|snapshot| snapshot.observation.as_ref())
+            .and_then(|observation| match &observation.control {
+                QuickToggleControl::Switch { enabled, .. } => Some(*enabled),
+                _ => None,
+            })
+            .unwrap_or(false);
+        self.alerts.set_rule_enabled(
+            AlertKind::Battery,
+            self.battery_alert_configured && toggle_enabled,
+        );
     }
 
     fn start_clipboard_history(&mut self) -> Result<(), ClipboardServiceError> {
@@ -498,6 +552,11 @@ impl ApplicationRuntime {
             registration.feature.id == SYSTEM_MONITOR_ID && registration.running
         })
     }
+
+    /// Whether the monitor feature currently owns sampling resources.
+    pub fn monitor_is_running(&self) -> bool {
+        self.system_monitor_is_running()
+    }
     fn quick_toggle_is_running(&self, id: QuickToggleId) -> bool {
         self.registry
             .registrations()
@@ -531,7 +590,7 @@ impl ApplicationRuntime {
 mod tests {
     use super::{ApplicationRuntime, FeaturePreset};
     use crate::STATUS_NOTIFIER_ID;
-    use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus};
+    use kestrel_core::{AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
         audio::FEATURE_ID as AUDIO_MIXER_ID,
         clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
@@ -542,6 +601,7 @@ mod tests {
         audio::{AudioAvailability, AudioCommand},
         clipboard::{ClipboardCommand, ClipboardLifecycle},
     };
+    use std::time::Duration;
 
     #[test]
     fn startup_keeps_unavailable_features_visible() {
@@ -632,6 +692,58 @@ mod tests {
         runtime.start();
 
         assert!(runtime.system_monitor_snapshot().is_some());
+    }
+    #[test]
+    fn battery_alert_rule_is_gated_until_toggle_observation() {
+        let runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        assert!(
+            !runtime
+                .alerts
+                .policy()
+                .rule(AlertKind::Battery)
+                .expect("battery rule exists")
+                .enabled
+        );
+    }
+
+    #[test]
+    fn monitor_sampling_respects_configured_interval() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(SYSTEM_MONITOR_ID, true)
+            .expect("feature ID is valid");
+        configuration.monitoring.refresh_interval_millis = 60_000;
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+
+        assert!(matches!(
+            runtime
+                .sample_monitor(Duration::from_millis(59_999))
+                .outcome,
+            kestrel_services::system_monitor::RefreshOutcome::Skipped
+        ));
+    }
+
+    #[test]
+    fn monitor_history_stays_bounded_by_configured_capacity() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.monitoring.history_samples = 1;
+        configuration
+            .set_feature_enabled(SYSTEM_MONITOR_ID, true)
+            .expect("feature ID is valid");
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+        let _ = runtime.sample_monitor(Duration::from_secs(1));
+        let _ = runtime.sample_monitor(Duration::from_secs(2));
+
+        assert_eq!(
+            runtime
+                .history_summary()
+                .expect("history has samples")
+                .samples,
+            1
+        );
     }
 
     #[test]

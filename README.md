@@ -69,12 +69,43 @@ interaction, and polling costs. Essentials, Balanced, and Everything presets
 change feature enablement as one reversible operation without discarding
 pre-existing per-feature choices.
 
-Settings search covers both controls and features. Quick Controls and the
-Feature Hub can be hidden or reordered independently; appearance and XDG
-autostart are separate preferences. Import validates each portable setting
-independently, while export contains only typed application-owned preferences,
-never clipboard content, runtime snapshots, credentials, or resolved executable
-paths.
+Settings search covers both controls and features. Quick Controls, the
+Feature Hub, and Monitoring can be hidden or reordered independently;
+appearance and XDG autostart are separate preferences. Import validates each
+portable setting independently, while export contains only typed
+application-owned preferences, never clipboard content, runtime snapshots,
+credentials, or resolved executable paths.
+
+### System monitoring
+
+`system.monitor` samples `/proc` and `/sys` at a configurable interval
+(default 1 s, bounded to 0.25-60 s). The Monitoring panel section renders the
+readouts the user selected and ordered: CPU, memory, swap, disk, network,
+temperature, battery, and GPU. Every readout stays visible when its backend is
+absent and reports the source reason instead of disappearing.
+
+Sampled values are kept in a bounded in-memory history (default 120 samples,
+maximum 600) that drops the oldest entry first and never touches disk. History
+feeds the per-readout maximum shown in the window; nothing else is persisted.
+Sampling runs on a worker thread and coalesces misses, so a slow sample never
+blocks the interface.
+
+Alerts are configured per kind in the `[monitoring.alerts]` table. Each rule
+declares a threshold, the number of consecutive samples that must cross it
+before the first notification, and a cooldown that rate-limits repeats while
+the condition persists. A rule re-arms only after the value recovers past a
+hysteresis margin, so a value hovering at the threshold cannot spam
+notifications. Rules are evaluated independently: an unreadable temperature
+sensor or a missing disk adapter never suppresses CPU, memory, or battery
+alerts, and a notification failure is reported per kind in the window. Battery
+alerts additionally require the `power.battery-alerts` quick toggle to be on.
+
+Temperature thresholds use degrees Celsius; every other kind uses a percentage
+of capacity or usage. GPU readings come from the read-only
+`gpu_busy_percent` attribute that AMD and several integrated drivers expose;
+NVIDIA GPUs need an NVML adapter that is not registered yet, which is reported
+as an explicit unavailable state. Per-process metrics are not collected at all,
+so snapshots never contain process command lines or process identifiers.
 
 ### Desktop integration
 

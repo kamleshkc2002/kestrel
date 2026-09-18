@@ -1,6 +1,6 @@
 //! UI-agnostic primitives shared by Kestrel services and front ends.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,19 @@ impl CapabilityEvidence {
 }
 
 /// The current version of Kestrel's non-sensitive configuration schema.
-pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 3;
+
+// Canonical bounds shared by validation and services.
+pub const MIN_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 250;
+pub const MAX_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 60_000;
+pub const DEFAULT_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 1_000;
+pub const MAX_MONITOR_HISTORY_SAMPLES: u32 = 600;
+pub const DEFAULT_MONITOR_HISTORY_SAMPLES: u32 = 120;
+pub const MIN_ALERT_SUSTAIN_SAMPLES: u32 = 1;
+pub const MAX_ALERT_SUSTAIN_SAMPLES: u32 = 600;
+pub const MAX_ALERT_COOLDOWN_SECONDS: u64 = 86_400;
+pub const MAX_ALERT_THRESHOLD_PERCENT: f64 = 100.0;
+pub const MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS: f64 = 150.0;
 
 /// The user's preferred appearance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -70,6 +82,23 @@ pub enum AppearancePreference {
 pub enum PanelSection {
     QuickControls,
     FeatureHub,
+    Monitoring,
+}
+
+impl PanelSection {
+    pub const ALL: [PanelSection; 3] = [
+        PanelSection::QuickControls,
+        PanelSection::FeatureHub,
+        PanelSection::Monitoring,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::QuickControls => "Quick Controls",
+            Self::FeatureHub => "Feature Hub",
+            Self::Monitoring => "Monitoring",
+        }
+    }
 }
 
 /// Visibility and ordering for one panel section.
@@ -89,16 +118,13 @@ pub struct UiConfiguration {
 }
 
 fn default_panel_sections() -> Vec<PanelSectionConfiguration> {
-    vec![
-        PanelSectionConfiguration {
-            section: PanelSection::QuickControls,
+    PanelSection::ALL
+        .into_iter()
+        .map(|section| PanelSectionConfiguration {
+            section,
             visible: true,
-        },
-        PanelSectionConfiguration {
-            section: PanelSection::FeatureHub,
-            visible: true,
-        },
-    ]
+        })
+        .collect()
 }
 
 impl Default for UiConfiguration {
@@ -174,6 +200,8 @@ pub struct ApplicationConfiguration {
     pub ui: UiConfiguration,
     #[serde(default)]
     pub startup: StartupConfiguration,
+    #[serde(default)]
+    pub monitoring: MonitorConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -183,6 +211,7 @@ impl Default for ApplicationConfiguration {
             features: BTreeMap::new(),
             ui: UiConfiguration::default(),
             startup: StartupConfiguration::default(),
+            monitoring: MonitorConfiguration::default(),
         }
     }
 }
@@ -231,7 +260,7 @@ impl ApplicationConfiguration {
         self.features = snapshot.features.clone();
     }
 
-    /// Validates schema, stable feature identifiers, and panel section shape.
+    /// Validates schema, stable feature identifiers, panel section shape, and monitoring.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if self.schema_version != CURRENT_CONFIGURATION_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchemaVersion {
@@ -243,6 +272,64 @@ impl ApplicationConfiguration {
             validate_feature_id(feature_id)?;
         }
         self.ui.validate()?;
+
+        let refresh_interval_millis = self.monitoring.refresh_interval_millis;
+        if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
+            .contains(&refresh_interval_millis)
+        {
+            return Err(ConfigurationError::InvalidMonitorRefreshInterval {
+                millis: refresh_interval_millis,
+            });
+        }
+
+        let history_samples = self.monitoring.history_samples;
+        if history_samples == 0 || history_samples > MAX_MONITOR_HISTORY_SAMPLES {
+            return Err(ConfigurationError::InvalidMonitorHistorySamples {
+                samples: history_samples,
+            });
+        }
+
+        let mut readouts = BTreeSet::new();
+        if self.monitoring.readouts.is_empty()
+            || self
+                .monitoring
+                .readouts
+                .iter()
+                .any(|readout| !readouts.insert(*readout))
+        {
+            return Err(ConfigurationError::DuplicateMonitorReadout);
+        }
+
+        for kind in AlertKind::ALL {
+            let rule = self.monitoring.alerts.rule(kind);
+            let maximum = match kind {
+                AlertKind::Temperature => MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
+                AlertKind::Cpu | AlertKind::Memory | AlertKind::Disk | AlertKind::Battery => {
+                    MAX_ALERT_THRESHOLD_PERCENT
+                }
+            };
+            if !rule.threshold.is_finite() || rule.threshold <= 0.0 || rule.threshold > maximum {
+                return Err(ConfigurationError::InvalidAlertThreshold {
+                    kind,
+                    threshold: rule.threshold,
+                });
+            }
+            if !(MIN_ALERT_SUSTAIN_SAMPLES..=MAX_ALERT_SUSTAIN_SAMPLES)
+                .contains(&rule.sustain_samples)
+            {
+                return Err(ConfigurationError::InvalidAlertSustainSamples {
+                    kind,
+                    samples: rule.sustain_samples,
+                });
+            }
+            if rule.cooldown_seconds > MAX_ALERT_COOLDOWN_SECONDS {
+                return Err(ConfigurationError::InvalidAlertCooldown {
+                    kind,
+                    seconds: rule.cooldown_seconds,
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -250,18 +337,22 @@ impl ApplicationConfiguration {
 impl UiConfiguration {
     /// Validates that panel sections are complete and unambiguous.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
-        let mut quick_controls = false;
-        let mut feature_hub = false;
+        let mut seen = [false; PanelSection::ALL.len()];
         for entry in &self.panel_sections {
-            match entry.section {
-                PanelSection::QuickControls if !quick_controls => quick_controls = true,
-                PanelSection::FeatureHub if !feature_hub => feature_hub = true,
-                PanelSection::QuickControls | PanelSection::FeatureHub => {
-                    return Err(ConfigurationError::DuplicatePanelSection);
-                }
+            let Some(index) = PanelSection::ALL
+                .iter()
+                .position(|section| *section == entry.section)
+            else {
+                return Err(ConfigurationError::MissingPanelSection);
+            };
+            if seen[index] {
+                return Err(ConfigurationError::DuplicatePanelSection);
             }
+            seen[index] = true;
         }
-        if self.panel_sections.len() != 2 || !quick_controls || !feature_hub {
+        if self.panel_sections.len() != PanelSection::ALL.len()
+            || seen.iter().any(|section_seen| !section_seen)
+        {
             Err(ConfigurationError::MissingPanelSection)
         } else {
             Ok(())
@@ -269,14 +360,202 @@ impl UiConfiguration {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorReadout {
+    Cpu,
+    Memory,
+    Swap,
+    Disk,
+    Network,
+    Temperature,
+    Battery,
+    Gpu,
+}
+
+impl MonitorReadout {
+    pub const ALL: [MonitorReadout; 8] = [
+        MonitorReadout::Cpu,
+        MonitorReadout::Memory,
+        MonitorReadout::Swap,
+        MonitorReadout::Disk,
+        MonitorReadout::Network,
+        MonitorReadout::Temperature,
+        MonitorReadout::Battery,
+        MonitorReadout::Gpu,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Memory => "Memory",
+            Self::Swap => "Swap",
+            Self::Disk => "Disk",
+            Self::Network => "Network",
+            Self::Temperature => "Temperature",
+            Self::Battery => "Battery",
+            Self::Gpu => "GPU",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertKind {
+    Cpu,
+    Temperature,
+    Memory,
+    Disk,
+    Battery,
+}
+
+impl AlertKind {
+    pub const ALL: [AlertKind; 5] = [
+        AlertKind::Cpu,
+        AlertKind::Temperature,
+        AlertKind::Memory,
+        AlertKind::Disk,
+        AlertKind::Battery,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Temperature => "Temperature",
+            Self::Memory => "Memory",
+            Self::Disk => "Disk",
+            Self::Battery => "Battery",
+        }
+    }
+
+    pub const fn unit(self) -> &'static str {
+        match self {
+            Self::Temperature => "°C",
+            Self::Cpu | Self::Memory | Self::Disk | Self::Battery => "%",
+        }
+    }
+
+    /// True for kinds that alert when the value rises above the threshold.
+    pub const fn alerts_above(self) -> bool {
+        !matches!(self, Self::Battery)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlertRuleConfiguration {
+    pub enabled: bool,
+    pub threshold: f64,
+    pub sustain_samples: u32,
+    pub cooldown_seconds: u64,
+}
+
+impl AlertRuleConfiguration {
+    pub const fn new(
+        enabled: bool,
+        threshold: f64,
+        sustain_samples: u32,
+        cooldown_seconds: u64,
+    ) -> Self {
+        Self {
+            enabled,
+            threshold,
+            sustain_samples,
+            cooldown_seconds,
+        }
+    }
+}
+
+impl Default for AlertRuleConfiguration {
+    fn default() -> Self {
+        Self::new(true, 90.0, 5, 900)
+    }
+}
+
+// f64 cannot derive Eq, but configuration validation rejects non-finite values.
+impl Eq for AlertRuleConfiguration {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorAlertConfiguration {
+    pub cpu: AlertRuleConfiguration,
+    pub temperature: AlertRuleConfiguration,
+    pub memory: AlertRuleConfiguration,
+    pub disk: AlertRuleConfiguration,
+    pub battery: AlertRuleConfiguration,
+}
+
+impl MonitorAlertConfiguration {
+    pub fn rule(&self, kind: AlertKind) -> &AlertRuleConfiguration {
+        match kind {
+            AlertKind::Cpu => &self.cpu,
+            AlertKind::Temperature => &self.temperature,
+            AlertKind::Memory => &self.memory,
+            AlertKind::Disk => &self.disk,
+            AlertKind::Battery => &self.battery,
+        }
+    }
+
+    pub fn rule_mut(&mut self, kind: AlertKind) -> &mut AlertRuleConfiguration {
+        match kind {
+            AlertKind::Cpu => &mut self.cpu,
+            AlertKind::Temperature => &mut self.temperature,
+            AlertKind::Memory => &mut self.memory,
+            AlertKind::Disk => &mut self.disk,
+            AlertKind::Battery => &mut self.battery,
+        }
+    }
+}
+
+impl Default for MonitorAlertConfiguration {
+    fn default() -> Self {
+        Self {
+            cpu: AlertRuleConfiguration::new(true, 90.0, 5, 900),
+            temperature: AlertRuleConfiguration::new(true, 90.0, 3, 900),
+            memory: AlertRuleConfiguration::new(true, 90.0, 5, 900),
+            disk: AlertRuleConfiguration::new(true, 90.0, 3, 3_600),
+            battery: AlertRuleConfiguration::new(true, 15.0, 1, 900),
+        }
+    }
+}
+
+impl Eq for MonitorAlertConfiguration {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorConfiguration {
+    pub refresh_interval_millis: u64,
+    pub history_samples: u32,
+    pub readouts: Vec<MonitorReadout>,
+    pub alerts: MonitorAlertConfiguration,
+}
+
+impl Default for MonitorConfiguration {
+    fn default() -> Self {
+        Self {
+            refresh_interval_millis: DEFAULT_MONITOR_REFRESH_INTERVAL_MILLIS,
+            history_samples: DEFAULT_MONITOR_HISTORY_SAMPLES,
+            readouts: MonitorReadout::ALL.to_vec(),
+            alerts: MonitorAlertConfiguration::default(),
+        }
+    }
+}
+
 /// An invalid portable configuration contract.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ConfigurationError {
     UnsupportedSchemaVersion { version: u32 },
     InvalidFeatureId { feature_id: String },
     DuplicatePanelSection,
     MissingPanelSection,
+    InvalidMonitorRefreshInterval { millis: u64 },
+    InvalidMonitorHistorySamples { samples: u32 },
+    DuplicateMonitorReadout,
+    InvalidAlertThreshold { kind: AlertKind, threshold: f64 },
+    InvalidAlertSustainSamples { kind: AlertKind, samples: u32 },
+    InvalidAlertCooldown { kind: AlertKind, seconds: u64 },
 }
+
+// f64 cannot derive Eq; retaining Eq keeps error matching ergonomic while
+// validation rejects non-finite thresholds.
+impl Eq for ConfigurationError {}
 
 /// Validates a stable namespaced identifier without depending on a UI or platform.
 pub fn validate_feature_id(feature_id: &str) -> Result<(), ConfigurationError> {
@@ -390,9 +669,13 @@ impl FeatureSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppearancePreference, ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION,
-        CapabilityEvidence, CapabilityReport, CapabilityStatus, ConfigurationError, CostLevel,
-        FeatureSpec, ResourceCost,
+        AlertKind, AlertRuleConfiguration, AppearancePreference, ApplicationConfiguration,
+        CURRENT_CONFIGURATION_SCHEMA_VERSION, CapabilityEvidence, CapabilityReport,
+        CapabilityStatus, ConfigurationError, CostLevel, FeatureSpec, MAX_ALERT_COOLDOWN_SECONDS,
+        MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT, MAX_MONITOR_HISTORY_SAMPLES,
+        MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
+        MIN_ALERT_SUSTAIN_SAMPLES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout,
+        PanelSection, PanelSectionConfiguration, ResourceCost, UiConfiguration,
     };
 
     #[test]
@@ -461,7 +744,7 @@ mod tests {
     fn defaults_cover_presentation_and_static_cost_contracts() {
         let configuration = ApplicationConfiguration::default();
         assert_eq!(configuration.ui.appearance, AppearancePreference::System);
-        assert_eq!(configuration.ui.panel_sections.len(), 2);
+        assert_eq!(configuration.ui.panel_sections.len(), 3);
         assert!(
             configuration
                 .ui
@@ -500,5 +783,281 @@ mod tests {
         configuration.restore_feature_snapshot(snapshot);
         assert!(configuration.feature_enabled("audio.mixer"));
         assert!(!configuration.features.contains_key("clipboard.history"));
+    }
+
+    #[test]
+    fn panel_section_default_is_complete_in_all_order() {
+        let configuration = UiConfiguration::default();
+        let sections = configuration
+            .panel_sections
+            .iter()
+            .map(|entry| entry.section)
+            .collect::<Vec<_>>();
+
+        assert_eq!(sections, PanelSection::ALL.to_vec());
+        assert!(
+            configuration
+                .panel_sections
+                .iter()
+                .all(|entry| entry.visible)
+        );
+        assert_eq!(configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn panel_section_validation_rejects_duplicates_and_missing_sections() {
+        let duplicate = UiConfiguration {
+            panel_sections: vec![
+                PanelSectionConfiguration {
+                    section: PanelSection::QuickControls,
+                    visible: true,
+                },
+                PanelSectionConfiguration {
+                    section: PanelSection::FeatureHub,
+                    visible: true,
+                },
+                PanelSectionConfiguration {
+                    section: PanelSection::Monitoring,
+                    visible: true,
+                },
+                PanelSectionConfiguration {
+                    section: PanelSection::Monitoring,
+                    visible: false,
+                },
+            ],
+            ..UiConfiguration::default()
+        };
+        assert_eq!(
+            duplicate.validate(),
+            Err(ConfigurationError::DuplicatePanelSection)
+        );
+
+        let missing = UiConfiguration {
+            panel_sections: PanelSection::ALL[..2]
+                .iter()
+                .map(|&section| PanelSectionConfiguration {
+                    section,
+                    visible: true,
+                })
+                .collect(),
+            ..UiConfiguration::default()
+        };
+        assert_eq!(
+            missing.validate(),
+            Err(ConfigurationError::MissingPanelSection)
+        );
+    }
+
+    #[test]
+    fn default_configuration_validates() {
+        let configuration = ApplicationConfiguration::default();
+
+        assert_eq!(configuration.validate(), Ok(()));
+        assert_eq!(
+            configuration.monitoring.readouts,
+            MonitorReadout::ALL.to_vec()
+        );
+    }
+
+    #[test]
+    fn monitor_refresh_interval_bounds_are_enforced() {
+        for millis in [
+            MIN_MONITOR_REFRESH_INTERVAL_MILLIS,
+            MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
+        ] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.monitoring.refresh_interval_millis = millis;
+            assert_eq!(configuration.validate(), Ok(()));
+        }
+
+        for millis in [
+            MIN_MONITOR_REFRESH_INTERVAL_MILLIS - 1,
+            MAX_MONITOR_REFRESH_INTERVAL_MILLIS + 1,
+        ] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.monitoring.refresh_interval_millis = millis;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidMonitorRefreshInterval { millis })
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_history_sample_bounds_are_enforced() {
+        for samples in [1, MAX_MONITOR_HISTORY_SAMPLES] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.monitoring.history_samples = samples;
+            assert_eq!(configuration.validate(), Ok(()));
+        }
+
+        for samples in [0, MAX_MONITOR_HISTORY_SAMPLES + 1] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.monitoring.history_samples = samples;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidMonitorHistorySamples { samples })
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_readouts_must_be_non_empty_and_unique() {
+        let mut empty = ApplicationConfiguration::default();
+        empty.monitoring.readouts.clear();
+        assert_eq!(
+            empty.validate(),
+            Err(ConfigurationError::DuplicateMonitorReadout)
+        );
+
+        let mut duplicate = ApplicationConfiguration::default();
+        duplicate.monitoring.readouts = vec![MonitorReadout::Cpu, MonitorReadout::Cpu];
+        assert_eq!(
+            duplicate.validate(),
+            Err(ConfigurationError::DuplicateMonitorReadout)
+        );
+    }
+
+    #[test]
+    fn alert_threshold_bounds_are_enforced_per_kind() {
+        let mut cpu_at_max = ApplicationConfiguration::default();
+        cpu_at_max
+            .monitoring
+            .alerts
+            .rule_mut(AlertKind::Cpu)
+            .threshold = MAX_ALERT_THRESHOLD_PERCENT;
+        assert_eq!(cpu_at_max.validate(), Ok(()));
+
+        let mut temperature_at_max = ApplicationConfiguration::default();
+        temperature_at_max
+            .monitoring
+            .alerts
+            .rule_mut(AlertKind::Temperature)
+            .threshold = MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS;
+        assert_eq!(temperature_at_max.validate(), Ok(()));
+
+        for threshold in [0.0, -1.0, MAX_ALERT_THRESHOLD_PERCENT + 1.0] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration
+                .monitoring
+                .alerts
+                .rule_mut(AlertKind::Cpu)
+                .threshold = threshold;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidAlertThreshold {
+                    kind: AlertKind::Cpu,
+                    threshold,
+                })
+            );
+        }
+
+        let mut over_temperature = ApplicationConfiguration::default();
+        over_temperature
+            .monitoring
+            .alerts
+            .rule_mut(AlertKind::Temperature)
+            .threshold = MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS + 1.0;
+        assert_eq!(
+            over_temperature.validate(),
+            Err(ConfigurationError::InvalidAlertThreshold {
+                kind: AlertKind::Temperature,
+                threshold: MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS + 1.0,
+            })
+        );
+
+        let mut non_finite = ApplicationConfiguration::default();
+        non_finite
+            .monitoring
+            .alerts
+            .rule_mut(AlertKind::Memory)
+            .threshold = f64::NAN;
+        match non_finite.validate() {
+            Err(ConfigurationError::InvalidAlertThreshold { kind, threshold }) => {
+                assert_eq!(kind, AlertKind::Memory);
+                assert!(threshold.is_nan());
+            }
+            other => panic!("unexpected validation result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alert_sustain_sample_bounds_are_enforced() {
+        for samples in [MIN_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_SUSTAIN_SAMPLES] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration
+                .monitoring
+                .alerts
+                .rule_mut(AlertKind::Disk)
+                .sustain_samples = samples;
+            assert_eq!(configuration.validate(), Ok(()));
+        }
+
+        for samples in [0, MAX_ALERT_SUSTAIN_SAMPLES + 1] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration
+                .monitoring
+                .alerts
+                .rule_mut(AlertKind::Disk)
+                .sustain_samples = samples;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidAlertSustainSamples {
+                    kind: AlertKind::Disk,
+                    samples,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn alert_cooldown_bound_is_enforced() {
+        let mut accepted = ApplicationConfiguration::default();
+        accepted
+            .monitoring
+            .alerts
+            .rule_mut(AlertKind::Battery)
+            .cooldown_seconds = MAX_ALERT_COOLDOWN_SECONDS;
+        assert_eq!(accepted.validate(), Ok(()));
+
+        let mut rejected = ApplicationConfiguration::default();
+        rejected
+            .monitoring
+            .alerts
+            .rule_mut(AlertKind::Battery)
+            .cooldown_seconds = MAX_ALERT_COOLDOWN_SECONDS + 1;
+        assert_eq!(
+            rejected.validate(),
+            Err(ConfigurationError::InvalidAlertCooldown {
+                kind: AlertKind::Battery,
+                seconds: MAX_ALERT_COOLDOWN_SECONDS + 1,
+            })
+        );
+    }
+
+    #[test]
+    fn alert_kind_labels_and_units_are_stable() {
+        assert_eq!(
+            AlertKind::ALL
+                .iter()
+                .map(|kind| kind.label())
+                .collect::<Vec<_>>(),
+            vec!["CPU", "Temperature", "Memory", "Disk", "Battery"]
+        );
+        assert_eq!(
+            AlertKind::ALL
+                .iter()
+                .map(|kind| kind.unit())
+                .collect::<Vec<_>>(),
+            vec!["%", "°C", "%", "%", "%"]
+        );
+        assert!(AlertKind::ALL[..4].iter().all(|kind| kind.alerts_above()));
+        assert!(!AlertKind::Battery.alerts_above());
+    }
+
+    #[test]
+    fn alert_rule_defaults_preserve_shape() {
+        let default = AlertRuleConfiguration::default();
+        assert_eq!(default, AlertRuleConfiguration::new(true, 90.0, 5, 900));
     }
 }

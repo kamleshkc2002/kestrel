@@ -8,6 +8,7 @@ use kestrel_core::CapabilityReport;
 pub mod audio;
 pub mod clipboard;
 
+pub mod notifications;
 pub mod quick_toggles;
 pub mod system_monitor;
 

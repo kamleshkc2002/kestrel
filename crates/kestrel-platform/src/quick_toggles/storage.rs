@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
     path::Path,
@@ -7,16 +7,13 @@ use std::{
 };
 
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus, Permission};
-use zbus::{
-    blocking::{Connection, Proxy},
-    zvariant::OwnedValue,
-};
 
 use super::{
-    BatteryReading, MutationConfirmation, QuickToggleControl, QuickToggleError,
-    QuickToggleErrorKind, QuickToggleId, QuickToggleMutation, QuickToggleObservation, ToggleAction,
-    permission_denied, supported,
+    MutationConfirmation, QuickToggleControl, QuickToggleError, QuickToggleErrorKind,
+    QuickToggleId, QuickToggleMutation, QuickToggleObservation, ToggleAction, permission_denied,
+    supported,
 };
+use crate::notifications;
 
 const MAX_TRASH_ENTRIES: usize = 100_000;
 
@@ -25,6 +22,13 @@ struct TrashScope {
     items: usize,
     bytes: u64,
     fingerprint: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BatteryReading {
+    pub name: String,
+    pub capacity: Option<u8>,
+    pub status: Option<String>,
 }
 
 pub(crate) fn trash_capability(data_home: &Path) -> CapabilityReport {
@@ -356,65 +360,20 @@ pub(crate) fn batteries(sys_root: &Path) -> Result<Vec<BatteryReading>, QuickTog
 }
 
 fn notification_capabilities() -> Result<Vec<String>, QuickToggleError> {
-    let connection = Connection::session().map_err(|error| {
-        QuickToggleError::unavailable(format!("connecting to the session bus failed: {error}"))
-    })?;
-    let proxy = Proxy::new(
-        &connection,
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-    )
-    .map_err(|error| {
-        QuickToggleError::protocol(format!("creating notification proxy failed: {error}"))
-    })?;
-    proxy.call("GetCapabilities", &()).map_err(|error| {
-        let message = error.to_string();
-        let kind = if message.contains("AccessDenied") {
-            QuickToggleErrorKind::PermissionDenied
-        } else {
-            QuickToggleErrorKind::Unavailable
-        };
-        QuickToggleError::new(
-            kind,
-            format!("querying notification capabilities failed: {error}"),
-        )
-    })
+    notifications::capabilities().map_err(notification_error)
 }
 
-pub(crate) fn notify_low_battery(summary: &str, body: &str) -> Result<(), QuickToggleError> {
-    let connection = Connection::session().map_err(|error| {
-        QuickToggleError::unavailable(format!("connecting to the session bus failed: {error}"))
-    })?;
-    let proxy = Proxy::new(
-        &connection,
-        "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications",
-        "org.freedesktop.Notifications",
-    )
-    .map_err(|error| {
-        QuickToggleError::protocol(format!("creating notification proxy failed: {error}"))
-    })?;
-    let actions: Vec<String> = Vec::new();
-    let hints: HashMap<String, OwnedValue> = HashMap::new();
-    let _: u32 = proxy
-        .call(
-            "Notify",
-            &(
-                "Kestrel",
-                0u32,
-                "battery-caution-symbolic",
-                summary,
-                body,
-                actions,
-                hints,
-                10_000i32,
-            ),
-        )
-        .map_err(|error| {
-            QuickToggleError::protocol(format!("sending notification failed: {error}"))
-        })?;
-    Ok(())
+fn notification_error(error: crate::notifications::NotificationError) -> QuickToggleError {
+    let kind = match error.kind() {
+        crate::notifications::NotificationErrorKind::Unavailable => {
+            QuickToggleErrorKind::Unavailable
+        }
+        crate::notifications::NotificationErrorKind::Protocol => QuickToggleErrorKind::Protocol,
+        crate::notifications::NotificationErrorKind::PermissionDenied => {
+            QuickToggleErrorKind::PermissionDenied
+        }
+    };
+    QuickToggleError::new(kind, error.message)
 }
 
 #[cfg(test)]
