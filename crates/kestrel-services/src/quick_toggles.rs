@@ -141,25 +141,29 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
             .error = error;
     }
 
-    pub fn stop(&mut self) {
-        let _ = self.backend.apply(
-            QuickToggleId::KeepAwake,
-            QuickToggleMutation::SetEnabled(false),
-            None,
-        );
-        let _ = self.backend.apply(
-            QuickToggleId::BatteryAlerts,
-            QuickToggleMutation::SetEnabled(false),
-            None,
-        );
-        self.refresh(QuickToggleId::KeepAwake);
-        self.refresh(QuickToggleId::BatteryAlerts);
+    /// Releases resources owned by one Kestrel-managed toggle.
+    ///
+    /// Provider-observed toggles are intentionally not touched here: disabling
+    /// one of those features must not undo a state changed outside Kestrel.
+    pub fn stop(&mut self, id: QuickToggleId) {
+        if matches!(id, QuickToggleId::KeepAwake | QuickToggleId::BatteryAlerts) {
+            let _ = self
+                .backend
+                .apply(id, QuickToggleMutation::SetEnabled(false), None);
+            self.refresh(id);
+        }
+    }
+
+    /// Releases every resource owned by this service.
+    pub fn stop_all(&mut self) {
+        self.stop(QuickToggleId::KeepAwake);
+        self.stop(QuickToggleId::BatteryAlerts);
     }
 }
 
 impl<B: QuickToggleBackend> Drop for QuickToggleService<B> {
     fn drop(&mut self) {
-        self.stop();
+        self.stop_all();
     }
 }
 
@@ -380,5 +384,48 @@ mod tests {
             .expect("appearance snapshot");
         assert!(wifi.observation.is_some());
         assert!(appearance.error.is_some());
+    }
+
+    #[test]
+    fn stopping_owned_keep_awake_does_not_disable_provider_wifi() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        service
+            .execute(QuickToggleCommand {
+                id: QuickToggleId::KeepAwake,
+                mutation: QuickToggleMutation::SetEnabled(true),
+                confirmation_token: None,
+            })
+            .expect("enabling Keep Awake succeeds");
+        service.refresh(QuickToggleId::Wifi);
+
+        service.stop(QuickToggleId::KeepAwake);
+        service.stop(QuickToggleId::Wifi);
+
+        assert!(matches!(
+            service.backend.controls.get(&QuickToggleId::KeepAwake),
+            Some(QuickToggleControl::Switch { enabled: false, .. })
+        ));
+        assert!(matches!(
+            service.backend.controls.get(&QuickToggleId::Wifi),
+            Some(QuickToggleControl::Switch { enabled: true, .. })
+        ));
+        let keep_awake = service
+            .snapshots()
+            .find(|snapshot| snapshot.id == QuickToggleId::KeepAwake)
+            .expect("Keep Awake snapshot");
+        assert_eq!(keep_awake.source, ToggleStateSource::KestrelOwned);
+        assert!(matches!(
+            keep_awake.observation.as_ref().unwrap().control,
+            QuickToggleControl::Switch { enabled: false, .. }
+        ));
+        let wifi = service
+            .snapshots()
+            .find(|snapshot| snapshot.id == QuickToggleId::Wifi)
+            .expect("Wi-Fi snapshot");
+        assert_eq!(wifi.source, ToggleStateSource::ProviderObserved);
+        assert!(matches!(
+            wifi.observation.as_ref().unwrap().control,
+            QuickToggleControl::Switch { enabled: true, .. }
+        ));
     }
 }

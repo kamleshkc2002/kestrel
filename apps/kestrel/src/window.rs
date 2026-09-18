@@ -2,10 +2,11 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
-    ApplicationCommand, ApplicationViewModel, CapabilityKindViewModel, ConfirmationViewModel,
-    FeatureViewModel, QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation,
-    QuickToggleViewModel, RemediationViewModel,
+    ApplicationCommand, ApplicationViewModel, ConfirmationViewModel, FeatureViewModel,
+    PanelMoveDirection, QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation,
+    QuickToggleViewModel,
 };
+use kestrel_core::{AppearancePreference, PanelSection};
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
@@ -106,7 +107,7 @@ fn build_page(
     page.set_margin_start(18);
     page.set_margin_end(18);
 
-    let heading = gtk::Label::new(Some("Capability status"));
+    let heading = gtk::Label::new(Some("Kestrel"));
     heading.add_css_class("title-1");
     heading.set_halign(Align::Start);
     heading.set_wrap(true);
@@ -114,25 +115,42 @@ fn build_page(
     page.append(&heading);
 
     let description = gtk::Label::new(Some(
-        "Kestrel keeps every feature visible and explains unavailable platform paths. The normal window remains available without a tray host or global shortcut provider.",
+        "Kestrel keeps registered features visible, explains unavailable platform paths, and lets you change presentation preferences without hiding warnings.",
     ));
     configure_wrapping_label(&description);
     description.add_css_class("dim-label");
     page.append(&description);
 
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search settings and features")
+        .hexpand(true)
+        .build();
+    page.append(&build_settings_group(view_model, window, commands, &search));
     if !view_model.warnings.is_empty() {
         page.append(&build_warning_group(view_model));
     }
-    if !view_model.quick_toggles.is_empty() {
-        page.append(&build_quick_toggle_group(
-            &view_model.quick_toggles,
-            window,
-            commands,
-        ));
-    }
 
-    for feature in &view_model.features {
-        page.append(&build_feature_group(feature));
+    for panel in &view_model.panel_sections {
+        if !panel.visible {
+            continue;
+        }
+        match panel.section {
+            PanelSection::QuickControls if !view_model.quick_toggles.is_empty() => {
+                page.append(&build_quick_toggle_group(
+                    &view_model.quick_toggles,
+                    window,
+                    commands,
+                ));
+            }
+            PanelSection::FeatureHub => {
+                page.append(&build_feature_hub_group(
+                    &view_model.features,
+                    commands,
+                    &search,
+                ));
+            }
+            PanelSection::QuickControls => {}
+        }
     }
 
     let clamp = adw::Clamp::new();
@@ -142,6 +160,355 @@ fn build_page(
     clamp
 }
 
+fn build_settings_group(
+    view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    search: &gtk::SearchEntry,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Settings")
+        .description("Presentation and startup preferences. Search filters this content and the feature hub.")
+        .build();
+    let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
+
+    let search_row = adw::ActionRow::new();
+    search_row.set_title("Search");
+    search_row.add_suffix(search);
+    search_row.set_activatable_widget(Some(search));
+    group.add(&search_row);
+
+    let appearance = adw::ComboRow::builder()
+        .title("Appearance")
+        .subtitle("Choose the application color scheme.")
+        .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
+        .selected(match view_model.appearance {
+            AppearancePreference::System => 0,
+            AppearancePreference::Light => 1,
+            AppearancePreference::Dark => 2,
+        })
+        .build();
+    let sender = commands.clone();
+    appearance.connect_selected_notify(move |row| {
+        let preference = match row.selected() {
+            1 => AppearancePreference::Light,
+            2 => AppearancePreference::Dark,
+            _ => AppearancePreference::System,
+        };
+        let _ = sender.try_send(ApplicationCommand::SetAppearance(preference));
+    });
+    filter_rows.push((
+        appearance.clone().upcast(),
+        "appearance color scheme system light dark".to_owned(),
+    ));
+    group.add(&appearance);
+
+    let autostart = adw::ActionRow::builder()
+        .title("Start automatically")
+        .subtitle("Launch Kestrel when your desktop session starts.")
+        .build();
+    let autostart_switch = gtk::Switch::builder()
+        .active(view_model.autostart)
+        .valign(Align::Center)
+        .build();
+    let sender = commands.clone();
+    autostart_switch.connect_state_set(move |_, enabled| {
+        let _ = sender.try_send(ApplicationCommand::SetAutostart(enabled));
+        gtk::glib::Propagation::Proceed
+    });
+    autostart.add_suffix(&autostart_switch);
+    autostart.set_activatable_widget(Some(&autostart_switch));
+    filter_rows.push((
+        autostart.clone().upcast(),
+        "start automatically autostart startup session".to_owned(),
+    ));
+    group.add(&autostart);
+
+    let preset_row = adw::ActionRow::builder()
+        .title("Feature presets")
+        .subtitle("Change enablement as one reversible operation.")
+        .subtitle_lines(0)
+        .build();
+    let presets = gtk::Box::new(Orientation::Horizontal, 6);
+    for (label, preset) in [
+        ("Essentials", kestrel::FeaturePreset::Essentials),
+        ("Balanced", kestrel::FeaturePreset::Balanced),
+        ("Everything", kestrel::FeaturePreset::Everything),
+    ] {
+        let button = gtk::Button::with_label(label);
+        button.set_tooltip_text(Some(&format!("Apply the {label} feature preset")));
+        let sender = commands.clone();
+        button.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::ApplyPreset(preset));
+        });
+        presets.append(&button);
+    }
+    let undo = gtk::Button::with_label("Undo");
+    undo.set_sensitive(view_model.can_undo);
+    let sender = commands.clone();
+    undo.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::UndoPreset);
+    });
+    presets.append(&undo);
+    preset_row.add_suffix(&presets);
+    filter_rows.push((
+        preset_row.clone().upcast(),
+        "feature presets essentials balanced everything undo enablement".to_owned(),
+    ));
+    group.add(&preset_row);
+
+    let panel_group = adw::PreferencesGroup::builder()
+        .title("Panel sections")
+        .description(
+            "Choose visibility and keyboard-accessible order for Quick Controls and Feature Hub.",
+        )
+        .build();
+    for (index, panel) in view_model.panel_sections.iter().enumerate() {
+        let row = adw::ActionRow::builder()
+            .title(panel_title(panel.section))
+            .subtitle("Visible in the main panel")
+            .build();
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let visibility = gtk::Switch::builder()
+            .active(panel.visible)
+            .valign(Align::Center)
+            .build();
+        let panel_name = panel_title(panel.section);
+        let visibility_label = format!("Show {panel_name}");
+        let visibility_description = format!("Show or hide the {panel_name} panel");
+        visibility.update_property(&[
+            Property::Label(&visibility_label),
+            Property::Description(&visibility_description),
+        ]);
+        let sender = commands.clone();
+        let section = panel.section;
+        visibility.connect_state_set(move |_, visible| {
+            let _ = sender.try_send(ApplicationCommand::SetPanelVisibility { section, visible });
+            gtk::glib::Propagation::Proceed
+        });
+        let up = gtk::Button::builder().icon_name("go-up-symbolic").build();
+        let up_label = format!("Move {panel_name} up");
+        up.update_property(&[Property::Label(&up_label), Property::Description(&up_label)]);
+        up.set_tooltip_text(Some(&up_label));
+        up.set_sensitive(index > 0);
+        let down = gtk::Button::builder().icon_name("go-down-symbolic").build();
+        let down_label = format!("Move {panel_name} down");
+        down.update_property(&[
+            Property::Label(&down_label),
+            Property::Description(&down_label),
+        ]);
+        down.set_tooltip_text(Some(&down_label));
+        down.set_sensitive(index + 1 < view_model.panel_sections.len());
+        let sender = commands.clone();
+        up.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::MovePanelSection {
+                section,
+                direction: PanelMoveDirection::Up,
+            });
+        });
+        let sender = commands.clone();
+        down.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::MovePanelSection {
+                section,
+                direction: PanelMoveDirection::Down,
+            });
+        });
+        controls.append(&visibility);
+        controls.append(&up);
+        controls.append(&down);
+        row.add_suffix(&controls);
+        row.set_activatable_widget(Some(&visibility));
+        panel_group.add(&row);
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("{} panel visibility order", panel_title(panel.section)),
+        ));
+    }
+    group.add(&panel_group);
+
+    let io_row = adw::ActionRow::builder()
+        .title("Configuration files")
+        .subtitle("Import or export configuration. Kestrel only emits the selected path command.")
+        .subtitle_lines(0)
+        .build();
+    let io_buttons = gtk::Box::new(Orientation::Horizontal, 6);
+    let import = gtk::Button::with_label("Import");
+    connect_file_chooser(&import, window, commands, false);
+    let export = gtk::Button::with_label("Export");
+    connect_file_chooser(&export, window, commands, true);
+    io_buttons.append(&import);
+    io_buttons.append(&export);
+    io_row.add_suffix(&io_buttons);
+    filter_rows.push((
+        io_row.clone().upcast(),
+        "configuration files import export".to_owned(),
+    ));
+    let filter_rows = std::rc::Rc::new(filter_rows);
+    search.connect_search_changed(move |entry| {
+        let query = entry.text().trim().to_lowercase();
+        for (row, content) in filter_rows.iter() {
+            row.set_visible(query.is_empty() || content.contains(&query));
+        }
+    });
+    group.add(&io_row);
+    group
+}
+
+fn panel_title(section: PanelSection) -> &'static str {
+    match section {
+        PanelSection::QuickControls => "Quick Controls",
+        PanelSection::FeatureHub => "Feature Hub",
+    }
+}
+
+fn connect_file_chooser(
+    button: &gtk::Button,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    save: bool,
+) {
+    let window = window.clone();
+    let sender = commands.clone();
+    button.connect_clicked(move |_| {
+        let action = if save {
+            gtk::FileChooserAction::Save
+        } else {
+            gtk::FileChooserAction::Open
+        };
+        let chooser = gtk::FileChooserNative::builder()
+            .title(if save {
+                "Export configuration"
+            } else {
+                "Import configuration"
+            })
+            .accept_label(if save { "Export" } else { "Import" })
+            .cancel_label("Cancel")
+            .transient_for(&window)
+            .action(action)
+            .build();
+        let sender = sender.clone();
+        chooser.connect_response(move |chooser, response| {
+            if response == gtk::ResponseType::Accept {
+                if let Some(path) = chooser.file().and_then(|file| file.path()) {
+                    let command = if save {
+                        ApplicationCommand::ExportConfiguration(path)
+                    } else {
+                        ApplicationCommand::ImportConfiguration(path)
+                    };
+                    let _ = sender.try_send(command);
+                }
+            }
+            chooser.destroy();
+        });
+        chooser.show();
+    });
+}
+
+fn build_feature_hub_group(
+    features: &[FeatureViewModel],
+    commands: &Sender<ApplicationCommand>,
+    search: &gtk::SearchEntry,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Feature Hub")
+        .description("Every registered feature exposes enablement, lifecycle, capability, and conservative resource costs.")
+        .build();
+    let mut rows = Vec::<(adw::ActionRow, String)>::new();
+    for feature in features {
+        let row = adw::ActionRow::builder()
+            .title(&feature.label)
+            .subtitle(feature_hub_subtitle(feature))
+            .subtitle_lines(0)
+            .build();
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let enabled = gtk::Switch::builder()
+            .active(feature.enabled)
+            .sensitive(feature.configurable)
+            .valign(Align::Center)
+            .build();
+        let sender = commands.clone();
+        let feature_id = feature.id.clone();
+        enabled.connect_state_set(move |_, state| {
+            let _ = sender.try_send(ApplicationCommand::SetFeatureEnabled {
+                feature_id: feature_id.clone(),
+                enabled: state,
+            });
+            gtk::glib::Propagation::Proceed
+        });
+        controls.append(&enabled);
+        row.add_suffix(&controls);
+        row.set_activatable_widget(Some(&enabled));
+        let accessible = format!(
+            "{}. Registered: {}. Enabled: {}. Available: {}. Running: {}. Configurable: {}. {}",
+            feature.label,
+            yes_no(feature.registered),
+            yes_no(feature.enabled),
+            yes_no(feature.available),
+            yes_no(feature.running),
+            yes_no(feature.configurable),
+            feature_hub_subtitle(feature)
+        );
+        row.update_property(&[Property::Label(&accessible)]);
+        group.add(&row);
+        rows.push((
+            row,
+            format!(
+                "{} {} {}",
+                feature.label,
+                feature.id,
+                feature_hub_subtitle(feature)
+            ),
+        ));
+    }
+    let rows = std::rc::Rc::new(rows);
+    let rows_for_search = rows.clone();
+    search.connect_search_changed(move |entry| {
+        let query = entry.text().trim().to_lowercase();
+        for (row, content) in rows_for_search.iter() {
+            row.set_visible(query.is_empty() || content.to_lowercase().contains(&query));
+        }
+    });
+    group
+}
+
+fn feature_hub_subtitle(feature: &FeatureViewModel) -> String {
+    let capability = feature
+        .capability
+        .status
+        .detail
+        .as_deref()
+        .unwrap_or(feature.capability.status.label);
+    let backend = feature
+        .capability
+        .selected_backend
+        .as_deref()
+        .map(|value| format!(" Backend: {value}."))
+        .unwrap_or_default();
+    let remediation = feature
+        .capability
+        .remediation
+        .as_ref()
+        .map(|value| format!(" Remediation: {}", value.message))
+        .unwrap_or_default();
+    format!(
+        "{}\nState: {} (registered {}, enabled {}, available {}, running {}, configurable {})\nCost: {}. Capability: {}.{}{}",
+        feature.capability.summary,
+        feature.lifecycle.label(),
+        yes_no(feature.registered),
+        yes_no(feature.enabled),
+        yes_no(feature.available),
+        yes_no(feature.running),
+        yes_no(feature.configurable),
+        feature.cost.summary(),
+        capability,
+        backend,
+        remediation
+    )
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
 fn build_quick_toggle_group(
     toggles: &[QuickToggleViewModel],
     window: &adw::ApplicationWindow,
@@ -335,101 +702,9 @@ fn build_warning_group(view_model: &ApplicationViewModel) -> adw::PreferencesGro
     group
 }
 
-fn build_feature_group(feature: &FeatureViewModel) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title(&feature.label)
-        .description(&feature.id)
-        .build();
-    group.set_tooltip_text(Some(&feature.id));
-
-    let status_row = adw::ActionRow::builder()
-        .title("Capability status")
-        .subtitle(&feature.capability.summary)
-        .subtitle_lines(0)
-        .build();
-    let icon = gtk::Image::from_icon_name(capability_icon_name(feature.capability.status.kind));
-    icon.add_css_class(capability_css_class(feature.capability.status.kind));
-    status_row.add_prefix(&icon);
-
-    let badge = gtk::Label::new(Some(feature.capability.status.label));
-    badge.add_css_class("pill");
-    badge.add_css_class(capability_css_class(feature.capability.status.kind));
-    badge.set_valign(Align::Center);
-    status_row.add_suffix(&badge);
-
-    let status_accessible_label = format!(
-        "{} capability: {}. {}",
-        feature.label, feature.capability.status.label, feature.capability.summary
-    );
-    status_row.update_property(&[Property::Label(&status_accessible_label)]);
-    group.add(&status_row);
-
-    group.add(&build_labeled_row(
-        "Service state",
-        feature.lifecycle.label(),
-    ));
-
-    if let Some(detail) = &feature.capability.status.detail {
-        group.add(&build_labeled_row("Capability detail", detail));
-    }
-    if let Some(backend) = &feature.capability.selected_backend {
-        group.add(&build_labeled_row("Selected backend", backend));
-    }
-    if let Some(remediation) = &feature.capability.remediation {
-        group.add(&build_remediation_row(remediation));
-    }
-
-    group
-}
-
-fn build_labeled_row(title: &str, value: &str) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
-        .title(title)
-        .subtitle(value)
-        .subtitle_lines(0)
-        .build();
-    let accessible_label = format!("{title}: {value}");
-    row.update_property(&[Property::Label(&accessible_label)]);
-    row
-}
-
-fn build_remediation_row(remediation: &RemediationViewModel) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
-        .title(remediation.title)
-        .subtitle(&remediation.message)
-        .subtitle_lines(0)
-        .build();
-    let icon = gtk::Image::from_icon_name("dialog-information-symbolic");
-    icon.add_css_class("accent");
-    row.add_prefix(&icon);
-    let accessible_label = format!("{}: {}", remediation.title, remediation.message);
-    row.update_property(&[Property::Label(&accessible_label)]);
-    row
-}
-
 fn configure_wrapping_label(label: &gtk::Label) {
     label.set_halign(Align::Start);
     label.set_wrap(true);
     label.set_xalign(0.0);
     label.set_hexpand(true);
-}
-
-fn capability_icon_name(kind: CapabilityKindViewModel) -> &'static str {
-    match kind {
-        CapabilityKindViewModel::Supported => "emblem-ok-symbolic",
-        CapabilityKindViewModel::Limited => "dialog-warning-symbolic",
-        CapabilityKindViewModel::NeedsPermission => "changes-prevent-symbolic",
-        CapabilityKindViewModel::MissingDependency => "software-update-available-symbolic",
-        CapabilityKindViewModel::Unsupported => "action-unavailable-symbolic",
-    }
-}
-
-fn capability_css_class(kind: CapabilityKindViewModel) -> &'static str {
-    match kind {
-        CapabilityKindViewModel::Supported => "success",
-        CapabilityKindViewModel::Limited
-        | CapabilityKindViewModel::NeedsPermission
-        | CapabilityKindViewModel::MissingDependency => "warning",
-        CapabilityKindViewModel::Unsupported => "error",
-    }
 }

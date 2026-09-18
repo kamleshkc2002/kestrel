@@ -52,14 +52,114 @@ impl CapabilityEvidence {
 }
 
 /// The current version of Kestrel's non-sensitive configuration schema.
-pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 2;
 
+/// The user's preferred appearance mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AppearancePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// A section that can be shown in the application panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelSection {
+    QuickControls,
+    FeatureHub,
+}
+
+/// Visibility and ordering for one panel section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanelSectionConfiguration {
+    pub section: PanelSection,
+    pub visible: bool,
+}
+
+/// Presentation preferences owned by the application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiConfiguration {
+    #[serde(default)]
+    pub appearance: AppearancePreference,
+    #[serde(default = "default_panel_sections")]
+    pub panel_sections: Vec<PanelSectionConfiguration>,
+}
+
+fn default_panel_sections() -> Vec<PanelSectionConfiguration> {
+    vec![
+        PanelSectionConfiguration {
+            section: PanelSection::QuickControls,
+            visible: true,
+        },
+        PanelSectionConfiguration {
+            section: PanelSection::FeatureHub,
+            visible: true,
+        },
+    ]
+}
+
+impl Default for UiConfiguration {
+    fn default() -> Self {
+        Self {
+            appearance: AppearancePreference::default(),
+            panel_sections: default_panel_sections(),
+        }
+    }
+}
+
+/// Startup preferences owned by the application.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StartupConfiguration {
+    #[serde(default)]
+    pub autostart: bool,
+}
+
+/// A resource-use level for a feature lifecycle operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CostLevel {
+    #[default]
+    None,
+    Low,
+    Moderate,
+}
+
+/// Static resource-use metadata for a feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResourceCost {
+    #[serde(default)]
+    pub idle: CostLevel,
+    #[serde(default)]
+    pub interaction: CostLevel,
+    #[serde(default)]
+    pub polling: CostLevel,
+}
+
+impl ResourceCost {
+    /// Builds resource metadata for idle, interaction, and polling work.
+    pub const fn new(idle: CostLevel, interaction: CostLevel, polling: CostLevel) -> Self {
+        Self {
+            idle,
+            interaction,
+            polling,
+        }
+    }
+}
 /// Non-sensitive, per-feature preferences persisted by the application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FeatureConfiguration {
     /// Whether the user has opted into starting this feature.
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// An exact, reversible copy of the complete feature preference map.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FeatureConfigurationSnapshot {
+    pub features: BTreeMap<String, FeatureConfiguration>,
 }
 
 /// Versioned, portable application configuration.
@@ -70,6 +170,10 @@ pub struct ApplicationConfiguration {
     /// Preferences keyed by stable, namespaced feature IDs.
     #[serde(default)]
     pub features: BTreeMap<String, FeatureConfiguration>,
+    #[serde(default)]
+    pub ui: UiConfiguration,
+    #[serde(default)]
+    pub startup: StartupConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -77,6 +181,8 @@ impl Default for ApplicationConfiguration {
         Self {
             schema_version: CURRENT_CONFIGURATION_SCHEMA_VERSION,
             features: BTreeMap::new(),
+            ui: UiConfiguration::default(),
+            startup: StartupConfiguration::default(),
         }
     }
 }
@@ -102,7 +208,30 @@ impl ApplicationConfiguration {
         Ok(())
     }
 
-    /// Validates schema and stable feature identifiers without performing I/O.
+    /// Captures every feature entry, including the distinction between absent
+    /// and disabled entries.
+    pub fn snapshot_features(&self) -> FeatureConfigurationSnapshot {
+        FeatureConfigurationSnapshot {
+            features: self.features.clone(),
+        }
+    }
+
+    /// Restores a previously captured feature map exactly.
+    pub fn restore_feature_snapshot(&mut self, snapshot: FeatureConfigurationSnapshot) {
+        self.features = snapshot.features;
+    }
+
+    /// Alias for callers that use the noun form of the snapshot operation.
+    pub fn feature_configuration_snapshot(&self) -> FeatureConfigurationSnapshot {
+        self.snapshot_features()
+    }
+
+    /// Restores a snapshot by reference, retaining the reusable snapshot.
+    pub fn restore_features(&mut self, snapshot: &FeatureConfigurationSnapshot) {
+        self.features = snapshot.features.clone();
+    }
+
+    /// Validates schema, stable feature identifiers, and panel section shape.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if self.schema_version != CURRENT_CONFIGURATION_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchemaVersion {
@@ -113,8 +242,30 @@ impl ApplicationConfiguration {
         for feature_id in self.features.keys() {
             validate_feature_id(feature_id)?;
         }
-
+        self.ui.validate()?;
         Ok(())
+    }
+}
+
+impl UiConfiguration {
+    /// Validates that panel sections are complete and unambiguous.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        let mut quick_controls = false;
+        let mut feature_hub = false;
+        for entry in &self.panel_sections {
+            match entry.section {
+                PanelSection::QuickControls if !quick_controls => quick_controls = true,
+                PanelSection::FeatureHub if !feature_hub => feature_hub = true,
+                PanelSection::QuickControls | PanelSection::FeatureHub => {
+                    return Err(ConfigurationError::DuplicatePanelSection);
+                }
+            }
+        }
+        if self.panel_sections.len() != 2 || !quick_controls || !feature_hub {
+            Err(ConfigurationError::MissingPanelSection)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -123,6 +274,8 @@ impl ApplicationConfiguration {
 pub enum ConfigurationError {
     UnsupportedSchemaVersion { version: u32 },
     InvalidFeatureId { feature_id: String },
+    DuplicatePanelSection,
+    MissingPanelSection,
 }
 
 /// Validates a stable namespaced identifier without depending on a UI or platform.
@@ -205,24 +358,41 @@ pub struct FeatureSpec {
     pub id: &'static str,
     pub label: &'static str,
     pub capability: CapabilityStatus,
+    pub configurable: bool,
+    pub cost: ResourceCost,
 }
 
 impl FeatureSpec {
-    /// Builds a feature descriptor whose runtime status is supplied by a backend probe.
+    /// Builds a feature descriptor with configurable, resource-free defaults.
     pub fn new(id: &'static str, label: &'static str, capability: CapabilityStatus) -> Self {
         Self {
             id,
             label,
             capability,
+            configurable: true,
+            cost: ResourceCost::default(),
         }
+    }
+
+    /// Marks whether the feature exposes user configuration.
+    pub fn with_configurable(mut self, configurable: bool) -> Self {
+        self.configurable = configurable;
+        self
+    }
+
+    /// Supplies static resource-use metadata.
+    pub fn with_cost(mut self, cost: ResourceCost) -> Self {
+        self.cost = cost;
+        self
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION, CapabilityEvidence,
-        CapabilityReport, CapabilityStatus, ConfigurationError, FeatureSpec,
+        AppearancePreference, ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION,
+        CapabilityEvidence, CapabilityReport, CapabilityStatus, ConfigurationError, CostLevel,
+        FeatureSpec, ResourceCost,
     };
 
     #[test]
@@ -285,5 +455,50 @@ mod tests {
                 feature_id: "not a feature".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn defaults_cover_presentation_and_static_cost_contracts() {
+        let configuration = ApplicationConfiguration::default();
+        assert_eq!(configuration.ui.appearance, AppearancePreference::System);
+        assert_eq!(configuration.ui.panel_sections.len(), 2);
+        assert!(
+            configuration
+                .ui
+                .panel_sections
+                .iter()
+                .all(|section| section.visible)
+        );
+        assert!(!configuration.startup.autostart);
+
+        let feature = FeatureSpec::new(
+            "system.monitor",
+            "System monitor",
+            CapabilityStatus::Supported,
+        )
+        .with_configurable(false)
+        .with_cost(ResourceCost {
+            idle: CostLevel::Low,
+            interaction: CostLevel::Moderate,
+            polling: CostLevel::Low,
+        });
+        assert!(!feature.configurable);
+        assert_eq!(feature.cost.polling, CostLevel::Low);
+    }
+
+    #[test]
+    fn feature_snapshot_restores_absence_and_values_exactly() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled("audio.mixer", true)
+            .expect("valid feature ID");
+        let snapshot = configuration.snapshot_features();
+        configuration.features.clear();
+        configuration
+            .set_feature_enabled("clipboard.history", false)
+            .expect("valid feature ID");
+        configuration.restore_feature_snapshot(snapshot);
+        assert!(configuration.feature_enabled("audio.mixer"));
+        assert!(!configuration.features.contains_key("clipboard.history"));
     }
 }

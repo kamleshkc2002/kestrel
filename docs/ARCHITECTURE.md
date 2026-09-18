@@ -381,6 +381,18 @@ Secrets, tokens, and credentials are not stored in the main configuration file.
 If a future provider requires a secret, it must use an OS secret service or an
 explicitly documented secure storage integration.
 
+`kestrel-core` owns schema validation, complete feature-map snapshots, and
+reversible preset data. `apps/kestrel` owns TOML and XDG file I/O, validates
+imported feature and UI entries independently, and writes deterministic exports.
+Portable configuration contains user intent only; it excludes service snapshots,
+clipboard content, credentials, and resolved machine paths.
+
+Appearance changes and XDG autostart desktop-file updates are application-layer
+side effects. The controller persists their preference only after the side effect
+succeeds and rolls back the presented configuration on failure. Presets similarly
+snapshot the complete feature map before applying enablement policy, so undo
+restores absent, disabled, and enabled entries exactly.
+
 ### 9.2 Local data
 
 Persistent data belongs under the relevant XDG data and state directories.

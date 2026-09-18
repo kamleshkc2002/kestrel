@@ -2,7 +2,10 @@ use crate::{
     ApplicationViewModel, ConfigurationWarning,
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
 };
-use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec};
+use kestrel_core::{
+    ApplicationConfiguration, CapabilityReport, CapabilityStatus, CostLevel,
+    FeatureConfigurationSnapshot, FeatureSpec, ResourceCost,
+};
 use kestrel_platform::{
     StaticCapabilityProbe,
     audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
@@ -29,6 +32,62 @@ use kestrel_services::{
         DEFAULT_REFRESH_INTERVAL, RefreshOutcome, SystemMonitorService, SystemSnapshot,
     },
 };
+/// A built-in enablement policy for the configurable features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeaturePreset {
+    Essentials,
+    Balanced,
+    Everything,
+}
+
+impl FeaturePreset {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Essentials => "Essentials",
+            Self::Balanced => "Balanced",
+            Self::Everything => "Everything",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Essentials => "Core monitoring, audio, power, and session controls.",
+            Self::Balanced => {
+                "All supported configurable features except clipboard history and global shortcuts."
+            }
+            Self::Everything => {
+                "Every configurable feature, including resource-intensive services."
+            }
+        }
+    }
+}
+
+const COMMAND_SURFACE_ID: &str = "app.command-surface";
+const GLOBAL_SHORTCUTS_ID: &str = "global.shortcuts";
+
+const fn cost(idle: CostLevel, interaction: CostLevel, polling: CostLevel) -> ResourceCost {
+    ResourceCost::new(idle, interaction, polling)
+}
+
+const COMMAND_SURFACE_COST: ResourceCost = cost(CostLevel::None, CostLevel::Low, CostLevel::None);
+const TRAY_COST: ResourceCost = cost(CostLevel::Low, CostLevel::Moderate, CostLevel::None);
+const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
+    match id {
+        QuickToggleId::KeepAwake => cost(CostLevel::Low, CostLevel::Low, CostLevel::None),
+        QuickToggleId::BatteryAlerts => cost(CostLevel::Low, CostLevel::Low, CostLevel::Low),
+        QuickToggleId::Appearance
+        | QuickToggleId::Brightness
+        | QuickToggleId::KeyboardLight
+        | QuickToggleId::Bluetooth
+        | QuickToggleId::Wifi
+        | QuickToggleId::EmptyTrash
+        | QuickToggleId::Eject
+        | QuickToggleId::HiddenFiles
+        | QuickToggleId::DesktopIcons
+        | QuickToggleId::ScreenLock => cost(CostLevel::None, CostLevel::Moderate, CostLevel::None),
+    }
+}
+
 use std::time::Duration;
 
 /// UI-independent composition root for startup, enablement, and capability refresh.
@@ -58,10 +117,12 @@ impl ApplicationRuntime {
         let mut registry = FeatureRegistry::default();
 
         let command_surface = FeatureSpec::new(
-            "app.command-surface",
+            COMMAND_SURFACE_ID,
             "Command surface",
             CapabilityStatus::Supported,
-        );
+        )
+        .with_configurable(false)
+        .with_cost(COMMAND_SURFACE_COST);
         registry.register_probe(
             command_surface.clone(),
             true,
@@ -74,7 +135,6 @@ impl ApplicationRuntime {
                 .with_selected_backend("GTK/libadwaita normal window"),
             ),
         )?;
-
         let status_notifier_available = matches!(
             &status_notifier_capability.status,
             CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
@@ -83,7 +143,9 @@ impl ApplicationRuntime {
             STATUS_NOTIFIER_ID,
             "Tray integration",
             status_notifier_capability.status.clone(),
-        );
+        )
+        .with_configurable(false)
+        .with_cost(TRAY_COST);
         registry.register_probe(
             status_notifier,
             status_notifier_available,
@@ -94,16 +156,18 @@ impl ApplicationRuntime {
             SYSTEM_MONITOR_ID,
             "System monitor",
             CapabilityStatus::Supported,
-        );
+        )
+        .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::Low));
         let monitor_source = ProcSysMonitor::default();
+        let audio_backend = PulseAudioBackend::new();
         registry.register_probe(
             system_monitor,
             configuration.feature_enabled(SYSTEM_MONITOR_ID),
             monitor_source.clone(),
         )?;
         let audio_mixer =
-            FeatureSpec::new(AUDIO_MIXER_ID, "Audio mixer", CapabilityStatus::Supported);
-        let audio_backend = PulseAudioBackend::new();
+            FeatureSpec::new(AUDIO_MIXER_ID, "Audio mixer", CapabilityStatus::Supported)
+                .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
         registry.register_probe(
             audio_mixer,
             configuration.feature_enabled(AUDIO_MIXER_ID),
@@ -113,19 +177,25 @@ impl ApplicationRuntime {
             CLIPBOARD_HISTORY_ID,
             "Clipboard history",
             CapabilityStatus::Supported,
-        );
+        )
+        .with_cost(cost(
+            CostLevel::Moderate,
+            CostLevel::Moderate,
+            CostLevel::Moderate,
+        ));
         registry.register_probe(
             clipboard_history,
             configuration.feature_enabled(CLIPBOARD_HISTORY_ID),
             ClipboardCapabilityProbe::new(),
         )?;
         let global_shortcuts = FeatureSpec::new(
-            "global.shortcuts",
+            GLOBAL_SHORTCUTS_ID,
             "Global shortcuts",
             CapabilityStatus::Unsupported {
                 reason: "No portable global-shortcut adapter is registered yet.".to_string(),
             },
-        );
+        )
+        .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
         registry.register_probe(
             global_shortcuts.clone(),
             configuration.feature_enabled(global_shortcuts.id),
@@ -150,7 +220,8 @@ impl ApplicationRuntime {
                 .map(|feature| feature.enabled)
                 .unwrap_or(true);
             registry.register_probe(
-                FeatureSpec::new(id.feature_id(), id.label(), CapabilityStatus::Supported),
+                FeatureSpec::new(id.feature_id(), id.label(), CapabilityStatus::Supported)
+                    .with_cost(quick_toggle_cost(id)),
                 enabled,
                 QuickToggleCapabilityProbe::new(quick_toggle_backend.clone(), id),
             )?;
@@ -173,19 +244,16 @@ impl ApplicationRuntime {
     /// Starts only the entries that are enabled and currently available.
     pub fn start(&mut self) {
         self.registry.start_enabled();
+        self.reconcile_resources();
         if self.system_monitor_is_running() {
             self.system_monitor.refresh(Duration::ZERO);
         }
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
         }
-        if self.clipboard_history_is_running() {
-            let _ = self.start_clipboard_history();
-        }
         self.refresh_quick_toggles();
     }
 
-    /// Refreshes every cached capability report through its feature-specific probe.
     pub fn refresh_capabilities(&mut self) -> Result<(), RegistryError> {
         let feature_ids = self
             .registry
@@ -195,8 +263,77 @@ impl ApplicationRuntime {
         for feature_id in feature_ids {
             self.registry.refresh_capability(feature_id)?;
         }
+        self.registry.start_enabled();
+        self.reconcile_resources();
         self.refresh_quick_toggles();
         Ok(())
+    }
+
+    /// Applies the current configuration to configurable registrations only.
+    pub fn apply_configuration(
+        &mut self,
+        configuration: &ApplicationConfiguration,
+    ) -> Result<(), RegistryError> {
+        let desired = self
+            .registry
+            .registrations()
+            .filter(|registration| registration.feature.configurable)
+            .map(|registration| {
+                (
+                    registration.feature.id,
+                    configuration
+                        .features
+                        .get(registration.feature.id)
+                        .map(|feature| feature.enabled)
+                        .unwrap_or_else(|| Self::default_enabled(registration.feature.id)),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (feature_id, enabled) in desired {
+            self.registry.set_enabled(feature_id, enabled)?;
+        }
+        self.registry.start_enabled();
+        self.reconcile_resources();
+        self.refresh_quick_toggles();
+        Ok(())
+    }
+
+    /// Applies a built-in policy and returns the exact prior feature map.
+    pub fn apply_preset(
+        &mut self,
+        configuration: &mut ApplicationConfiguration,
+        preset: FeaturePreset,
+    ) -> Result<FeatureConfigurationSnapshot, RegistryError> {
+        let snapshot = configuration.snapshot_features();
+        let configurable = self
+            .registry
+            .registrations()
+            .filter(|registration| registration.feature.configurable)
+            .map(|registration| registration.feature.id)
+            .collect::<Vec<_>>();
+        for feature_id in configurable {
+            configuration
+                .features
+                .entry(feature_id.to_owned())
+                .or_default()
+                .enabled = Self::preset_enabled(preset, feature_id);
+        }
+        if let Err(error) = self.apply_configuration(configuration) {
+            configuration.restore_features(&snapshot);
+            let _ = self.apply_configuration(configuration);
+            return Err(error);
+        }
+        Ok(snapshot)
+    }
+
+    /// Restores a consumed preset snapshot and reapplies its enablement.
+    pub fn undo_preset(
+        &mut self,
+        configuration: &mut ApplicationConfiguration,
+        snapshot: FeatureConfigurationSnapshot,
+    ) -> Result<(), RegistryError> {
+        configuration.restore_feature_snapshot(snapshot);
+        self.apply_configuration(configuration)
     }
 
     /// Returns UI-independent registration snapshots for the active session.
@@ -204,11 +341,18 @@ impl ApplicationRuntime {
         self.registry.registrations()
     }
     /// Extracts owned presentation state without exposing live service resources.
-    pub fn view_model(&self, warnings: &[ConfigurationWarning]) -> ApplicationViewModel {
+    pub fn view_model(
+        &self,
+        warnings: &[ConfigurationWarning],
+        configuration: &ApplicationConfiguration,
+        can_undo: bool,
+    ) -> ApplicationViewModel {
         ApplicationViewModel::new(
             self.registrations(),
             self.quick_toggles.snapshots(),
             warnings,
+            configuration,
+            can_undo,
         )
     }
 
@@ -299,21 +443,27 @@ impl ApplicationRuntime {
                     self.quick_toggles
                         .set_runtime_error(id, self.battery_alerts.last_error());
                 }
-            } else if id == QuickToggleId::BatteryAlerts && self.battery_alerts.is_running() {
-                self.battery_alerts.stop();
-                let _ = self.quick_toggles.execute(QuickToggleCommand {
-                    id,
-                    mutation: QuickToggleMutation::SetEnabled(false),
-                    confirmation_token: None,
-                });
             }
         }
     }
 
-    fn quick_toggle_is_running(&self, id: QuickToggleId) -> bool {
-        self.registry
-            .registrations()
-            .any(|registration| registration.feature.id == id.feature_id() && registration.running)
+    fn reconcile_resources(&mut self) {
+        if self.clipboard_history_is_running() {
+            if !self.clipboard_worker_is_running() {
+                let _ = self.start_clipboard_history();
+            }
+        } else {
+            self.clipboard_history.stop();
+        }
+
+        if !self.quick_toggle_is_running(QuickToggleId::BatteryAlerts) {
+            self.battery_alerts.stop();
+            self.quick_toggles.stop(QuickToggleId::BatteryAlerts);
+        }
+
+        if !self.quick_toggle_is_running(QuickToggleId::KeepAwake) {
+            self.quick_toggles.stop(QuickToggleId::KeepAwake);
+        }
     }
 
     fn start_clipboard_history(&mut self) -> Result<(), ClipboardServiceError> {
@@ -330,6 +480,13 @@ impl ApplicationRuntime {
         })
     }
 
+    fn clipboard_worker_is_running(&self) -> bool {
+        matches!(
+            self.clipboard_history.latest().lifecycle,
+            kestrel_services::clipboard::ClipboardLifecycle::Running
+        )
+    }
+
     fn audio_mixer_is_running(&self) -> bool {
         self.registry
             .registrations()
@@ -341,16 +498,45 @@ impl ApplicationRuntime {
             registration.feature.id == SYSTEM_MONITOR_ID && registration.running
         })
     }
+    fn quick_toggle_is_running(&self, id: QuickToggleId) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == id.feature_id() && registration.running)
+    }
+
+    fn default_enabled(feature_id: &str) -> bool {
+        ALL_QUICK_TOGGLES
+            .into_iter()
+            .any(|id| id.feature_id() == feature_id)
+    }
+
+    fn preset_enabled(preset: FeaturePreset, feature_id: &str) -> bool {
+        match preset {
+            FeaturePreset::Essentials => matches!(
+                feature_id,
+                SYSTEM_MONITOR_ID
+                    | AUDIO_MIXER_ID
+                    | kestrel_platform::quick_toggles::KEEP_AWAKE_ID
+                    | kestrel_platform::quick_toggles::SCREEN_LOCK_ID
+            ),
+            FeaturePreset::Balanced => {
+                feature_id != CLIPBOARD_HISTORY_ID && feature_id != GLOBAL_SHORTCUTS_ID
+            }
+            FeaturePreset::Everything => true,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ApplicationRuntime;
+    use super::{ApplicationRuntime, FeaturePreset};
     use crate::STATUS_NOTIFIER_ID;
     use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
-        audio::FEATURE_ID as AUDIO_MIXER_ID, clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
-        quick_toggles::ALL_QUICK_TOGGLES, system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
+        audio::FEATURE_ID as AUDIO_MIXER_ID,
+        clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
+        quick_toggles::{ALL_QUICK_TOGGLES, KEEP_AWAKE_ID, SCREEN_LOCK_ID},
+        system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
     };
     use kestrel_services::{
         audio::{AudioAvailability, AudioCommand},
@@ -483,5 +669,60 @@ mod tests {
                 .execute_clipboard_command(ClipboardCommand::Wipe)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn preset_policy_is_observable_and_undo_restores_the_exact_feature_map() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(SYSTEM_MONITOR_ID, false)
+            .expect("feature ID is valid");
+        configuration
+            .set_feature_enabled(CLIPBOARD_HISTORY_ID, true)
+            .expect("feature ID is valid");
+        configuration
+            .set_feature_enabled("feature.preserved", false)
+            .expect("feature ID is valid");
+        let original_features = configuration.features.clone();
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+
+        let snapshot = runtime
+            .apply_preset(&mut configuration, FeaturePreset::Essentials)
+            .expect("preset applies");
+
+        assert_eq!(snapshot.features, original_features);
+        for registration in runtime
+            .registrations()
+            .filter(|registration| registration.feature.configurable)
+        {
+            let expected = matches!(
+                registration.feature.id,
+                SYSTEM_MONITOR_ID | AUDIO_MIXER_ID | KEEP_AWAKE_ID | SCREEN_LOCK_ID
+            );
+            assert_eq!(
+                registration.enabled, expected,
+                "{} follows the Essentials policy",
+                registration.feature.id
+            );
+            assert_eq!(
+                configuration
+                    .features
+                    .get(registration.feature.id)
+                    .map(|feature| feature.enabled),
+                Some(expected),
+                "{} is represented in the applied configuration",
+                registration.feature.id
+            );
+        }
+        assert_eq!(
+            configuration.features.get("feature.preserved"),
+            original_features.get("feature.preserved")
+        );
+
+        runtime
+            .undo_preset(&mut configuration, snapshot)
+            .expect("preset undo applies");
+
+        assert_eq!(configuration.features, original_features);
     }
 }
