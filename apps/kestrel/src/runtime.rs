@@ -1,7 +1,7 @@
 use crate::{
     ApplicationViewModel, ConfigurationWarning,
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
-    view_model::{MonitorPresentation, MonitorViewModel},
+    view_model::{AudioPresentation, MonitorPresentation, MonitorViewModel},
 };
 use kestrel_core::{
     AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, CostLevel,
@@ -23,7 +23,7 @@ use kestrel_platform::{
 use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
     alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
-    audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioSnapshot},
+    audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot},
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardPolicy, ClipboardServiceError,
         ClipboardSnapshot,
@@ -234,7 +234,11 @@ impl ApplicationRuntime {
         }
         let mut runtime = Self {
             registry,
-            audio_mixer: AudioMixerService::new(audio_backend),
+            audio_mixer: AudioMixerService::with_policy(
+                audio_backend,
+                AudioPolicy::from_configuration(&configuration.audio),
+            )
+            .expect("the validated audio policy is valid"),
             clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::default())
                 .expect("the built-in clipboard policy is valid"),
             system_monitor: SystemMonitorService::new(
@@ -277,6 +281,11 @@ impl ApplicationRuntime {
         }
         self.registry.start_enabled();
         self.reconcile_resources();
+        // Device loss is repaired by re-reading the graph, so an explicit refresh
+        // must resample audio as well as re-probe capabilities.
+        if self.audio_mixer_is_running() {
+            let _ = self.audio_mixer.refresh();
+        }
         self.refresh_quick_toggles();
         Ok(())
     }
@@ -296,6 +305,12 @@ impl ApplicationRuntime {
             &configuration.monitoring.alerts,
         ));
         self.battery_alert_configured = configuration.monitoring.alerts.battery.enabled;
+        self.audio_mixer
+            .set_policy(AudioPolicy::from_configuration(&configuration.audio))
+            .expect("the validated audio policy is valid");
+        if self.audio_mixer_is_running() {
+            let _ = self.audio_mixer.refresh();
+        }
         let desired = self
             .registry
             .registrations()
@@ -373,6 +388,11 @@ impl ApplicationRuntime {
         ApplicationViewModel::new(
             self.registrations(),
             self.quick_toggles.snapshots(),
+            AudioPresentation {
+                snapshot: Some(self.audio_mixer.latest()),
+                running: self.audio_mixer_is_running(),
+                policy: self.audio_mixer.policy(),
+            },
             MonitorPresentation {
                 snapshot: self.system_monitor.latest(),
                 history: self.system_monitor.history_summary(),

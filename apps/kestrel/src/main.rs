@@ -127,6 +127,12 @@ enum ControllerOperation {
         kind: AlertKind,
         threshold: f64,
     },
+    Audio(kestrel::AudioCommand),
+    SetAudioBoostPercent(u8),
+    SetAudioOutputSwitch(kestrel::AudioOutputSwitch),
+    SetAudioDisconnectPolicy(kestrel::AudioDisconnectPolicy),
+    SetAudioDisconnectVolumePercent(u8),
+    SetAudioIncludeInactiveStreams(bool),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
 }
@@ -460,7 +466,7 @@ impl ControllerState {
                         .readouts
                         .retain(|entry| *entry != readout);
                 }
-                self.commit_monitoring_configuration(
+                self.commit_configuration(
                     candidate,
                     config_path,
                     format!(
@@ -478,7 +484,7 @@ impl ControllerState {
                         format!("{} readout is already at that boundary", readout.label()),
                     ));
                 }
-                self.commit_monitoring_configuration(
+                self.commit_configuration(
                     candidate,
                     config_path,
                     "Monitor readout order updated".to_owned(),
@@ -487,7 +493,7 @@ impl ControllerState {
             ControllerOperation::SetAlertEnabled { kind, enabled } => {
                 let mut candidate = self.configuration.clone();
                 candidate.monitoring.alerts.rule_mut(kind).enabled = enabled;
-                self.commit_monitoring_configuration(
+                self.commit_configuration(
                     candidate,
                     config_path,
                     format!(
@@ -500,10 +506,66 @@ impl ControllerState {
             ControllerOperation::SetAlertThreshold { kind, threshold } => {
                 let mut candidate = self.configuration.clone();
                 candidate.monitoring.alerts.rule_mut(kind).threshold = threshold;
-                self.commit_monitoring_configuration(
+                self.commit_configuration(
                     candidate,
                     config_path,
                     format!("{} alert threshold updated", kind.label()),
+                )?
+            }
+            ControllerOperation::Audio(command) => {
+                let summary = audio_command_summary(command);
+                match self.runtime.execute_audio_command(command) {
+                    Some(Ok(_)) => format!("{summary} updated"),
+                    Some(Err(failure)) => format!("{summary} failed: {}", failure.error),
+                    None => "The audio mixer is not running; enable audio.mixer first".to_owned(),
+                }
+            }
+            ControllerOperation::SetAudioBoostPercent(percent) => {
+                let mut candidate = self.configuration.clone();
+                candidate.audio.boost_percent = percent;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Audio boost ceiling set to {percent}%"),
+                )?
+            }
+            ControllerOperation::SetAudioOutputSwitch(mode) => {
+                let mut candidate = self.configuration.clone();
+                candidate.audio.output_switch = mode;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Output switching set to {}", mode.label()),
+                )?
+            }
+            ControllerOperation::SetAudioDisconnectPolicy(policy) => {
+                let mut candidate = self.configuration.clone();
+                candidate.audio.disconnect_policy = policy;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Disconnect policy set to {}", policy.label()),
+                )?
+            }
+            ControllerOperation::SetAudioDisconnectVolumePercent(percent) => {
+                let mut candidate = self.configuration.clone();
+                candidate.audio.disconnect_volume_percent = percent;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Disconnect volume set to {percent}%"),
+                )?
+            }
+            ControllerOperation::SetAudioIncludeInactiveStreams(include) => {
+                let mut candidate = self.configuration.clone();
+                candidate.audio.include_inactive_streams = include;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "Inactive streams {}",
+                        if include { "shown" } else { "hidden" }
+                    ),
                 )?
             }
             ControllerOperation::ImportConfiguration(path) => {
@@ -548,7 +610,7 @@ impl ControllerState {
         };
         Ok((self.view_model(), message))
     }
-    fn commit_monitoring_configuration(
+    fn commit_configuration(
         &mut self,
         candidate: ApplicationConfiguration,
         config_path: Option<&Path>,
@@ -556,17 +618,17 @@ impl ControllerState {
     ) -> Result<String, String> {
         candidate
             .validate()
-            .map_err(|error| format!("Invalid monitoring configuration: {error:?}"))?;
+            .map_err(|error| format!("Invalid configuration: {error:?}"))?;
         let old = self.configuration.clone();
         self.runtime
             .apply_configuration(&candidate)
             .map_err(|error| {
                 self.restore_configuration(old.clone());
-                format!("Could not apply monitoring configuration: {error:?}")
+                format!("Could not apply the configuration: {error:?}")
             })?;
         if let Err(error) = persist(config_path, &candidate) {
             self.restore_configuration(old);
-            return Err(format!("Monitoring change was not saved: {error}"));
+            return Err(format!("Configuration change was not saved: {error}"));
         }
         self.configuration = candidate;
         Ok(message)
@@ -644,6 +706,19 @@ fn move_monitor_readout(
     let Some(target) = target else { return false };
     readouts.swap(index, target);
     true
+}
+
+/// Names the mixer operation that a status message refers to.
+fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
+    match command {
+        kestrel::AudioCommand::SetStreamVolume { .. } => "Stream volume",
+        kestrel::AudioCommand::SetStreamMute { .. } => "Stream mute",
+        kestrel::AudioCommand::MoveStream { .. } => "Stream routing",
+        kestrel::AudioCommand::SetOutputVolume { .. } => "Output volume",
+        kestrel::AudioCommand::SetOutputMute { .. } => "Output mute",
+        kestrel::AudioCommand::SetDefaultOutput { .. } => "Default output",
+        kestrel::AudioCommand::CycleOutput { .. } => "Output cycle",
+    }
 }
 
 fn panel_label(section: PanelSection) -> &'static str {
@@ -875,6 +950,31 @@ fn dispatch_commands(
                     .request_operation(
                         ControllerOperation::SetAlertThreshold { kind, threshold },
                         "kestrel-alert-threshold",
+                    ),
+                ApplicationCommand::Audio(command) => controller
+                    .request_operation(ControllerOperation::Audio(command), "kestrel-audio"),
+                ApplicationCommand::SetAudioBoostPercent(percent) => controller.request_operation(
+                    ControllerOperation::SetAudioBoostPercent(percent),
+                    "kestrel-audio-boost",
+                ),
+                ApplicationCommand::SetAudioOutputSwitch(mode) => controller.request_operation(
+                    ControllerOperation::SetAudioOutputSwitch(mode),
+                    "kestrel-audio-output-switch",
+                ),
+                ApplicationCommand::SetAudioDisconnectPolicy(policy) => controller
+                    .request_operation(
+                        ControllerOperation::SetAudioDisconnectPolicy(policy),
+                        "kestrel-audio-disconnect",
+                    ),
+                ApplicationCommand::SetAudioDisconnectVolumePercent(percent) => controller
+                    .request_operation(
+                        ControllerOperation::SetAudioDisconnectVolumePercent(percent),
+                        "kestrel-audio-disconnect-volume",
+                    ),
+                ApplicationCommand::SetAudioIncludeInactiveStreams(include) => controller
+                    .request_operation(
+                        ControllerOperation::SetAudioIncludeInactiveStreams(include),
+                        "kestrel-audio-inactive",
                     ),
                 ApplicationCommand::ImportConfiguration(path) => controller.request_operation(
                     ControllerOperation::ImportConfiguration(path),
