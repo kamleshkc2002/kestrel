@@ -4,13 +4,14 @@ use std::{
 };
 
 use kestrel_core::{
-    AlertKind, AppearancePreference, ApplicationConfiguration,
-    CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError, FeatureConfiguration,
-    MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT,
-    MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
-    MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
-    MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout, PanelSection, PanelSectionConfiguration,
-    StartupConfiguration, validate_feature_id,
+    AlertKind, AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy,
+    AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError,
+    FeatureConfiguration, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
+    MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_MONITOR_HISTORY_SAMPLES,
+    MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
+    MIN_ALERT_SUSTAIN_SAMPLES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout, PanelSection,
+    PanelSectionConfiguration, StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
+    validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -186,6 +187,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_ui(&mut loaded, document.get("ui"));
     parse_startup(&mut loaded, document.get("startup"));
     parse_monitoring(&mut loaded, document.get("monitoring"));
+    parse_audio(&mut loaded, document.get("audio"));
     Ok(loaded)
 }
 
@@ -449,6 +451,79 @@ fn parse_monitoring(loaded: &mut LoadedConfiguration, value: Option<&toml::Value
     parse_monitoring_alerts(loaded, monitoring.get("alerts"));
 }
 
+fn parse_audio(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(audio) = value.as_table() else {
+        loaded
+            .warnings
+            .push(warning("audio", "The audio value must be a TOML table."));
+        return;
+    };
+
+    if let Some(boost) = audio.get("boost_percent") {
+        match u8::deserialize(boost.clone()) {
+            Ok(percent)
+                if (UNAMPLIFIED_AUDIO_VOLUME_PERCENT..=MAX_AUDIO_BOOST_PERCENT)
+                    .contains(&percent) =>
+            {
+                loaded.configuration.audio.boost_percent = percent;
+            }
+            _ => loaded.warnings.push(warning(
+                "audio.boost_percent",
+                format!(
+                    "Boost ceiling must be between {UNAMPLIFIED_AUDIO_VOLUME_PERCENT} and \
+                     {MAX_AUDIO_BOOST_PERCENT} percent; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(switch) = audio.get("output_switch") {
+        match AudioOutputSwitch::deserialize(switch.clone()) {
+            Ok(parsed) => loaded.configuration.audio.output_switch = parsed,
+            Err(error) => loaded.warnings.push(warning(
+                "audio.output_switch",
+                format!("Output switch mode is invalid and was ignored: {error}"),
+            )),
+        }
+    }
+
+    if let Some(policy) = audio.get("disconnect_policy") {
+        match AudioDisconnectPolicy::deserialize(policy.clone()) {
+            Ok(parsed) => loaded.configuration.audio.disconnect_policy = parsed,
+            Err(error) => loaded.warnings.push(warning(
+                "audio.disconnect_policy",
+                format!("Disconnect policy is invalid and was ignored: {error}"),
+            )),
+        }
+    }
+
+    if let Some(volume) = audio.get("disconnect_volume_percent") {
+        match u8::deserialize(volume.clone()) {
+            Ok(percent) if percent <= UNAMPLIFIED_AUDIO_VOLUME_PERCENT => {
+                loaded.configuration.audio.disconnect_volume_percent = percent;
+            }
+            _ => loaded.warnings.push(warning(
+                "audio.disconnect_volume_percent",
+                format!(
+                    "Disconnect volume must be between 0 and {UNAMPLIFIED_AUDIO_VOLUME_PERCENT} \
+                     percent; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(include) = audio.get("include_inactive_streams") {
+        match bool::deserialize(include.clone()) {
+            Ok(include) => loaded.configuration.audio.include_inactive_streams = include,
+            Err(error) => loaded.warnings.push(warning(
+                "audio.include_inactive_streams",
+                format!("The inactive-stream preference is invalid and was ignored: {error}"),
+            )),
+        }
+    }
+}
+
 fn parse_monitoring_alerts(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
     let Some(value) = value else { return };
     let Some(alerts) = value.as_table() else {
@@ -603,8 +678,9 @@ mod tests {
         ConfigurationLoadError, export_string, import_file, import_string, load, parse, save,
     };
     use kestrel_core::{
-        AppearancePreference, ApplicationConfiguration, CURRENT_CONFIGURATION_SCHEMA_VERSION,
-        MonitorReadout, PanelSection, PanelSectionConfiguration,
+        AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy, AudioOutputSwitch,
+        CURRENT_CONFIGURATION_SCHEMA_VERSION, MonitorReadout, PanelSection,
+        PanelSectionConfiguration,
     };
 
     #[test]
@@ -816,6 +892,84 @@ sustain_samples = "bad"
                     .any(|warning| warning.feature_id == location)
             );
         }
+    }
+
+    #[test]
+    fn audio_table_parses_every_mixer_policy_field() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[audio]
+boost_percent = 140
+output_switch = "all_streams"
+disconnect_policy = "reset_volume"
+disconnect_volume_percent = 65
+include_inactive_streams = true
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        let audio = loaded.configuration.audio;
+        assert_eq!(audio.boost_percent, 140);
+        assert_eq!(audio.output_switch, AudioOutputSwitch::AllStreams);
+        assert_eq!(audio.disconnect_policy, AudioDisconnectPolicy::ResetVolume);
+        assert_eq!(audio.disconnect_volume_percent, 65);
+        assert!(audio.include_inactive_streams);
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn malformed_audio_fields_are_isolated() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[audio]
+boost_percent = 400
+output_switch = "surround"
+disconnect_policy = "forget"
+disconnect_volume_percent = 160
+include_inactive_streams = "sometimes"
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.audio,
+            kestrel_core::AudioConfiguration::default()
+        );
+        for location in [
+            "audio.boost_percent",
+            "audio.output_switch",
+            "audio.disconnect_policy",
+            "audio.disconnect_volume_percent",
+            "audio.include_inactive_streams",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location),
+                "{location} must report an isolated warning"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_policy_survives_export_round_trip() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.audio.boost_percent = 150;
+        configuration.audio.output_switch = AudioOutputSwitch::AllStreams;
+        configuration.audio.disconnect_policy = AudioDisconnectPolicy::ResetVolume;
+        configuration.audio.disconnect_volume_percent = 40;
+        configuration.audio.include_inactive_streams = true;
+
+        let exported = export_string(&configuration).expect("configuration exports");
+        assert!(exported.contains("[audio]"));
+        assert!(exported.contains("boost_percent = 150"));
+
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(reloaded.configuration.audio, configuration.audio);
+        assert!(reloaded.warnings.is_empty());
     }
 
     #[test]

@@ -11,16 +11,21 @@ pub use config::{
     ConfigurationLoadError, ConfigurationWarning, LoadedConfiguration, configuration_path,
     export_file, export_string, import_file, import_string, load, save,
 };
-pub use kestrel_core::{AlertKind, AppearancePreference, MonitorReadout, PanelSection};
+pub use kestrel_core::{
+    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, MonitorReadout,
+    PanelSection,
+};
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
+pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use runtime::{ApplicationRuntime, FeaturePreset};
 pub use status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration};
 pub use view_model::{
-    ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, CapabilityKindViewModel,
-    CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
-    ConfirmationViewModel, FeatureLifecycleViewModel, FeatureViewModel,
-    MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
+    AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
+    CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel,
+    ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
+    FeatureViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
     QuickToggleViewModel, RemediationViewModel,
 };
@@ -74,6 +79,14 @@ pub enum ApplicationCommand {
         kind: AlertKind,
         threshold: f64,
     },
+    /// A mixer mutation applied through the opt-in audio service.
+    Audio(AudioCommand),
+    /// The amplification ceiling for the mixer, between 100% and the hard cap.
+    SetAudioBoostPercent(u8),
+    SetAudioOutputSwitch(AudioOutputSwitch),
+    SetAudioDisconnectPolicy(AudioDisconnectPolicy),
+    SetAudioDisconnectVolumePercent(u8),
+    SetAudioIncludeInactiveStreams(bool),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
     Quit,

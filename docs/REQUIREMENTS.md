@@ -200,6 +200,16 @@ report and a safe read-only fallback.
 - Recommendation: start with a PulseAudio-compatible backend for common controls, then
   add a native PipeWire backend for robust stream discovery, device routing, and
   application-specific metadata. Keep both behind the same service interface.
+- Amplification is bounded by a user-visible ceiling between 100% and a hard cap of 150%
+  (default 130%). Requests above the ceiling are rejected with the effective maximum
+  rather than silently clamped, and a backend value above the ceiling is still reported
+  truthfully.
+- Output switching and device-loss handling are independent, testable preferences: a
+  default-output switch either leaves playing streams alone or moves them with it, and a
+  stream whose output disappears either keeps its volume or is reset to a configured
+  value. Device loss must not leave stale routing or fail the feature.
+- Namespaced commands and typed results only: `<feature>.<action>` identifiers and
+  structured payloads. No production path parses `pactl`/`wpctl` text output.
 
 ### 4.5 Sensors and hardware
 

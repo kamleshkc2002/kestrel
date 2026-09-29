@@ -66,6 +66,15 @@ pub const MAX_ALERT_COOLDOWN_SECONDS: u64 = 86_400;
 pub const MAX_ALERT_THRESHOLD_PERCENT: f64 = 100.0;
 pub const MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS: f64 = 150.0;
 
+/// Unamplified playback volume. Values above this are software amplification.
+pub const UNAMPLIFIED_AUDIO_VOLUME_PERCENT: u8 = 100;
+/// The hard cap for amplified playback volume; no command may exceed it.
+pub const MAX_AUDIO_BOOST_PERCENT: u8 = 150;
+/// Conservative default amplification ceiling for a fresh configuration.
+pub const DEFAULT_AUDIO_BOOST_PERCENT: u8 = 130;
+/// The volume reapplied after output loss when the disconnect policy resets it.
+pub const DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT: u8 = 100;
+
 /// The user's preferred appearance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -202,6 +211,8 @@ pub struct ApplicationConfiguration {
     pub startup: StartupConfiguration,
     #[serde(default)]
     pub monitoring: MonitorConfiguration,
+    #[serde(default)]
+    pub audio: AudioConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -212,6 +223,7 @@ impl Default for ApplicationConfiguration {
             ui: UiConfiguration::default(),
             startup: StartupConfiguration::default(),
             monitoring: MonitorConfiguration::default(),
+            audio: AudioConfiguration::default(),
         }
     }
 }
@@ -272,6 +284,7 @@ impl ApplicationConfiguration {
             validate_feature_id(feature_id)?;
         }
         self.ui.validate()?;
+        self.audio.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
         if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
@@ -538,6 +551,113 @@ impl Default for MonitorConfiguration {
     }
 }
 
+/// How a master output switch treats streams that are already playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioOutputSwitch {
+    /// Switch only the default output; playing streams keep their current device.
+    #[default]
+    DefaultOutput,
+    /// Switch the default output and move every active stream to it.
+    AllStreams,
+}
+
+impl AudioOutputSwitch {
+    pub const ALL: [AudioOutputSwitch; 2] = [
+        AudioOutputSwitch::DefaultOutput,
+        AudioOutputSwitch::AllStreams,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DefaultOutput => "Default output only",
+            Self::AllStreams => "Move all streams",
+        }
+    }
+}
+
+/// What Kestrel does to a stream whose output device disappears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioDisconnectPolicy {
+    /// Keep whatever volume the stream had when its output was lost.
+    #[default]
+    PreserveVolume,
+    /// Reapply the configured disconnect volume when its output is lost.
+    ResetVolume,
+}
+
+impl AudioDisconnectPolicy {
+    pub const ALL: [AudioDisconnectPolicy; 2] = [
+        AudioDisconnectPolicy::PreserveVolume,
+        AudioDisconnectPolicy::ResetVolume,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PreserveVolume => "Keep the stream volume",
+            Self::ResetVolume => "Reset to the configured volume",
+        }
+    }
+}
+
+/// User intent for the PulseAudio-compatible mixer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioConfiguration {
+    /// The largest amplified volume the UI and service may request.
+    #[serde(default = "default_audio_boost_percent")]
+    pub boost_percent: u8,
+    #[serde(default)]
+    pub output_switch: AudioOutputSwitch,
+    #[serde(default)]
+    pub disconnect_policy: AudioDisconnectPolicy,
+    /// The volume reapplied to a stream after output loss under `reset_volume`.
+    #[serde(default = "default_audio_disconnect_volume_percent")]
+    pub disconnect_volume_percent: u8,
+    /// Whether idle/corked streams are listed alongside active ones.
+    #[serde(default)]
+    pub include_inactive_streams: bool,
+}
+
+fn default_audio_boost_percent() -> u8 {
+    DEFAULT_AUDIO_BOOST_PERCENT
+}
+
+fn default_audio_disconnect_volume_percent() -> u8 {
+    DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT
+}
+
+impl Default for AudioConfiguration {
+    fn default() -> Self {
+        Self {
+            boost_percent: DEFAULT_AUDIO_BOOST_PERCENT,
+            output_switch: AudioOutputSwitch::default(),
+            disconnect_policy: AudioDisconnectPolicy::default(),
+            disconnect_volume_percent: DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT,
+            include_inactive_streams: false,
+        }
+    }
+}
+
+impl AudioConfiguration {
+    /// Validates the amplification ceiling and the disconnect volume bounds.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(UNAMPLIFIED_AUDIO_VOLUME_PERCENT..=MAX_AUDIO_BOOST_PERCENT)
+            .contains(&self.boost_percent)
+        {
+            return Err(ConfigurationError::InvalidAudioBoostPercent {
+                percent: self.boost_percent,
+            });
+        }
+        if self.disconnect_volume_percent > UNAMPLIFIED_AUDIO_VOLUME_PERCENT {
+            return Err(ConfigurationError::InvalidAudioDisconnectVolumePercent {
+                percent: self.disconnect_volume_percent,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// An invalid portable configuration contract.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigurationError {
@@ -551,6 +671,8 @@ pub enum ConfigurationError {
     InvalidAlertThreshold { kind: AlertKind, threshold: f64 },
     InvalidAlertSustainSamples { kind: AlertKind, samples: u32 },
     InvalidAlertCooldown { kind: AlertKind, seconds: u64 },
+    InvalidAudioBoostPercent { percent: u8 },
+    InvalidAudioDisconnectVolumePercent { percent: u8 },
 }
 
 // f64 cannot derive Eq; retaining Eq keeps error matching ergonomic while
@@ -670,12 +792,14 @@ impl FeatureSpec {
 mod tests {
     use super::{
         AlertKind, AlertRuleConfiguration, AppearancePreference, ApplicationConfiguration,
-        CURRENT_CONFIGURATION_SCHEMA_VERSION, CapabilityEvidence, CapabilityReport,
-        CapabilityStatus, ConfigurationError, CostLevel, FeatureSpec, MAX_ALERT_COOLDOWN_SECONDS,
-        MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT, MAX_MONITOR_HISTORY_SAMPLES,
-        MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
-        MIN_ALERT_SUSTAIN_SAMPLES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout,
-        PanelSection, PanelSectionConfiguration, ResourceCost, UiConfiguration,
+        AudioDisconnectPolicy, AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION,
+        CapabilityEvidence, CapabilityReport, CapabilityStatus, ConfigurationError, CostLevel,
+        DEFAULT_AUDIO_BOOST_PERCENT, DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT, FeatureSpec,
+        MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT,
+        MAX_AUDIO_BOOST_PERCENT, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
+        MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
+        MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout, PanelSection,
+        PanelSectionConfiguration, ResourceCost, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, UiConfiguration,
     };
 
     #[test]
@@ -899,6 +1023,63 @@ mod tests {
                 Err(ConfigurationError::InvalidMonitorHistorySamples { samples })
             );
         }
+    }
+
+    #[test]
+    fn audio_boost_ceiling_is_bounded_by_the_hard_cap() {
+        for percent in [UNAMPLIFIED_AUDIO_VOLUME_PERCENT, MAX_AUDIO_BOOST_PERCENT] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.audio.boost_percent = percent;
+            assert_eq!(configuration.validate(), Ok(()));
+        }
+
+        for percent in [
+            UNAMPLIFIED_AUDIO_VOLUME_PERCENT - 1,
+            MAX_AUDIO_BOOST_PERCENT + 1,
+        ] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.audio.boost_percent = percent;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidAudioBoostPercent { percent })
+            );
+        }
+    }
+
+    #[test]
+    fn audio_disconnect_volume_stays_within_the_unamplified_range() {
+        for percent in [0, UNAMPLIFIED_AUDIO_VOLUME_PERCENT] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.audio.disconnect_volume_percent = percent;
+            assert_eq!(configuration.validate(), Ok(()));
+        }
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.audio.disconnect_volume_percent = UNAMPLIFIED_AUDIO_VOLUME_PERCENT + 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidAudioDisconnectVolumePercent { percent: 101 })
+        );
+    }
+
+    #[test]
+    fn audio_defaults_keep_boost_bounded_and_disconnect_policy_conservative() {
+        let audio = ApplicationConfiguration::default().audio;
+
+        assert_eq!(audio.boost_percent, DEFAULT_AUDIO_BOOST_PERCENT);
+        assert!(audio.boost_percent < MAX_AUDIO_BOOST_PERCENT);
+        assert!(audio.boost_percent > UNAMPLIFIED_AUDIO_VOLUME_PERCENT);
+        assert_eq!(audio.output_switch, AudioOutputSwitch::DefaultOutput);
+        assert_eq!(
+            audio.disconnect_policy,
+            AudioDisconnectPolicy::PreserveVolume
+        );
+        assert_eq!(
+            audio.disconnect_volume_percent,
+            DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT
+        );
+        assert!(!audio.include_inactive_streams);
+        assert_eq!(audio.validate(), Ok(()));
     }
 
     #[test]

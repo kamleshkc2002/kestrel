@@ -107,6 +107,33 @@ NVIDIA GPUs need an NVML adapter that is not registered yet, which is reported
 as an explicit unavailable state. Per-process metrics are not collected at all,
 so snapshots never contain process command lines or process identifiers.
 
+### Audio mixer
+
+`audio.mixer` is enabled by default and controls the PulseAudio-compatible
+server (PipeWire's PulseAudio service or PulseAudio itself) through `libpulse`.
+No production path parses `pactl` output. The mixer exposes the master output,
+every discovered output device grouped by its owning card, and each playing
+stream with its own volume, mute, and routing selector. Outputs can be cycled
+without stopping playback.
+
+Amplification is bounded, not silent. `[audio] boost_percent` sets the ceiling
+the UI and service may request; it must stay between 100 and the hard cap of
+150, and the default is 130. A request above the ceiling is rejected with the
+effective maximum, and any server value above the ceiling is still reported
+truthfully rather than shown as a clamped 100%. Volume percentages round-trip
+exactly at every step.
+
+`[audio] output_switch` decides whether switching the default output leaves
+playing streams on their current device (`default_output`) or moves them with
+it (`all_streams`). `[audio] disconnect_policy` decides what happens when a
+stream's output device disappears: `preserve_volume` keeps whatever volume the
+stream had, while `reset_volume` reapplies `disconnect_volume_percent` (0–100).
+Device loss is reconciled on the next refresh by re-homing affected streams to
+the current default output and re-reading the graph, so stale routing is never
+displayed and a vanished device is reported as a repair rather than a failure.
+`[audio] include_inactive_streams` lists corked or idle streams next to playing
+ones; they stay controllable by identifier while hidden.
+
 ### Desktop integration
 
 Kestrel always provides a normal application window. Its optional

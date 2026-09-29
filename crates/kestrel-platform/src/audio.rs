@@ -9,7 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
+use kestrel_core::{
+    CapabilityEvidence, CapabilityReport, CapabilityStatus, MAX_AUDIO_BOOST_PERCENT,
+};
 use libpulse_binding as pulse;
 use pulse::{
     callbacks::ListResult,
@@ -41,6 +43,15 @@ pub struct OutputDevice {
     pub description: String,
     pub volume_percent: u8,
     pub muted: bool,
+    /// True when this device is the server's current default output.
+    pub is_default: bool,
+    /// Owning card index, absent for virtual devices with no hardware card.
+    pub card_id: Option<u32>,
+    /// User-facing card label used to group devices that share hardware.
+    pub card_name: Option<String>,
+    /// Active port name, when the device exposes ports.
+    pub port_name: Option<String>,
+    pub port_description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +65,8 @@ pub struct PlaybackStream {
     pub volume_percent: Option<u8>,
     pub volume_writable: bool,
     pub muted: bool,
+    /// True for idle/corked streams that are not currently playing.
+    pub corked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +113,11 @@ pub trait AudioBackend {
     fn set_stream_volume(&mut self, stream_id: u32, volume_percent: u8) -> Result<(), AudioError>;
     fn set_stream_mute(&mut self, stream_id: u32, muted: bool) -> Result<(), AudioError>;
     fn move_stream(&mut self, stream_id: u32, output_id: u32) -> Result<(), AudioError>;
+    /// Sets the volume of one output device; the same boost bound applies.
+    fn set_output_volume(&mut self, output_id: u32, volume_percent: u8) -> Result<(), AudioError>;
+    fn set_output_mute(&mut self, output_id: u32, muted: bool) -> Result<(), AudioError>;
+    /// Makes the named output the server-wide default.
+    fn set_default_output(&mut self, output_name: &str) -> Result<(), AudioError>;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -113,13 +131,27 @@ impl PulseAudioBackend {
     fn discover_inner(&self) -> Result<AudioDiscovery, AudioError> {
         let mut session = PulseSession::connect()?;
         let server = session.server_info()?;
-        let outputs = session.outputs()?;
+        let cards = session.cards()?;
+        let outputs = session.outputs(server.default_output_name.as_deref(), &cards)?;
         let streams = session.streams()?;
         Ok(AudioDiscovery {
             server,
             outputs,
             streams,
         })
+    }
+
+    /// Rejects amplification above the shared hard cap instead of silently clamping it.
+    fn check_volume_bound(volume_percent: u8) -> Result<(), AudioError> {
+        if volume_percent > MAX_AUDIO_BOOST_PERCENT {
+            return Err(AudioError::new(
+                AudioErrorKind::Rejected,
+                format!(
+                    "volume {volume_percent}% is above the {MAX_AUDIO_BOOST_PERCENT}% amplification cap"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn stream_channel_count(&self, stream_id: u32) -> Result<u8, AudioError> {
@@ -150,6 +182,39 @@ impl PulseAudioBackend {
             )
         })
     }
+
+    fn output_channel_count(&self, output_id: u32) -> Result<u8, AudioError> {
+        let mut session = PulseSession::connect()?;
+        let channels = Rc::new(Cell::new(None));
+        let list_failed = Rc::new(Cell::new(false));
+        let channels_result = Rc::clone(&channels);
+        let failed_result = Rc::clone(&list_failed);
+        let operation =
+            session
+                .context
+                .introspect()
+                .get_sink_info_list(move |result| match result {
+                    ListResult::Item(info) if info.index == output_id => {
+                        channels_result.set(Some(info.volume.len()))
+                    }
+                    ListResult::Item(_) => {}
+                    ListResult::Error => failed_result.set(true),
+                    ListResult::End => {}
+                });
+        session.drive_operation(&operation)?;
+        if list_failed.get() {
+            return Err(AudioError::new(
+                AudioErrorKind::Protocol,
+                format!("failed to inspect output {output_id}"),
+            ));
+        }
+        channels.get().filter(|count| *count > 0).ok_or_else(|| {
+            AudioError::new(
+                AudioErrorKind::Rejected,
+                format!("output {output_id} has no writable volume channels"),
+            )
+        })
+    }
 }
 
 impl AudioBackend for PulseAudioBackend {
@@ -158,16 +223,9 @@ impl AudioBackend for PulseAudioBackend {
     }
 
     fn set_stream_volume(&mut self, stream_id: u32, volume_percent: u8) -> Result<(), AudioError> {
-        if volume_percent > 100 {
-            return Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("volume {volume_percent}% is outside the supported 0..=100% range"),
-            ));
-        }
+        Self::check_volume_bound(volume_percent)?;
         let channels = self.stream_channel_count(stream_id)?;
-        let raw = u64::from(Volume::NORMAL.0).saturating_mul(u64::from(volume_percent)) / 100;
-        let mut volumes = ChannelVolumes::default();
-        volumes.set(channels, Volume(raw as u32));
+        let volumes = channel_volumes(channels, volume_percent);
 
         let succeeded = Rc::new(Cell::new(None));
         let result = Rc::clone(&succeeded);
@@ -224,6 +282,69 @@ impl AudioBackend for PulseAudioBackend {
             Err(AudioError::new(
                 AudioErrorKind::Rejected,
                 format!("PulseAudio rejected routing stream {stream_id} to output {output_id}"),
+            ))
+        }
+    }
+
+    fn set_output_volume(&mut self, output_id: u32, volume_percent: u8) -> Result<(), AudioError> {
+        Self::check_volume_bound(volume_percent)?;
+        let channels = self.output_channel_count(output_id)?;
+        let volumes = channel_volumes(channels, volume_percent);
+
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.introspect().set_sink_volume_by_index(
+            output_id,
+            &volumes,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        if succeeded.get() == Some(true) {
+            Ok(())
+        } else {
+            Err(AudioError::new(
+                AudioErrorKind::Rejected,
+                format!("PulseAudio rejected volume for output {output_id}"),
+            ))
+        }
+    }
+
+    fn set_output_mute(&mut self, output_id: u32, muted: bool) -> Result<(), AudioError> {
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.introspect().set_sink_mute_by_index(
+            output_id,
+            muted,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        if succeeded.get() == Some(true) {
+            Ok(())
+        } else {
+            Err(AudioError::new(
+                AudioErrorKind::Rejected,
+                format!("PulseAudio rejected mute for output {output_id}"),
+            ))
+        }
+    }
+
+    fn set_default_output(&mut self, output_name: &str) -> Result<(), AudioError> {
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.set_default_sink(
+            output_name,
+            Box::new(move |success| result.set(Some(success))),
+        );
+        session.drive_operation(&operation)?;
+        if succeeded.get() == Some(true) {
+            Ok(())
+        } else {
+            Err(AudioError::new(
+                AudioErrorKind::Rejected,
+                format!("PulseAudio rejected default output {output_name}"),
             ))
         }
     }
@@ -351,7 +472,8 @@ impl PulseSession {
         Ok(server)
     }
 
-    fn outputs(&mut self) -> Result<Vec<OutputDevice>, AudioError> {
+    /// Resolves card indices to user-facing labels for device grouping.
+    fn cards(&mut self) -> Result<Vec<(u32, String)>, AudioError> {
         let result = Rc::new(RefCell::new(Vec::new()));
         let failed = Rc::new(Cell::new(false));
         let callback_result = Rc::clone(&result);
@@ -359,23 +481,85 @@ impl PulseSession {
         let operation = self
             .context
             .introspect()
+            .get_card_info_list(move |item| match item {
+                ListResult::Item(info) => {
+                    let label = info
+                        .proplist
+                        .get_str(properties::DEVICE_DESCRIPTION)
+                        .or_else(|| info.name.as_deref().map(str::to_owned))
+                        .unwrap_or_else(|| format!("Card {}", info.index));
+                    callback_result.borrow_mut().push((info.index, label));
+                }
+                ListResult::Error => callback_failed.set(true),
+                ListResult::End => {}
+            });
+        self.drive_operation(&operation)?;
+        if failed.get() {
+            Err(AudioError::new(
+                AudioErrorKind::Protocol,
+                "PulseAudio card discovery failed",
+            ))
+        } else {
+            Ok(result.borrow().clone())
+        }
+    }
+
+    fn outputs(
+        &mut self,
+        default_output_name: Option<&str>,
+        cards: &[(u32, String)],
+    ) -> Result<Vec<OutputDevice>, AudioError> {
+        let result = Rc::new(RefCell::new(Vec::new()));
+        let failed = Rc::new(Cell::new(false));
+        let callback_result = Rc::clone(&result);
+        let callback_failed = Rc::clone(&failed);
+        let callback_default = default_output_name.map(str::to_owned);
+        let callback_cards = cards.to_vec();
+        let operation = self
+            .context
+            .introspect()
             .get_sink_info_list(move |item| match item {
-                ListResult::Item(info) => callback_result.borrow_mut().push(OutputDevice {
-                    id: info.index,
-                    name: info
+                ListResult::Item(info) => {
+                    let name = info
                         .name
                         .as_deref()
                         .map(str::to_owned)
-                        .unwrap_or_else(|| format!("output-{}", info.index)),
-                    description: info
-                        .description
-                        .as_deref()
-                        .map(str::to_owned)
-                        .or_else(|| info.name.as_deref().map(str::to_owned))
-                        .unwrap_or_else(|| format!("Output {}", info.index)),
-                    volume_percent: volume_percent(info.volume.avg()),
-                    muted: info.mute,
-                }),
+                        .unwrap_or_else(|| format!("output-{}", info.index));
+                    let card_name = info.card.and_then(|card| {
+                        callback_cards
+                            .iter()
+                            .find(|(index, _)| *index == card)
+                            .map(|(_, label)| label.clone())
+                    });
+                    let (port_name, port_description) = info
+                        .active_port
+                        .as_ref()
+                        .map(|port| {
+                            (
+                                Some(port.name.as_deref().map(str::to_owned).unwrap_or_default()),
+                                port.description.as_deref().map(str::to_owned),
+                            )
+                        })
+                        .unwrap_or((None, None));
+                    let is_default = callback_default.as_deref() == Some(name.as_str());
+                    callback_result.borrow_mut().push(OutputDevice {
+                        id: info.index,
+                        name,
+                        description: info
+                            .description
+                            .as_deref()
+                            .map(str::to_owned)
+                            .or_else(|| info.name.as_deref().map(str::to_owned))
+                            .unwrap_or_else(|| format!("Output {}", info.index)),
+                        volume_percent: volume_percent(info.volume.avg()),
+                        muted: info.mute,
+                        is_default,
+                        card_id: info.card,
+                        card_name,
+                        port_name: port_name.filter(|name| !name.is_empty()),
+                        port_description,
+                    });
+                }
                 ListResult::Error => callback_failed.set(true),
                 ListResult::End => {}
             });
@@ -416,6 +600,7 @@ impl PulseSession {
                                 .then(|| volume_percent(info.volume.avg())),
                             volume_writable: info.has_volume && info.volume_writable,
                             muted: info.mute,
+                            corked: info.corked,
                         });
                     }
                     ListResult::Error => callback_failed.set(true),
@@ -439,97 +624,166 @@ impl Drop for PulseSession {
     }
 }
 
+/// Converts a server volume to a percentage without hiding amplification.
+///
+/// Values above the shared amplification cap stay readable so the UI never
+/// reports a silently clamped value; only the `u8` range bounds the result.
+/// Rounding to nearest keeps a set/read round trip exact at every percentage.
 fn volume_percent(volume: Volume) -> u8 {
-    let percent = u64::from(volume.0).saturating_mul(100) / u64::from(Volume::NORMAL.0);
-    percent.min(100) as u8
+    let percent = (u64::from(volume.0).saturating_mul(100) + u64::from(Volume::NORMAL.0) / 2)
+        / u64::from(Volume::NORMAL.0);
+    percent.min(u64::from(u8::MAX)) as u8
+}
+
+/// Builds server channel volumes for a percentage, including amplification.
+fn channel_volumes(channels: u8, volume_percent: u8) -> ChannelVolumes {
+    let raw = (u64::from(Volume::NORMAL.0).saturating_mul(u64::from(volume_percent)) + 50) / 100;
+    let mut volumes = ChannelVolumes::default();
+    volumes.set(channels, Volume(raw.min(u64::from(u32::MAX)) as u32));
+    volumes
+}
+
+/// Builds the capability report for a successful discovery without cloning it.
+pub fn capability_for(discovery: &AudioDiscovery) -> CapabilityReport {
+    let stream_count = discovery.streams.len();
+    let output_count = discovery.outputs.len();
+    let status = if output_count == 0 {
+        CapabilityStatus::Limited {
+            reason: "The audio server has no output devices.".to_string(),
+        }
+    } else if stream_count == 0 {
+        CapabilityStatus::Limited {
+            reason: "There are no active playback streams.".to_string(),
+        }
+    } else {
+        CapabilityStatus::Supported
+    };
+    let mut report = CapabilityReport::new(
+        FEATURE_ID,
+        status,
+        format!(
+            "PulseAudio-compatible server exposes {output_count} outputs and {stream_count} active streams."
+        ),
+    )
+    .with_selected_backend("PulseAudio-compatible protocol via libpulse")
+    .with_alternative("Native PipeWire/WirePlumber graph adapter")
+    .with_evidence(CapabilityEvidence::new(
+        "output_count",
+        output_count.to_string(),
+    ))
+    .with_evidence(CapabilityEvidence::new(
+        "active_stream_count",
+        stream_count.to_string(),
+    ));
+    if output_count == 0 || stream_count == 0 {
+        report = report.with_remediation(if output_count == 0 {
+            "Connect or enable an audio output device."
+        } else {
+            "Start playback in an application to expose a controllable stream."
+        });
+    }
+    report
 }
 
 pub fn capability_for_discovery(
     discovery: &Result<AudioDiscovery, AudioError>,
 ) -> CapabilityReport {
     match discovery {
-        Ok(discovery) => {
-            let stream_count = discovery.streams.len();
-            let output_count = discovery.outputs.len();
-            let status = if output_count == 0 {
-                CapabilityStatus::Limited {
-                    reason: "The audio server has no output devices.".to_string(),
-                }
-            } else if stream_count == 0 {
-                CapabilityStatus::Limited {
-                    reason: "There are no active playback streams.".to_string(),
-                }
-            } else {
-                CapabilityStatus::Supported
-            };
-            let mut report = CapabilityReport::new(
-                FEATURE_ID,
-                status,
-                format!(
-                    "PulseAudio-compatible server exposes {output_count} outputs and {stream_count} active streams."
-                ),
-            )
-            .with_selected_backend("PulseAudio-compatible protocol via libpulse")
-            .with_alternative("Native PipeWire/WirePlumber graph adapter")
-            .with_evidence(CapabilityEvidence::new(
-                "output_count",
-                output_count.to_string(),
-            ))
-            .with_evidence(CapabilityEvidence::new(
-                "active_stream_count",
-                stream_count.to_string(),
-            ));
-            if output_count == 0 || stream_count == 0 {
-                report = report.with_remediation(if output_count == 0 {
-                    "Connect or enable an audio output device."
-                } else {
-                    "Start playback in an application to expose a controllable stream."
-                });
-            }
-            report
-        }
-        Err(error) => CapabilityReport::new(
-            FEATURE_ID,
-            CapabilityStatus::Unsupported {
-                reason: error.message.clone(),
-            },
-            "PulseAudio-compatible audio service is unavailable.",
-        )
-        .with_selected_backend("PulseAudio-compatible protocol via libpulse")
-        .with_alternative("Native PipeWire/WirePlumber graph adapter")
-        .with_remediation(
-            "Start PulseAudio or PipeWire's PulseAudio compatibility service for this user session.",
-        )
-        .with_evidence(CapabilityEvidence::new(
-            "error_kind",
-            format!("{:?}", error.kind),
-        )),
+        Ok(discovery) => capability_for(discovery),
+        Err(error) => capability_for_error(error),
     }
+}
+
+/// Builds the unavailable capability report for a failed discovery.
+pub fn capability_for_error(error: &AudioError) -> CapabilityReport {
+    CapabilityReport::new(
+        FEATURE_ID,
+        CapabilityStatus::Unsupported {
+            reason: error.message.clone(),
+        },
+        "PulseAudio-compatible audio service is unavailable.",
+    )
+    .with_selected_backend("PulseAudio-compatible protocol via libpulse")
+    .with_alternative("Native PipeWire/WirePlumber graph adapter")
+    .with_remediation(
+        "Start PulseAudio or PipeWire's PulseAudio compatibility service for this user session.",
+    )
+    .with_evidence(CapabilityEvidence::new(
+        "error_kind",
+        format!("{:?}", error.kind),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         AudioBackend, AudioDiscovery, AudioErrorKind, AudioServer, OutputDevice, PulseAudioBackend,
-        capability_for_discovery, volume_percent,
+        capability_for_discovery, channel_volumes, volume_percent,
     };
-    use kestrel_core::CapabilityStatus;
+    use kestrel_core::{CapabilityStatus, MAX_AUDIO_BOOST_PERCENT};
     use libpulse_binding::volume::Volume;
 
-    #[test]
-    fn volume_conversion_is_bounded_to_one_hundred_percent() {
-        assert_eq!(volume_percent(Volume::MUTED), 0);
-        assert_eq!(volume_percent(Volume::NORMAL), 100);
-        assert_eq!(volume_percent(Volume(Volume::NORMAL.0 * 2)), 100);
+    fn output(output_id: u32) -> OutputDevice {
+        OutputDevice {
+            id: output_id,
+            name: format!("output-{output_id}"),
+            description: format!("Output {output_id}"),
+            volume_percent: 50,
+            muted: false,
+            is_default: output_id == 1,
+            card_id: Some(0),
+            card_name: Some("Built-in Audio".to_string()),
+            port_name: Some("analog-output".to_string()),
+            port_description: Some("Headphones".to_string()),
+        }
     }
 
     #[test]
-    fn adapter_rejects_amplified_volume_before_connecting() {
+    fn volume_conversion_preserves_amplification_up_to_the_type_bound() {
+        assert_eq!(volume_percent(Volume::MUTED), 0);
+        assert_eq!(volume_percent(Volume::NORMAL), 100);
+        assert_eq!(
+            volume_percent(Volume(Volume::NORMAL.0 / 2)),
+            50,
+            "half volume must stay halfway, not saturate"
+        );
+        assert_eq!(
+            volume_percent(Volume(Volume::NORMAL.0 + Volume::NORMAL.0 / 2)),
+            150
+        );
+        assert_eq!(volume_percent(Volume(u32::MAX)), u8::MAX);
+    }
+
+    #[test]
+    fn channel_volumes_carry_amplification_and_respect_the_hard_cap() {
+        let boosted = channel_volumes(2, MAX_AUDIO_BOOST_PERCENT);
+        assert!(boosted.avg().0 > Volume::NORMAL.0);
+
+        let unamplified = channel_volumes(2, 100);
+        assert_eq!(unamplified.avg().0, Volume::NORMAL.0);
+        assert_eq!(unamplified.len(), 2);
+    }
+
+    #[test]
+    fn every_percentage_round_trips_through_server_volumes() {
+        for percent in 0..=MAX_AUDIO_BOOST_PERCENT {
+            let volumes = channel_volumes(2, percent);
+            assert_eq!(
+                volume_percent(volumes.avg()),
+                percent,
+                "{percent}% must survive a set/read round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn adapter_rejects_volume_above_the_amplification_cap_before_connecting() {
         let error = PulseAudioBackend::new()
-            .set_stream_volume(1, 101)
-            .expect_err("volume above the service bound is rejected");
+            .set_stream_volume(1, MAX_AUDIO_BOOST_PERCENT + 1)
+            .expect_err("volume above the amplification cap is rejected");
 
         assert_eq!(error.kind, AudioErrorKind::Rejected);
+        assert!(error.message.contains("150% amplification cap"));
     }
 
     #[test]
@@ -539,15 +793,9 @@ mod tests {
                 name: Some("PulseAudio (on PipeWire)".to_string()),
                 version: Some("1".to_string()),
                 protocol_version: Some(35),
-                default_output_name: Some("default".to_string()),
+                default_output_name: Some("output-1".to_string()),
             },
-            outputs: vec![OutputDevice {
-                id: 1,
-                name: "default".to_string(),
-                description: "Default output".to_string(),
-                volume_percent: 50,
-                muted: false,
-            }],
+            outputs: vec![output(1)],
             streams: Vec::new(),
         }));
 

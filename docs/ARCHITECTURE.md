@@ -267,6 +267,33 @@ an unavailable capability rather than probing process identity or command
 lines, so snapshots, history, and diagnostics carry only system-level,
 non-identifying measurements.
 
+### 5.6 Audio mixer policy and device-loss handling
+
+`audio.mixer` follows the same layering as monitoring. `kestrel-core` owns the
+portable bounds: the unamplified volume, the hard amplification cap, the default
+boost ceiling, and the `[audio]` configuration contract. `kestrel-services`
+owns mixer policy — the effective boost ceiling, whether a default-output switch
+also moves playing streams, what happens to a stream whose output device
+disappears, and whether inactive streams are listed. The `kestrel-platform`
+adapter owns the PulseAudio-compatible protocol through `libpulse`; no
+production path parses `pactl` or `wpctl` output.
+
+Amplification is bounded and explicit. A request above the effective ceiling is
+rejected with that maximum instead of being clamped, and the adapter checks the
+hard cap again before touching the server. Server values above the ceiling stay
+readable, and percentage conversion rounds to nearest so a set/read round trip
+is exact at every step.
+
+The service retains the unfiltered discovery for validation and reconciliation,
+while presentation state carries the filter result plus the hidden-stream count,
+so a corked stream that is not listed stays addressable by identifier. Each
+refresh compares the previous outputs with the current graph; streams whose
+output vanished are re-homed to the default output and, under the reset policy,
+have their volume reapplied before the graph is re-read. The outcome is recorded
+as owned diagnostics (`last_reconcile`, `last_switch`) and surfaced in the
+window, so device loss produces a reported repair rather than stale routing or a
+feature failure.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:
