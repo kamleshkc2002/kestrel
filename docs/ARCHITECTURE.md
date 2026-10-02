@@ -294,6 +294,46 @@ as owned diagnostics (`last_reconcile`, `last_switch`) and surfaced in the
 window, so device loss produces a reported repair rather than stale routing or a
 feature failure.
 
+### 5.7 Clipboard retention, ownership, and queries
+
+`clipboard.history` is an opt-in, memory-only service. Retained content lives in
+the worker inside zeroizing buffers; the published `ClipboardSnapshot` carries
+metadata only (identifier, kind, byte size, age, pin, and non-sensitive
+descriptors such as PNG dimensions or path count). Content leaves the worker
+through exactly two paths: an explicit bounded search that returns previews for
+matching entries, and an explicit bounded preview for one entry. Neither path
+touches the snapshot, a capability report, or a diagnostic.
+
+Entry kinds are per capability, not per platform claim. The Wayland adapter
+carries text, PNG images, and `text/uri-list` file lists; the X11 compatibility
+path is text-only and says so in its capability evidence and remediation.
+Rich payloads are transferred byte-exact — an image entry is the original PNG
+and a file entry is the URI list — so Kestrel never decodes, re-encodes, or
+re-renders retained content, and per-kind bounds (item bytes, image bytes, file
+count, total bytes, age) are enforced independently when an entry is captured.
+
+Ownership uses one mechanism per selection: Kestrel serves what it owns over
+Wayland data-control (text under the common plain-text MIME types, PNG under
+`image/png`, file lists under `text/uri-list`) and releases it by tearing that
+source down. Text reads still use arboard, and the X11 path keeps arboard's
+ownership. A release only ever removes Kestrel's own source: if another source
+still exposes those bytes, that is not Kestrel's selection to clear, and the
+next poll captures the re-published content again so the state stays visible
+rather than silently diverging.
+
+Session privacy is unchanged from the retention contract: lock, sleep, service
+stop, shutdown, and wipe drop every retained entry (pinned entries included) and
+release the owned selection. The independent automatic clear only releases the
+live selection after a configured interval and never touches saved entries.
+
+The window learns about clipboard changes through the same periodic tick as
+monitoring: the tick compares a metadata fingerprint (lifecycle, counts, byte
+total, pin/filter/clear/wipe counters, error presence) and, when it differs,
+re-runs the current query and hands the window owned presentation state. A
+background capture, an automatic selection clear, and a lock-time wipe therefore
+all become visible without a user action, and the search field keeps its text
+and focus because only the result rows are rebuilt.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

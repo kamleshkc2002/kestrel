@@ -75,6 +75,23 @@ pub const DEFAULT_AUDIO_BOOST_PERCENT: u8 = 130;
 /// The volume reapplied after output loss when the disconnect policy resets it.
 pub const DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT: u8 = 100;
 
+// Clipboard retention bounds. History stays memory-only and bounded; these
+// values only narrow or widen the in-memory window.
+pub const DEFAULT_CLIPBOARD_MAX_ITEMS: u32 = 100;
+pub const MAX_CLIPBOARD_MAX_ITEMS: u32 = 1000;
+pub const MIN_CLIPBOARD_ITEM_BYTES: u32 = 1024;
+pub const DEFAULT_CLIPBOARD_ITEM_BYTES: u32 = 1024 * 1024;
+pub const MAX_CLIPBOARD_ITEM_BYTES: u32 = 16 * 1024 * 1024;
+pub const DEFAULT_CLIPBOARD_IMAGE_BYTES: u32 = 4 * 1024 * 1024;
+pub const MAX_CLIPBOARD_IMAGE_BYTES: u32 = 64 * 1024 * 1024;
+pub const DEFAULT_CLIPBOARD_FILE_ENTRIES: u32 = 64;
+pub const MAX_CLIPBOARD_FILE_ENTRIES: u32 = 1024;
+pub const DEFAULT_CLIPBOARD_TOTAL_BYTES: u32 = 16 * 1024 * 1024;
+pub const MAX_CLIPBOARD_TOTAL_BYTES: u32 = 128 * 1024 * 1024;
+pub const DEFAULT_CLIPBOARD_AGE_HOURS: u32 = 24;
+pub const MAX_CLIPBOARD_AGE_HOURS: u32 = 24 * 30;
+pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 86_400;
+
 /// The user's preferred appearance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -213,6 +230,8 @@ pub struct ApplicationConfiguration {
     pub monitoring: MonitorConfiguration,
     #[serde(default)]
     pub audio: AudioConfiguration,
+    #[serde(default)]
+    pub clipboard: ClipboardConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -224,6 +243,7 @@ impl Default for ApplicationConfiguration {
             startup: StartupConfiguration::default(),
             monitoring: MonitorConfiguration::default(),
             audio: AudioConfiguration::default(),
+            clipboard: ClipboardConfiguration::default(),
         }
     }
 }
@@ -285,6 +305,7 @@ impl ApplicationConfiguration {
         }
         self.ui.validate()?;
         self.audio.validate()?;
+        self.clipboard.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
         if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
@@ -658,6 +679,126 @@ impl AudioConfiguration {
     }
 }
 
+/// User intent for the bounded, memory-only clipboard history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardConfiguration {
+    #[serde(default = "default_clipboard_max_items")]
+    pub max_items: u32,
+    #[serde(default = "default_clipboard_item_bytes")]
+    pub max_item_bytes: u32,
+    #[serde(default = "default_clipboard_image_bytes")]
+    pub max_image_bytes: u32,
+    #[serde(default = "default_clipboard_file_entries")]
+    pub max_file_entries: u32,
+    #[serde(default = "default_clipboard_total_bytes")]
+    pub max_total_bytes: u32,
+    #[serde(default = "default_clipboard_age_hours")]
+    pub max_age_hours: u32,
+    /// Seconds after which the live selection is cleared; `0` disables it.
+    ///
+    /// This never deletes saved entries.
+    #[serde(default)]
+    pub clear_seconds: u64,
+    /// Skips capturing content that matches a documented sensitive pattern.
+    #[serde(default)]
+    pub filter_sensitive: bool,
+    /// Whether the quick-paste action copies the plain-text form of an entry.
+    #[serde(default = "default_true")]
+    pub paste_plain_text: bool,
+}
+
+fn default_clipboard_max_items() -> u32 {
+    DEFAULT_CLIPBOARD_MAX_ITEMS
+}
+
+fn default_clipboard_item_bytes() -> u32 {
+    DEFAULT_CLIPBOARD_ITEM_BYTES
+}
+
+fn default_clipboard_image_bytes() -> u32 {
+    DEFAULT_CLIPBOARD_IMAGE_BYTES
+}
+
+fn default_clipboard_file_entries() -> u32 {
+    DEFAULT_CLIPBOARD_FILE_ENTRIES
+}
+
+fn default_clipboard_total_bytes() -> u32 {
+    DEFAULT_CLIPBOARD_TOTAL_BYTES
+}
+
+fn default_clipboard_age_hours() -> u32 {
+    DEFAULT_CLIPBOARD_AGE_HOURS
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ClipboardConfiguration {
+    fn default() -> Self {
+        Self {
+            max_items: DEFAULT_CLIPBOARD_MAX_ITEMS,
+            max_item_bytes: DEFAULT_CLIPBOARD_ITEM_BYTES,
+            max_image_bytes: DEFAULT_CLIPBOARD_IMAGE_BYTES,
+            max_file_entries: DEFAULT_CLIPBOARD_FILE_ENTRIES,
+            max_total_bytes: DEFAULT_CLIPBOARD_TOTAL_BYTES,
+            max_age_hours: DEFAULT_CLIPBOARD_AGE_HOURS,
+            clear_seconds: 0,
+            filter_sensitive: false,
+            paste_plain_text: true,
+        }
+    }
+}
+
+impl ClipboardConfiguration {
+    /// Validates every retention bound and the automatic clear interval.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(1..=MAX_CLIPBOARD_MAX_ITEMS).contains(&self.max_items) {
+            return Err(ConfigurationError::InvalidClipboardMaxItems {
+                items: self.max_items,
+            });
+        }
+        if !(MIN_CLIPBOARD_ITEM_BYTES..=MAX_CLIPBOARD_ITEM_BYTES).contains(&self.max_item_bytes) {
+            return Err(ConfigurationError::InvalidClipboardItemBytes {
+                bytes: self.max_item_bytes,
+            });
+        }
+        if !(MIN_CLIPBOARD_ITEM_BYTES..=MAX_CLIPBOARD_IMAGE_BYTES).contains(&self.max_image_bytes) {
+            return Err(ConfigurationError::InvalidClipboardImageBytes {
+                bytes: self.max_image_bytes,
+            });
+        }
+        if !(1..=MAX_CLIPBOARD_FILE_ENTRIES).contains(&self.max_file_entries) {
+            return Err(ConfigurationError::InvalidClipboardFileEntries {
+                entries: self.max_file_entries,
+            });
+        }
+        if !(MIN_CLIPBOARD_ITEM_BYTES..=MAX_CLIPBOARD_TOTAL_BYTES).contains(&self.max_total_bytes) {
+            return Err(ConfigurationError::InvalidClipboardTotalBytes {
+                bytes: self.max_total_bytes,
+            });
+        }
+        if self.max_item_bytes > self.max_total_bytes || self.max_image_bytes > self.max_total_bytes
+        {
+            return Err(ConfigurationError::InvalidClipboardTotalBytes {
+                bytes: self.max_total_bytes,
+            });
+        }
+        if !(1..=MAX_CLIPBOARD_AGE_HOURS).contains(&self.max_age_hours) {
+            return Err(ConfigurationError::InvalidClipboardAgeHours {
+                hours: self.max_age_hours,
+            });
+        }
+        if self.clear_seconds > MAX_CLIPBOARD_CLEAR_SECONDS {
+            return Err(ConfigurationError::InvalidClipboardClearSeconds {
+                seconds: self.clear_seconds,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// An invalid portable configuration contract.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigurationError {
@@ -673,6 +814,13 @@ pub enum ConfigurationError {
     InvalidAlertCooldown { kind: AlertKind, seconds: u64 },
     InvalidAudioBoostPercent { percent: u8 },
     InvalidAudioDisconnectVolumePercent { percent: u8 },
+    InvalidClipboardMaxItems { items: u32 },
+    InvalidClipboardItemBytes { bytes: u32 },
+    InvalidClipboardImageBytes { bytes: u32 },
+    InvalidClipboardFileEntries { entries: u32 },
+    InvalidClipboardTotalBytes { bytes: u32 },
+    InvalidClipboardAgeHours { hours: u32 },
+    InvalidClipboardClearSeconds { seconds: u64 },
 }
 
 // f64 cannot derive Eq; retaining Eq keeps error matching ergonomic while
@@ -793,13 +941,19 @@ mod tests {
     use super::{
         AlertKind, AlertRuleConfiguration, AppearancePreference, ApplicationConfiguration,
         AudioDisconnectPolicy, AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION,
-        CapabilityEvidence, CapabilityReport, CapabilityStatus, ConfigurationError, CostLevel,
-        DEFAULT_AUDIO_BOOST_PERCENT, DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT, FeatureSpec,
-        MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT,
-        MAX_AUDIO_BOOST_PERCENT, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
+        CapabilityEvidence, CapabilityReport, CapabilityStatus, ClipboardConfiguration,
+        ConfigurationError, CostLevel, DEFAULT_AUDIO_BOOST_PERCENT,
+        DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT, DEFAULT_CLIPBOARD_AGE_HOURS,
+        DEFAULT_CLIPBOARD_FILE_ENTRIES, DEFAULT_CLIPBOARD_IMAGE_BYTES,
+        DEFAULT_CLIPBOARD_ITEM_BYTES, DEFAULT_CLIPBOARD_MAX_ITEMS, DEFAULT_CLIPBOARD_TOTAL_BYTES,
+        FeatureSpec, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
+        MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
+        MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
+        MAX_CLIPBOARD_MAX_ITEMS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
         MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
-        MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout, PanelSection,
-        PanelSectionConfiguration, ResourceCost, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, UiConfiguration,
+        MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout,
+        PanelSection, PanelSectionConfiguration, ResourceCost, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
+        UiConfiguration,
     };
 
     #[test]
@@ -1080,6 +1234,98 @@ mod tests {
         );
         assert!(!audio.include_inactive_streams);
         assert_eq!(audio.validate(), Ok(()));
+    }
+
+    #[test]
+    fn clipboard_bounds_are_validated_independently() {
+        assert_eq!(ClipboardConfiguration::default().validate(), Ok(()));
+
+        for items in [0, MAX_CLIPBOARD_MAX_ITEMS + 1] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.clipboard.max_items = items;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidClipboardMaxItems { items })
+            );
+        }
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.clipboard.max_item_bytes = MIN_CLIPBOARD_ITEM_BYTES - 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidClipboardItemBytes {
+                bytes: MIN_CLIPBOARD_ITEM_BYTES - 1
+            })
+        );
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.clipboard.max_image_bytes = MAX_CLIPBOARD_IMAGE_BYTES + 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidClipboardImageBytes {
+                bytes: MAX_CLIPBOARD_IMAGE_BYTES + 1
+            })
+        );
+
+        for entries in [0, MAX_CLIPBOARD_FILE_ENTRIES + 1] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.clipboard.max_file_entries = entries;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidClipboardFileEntries { entries })
+            );
+        }
+
+        // A per-item bound above the total byte bound is not a valid shape.
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.clipboard.max_total_bytes = MIN_CLIPBOARD_ITEM_BYTES;
+        configuration.clipboard.max_item_bytes = MIN_CLIPBOARD_ITEM_BYTES * 2;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidClipboardTotalBytes {
+                bytes: MIN_CLIPBOARD_ITEM_BYTES
+            })
+        );
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.clipboard.max_age_hours = MAX_CLIPBOARD_AGE_HOURS + 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidClipboardAgeHours {
+                hours: MAX_CLIPBOARD_AGE_HOURS + 1
+            })
+        );
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.clipboard.clear_seconds = MAX_CLIPBOARD_CLEAR_SECONDS + 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidClipboardClearSeconds {
+                seconds: MAX_CLIPBOARD_CLEAR_SECONDS + 1
+            })
+        );
+    }
+
+    #[test]
+    fn clipboard_defaults_stay_bounded_memory_only_and_opt_in() {
+        let clipboard = ApplicationConfiguration::default().clipboard;
+
+        assert_eq!(clipboard.max_items, DEFAULT_CLIPBOARD_MAX_ITEMS);
+        assert_eq!(clipboard.max_item_bytes, DEFAULT_CLIPBOARD_ITEM_BYTES);
+        assert_eq!(clipboard.max_image_bytes, DEFAULT_CLIPBOARD_IMAGE_BYTES);
+        assert_eq!(clipboard.max_file_entries, DEFAULT_CLIPBOARD_FILE_ENTRIES);
+        assert_eq!(clipboard.max_total_bytes, DEFAULT_CLIPBOARD_TOTAL_BYTES);
+        assert_eq!(clipboard.max_age_hours, DEFAULT_CLIPBOARD_AGE_HOURS);
+        assert_eq!(
+            clipboard.clear_seconds, 0,
+            "the automatic selection clear is opt-in"
+        );
+        assert!(
+            !clipboard.filter_sensitive,
+            "sensitive filtering is opt-in because it has documented false positives"
+        );
+        assert!(clipboard.paste_plain_text);
+        assert_eq!(clipboard.validate(), Ok(()));
     }
 
     #[test]

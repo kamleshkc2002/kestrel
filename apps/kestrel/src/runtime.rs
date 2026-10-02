@@ -1,7 +1,10 @@
 use crate::{
     ApplicationViewModel, ConfigurationWarning,
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
-    view_model::{AudioPresentation, MonitorPresentation, MonitorViewModel},
+    view_model::{
+        AudioPresentation, ClipboardPresentation, ClipboardViewModel, MonitorPresentation,
+        MonitorViewModel,
+    },
 };
 use kestrel_core::{
     AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, CostLevel,
@@ -25,8 +28,8 @@ use kestrel_services::{
     alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
     audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot},
     clipboard::{
-        ClipboardCommand, ClipboardHistoryService, ClipboardPolicy, ClipboardServiceError,
-        ClipboardSnapshot,
+        ClipboardCommand, ClipboardHistoryService, ClipboardMatch, ClipboardPolicy,
+        ClipboardPreview, ClipboardServiceError, ClipboardSnapshot,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
     system_monitor::{HistorySummary, RefreshOutcome, SystemMonitorService, SystemSnapshot},
@@ -239,8 +242,10 @@ impl ApplicationRuntime {
                 AudioPolicy::from_configuration(&configuration.audio),
             )
             .expect("the validated audio policy is valid"),
-            clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::default())
-                .expect("the built-in clipboard policy is valid"),
+            clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::from_configuration(
+                &configuration.clipboard,
+            ))
+            .expect("the validated clipboard policy is valid"),
             system_monitor: SystemMonitorService::new(
                 monitor_source,
                 Duration::from_millis(configuration.monitoring.refresh_interval_millis),
@@ -310,6 +315,13 @@ impl ApplicationRuntime {
             .expect("the validated audio policy is valid");
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
+        }
+        if self.clipboard_history_is_running() {
+            let _ = self
+                .clipboard_history
+                .set_policy(ClipboardPolicy::from_configuration(
+                    &configuration.clipboard,
+                ));
         }
         let desired = self
             .registry
@@ -385,6 +397,22 @@ impl ApplicationRuntime {
         configuration: &ApplicationConfiguration,
         can_undo: bool,
     ) -> ApplicationViewModel {
+        self.view_model_with_clipboard(warnings, configuration, can_undo, "", &[], None)
+    }
+
+    /// Builds the view model with the application's current clipboard query.
+    ///
+    /// Search results and previews are produced by explicit, bounded requests,
+    /// so only the values the user asked to see are rendered.
+    pub fn view_model_with_clipboard(
+        &self,
+        warnings: &[ConfigurationWarning],
+        configuration: &ApplicationConfiguration,
+        can_undo: bool,
+        clipboard_query: &str,
+        clipboard_matches: &[ClipboardMatch],
+        clipboard_preview: Option<&ClipboardPreview>,
+    ) -> ApplicationViewModel {
         ApplicationViewModel::new(
             self.registrations(),
             self.quick_toggles.snapshots(),
@@ -392,6 +420,13 @@ impl ApplicationRuntime {
                 snapshot: Some(self.audio_mixer.latest()),
                 running: self.audio_mixer_is_running(),
                 policy: self.audio_mixer.policy(),
+            },
+            ClipboardPresentation {
+                snapshot: Some(self.clipboard_history.latest()),
+                running: self.clipboard_history_is_running(),
+                search_query: clipboard_query,
+                matches: clipboard_matches,
+                preview: clipboard_preview,
             },
             MonitorPresentation {
                 snapshot: self.system_monitor.latest(),
@@ -458,6 +493,31 @@ impl ApplicationRuntime {
     pub fn audio_snapshot(&self) -> &AudioSnapshot {
         self.audio_mixer.latest()
     }
+    /// Whether the opt-in clipboard history registration is running.
+    pub fn clipboard_is_running(&self) -> bool {
+        self.clipboard_history_is_running()
+    }
+
+    /// Builds clipboard presentation state alone, for targeted tick updates.
+    pub fn clipboard_view_model(
+        &self,
+        configuration: &ApplicationConfiguration,
+        query: &str,
+        matches: &[ClipboardMatch],
+        preview: Option<&ClipboardPreview>,
+    ) -> ClipboardViewModel {
+        ClipboardViewModel::from_presentation(
+            &configuration.clipboard,
+            ClipboardPresentation {
+                snapshot: Some(self.clipboard_history.latest()),
+                running: self.clipboard_history_is_running(),
+                search_query: query,
+                matches,
+                preview,
+            },
+        )
+    }
+
     /// Applies an audio command only while the opt-in mixer service is running.
     pub fn execute_audio_command(&mut self, command: AudioCommand) -> Option<AudioCommandResult> {
         self.audio_mixer_is_running()
@@ -466,6 +526,29 @@ impl ApplicationRuntime {
     /// Returns metadata about retained clipboard items without exposing their contents.
     pub fn clipboard_snapshot(&self) -> ClipboardSnapshot {
         self.clipboard_history.latest()
+    }
+
+    /// Searches retained entries through the running worker.
+    ///
+    /// The returned previews are bounded and explicitly requested; they never
+    /// enter the service snapshot or its diagnostics.
+    pub fn clipboard_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Option<Result<Vec<ClipboardMatch>, ClipboardServiceError>> {
+        self.clipboard_history_is_running()
+            .then(|| self.clipboard_history.search(query, limit))
+    }
+
+    /// Returns one bounded entry preview through the running worker.
+    pub fn clipboard_preview(
+        &self,
+        item_id: u64,
+        max_bytes: usize,
+    ) -> Option<Result<ClipboardPreview, ClipboardServiceError>> {
+        self.clipboard_history_is_running()
+            .then(|| self.clipboard_history.preview(item_id, max_bytes))
     }
 
     /// Applies a clipboard command only while the opt-in service is running.

@@ -150,15 +150,39 @@ not treat that extension or any tray icon as its sole entry point.
 ### Clipboard history
 
 `clipboard.history` is disabled by default and starts only after explicit
-per-feature opt-in and a successful capability probe. Retained UTF-8 text is
-memory-only and bounded to 100 items, 1 MiB per item, and 24 hours. Wipe,
-lock, sleep, shutdown, and service stop zero and drop retained buffers; Kestrel
-clears the live selection only when it still matches content Kestrel owns.
+per-feature opt-in and a successful capability probe. History is memory-only and
+bounded by `[clipboard]`: at most 100 entries (configurable to 1000), 1 MiB per
+text entry, 4 MiB per PNG image, 64 file paths per list, 16 MiB in total, and 24
+hours of age. Wipe, lock, sleep, shutdown, and service stop zero and drop
+retained buffers regardless of those values, and Kestrel releases the live
+selection only while it still owns it.
 
-Wayland uses the data-control protocol when available, with X11 `CLIPBOARD` as
-the compatibility path. No external clipboard-manager command is required.
-Generic source-application exclusions are unavailable because these clipboard
-interfaces do not provide verifiable source-application identity.
+The window lists retained entries with a bounded preview, and supports search,
+pins, multi-select deletion, explicit preview with text editing, quick copy, and
+paste-as-plain-text. Plain-text copying strips ANSI escape sequences and
+trailing whitespace, and file entries copy as their paths. Pins survive age
+pruning and eviction but never bypass the count or total-byte bounds.
+
+Entry kinds are per capability. Wayland data-control carries text, PNG images,
+and `text/uri-list` file lists; the X11 compatibility path captures text only
+and reports that reduction with remediation. Images and file lists are moved as
+byte-exact payloads — Kestrel never decodes or re-encodes them — so an image
+entry is the original PNG and its dimensions come from the PNG header.
+
+`[clipboard] clear_seconds` clears the live selection a fixed time after Kestrel
+takes it, without deleting saved entries; `0` disables it. `[clipboard]
+filter_sensitive` skips capturing text that matches a documented pattern set (a
+PEM private-key block, an `AKIA` access key, a `Bearer` token, a `password`
+assignment, or a mixed-case base64/hex run of 48 or more characters). Those
+heuristics produce documented false positives — a 64-character hex digest, a
+base64 blob in prose, or a code sample mentioning `password=` — so the filter is
+off by default and every skip is counted in the window.
+
+Snapshots and diagnostics never carry clipboard content: rows and previews come
+only from an explicit, bounded search or preview request. No external
+clipboard-manager command is required. Generic source-application exclusions are
+unavailable because these clipboard interfaces do not provide verifiable
+source-application identity.
 
 ## AppImage preview
 

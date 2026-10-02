@@ -15,8 +15,10 @@ pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, MonitorReadout,
     PanelSection,
 };
+pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
+pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use runtime::{ApplicationRuntime, FeaturePreset};
 pub use status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration};
@@ -24,11 +26,24 @@ pub use view_model::{
     ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
     AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
     CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel,
-    ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
-    FeatureViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
+    ClipboardPreviewViewModel, ClipboardViewModel, ConfigurationWarningViewModel,
+    ConfirmationViewModel, FeatureLifecycleViewModel, FeatureViewModel,
+    MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
     QuickToggleViewModel, RemediationViewModel,
 };
+
+/// One bounded clipboard retention value edited from the settings controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardLimit {
+    Items(u32),
+    ItemBytes(u32),
+    ImageBytes(u32),
+    FileEntries(u32),
+    MaxAgeHours(u32),
+    ClearSeconds(u64),
+}
 
 /// Direction for moving one of the ordered panel sections or monitoring readouts.
 ///
@@ -87,6 +102,15 @@ pub enum ApplicationCommand {
     SetAudioDisconnectPolicy(AudioDisconnectPolicy),
     SetAudioDisconnectVolumePercent(u8),
     SetAudioIncludeInactiveStreams(bool),
+    /// A clipboard history mutation (copy, pin, delete, edit, clear, wipe).
+    Clipboard(ClipboardCommand),
+    /// Runs an explicit, bounded search over retained entries.
+    ClipboardSearch(String),
+    /// Requests one bounded entry preview for display.
+    ClipboardPreview(u64),
+    SetClipboardLimit(ClipboardLimit),
+    SetClipboardFilterSensitive(bool),
+    SetClipboardPastePlainText(bool),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
     Quit,
