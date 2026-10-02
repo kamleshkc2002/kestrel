@@ -13,9 +13,10 @@ use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
 use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
-    ConfigurationWarning, FeaturePreset, LoadedConfiguration, MonitorReadout, MonitorViewModel,
-    PanelMoveDirection, PanelSection, StatusNotifierIntegration, configuration_path,
-    disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
+    ClipboardLifecycle, ClipboardViewModel, ConfigurationWarning, FeaturePreset,
+    LoadedConfiguration, MonitorReadout, MonitorViewModel, PanelMoveDirection, PanelSection,
+    StatusNotifierIntegration, configuration_path, disable as disable_autostart,
+    enable as enable_autostart, export_file, import_file, load, save,
 };
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
@@ -25,39 +26,66 @@ use kestrel_services::alerts::notification_text;
 
 use window::WindowView;
 
-const MONITOR_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const TICK_INTERVAL: Duration = Duration::from_millis(250);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
-/// `None` means the tick produced no new snapshot, so the window is left untouched.
-type MonitorResult = Option<MonitorViewModel>;
+/// A periodic tick: each field is `None` when that feature produced no new state.
+type TickUpdate = (Option<MonitorViewModel>, Option<ClipboardViewModel>);
 
 type SharedState = Arc<Mutex<ControllerState>>;
+
+/// The entries one search request may return to the window.
+const CLIPBOARD_SEARCH_LIMIT: usize = 50;
+/// The largest preview the window may request for one entry.
+const CLIPBOARD_PREVIEW_BYTES: usize = 2048;
 
 struct ControllerState {
     runtime: ApplicationRuntime,
     configuration: ApplicationConfiguration,
     warnings: Vec<ConfigurationWarning>,
     preset_snapshot: Option<FeatureConfigurationSnapshot>,
+    /// The application's current clipboard query and its bounded results.
+    clipboard_query: String,
+    clipboard_matches: Vec<kestrel_services::clipboard::ClipboardMatch>,
+    clipboard_preview: Option<kestrel_services::clipboard::ClipboardPreview>,
+    /// The last clipboard state delivered to the window.
+    clipboard_fingerprint: Option<ClipboardFingerprint>,
 }
 
 impl ControllerState {
     fn view_model(&self) -> ApplicationViewModel {
-        self.runtime.view_model(
+        self.runtime.view_model_with_clipboard(
             &self.warnings,
             &self.configuration,
             self.preset_snapshot.is_some(),
+            &self.clipboard_query,
+            &self.clipboard_matches,
+            self.clipboard_preview.as_ref(),
         )
+    }
+
+    /// Re-runs the current clipboard query so the list reflects a mutation.
+    fn refresh_clipboard_matches(&mut self) {
+        self.clipboard_preview = None;
+        match self
+            .runtime
+            .clipboard_search(&self.clipboard_query, CLIPBOARD_SEARCH_LIMIT)
+        {
+            Some(Ok(matches)) => self.clipboard_matches = matches,
+            Some(Err(_)) | None => self.clipboard_matches.clear(),
+        }
     }
 }
 
-/// Samples the monitor, delivers alert notifications, and reports owned monitoring
-/// presentation. The state mutex is held only for the sample and for recording
-/// delivery results, never across the blocking session-bus notification call.
-fn run_monitor_tick(
+/// Samples the monitor, delivers alerts, and reports clipboard changes.
+///
+/// The state mutex is held only for the sample, for recording delivery results,
+/// and for one clipboard comparison; never across the blocking notification call.
+fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
     observed_at: Duration,
-) -> MonitorResult {
+) -> TickUpdate {
     let (updated, alerts) = {
         let mut guard = state
             .lock()
@@ -68,10 +96,18 @@ fn run_monitor_tick(
             tick.alerts,
         )
     };
-    if !updated {
-        return None;
-    }
+    let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
+    let clipboard = clipboard_tick_update(state);
+    (monitor, clipboard)
+}
 
+/// Delivers alert notifications outside the controller lock, then reports the
+/// resulting monitor presentation state.
+fn deliver_alerts(
+    state: &SharedState,
+    notifier: &dyn AlertNotifier,
+    alerts: Vec<kestrel_services::alerts::AlertEvent>,
+) -> MonitorViewModel {
     let deliveries = alerts
         .iter()
         .map(|event| {
@@ -89,7 +125,80 @@ fn run_monitor_tick(
     for (kind, result) in deliveries {
         guard.runtime.record_alert_delivery(kind, result);
     }
-    Some(guard.runtime.monitor_view_model(&guard.configuration))
+    guard.runtime.monitor_view_model(&guard.configuration)
+}
+
+/// Builds clipboard presentation state when the worker's snapshot changed.
+fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
+    let mut guard = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let snapshot = guard.runtime.clipboard_snapshot();
+    let fingerprint = ClipboardFingerprint::of(&snapshot);
+    if guard.clipboard_fingerprint == Some(fingerprint) {
+        return None;
+    }
+    guard.clipboard_fingerprint = Some(fingerprint);
+    // The row list is produced by an explicit query, so re-run the current one
+    // when the snapshot changed: a background capture must appear in the list,
+    // not only in the retained count.
+    let refreshed = {
+        let query = &guard.clipboard_query;
+        guard
+            .runtime
+            .clipboard_search(query, CLIPBOARD_SEARCH_LIMIT)
+    };
+    if let Some(Ok(matches)) = refreshed {
+        guard.clipboard_matches = matches;
+    }
+    if let Some(preview) = guard.clipboard_preview.as_ref() {
+        if !guard
+            .clipboard_matches
+            .iter()
+            .any(|matched| matched.id == preview.id)
+        {
+            guard.clipboard_preview = None;
+        }
+    }
+    Some(guard.runtime.clipboard_view_model(
+        &guard.configuration,
+        &guard.clipboard_query,
+        &guard.clipboard_matches,
+        guard.clipboard_preview.as_ref(),
+    ))
+}
+
+/// Cheap change detector for the clipboard snapshot.
+///
+/// The worker publishes on every poll, so the tick compares this fingerprint
+/// instead of rebuilding presentation state (or touching widgets) each time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClipboardFingerprint {
+    lifecycle: ClipboardLifecycle,
+    items: usize,
+    total_bytes: usize,
+    pinned: usize,
+    rejected: u64,
+    filtered: u64,
+    clears: u64,
+    wipes: u64,
+    has_error: bool,
+}
+
+impl ClipboardFingerprint {
+    fn of(snapshot: &kestrel_services::clipboard::ClipboardSnapshot) -> Self {
+        Self {
+            lifecycle: snapshot.lifecycle,
+            items: snapshot.items.len(),
+            total_bytes: snapshot.total_bytes,
+            pinned: snapshot.pinned_items,
+            rejected: snapshot.rejected_oversize_items,
+            filtered: snapshot.filtered_sensitive_items,
+            clears: snapshot.selection_clears,
+            wipes: snapshot.wipe_count,
+            has_error: snapshot.last_error.is_some(),
+        }
+    }
 }
 
 enum ControllerOperation {
@@ -133,6 +242,12 @@ enum ControllerOperation {
     SetAudioDisconnectPolicy(kestrel::AudioDisconnectPolicy),
     SetAudioDisconnectVolumePercent(u8),
     SetAudioIncludeInactiveStreams(bool),
+    Clipboard(kestrel::ClipboardCommand),
+    ClipboardSearch(String),
+    ClipboardPreview(u64),
+    SetClipboardLimit(kestrel::ClipboardLimit),
+    SetClipboardFilterSensitive(bool),
+    SetClipboardPastePlainText(bool),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
 }
@@ -141,7 +256,7 @@ enum ControllerOperation {
 struct ControllerContext {
     config_path: Option<PathBuf>,
     refresh_results: Sender<RefreshResult>,
-    monitor_results: Sender<MonitorResult>,
+    tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
 }
@@ -151,13 +266,17 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
     refreshing: Cell<bool>,
+    /// True while the queued operation should update only the clipboard group.
+    clipboard_update: Cell<bool>,
     monitoring: Cell<bool>,
     /// Mirrors the monitor registration so a disabled feature never spawns tick workers.
     monitor_running: Cell<bool>,
+    /// Mirrors the clipboard registration so background captures reach the window.
+    clipboard_running: Cell<bool>,
     monitor_started_at: Instant,
     notifier: Arc<dyn AlertNotifier>,
     refresh_results: Sender<RefreshResult>,
-    monitor_results: Sender<MonitorResult>,
+    tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
 }
 impl ApplicationController {
@@ -170,27 +289,34 @@ impl ApplicationController {
         let ControllerContext {
             config_path,
             refresh_results,
-            monitor_results,
+            tick_results,
             commands,
             notifier,
         } = context;
         let monitor_running = runtime.monitor_is_running();
+        let clipboard_running = runtime.clipboard_is_running();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
                 runtime,
                 configuration,
                 warnings,
                 preset_snapshot: None,
+                clipboard_query: String::new(),
+                clipboard_matches: Vec::new(),
+                clipboard_preview: None,
+                clipboard_fingerprint: None,
             })),
             config_path,
             window: RefCell::new(None),
             refreshing: Cell::new(false),
+            clipboard_update: Cell::new(false),
             monitoring: Cell::new(false),
             monitor_running: Cell::new(monitor_running),
+            clipboard_running: Cell::new(clipboard_running),
             monitor_started_at: Instant::now(),
             notifier,
             refresh_results,
-            monitor_results,
+            tick_results,
             commands,
         })
     }
@@ -260,6 +386,25 @@ impl ApplicationController {
         }
     }
 
+    /// Queues a clipboard operation that updates only the clipboard group.
+    ///
+    /// The group owns the search field, so a full page rebuild while the user
+    /// types would steal focus and lose the query.
+    fn request_clipboard_operation(
+        &self,
+        operation: ControllerOperation,
+        worker_name: &'static str,
+    ) {
+        // The single-operation gate is checked first so a rejected request
+        // never leaves the targeted-update flag set.
+        if self.refreshing.get() {
+            self.request_operation(operation, worker_name);
+            return;
+        }
+        self.clipboard_update.set(true);
+        self.request_operation(operation, worker_name);
+    }
+
     fn finish_refresh(&self, result: RefreshResult) {
         self.refreshing.set(false);
         let window = self.window.borrow();
@@ -267,48 +412,73 @@ impl ApplicationController {
             return;
         };
         view.set_refreshing(false);
+        let clipboard_only = self.clipboard_update.replace(false);
         match result {
             Ok((view_model, message)) => {
                 apply_color_scheme(view_model.appearance);
                 self.monitor_running.set(view_model.monitor.running);
-                view.set_view_model(&view_model);
-                view.show_message(&message);
+                self.clipboard_running.set(view_model.clipboard.running);
+                if clipboard_only {
+                    view.set_clipboard(&view_model.clipboard);
+                } else {
+                    view.set_view_model(&view_model);
+                }
+                if !message.is_empty() {
+                    view.show_message(&message);
+                }
             }
             Err(message) => {
                 let view_model = self.current_view_model();
                 self.monitor_running.set(view_model.monitor.running);
-                view.set_view_model(&view_model);
+                self.clipboard_running.set(view_model.clipboard.running);
+                if clipboard_only {
+                    view.set_clipboard(&view_model.clipboard);
+                } else {
+                    view.set_view_model(&view_model);
+                }
                 view.show_message(&message);
             }
         }
     }
-    fn request_monitor_sample(&self) {
-        if self.refreshing.get() || !self.monitor_running.get() || self.monitoring.replace(true) {
+    fn request_tick(&self) {
+        if self.refreshing.get() || self.monitoring.replace(true) {
+            return;
+        }
+        // The tick serves the monitor and the clipboard panel, so it runs while
+        // either feature is live.
+        if !self.monitor_running.get() && !self.clipboard_running.get() {
+            self.monitoring.set(false);
             return;
         }
         let state = Arc::clone(&self.state);
         let notifier = Arc::clone(&self.notifier);
-        let results = self.monitor_results.clone();
+        let results = self.tick_results.clone();
         let observed_at = self.monitor_started_at.elapsed();
         let worker = thread::Builder::new()
-            .name("kestrel-monitor-sample".to_owned())
+            .name("kestrel-tick".to_owned())
             .spawn(move || {
-                let view_model = run_monitor_tick(&state, notifier.as_ref(), observed_at);
-                let _ = results.send_blocking(view_model);
+                let update = run_tick(&state, notifier.as_ref(), observed_at);
+                let _ = results.send_blocking(update);
             });
         if worker.is_err() {
             self.monitoring.set(false);
         }
     }
 
-    fn finish_monitor_sample(&self, monitor: Option<MonitorViewModel>) {
+    fn finish_tick(&self, update: TickUpdate) {
         self.monitoring.set(false);
-        let Some(monitor) = monitor else {
+        let (monitor, clipboard) = update;
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
             return;
         };
-        self.monitor_running.set(monitor.running);
-        if let Some(view) = self.window.borrow().as_ref() {
+        if let Some(monitor) = monitor {
+            self.monitor_running.set(monitor.running);
             view.set_monitor(&monitor);
+        }
+        if let Some(clipboard) = clipboard {
+            self.clipboard_running.set(clipboard.running);
+            view.set_clipboard(&clipboard);
         }
     }
 
@@ -568,6 +738,127 @@ impl ControllerState {
                     ),
                 )?
             }
+            ControllerOperation::Clipboard(command) => {
+                let summary = clipboard_command_summary(&command);
+                match self.runtime.execute_clipboard_command(command) {
+                    Some(Ok(snapshot)) => {
+                        self.refresh_clipboard_matches();
+                        format!("{summary} · {} entries retained", snapshot.items.len())
+                    }
+                    Some(Err(error)) => format!("{summary} failed: {error}"),
+                    None => "Clipboard history is not running; enable clipboard.history first"
+                        .to_owned(),
+                }
+            }
+            ControllerOperation::ClipboardSearch(query) => {
+                self.clipboard_query = query.clone();
+                self.clipboard_preview = None;
+                match self
+                    .runtime
+                    .clipboard_search(&query, CLIPBOARD_SEARCH_LIMIT)
+                {
+                    Some(Ok(matches)) => {
+                        let shown = matches.len();
+                        self.clipboard_matches = matches;
+                        if query.trim().is_empty() {
+                            // An empty query is the initial listing; it updates
+                            // the list without a toast.
+                            String::new()
+                        } else {
+                            format!("{shown} entries match \"{query}\"")
+                        }
+                    }
+                    Some(Err(error)) => {
+                        self.clipboard_matches.clear();
+                        format!("Clipboard search failed: {error}")
+                    }
+                    None => {
+                        self.clipboard_matches.clear();
+                        "Clipboard history is not running".to_owned()
+                    }
+                }
+            }
+            ControllerOperation::ClipboardPreview(item_id) => {
+                self.clipboard_preview = None;
+                match self
+                    .runtime
+                    .clipboard_preview(item_id, CLIPBOARD_PREVIEW_BYTES)
+                {
+                    Some(Ok(preview)) => {
+                        let truncated = if preview.truncated {
+                            " (truncated)"
+                        } else {
+                            ""
+                        };
+                        self.clipboard_preview = Some(preview);
+                        format!("Entry preview loaded{truncated}")
+                    }
+                    Some(Err(error)) => format!("Entry preview failed: {error}"),
+                    None => "Clipboard history is not running".to_owned(),
+                }
+            }
+            ControllerOperation::SetClipboardLimit(limit) => {
+                let mut candidate = self.configuration.clone();
+                let message = match limit {
+                    kestrel::ClipboardLimit::Items(items) => {
+                        candidate.clipboard.max_items = items;
+                        format!("Clipboard retains at most {items} entries")
+                    }
+                    kestrel::ClipboardLimit::ItemBytes(bytes) => {
+                        candidate.clipboard.max_item_bytes = bytes;
+                        format!("Clipboard text entries are bounded to {bytes} bytes")
+                    }
+                    kestrel::ClipboardLimit::ImageBytes(bytes) => {
+                        candidate.clipboard.max_image_bytes = bytes;
+                        format!("Clipboard image entries are bounded to {bytes} bytes")
+                    }
+                    kestrel::ClipboardLimit::FileEntries(entries) => {
+                        candidate.clipboard.max_file_entries = entries;
+                        format!("Clipboard file entries are bounded to {entries} paths")
+                    }
+                    kestrel::ClipboardLimit::MaxAgeHours(hours) => {
+                        candidate.clipboard.max_age_hours = hours;
+                        format!("Clipboard entries expire after {hours} hours")
+                    }
+                    kestrel::ClipboardLimit::ClearSeconds(seconds) => {
+                        candidate.clipboard.clear_seconds = seconds;
+                        if seconds == 0 {
+                            "Automatic selection clearing is disabled".to_owned()
+                        } else {
+                            format!("The live selection is cleared after {seconds} seconds")
+                        }
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetClipboardFilterSensitive(filter) => {
+                let mut candidate = self.configuration.clone();
+                candidate.clipboard.filter_sensitive = filter;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "Sensitive-pattern filtering {}",
+                        if filter { "enabled" } else { "disabled" }
+                    ),
+                )?
+            }
+            ControllerOperation::SetClipboardPastePlainText(plain) => {
+                let mut candidate = self.configuration.clone();
+                candidate.clipboard.paste_plain_text = plain;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "Quick paste copies {}",
+                        if plain {
+                            "plain text"
+                        } else {
+                            "the original form"
+                        }
+                    ),
+                )?
+            }
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -721,6 +1012,19 @@ fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
     }
 }
 
+/// Names the clipboard operation that a status message refers to.
+fn clipboard_command_summary(command: &kestrel::ClipboardCommand) -> &'static str {
+    match command {
+        kestrel::ClipboardCommand::Refresh => "Clipboard refresh",
+        kestrel::ClipboardCommand::CopyItem { .. } => "Clipboard copy",
+        kestrel::ClipboardCommand::DeleteItems { .. } => "Clipboard delete",
+        kestrel::ClipboardCommand::SetPinned { .. } => "Clipboard pin",
+        kestrel::ClipboardCommand::ReplaceText { .. } => "Clipboard edit",
+        kestrel::ClipboardCommand::ClearSelection => "Clipboard selection clear",
+        kestrel::ClipboardCommand::Wipe => "Clipboard wipe",
+    }
+}
+
 fn panel_label(section: PanelSection) -> &'static str {
     match section {
         PanelSection::QuickControls => "Quick Controls",
@@ -803,7 +1107,7 @@ fn main() {
         .expect("built-in capability probes are internally consistent");
 
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
-    let (monitor_results, monitor_receiver) = async_channel::unbounded();
+    let (tick_results, tick_receiver) = async_channel::unbounded();
     let notifier: Arc<dyn AlertNotifier> = Arc::new(DesktopNotifier::new());
     let controller = ApplicationController::new(
         runtime,
@@ -812,7 +1116,7 @@ fn main() {
         ControllerContext {
             config_path,
             refresh_results,
-            monitor_results,
+            tick_results,
             commands: commands.clone(),
             notifier,
         },
@@ -820,11 +1124,11 @@ fn main() {
     install_command_actions(&application, commands);
     dispatch_commands(&application, &controller, command_receiver);
     dispatch_refresh_results(&controller, refresh_receiver);
-    dispatch_monitor_results(&controller, monitor_receiver);
+    dispatch_tick_results(&controller, tick_receiver);
     let weak_monitor_controller = Rc::downgrade(&controller);
-    glib::timeout_add_local(MONITOR_TICK_INTERVAL, move || {
+    glib::timeout_add_local(TICK_INTERVAL, move || {
         if let Some(controller) = weak_monitor_controller.upgrade() {
-            controller.request_monitor_sample();
+            controller.request_tick();
         }
         glib::ControlFlow::Continue
     });
@@ -976,6 +1280,34 @@ fn dispatch_commands(
                         ControllerOperation::SetAudioIncludeInactiveStreams(include),
                         "kestrel-audio-inactive",
                     ),
+                ApplicationCommand::Clipboard(command) => controller.request_clipboard_operation(
+                    ControllerOperation::Clipboard(command),
+                    "kestrel-clipboard",
+                ),
+                ApplicationCommand::ClipboardSearch(query) => controller
+                    .request_clipboard_operation(
+                        ControllerOperation::ClipboardSearch(query),
+                        "kestrel-clipboard-search",
+                    ),
+                ApplicationCommand::ClipboardPreview(item_id) => controller
+                    .request_clipboard_operation(
+                        ControllerOperation::ClipboardPreview(item_id),
+                        "kestrel-clipboard-preview",
+                    ),
+                ApplicationCommand::SetClipboardLimit(limit) => controller.request_operation(
+                    ControllerOperation::SetClipboardLimit(limit),
+                    "kestrel-clipboard-limit",
+                ),
+                ApplicationCommand::SetClipboardFilterSensitive(filter) => controller
+                    .request_operation(
+                        ControllerOperation::SetClipboardFilterSensitive(filter),
+                        "kestrel-clipboard-filter",
+                    ),
+                ApplicationCommand::SetClipboardPastePlainText(plain) => controller
+                    .request_operation(
+                        ControllerOperation::SetClipboardPastePlainText(plain),
+                        "kestrel-clipboard-paste",
+                    ),
                 ApplicationCommand::ImportConfiguration(path) => controller.request_operation(
                     ControllerOperation::ImportConfiguration(path),
                     "kestrel-configuration-import",
@@ -1004,17 +1336,14 @@ fn dispatch_refresh_results(
         }
     });
 }
-fn dispatch_monitor_results(
-    controller: &Rc<ApplicationController>,
-    receiver: Receiver<MonitorResult>,
-) {
+fn dispatch_tick_results(controller: &Rc<ApplicationController>, receiver: Receiver<TickUpdate>) {
     let controller = Rc::downgrade(controller);
     glib::spawn_future_local(async move {
         while let Ok(monitor) = receiver.recv().await {
             let Some(controller) = controller.upgrade() else {
                 break;
             };
-            controller.finish_monitor_sample(monitor);
+            controller.finish_tick(monitor);
         }
     });
 }
@@ -1116,7 +1445,7 @@ mod tests {
     /// enabled counterpart proves the same path still samples.
     #[test]
     fn monitor_ticks_are_inert_while_the_feature_is_disabled() {
-        use super::{ApplicationController, ControllerContext, MonitorResult};
+        use super::{ApplicationController, ControllerContext};
         use async_channel::Sender;
         use kestrel::ApplicationRuntime;
         use kestrel_platform::notifications::{
@@ -1136,7 +1465,7 @@ mod tests {
 
         fn controller_for(
             configuration: &ApplicationConfiguration,
-            monitor_results: Sender<MonitorResult>,
+            tick_results: Sender<super::TickUpdate>,
         ) -> Rc<ApplicationController> {
             let mut runtime =
                 ApplicationRuntime::new(configuration).expect("built-in features have valid IDs");
@@ -1150,7 +1479,7 @@ mod tests {
                 ControllerContext {
                     config_path: None,
                     refresh_results,
-                    monitor_results,
+                    tick_results,
                     commands,
                     notifier: Arc::new(SilentNotifier),
                 },
@@ -1159,7 +1488,7 @@ mod tests {
 
         let (disabled_results, disabled_receiver) = async_channel::unbounded();
         let disabled = controller_for(&ApplicationConfiguration::default(), disabled_results);
-        disabled.request_monitor_sample();
+        disabled.request_tick();
         assert!(
             !disabled.monitoring.get(),
             "a disabled monitor must not start a sampling worker"
@@ -1176,7 +1505,7 @@ mod tests {
             .expect("feature ID is valid");
         let (enabled_results, enabled_receiver) = async_channel::unbounded();
         let enabled = controller_for(&configuration, enabled_results);
-        enabled.request_monitor_sample();
+        enabled.request_tick();
         assert!(
             enabled.monitoring.get(),
             "an enabled monitor samples on the next tick"

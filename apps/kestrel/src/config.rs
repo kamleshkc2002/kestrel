@@ -7,11 +7,13 @@ use kestrel_core::{
     AlertKind, AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy,
     AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError,
     FeatureConfiguration, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
-    MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_MONITOR_HISTORY_SAMPLES,
+    MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
+    MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
+    MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_MONITOR_HISTORY_SAMPLES,
     MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
-    MIN_ALERT_SUSTAIN_SAMPLES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout, PanelSection,
-    PanelSectionConfiguration, StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
-    validate_feature_id,
+    MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS,
+    MonitorReadout, PanelSection, PanelSectionConfiguration, StartupConfiguration,
+    UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -188,6 +190,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_startup(&mut loaded, document.get("startup"));
     parse_monitoring(&mut loaded, document.get("monitoring"));
     parse_audio(&mut loaded, document.get("audio"));
+    parse_clipboard(&mut loaded, document.get("clipboard"));
     Ok(loaded)
 }
 
@@ -521,6 +524,128 @@ fn parse_audio(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
                 format!("The inactive-stream preference is invalid and was ignored: {error}"),
             )),
         }
+    }
+}
+
+fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(clipboard) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "clipboard",
+            "The clipboard value must be a TOML table.",
+        ));
+        return;
+    };
+
+    let bounded_u32 = |loaded: &mut LoadedConfiguration, key: &str, minimum: u32, maximum: u32| {
+        if let Some(value) = clipboard.get(key) {
+            match u32::deserialize(value.clone()) {
+                Ok(parsed) if (minimum..=maximum).contains(&parsed) => Some(parsed),
+                _ => {
+                    loaded.warnings.push(warning(
+                        &format!("clipboard.{key}"),
+                        format!(
+                            "The value must be between {minimum} and {maximum}; the default was \
+                             retained."
+                        ),
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some(items) = bounded_u32(loaded, "max_items", 1, MAX_CLIPBOARD_MAX_ITEMS) {
+        loaded.configuration.clipboard.max_items = items;
+    }
+    if let Some(bytes) = bounded_u32(
+        loaded,
+        "max_item_bytes",
+        MIN_CLIPBOARD_ITEM_BYTES,
+        MAX_CLIPBOARD_TOTAL_BYTES,
+    ) {
+        loaded.configuration.clipboard.max_item_bytes = bytes;
+    }
+    if let Some(bytes) = bounded_u32(
+        loaded,
+        "max_image_bytes",
+        MIN_CLIPBOARD_ITEM_BYTES,
+        MAX_CLIPBOARD_IMAGE_BYTES,
+    ) {
+        loaded.configuration.clipboard.max_image_bytes = bytes;
+    }
+    if let Some(entries) = bounded_u32(loaded, "max_file_entries", 1, MAX_CLIPBOARD_FILE_ENTRIES) {
+        loaded.configuration.clipboard.max_file_entries = entries;
+    }
+    if let Some(bytes) = bounded_u32(
+        loaded,
+        "max_total_bytes",
+        MIN_CLIPBOARD_ITEM_BYTES,
+        MAX_CLIPBOARD_TOTAL_BYTES,
+    ) {
+        loaded.configuration.clipboard.max_total_bytes = bytes;
+    }
+    if let Some(hours) = bounded_u32(loaded, "max_age_hours", 1, MAX_CLIPBOARD_AGE_HOURS) {
+        loaded.configuration.clipboard.max_age_hours = hours;
+    }
+    if let Some(value) = clipboard.get("clear_seconds") {
+        match u64::deserialize(value.clone()) {
+            Ok(seconds) if seconds <= MAX_CLIPBOARD_CLEAR_SECONDS => {
+                loaded.configuration.clipboard.clear_seconds = seconds;
+            }
+            _ => loaded.warnings.push(warning(
+                "clipboard.clear_seconds",
+                format!(
+                    "The automatic clear interval must be between 0 and \
+                     {MAX_CLIPBOARD_CLEAR_SECONDS} seconds; the default was retained."
+                ),
+            )),
+        }
+    }
+    for (key, target) in [
+        (
+            "filter_sensitive",
+            &mut loaded.configuration.clipboard.filter_sensitive,
+        ),
+        (
+            "paste_plain_text",
+            &mut loaded.configuration.clipboard.paste_plain_text,
+        ),
+    ] {
+        if let Some(value) = clipboard.get(key) {
+            match bool::deserialize(value.clone()) {
+                Ok(parsed) => *target = parsed,
+                Err(error) => loaded.warnings.push(warning(
+                    &format!("clipboard.{key}"),
+                    format!("The value is invalid and was ignored: {error}"),
+                )),
+            }
+        }
+    }
+
+    // A per-item bound above the total byte bound is not a valid shape. The
+    // explicit total cap wins, because exceeding it is the one outcome a user
+    // cannot have intended, and the entry bounds are lowered to fit it.
+    let total = loaded.configuration.clipboard.max_total_bytes;
+    let mut repaired = false;
+    if loaded.configuration.clipboard.max_item_bytes > total {
+        loaded.configuration.clipboard.max_item_bytes = total;
+        repaired = true;
+    }
+    if loaded.configuration.clipboard.max_image_bytes > total {
+        loaded.configuration.clipboard.max_image_bytes = total;
+        repaired = true;
+    }
+    if repaired {
+        loaded.warnings.push(warning(
+            "clipboard.max_total_bytes",
+            format!(
+                "The total byte bound ({total} bytes) is smaller than a single entry bound; the \
+                 per-entry bounds were lowered to it."
+            ),
+        ));
     }
 }
 
@@ -969,6 +1094,125 @@ include_inactive_streams = "sometimes"
 
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.audio, configuration.audio);
+        assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn clipboard_table_parses_every_retention_bound() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[clipboard]
+max_items = 250
+max_item_bytes = 524288
+max_image_bytes = 2097152
+max_file_entries = 12
+max_total_bytes = 8388608
+max_age_hours = 6
+clear_seconds = 45
+filter_sensitive = true
+paste_plain_text = false
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        let clipboard = loaded.configuration.clipboard;
+        assert_eq!(clipboard.max_items, 250);
+        assert_eq!(clipboard.max_item_bytes, 524_288);
+        assert_eq!(clipboard.max_image_bytes, 2_097_152);
+        assert_eq!(clipboard.max_file_entries, 12);
+        assert_eq!(clipboard.max_total_bytes, 8_388_608);
+        assert_eq!(clipboard.max_age_hours, 6);
+        assert_eq!(clipboard.clear_seconds, 45);
+        assert!(clipboard.filter_sensitive);
+        assert!(!clipboard.paste_plain_text);
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn malformed_clipboard_fields_are_isolated() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[clipboard]
+max_items = 100000
+max_item_bytes = 0
+max_image_bytes = "big"
+max_file_entries = 0
+max_age_hours = 0
+clear_seconds = 999999
+filter_sensitive = "yes"
+paste_plain_text = 3
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.clipboard,
+            kestrel_core::ClipboardConfiguration::default()
+        );
+        for location in [
+            "clipboard.max_items",
+            "clipboard.max_item_bytes",
+            "clipboard.max_image_bytes",
+            "clipboard.max_file_entries",
+            "clipboard.max_age_hours",
+            "clipboard.clear_seconds",
+            "clipboard.filter_sensitive",
+            "clipboard.paste_plain_text",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location),
+                "{location} must report an isolated warning"
+            );
+        }
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_inconsistent_clipboard_bound_pair_is_reported_and_repaired() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[clipboard]
+max_total_bytes = 4096
+max_item_bytes = 1048576
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.clipboard.max_item_bytes, 4096,
+            "the per-entry bound is lowered to the explicit total bound"
+        );
+        assert_eq!(loaded.configuration.clipboard.max_image_bytes, 4096);
+        assert_eq!(loaded.configuration.clipboard.max_total_bytes, 4096);
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "clipboard.max_total_bytes")
+        );
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn clipboard_policy_survives_export_round_trip() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.clipboard.max_items = 12;
+        configuration.clipboard.clear_seconds = 90;
+        configuration.clipboard.filter_sensitive = true;
+
+        let exported = export_string(&configuration).expect("configuration exports");
+        assert!(exported.contains("[clipboard]"));
+        assert!(exported.contains("max_items = 12"));
+
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(reloaded.configuration.clipboard, configuration.clipboard);
         assert!(reloaded.warnings.is_empty());
     }
 

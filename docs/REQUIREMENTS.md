@@ -463,7 +463,10 @@ specific remediation rather than simply hiding a feature without explanation.
 - **Clipboard privacy:** history is disabled by default and retains content only in
   bounded, zeroizing process memory after opt-in. Enforce maximum item size, count, and
   age; clear on lock/sleep; release owned selections on stop; and provide immediate
-  wipe. Per-application ignore rules must not be claimed unless a desktop interface
+  wipe. Snapshots and diagnostics must not expose clipboard content: entry text leaves
+  the service only through an explicit, bounded search or preview request. The optional
+  sensitive-pattern filter is heuristic, documented with its false positives, and off by
+  default. Per-application ignore rules must not be claimed unless a desktop interface
   supplies verifiable source-application identity.
 - **Media privacy:** screenshots, recordings, camera frames, OCR text, and QR results
   stay local by default. Upload or temporary sharing must be an explicit, separately

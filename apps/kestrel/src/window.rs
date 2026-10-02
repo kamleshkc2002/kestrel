@@ -21,7 +21,23 @@ pub struct WindowView {
     toasts: adw::ToastOverlay,
     commands: Sender<ApplicationCommand>,
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
+    /// The retained clipboard panel, so a search keeps its text and focus.
+    clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
 }
+
+/// The reusable parts of the clipboard group.
+///
+/// The search field and status line survive result updates; only the result
+/// rows are rebuilt, so typing is never interrupted by a refresh.
+struct ClipboardPanel {
+    container: gtk::Box,
+    status: gtk::Label,
+    results: gtk::Box,
+    selected: std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<u64>>>,
+}
+
+/// Keeps programmatic search-field updates from re-triggering a search.
+type SearchGuard = std::rc::Rc<std::cell::Cell<bool>>;
 
 impl WindowView {
     pub fn new(
@@ -77,6 +93,7 @@ impl WindowView {
             toasts,
             commands,
             monitor_container: std::cell::RefCell::new(page.monitor_container),
+            clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
         }
     }
 
@@ -84,6 +101,23 @@ impl WindowView {
         let page = build_page(view_model, &self.window, &self.commands);
         self.content.set_child(Some(&page.clamp));
         *self.monitor_container.borrow_mut() = page.monitor_container;
+        *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
+    }
+
+    /// Updates the clipboard group in place, preserving the search field.
+    pub fn set_clipboard(&self, clipboard: &kestrel::ClipboardViewModel) {
+        let panel = self.clipboard_panel.borrow();
+        let Some(panel) = panel.as_ref() else {
+            return;
+        };
+        panel.status.set_text(&clipboard.status);
+        while let Some(child) = panel.results.first_child() {
+            child.unparent();
+        }
+        fill_clipboard_results(panel, clipboard, &self.commands);
+        // A background capture makes entries exist before any query was run, so
+        // the first listing is requested here as well as on a full rebuild.
+        request_initial_clipboard_listing(clipboard, &self.commands);
     }
 
     pub fn set_monitor(&self, monitor: &MonitorViewModel) {
@@ -113,6 +147,7 @@ impl WindowView {
 struct PageBuild {
     clamp: adw::Clamp,
     monitor_container: Option<gtk::Box>,
+    clipboard_panel: Option<ClipboardPanel>,
 }
 
 fn build_page(
@@ -149,6 +184,7 @@ fn build_page(
         page.append(&build_warning_group(view_model));
     }
     let mut monitor_container = None;
+    let mut clipboard_panel = None;
     for panel in &view_model.panel_sections {
         if !panel.visible {
             continue;
@@ -163,6 +199,9 @@ fn build_page(
                     ));
                 }
                 page.append(&build_audio_controls(&view_model.audio, commands));
+                let panel = build_clipboard_panel(&view_model.clipboard, commands);
+                page.append(&panel.container);
+                clipboard_panel = Some(panel);
             }
             PanelSection::FeatureHub => {
                 page.append(&build_feature_hub_group(
@@ -187,6 +226,7 @@ fn build_page(
     PageBuild {
         clamp,
         monitor_container,
+        clipboard_panel,
     }
 }
 
@@ -662,6 +702,218 @@ fn build_settings_group(
 
     group.add(&audio_group);
 
+    let clipboard = &view_model.clipboard;
+    let clipboard_group = adw::PreferencesGroup::builder()
+        .title("Clipboard")
+        .description(
+            "Memory-only retention bounds. Lock, sleep, service stop, wipe, and shutdown always \
+             drop retained entries regardless of these values.",
+        )
+        .build();
+
+    let bounds = clipboard.policy.bounds;
+    let push_limit = |row: &adw::SpinRow, limit: kestrel::ClipboardLimit, description: &str| {
+        let sender = commands.clone();
+        let description = description.to_owned();
+        row.update_property(&[
+            Property::Label(&description),
+            Property::Description(&description),
+        ]);
+        row.set_tooltip_text(Some(&description));
+        row.connect_value_notify(move |spin| {
+            // Byte bounds are edited in kibibytes and stored in bytes; the
+            // match arm carries the unit conversion for each bound.
+            let value = spin.value().max(0.0);
+            let command = match limit {
+                kestrel::ClipboardLimit::Items(_) => kestrel::ClipboardLimit::Items(value as u32),
+                kestrel::ClipboardLimit::ItemBytes(_) => {
+                    kestrel::ClipboardLimit::ItemBytes(value as u32 * 1024)
+                }
+                kestrel::ClipboardLimit::ImageBytes(_) => {
+                    kestrel::ClipboardLimit::ImageBytes(value as u32 * 1024)
+                }
+                kestrel::ClipboardLimit::FileEntries(_) => {
+                    kestrel::ClipboardLimit::FileEntries(value as u32)
+                }
+                kestrel::ClipboardLimit::MaxAgeHours(_) => {
+                    kestrel::ClipboardLimit::MaxAgeHours(value as u32)
+                }
+                kestrel::ClipboardLimit::ClearSeconds(_) => {
+                    kestrel::ClipboardLimit::ClearSeconds(value as u64)
+                }
+            };
+            let _ = sender.try_send(ApplicationCommand::SetClipboardLimit(command));
+        });
+    };
+
+    let items = adw::SpinRow::with_range(1.0, f64::from(bounds.max_items), 1.0);
+    items.set_title("Retained entries");
+    items.set_subtitle("How many entries the bounded history keeps.");
+    items.set_value(f64::from(clipboard.policy.max_items));
+    items.set_numeric(true);
+    push_limit(
+        &items,
+        kestrel::ClipboardLimit::Items(clipboard.policy.max_items),
+        "Clipboard retained entries",
+    );
+    clipboard_group.add(&items);
+
+    let item_kib = clipboard.policy.max_item_bytes / 1024;
+    let item_bytes = adw::SpinRow::with_range(
+        f64::from(bounds.min_item_bytes / 1024),
+        f64::from(bounds.max_item_bytes / 1024),
+        1.0,
+    );
+    item_bytes.set_title("Text entry bound");
+    item_bytes.set_subtitle("Largest retained text entry, in kibibytes.");
+    item_bytes.set_value(f64::from(item_kib));
+    item_bytes.set_numeric(true);
+    push_limit(
+        &item_bytes,
+        kestrel::ClipboardLimit::ItemBytes(clipboard.policy.max_item_bytes),
+        "Clipboard text entry byte bound",
+    );
+    clipboard_group.add(&item_bytes);
+
+    let image_kib = clipboard.policy.max_image_bytes / 1024;
+    let image_bytes = adw::SpinRow::with_range(
+        f64::from(bounds.min_item_bytes / 1024),
+        f64::from(bounds.max_image_bytes / 1024),
+        1.0,
+    );
+    image_bytes.set_title("Image entry bound");
+    image_bytes.set_subtitle("Largest retained PNG payload, in kibibytes.");
+    image_bytes.set_value(f64::from(image_kib));
+    image_bytes.set_numeric(true);
+    push_limit(
+        &image_bytes,
+        kestrel::ClipboardLimit::ImageBytes(clipboard.policy.max_image_bytes),
+        "Clipboard image entry byte bound",
+    );
+    clipboard_group.add(&image_bytes);
+
+    let files = adw::SpinRow::with_range(1.0, f64::from(bounds.max_file_entries), 1.0);
+    files.set_title("File paths per entry");
+    files.set_subtitle("Largest retained file list.");
+    files.set_value(f64::from(clipboard.policy.max_file_entries));
+    files.set_numeric(true);
+    push_limit(
+        &files,
+        kestrel::ClipboardLimit::FileEntries(clipboard.policy.max_file_entries),
+        "Clipboard file path bound",
+    );
+    clipboard_group.add(&files);
+
+    let age = adw::SpinRow::with_range(1.0, f64::from(bounds.max_age_hours), 1.0);
+    age.set_title("Retention age");
+    age.set_subtitle("How long an entry stays retained, in hours.");
+    age.set_value(f64::from(clipboard.policy.max_age_hours));
+    age.set_numeric(true);
+    push_limit(
+        &age,
+        kestrel::ClipboardLimit::MaxAgeHours(clipboard.policy.max_age_hours),
+        "Clipboard retention age in hours",
+    );
+    clipboard_group.add(&age);
+
+    let clear = adw::SpinRow::with_range(0.0, bounds.max_clear_seconds as f64, 5.0);
+    clear.set_title("Automatic selection clear");
+    clear.set_subtitle(
+        "Seconds after Kestrel takes the selection before the live clipboard is cleared.          Saved entries are kept; 0 disables it.",
+    );
+    clear.set_value(clipboard.policy.clear_seconds as f64);
+    clear.set_numeric(true);
+    push_limit(
+        &clear,
+        kestrel::ClipboardLimit::ClearSeconds(clipboard.policy.clear_seconds),
+        "Clipboard automatic selection clear interval",
+    );
+    clipboard_group.add(&clear);
+
+    let filter = adw::ActionRow::builder()
+        .title("Filter sensitive patterns")
+        .subtitle(
+            "Skip capturing content that looks like a secret. Heuristics produce false \
+             positives, so this is off by default.",
+        )
+        .subtitle_lines(0)
+        .build();
+    let filter_switch = gtk::Switch::builder()
+        .active(clipboard.policy.filter_sensitive)
+        .valign(Align::Center)
+        .build();
+    filter_switch.update_property(&[
+        Property::Label("Filter sensitive clipboard patterns"),
+        Property::Description(
+            "Skip capturing text that matches a documented sensitive-content pattern",
+        ),
+    ]);
+    let sender = commands.clone();
+    filter_switch.connect_state_set(move |_, filter| {
+        let _ = sender.try_send(ApplicationCommand::SetClipboardFilterSensitive(filter));
+        gtk::glib::Propagation::Proceed
+    });
+    filter.add_suffix(&filter_switch);
+    filter.set_activatable_widget(Some(&filter_switch));
+    clipboard_group.add(&filter);
+
+    let patterns = adw::ActionRow::builder()
+        .title("Documented sensitive patterns")
+        .subtitle(
+            kestrel_services::clipboard::SENSITIVE_PATTERNS
+                .iter()
+                .map(|pattern| pattern.description)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .subtitle_lines(0)
+        .sensitive(false)
+        .build();
+    patterns.update_property(&[Property::Label("Documented sensitive patterns")]);
+    clipboard_group.add(&patterns);
+
+    let paste = adw::ActionRow::builder()
+        .title("Quick paste as plain text")
+        .subtitle(
+            "Copying an entry strips ANSI escapes and trailing whitespace; file entries copy \
+             as their paths.",
+        )
+        .subtitle_lines(0)
+        .build();
+    let paste_switch = gtk::Switch::builder()
+        .active(clipboard.policy.paste_plain_text)
+        .valign(Align::Center)
+        .build();
+    paste_switch.update_property(&[
+        Property::Label("Quick paste as plain text"),
+        Property::Description("Copy the plain-text form of an entry"),
+    ]);
+    let sender = commands.clone();
+    paste_switch.connect_state_set(move |_, plain| {
+        let _ = sender.try_send(ApplicationCommand::SetClipboardPastePlainText(plain));
+        gtk::glib::Propagation::Proceed
+    });
+    paste.add_suffix(&paste_switch);
+    paste.set_activatable_widget(Some(&paste_switch));
+    clipboard_group.add(&paste);
+
+    for row in [
+        items.upcast_ref::<gtk::Widget>().clone(),
+        item_bytes.upcast_ref::<gtk::Widget>().clone(),
+        image_bytes.upcast_ref::<gtk::Widget>().clone(),
+        files.upcast_ref::<gtk::Widget>().clone(),
+        age.upcast_ref::<gtk::Widget>().clone(),
+        clear.upcast_ref::<gtk::Widget>().clone(),
+        filter.clone().upcast(),
+        paste.clone().upcast(),
+    ] {
+        filter_rows.push((
+            row,
+            "clipboard history retention bounds sensitive plain text".to_owned(),
+        ));
+    }
+    group.add(&clipboard_group);
+
     let io_row = adw::ActionRow::builder()
         .title("Configuration files")
         .subtitle("Import or export configuration. Kestrel only emits the selected path command.")
@@ -813,6 +1065,374 @@ fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
     }
 
     group
+}
+
+/// Requests the first listing once, when entries exist but none were requested.
+///
+/// Rows are only ever produced by an explicit search, so without this the panel
+/// would report retained entries while showing none. After a wipe the retained
+/// count is zero and no further request is made, which keeps this from looping.
+fn request_initial_clipboard_listing(
+    clipboard: &kestrel::ClipboardViewModel,
+    commands: &Sender<ApplicationCommand>,
+) {
+    if clipboard.running
+        && clipboard.search_query.is_empty()
+        && clipboard.items.is_empty()
+        && clipboard.total_items > 0
+    {
+        let _ = commands.try_send(ApplicationCommand::ClipboardSearch(String::new()));
+    }
+}
+
+/// Builds the retained clipboard group: search field, status line, and results.
+fn build_clipboard_panel(
+    clipboard: &kestrel::ClipboardViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> ClipboardPanel {
+    let container = gtk::Box::new(Orientation::Vertical, 12);
+    let group = adw::PreferencesGroup::builder()
+        .title("Clipboard")
+        .description(
+            "Memory-only retention. Content is never written to disk, and the window only \
+             renders entries you ask to see.",
+        )
+        .build();
+
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search retained entries")
+        .hexpand(true)
+        .build();
+    search.update_property(&[
+        Property::Label("Search clipboard history"),
+        Property::Description(
+            "Searches retained text and file paths plus image labels; the result list updates \
+             after you pause typing.",
+        ),
+    ]);
+    let search_row = adw::ActionRow::new();
+    search_row.set_title("Search");
+    search_row
+        .set_subtitle("Text and file paths match case-insensitively; images match on their label.");
+    search_row.add_suffix(&search);
+    search_row.set_activatable_widget(Some(&search));
+    let sender = commands.clone();
+    // The field is only filled programmatically after a full rebuild, and the
+    // guard stops that from re-running the search.
+    let guard: SearchGuard = std::rc::Rc::new(std::cell::Cell::new(false));
+    let handler_guard = std::rc::Rc::clone(&guard);
+    search.connect_search_changed(move |entry| {
+        if handler_guard.get() {
+            return;
+        }
+        let _ = sender.try_send(ApplicationCommand::ClipboardSearch(
+            entry.text().to_string(),
+        ));
+    });
+    if !clipboard.search_query.is_empty() {
+        guard.set(true);
+        search.set_text(&clipboard.search_query);
+        guard.set(false);
+    }
+    group.add(&search_row);
+
+    let status = gtk::Label::new(Some(&clipboard.status));
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.add_css_class("dim-label");
+    let status_row = adw::ActionRow::new();
+    status_row.set_title("Retained state");
+    status_row.add_suffix(&status);
+    group.add(&status_row);
+
+    let actions = adw::ActionRow::builder()
+        .title("History actions")
+        .subtitle(
+            "Clear the live selection without touching entries, or wipe every retained entry.",
+        )
+        .subtitle_lines(0)
+        .build();
+    let action_box = gtk::Box::new(Orientation::Horizontal, 6);
+    let clear = gtk::Button::with_label("Clear selection");
+    clear.set_tooltip_text(Some("Clear the live clipboard; retained entries stay"));
+    let sender = commands.clone();
+    clear.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::Clipboard(
+            kestrel::ClipboardCommand::ClearSelection,
+        ));
+    });
+    let wipe = gtk::Button::with_label("Wipe history");
+    wipe.set_tooltip_text(Some(
+        "Clear the live clipboard and drop every retained entry",
+    ));
+    let sender = commands.clone();
+    wipe.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::Clipboard(
+            kestrel::ClipboardCommand::Wipe,
+        ));
+    });
+    action_box.append(&clear);
+    action_box.append(&wipe);
+    actions.add_suffix(&action_box);
+    group.add(&actions);
+
+    let results = gtk::Box::new(Orientation::Vertical, 6);
+    request_initial_clipboard_listing(clipboard, commands);
+    let selected = std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
+    let panel = ClipboardPanel {
+        container: container.clone(),
+        status,
+        results: results.clone(),
+        selected: std::rc::Rc::clone(&selected),
+    };
+    fill_clipboard_results(&panel, clipboard, commands);
+    group.add(&results);
+    container.append(&group);
+
+    if !clipboard.running {
+        let row = adw::ActionRow::builder()
+            .title("Clipboard history is not running")
+            .subtitle(&clipboard.status)
+            .subtitle_lines(0)
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label("Clipboard history is not running")]);
+        group.add(&row);
+        return panel;
+    }
+
+    let delete = gtk::Button::with_label("Delete selected");
+    let selected_for_delete = std::rc::Rc::clone(&selected);
+    let sender = commands.clone();
+    let delete_row = adw::ActionRow::builder()
+        .title("Multiple selection")
+        .subtitle("Tick entries in the list and delete them together.")
+        .build();
+    delete.set_tooltip_text(Some("Delete every ticked entry"));
+    delete.connect_clicked(move |_| {
+        let ids = selected_for_delete
+            .borrow()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            return;
+        }
+        let _ = sender.try_send(ApplicationCommand::Clipboard(
+            kestrel::ClipboardCommand::DeleteItems { item_ids: ids },
+        ));
+    });
+    delete_row.add_suffix(&delete);
+    group.add(&delete_row);
+
+    panel
+}
+
+/// Rebuilds the result rows from the current bounded search matches.
+fn fill_clipboard_results(
+    panel: &ClipboardPanel,
+    clipboard: &kestrel::ClipboardViewModel,
+    commands: &Sender<ApplicationCommand>,
+) {
+    if clipboard.items.is_empty() {
+        let row = adw::ActionRow::builder()
+            .title(if clipboard.search_query.trim().is_empty() {
+                "No retained entries"
+            } else {
+                "No entries match the search"
+            })
+            .subtitle(if clipboard.running {
+                "Copy something, or widen the search."
+            } else {
+                "Enable clipboard.history in the Feature Hub to retain entries."
+            })
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label("No clipboard entries to show")]);
+        panel.results.append(&row);
+        return;
+    }
+
+    for item in &clipboard.items {
+        let row = adw::ActionRow::builder()
+            .title(format!("{} · {}", item.kind, item.detail))
+            .subtitle(if item.preview.is_empty() {
+                "No inline preview for this entry kind".to_owned()
+            } else {
+                item.preview.clone()
+            })
+            .subtitle_lines(2)
+            .build();
+        row.update_property(&[Property::Label(&format!(
+            "{} entry: {}",
+            item.kind, item.preview
+        ))]);
+
+        let select = gtk::CheckButton::new();
+        let select_label = format!("Select entry {}", item.id);
+        select.update_property(&[Property::Label(&select_label)]);
+        select.set_tooltip_text(Some(&format!("Select entry {} for deletion", item.id)));
+        let selected = std::rc::Rc::clone(&panel.selected);
+        let id = item.id;
+        select.connect_toggled(move |button| {
+            let mut selected = selected.borrow_mut();
+            if button.is_active() {
+                selected.insert(id);
+            } else {
+                selected.remove(&id);
+            }
+        });
+        row.add_suffix(&select);
+
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let pin = gtk::Button::with_label(if item.pinned { "Unpin" } else { "Pin" });
+        let pin_label = format!(
+            "{} entry {}",
+            if item.pinned { "Unpin" } else { "Pin" },
+            item.id
+        );
+        pin.update_property(&[Property::Label(&pin_label)]);
+        pin.set_tooltip_text(Some(&pin_label));
+        let sender = commands.clone();
+        let id = item.id;
+        let pinned = item.pinned;
+        pin.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Clipboard(
+                kestrel::ClipboardCommand::SetPinned {
+                    item_id: id,
+                    pinned: !pinned,
+                },
+            ));
+        });
+        controls.append(&pin);
+
+        let copy = gtk::Button::with_label("Copy");
+        copy.update_property(&[Property::Label(&format!("Copy entry {}", item.id))]);
+        copy.set_tooltip_text(Some("Put this entry on the clipboard"));
+        let sender = commands.clone();
+        let id = item.id;
+        copy.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Clipboard(
+                kestrel::ClipboardCommand::CopyItem {
+                    item_id: id,
+                    plain_text: false,
+                },
+            ));
+        });
+        controls.append(&copy);
+
+        let plain = gtk::Button::with_label("Plain");
+        plain.update_property(&[Property::Label(&format!(
+            "Copy entry {} as plain text",
+            item.id
+        ))]);
+        plain.set_tooltip_text(Some(
+            "Copy without ANSI escapes or trailing whitespace; file entries copy as paths",
+        ));
+        let sender = commands.clone();
+        let id = item.id;
+        plain.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Clipboard(
+                kestrel::ClipboardCommand::CopyItem {
+                    item_id: id,
+                    plain_text: true,
+                },
+            ));
+        });
+        controls.append(&plain);
+
+        let preview = gtk::Button::with_label("Preview");
+        preview.update_property(&[Property::Label(&format!("Preview entry {}", item.id))]);
+        preview.set_tooltip_text(Some("Show a bounded, explicit preview of this entry"));
+        let sender = commands.clone();
+        let id = item.id;
+        preview.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::ClipboardPreview(id));
+        });
+        controls.append(&preview);
+
+        let delete = gtk::Button::with_label("Delete");
+        delete.update_property(&[Property::Label(&format!("Delete entry {}", item.id))]);
+        delete.set_tooltip_text(Some("Drop this retained entry"));
+        let sender = commands.clone();
+        let id = item.id;
+        delete.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Clipboard(
+                kestrel::ClipboardCommand::DeleteItems { item_ids: vec![id] },
+            ));
+        });
+        controls.append(&delete);
+        row.add_suffix(&controls);
+        panel.results.append(&row);
+
+        if let Some(preview) = clipboard
+            .preview
+            .as_ref()
+            .filter(|preview| preview.id == item.id)
+        {
+            panel
+                .results
+                .append(&build_clipboard_preview_row(preview, commands));
+        }
+    }
+}
+
+/// The explicitly requested preview for one entry.
+fn build_clipboard_preview_row(
+    preview: &kestrel::ClipboardPreviewViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::ActionRow {
+    let mut description = vec![format!("{} entry", preview.kind)];
+    if preview.truncated {
+        description.push("preview truncated to the request bound".to_owned());
+    }
+    if let Some((width, height)) = preview.image_dimensions {
+        description.push(format!("{width}×{height}"));
+    }
+    if let Some(count) = preview.file_count {
+        description.push(format!("{count} paths"));
+    }
+    if preview.text.is_empty() {
+        description.push("no inline text for this kind".to_owned());
+    }
+    let row = adw::ActionRow::builder()
+        .title(format!("Preview {}", preview.id))
+        .subtitle(description.join(" · "))
+        .subtitle_lines(0)
+        .build();
+    row.update_property(&[Property::Label(&format!("Preview of entry {}", preview.id))]);
+    if !preview.text.is_empty() {
+        let text = gtk::Label::new(Some(&preview.text));
+        text.set_wrap(true);
+        text.set_xalign(0.0);
+        text.set_selectable(true);
+        text.set_valign(Align::Center);
+        row.add_suffix(&text);
+    }
+    if preview.editable {
+        let edit = gtk::Entry::builder()
+            .text(&preview.text)
+            .hexpand(true)
+            .build();
+        edit.update_property(&[Property::Label(&format!("Edit entry {} text", preview.id))]);
+        let save = gtk::Button::with_label("Save edit");
+        let sender = commands.clone();
+        let id = preview.id;
+        let edit_for_save = edit.clone();
+        save.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Clipboard(
+                kestrel::ClipboardCommand::ReplaceText {
+                    item_id: id,
+                    text: edit_for_save.text().to_string(),
+                },
+            ));
+        });
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        controls.append(&edit);
+        controls.append(&save);
+        row.add_suffix(&controls);
+    }
+    row
 }
 
 /// Which service entity a volume or mute control addresses.
