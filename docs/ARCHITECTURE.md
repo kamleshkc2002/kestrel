@@ -370,6 +370,35 @@ Trigger expansion timing is stored as user intent and currently reported as
 inactive: delimiter expansion requires a key-capture provider, which the current
 feature set does not include, so only manual insertion inserts text.
 
+### 5.9 Command ranking, providers, and bounded actions
+
+The command bar is a ranking problem, not an index. `kestrel-services` holds the
+catalog (Kestrel actions, quick toggles, snippets, configured scripts, and a
+built-in emoji table), the fuzzy scorer, and the learned ranking; it receives the
+already-gathered application and file results from the application layer, so the
+service stays pure and testable and never performs I/O itself.
+
+Ranking is bounded by construction. Scores prefer prefix, contiguous, and short
+matches; pins and learned use counts break ties deterministically. The learned
+state maps identifiers to counts plus a pin set, has no field able to hold query
+text, is capped by a core constant with least-used eviction, and is persisted to
+a `0600` file that the window can inspect and reset.
+
+Providers are classified by what they need. Portable providers (Kestrel actions,
+snippets, math, units, dates, links, emoji) answer without any desktop
+integration, so a missing provider reduces coverage instead of hiding results.
+Integration providers are capability-checked: XDG application directories are
+scanned with a file budget, `xdg-open` must resolve before anything is launched
+or opened, and file search runs only inside user-configured roots with depth,
+entry, and match budgets that skip hidden and symlinked directories. Nothing
+constructs a filesystem-wide index in any configuration.
+
+Every action that leaves the process goes through a bounded adapter: a resolved
+executable, one argv vector, no shell, a timeout, and capped output read on
+dedicated threads. Script outcomes carry the exit status, the duration, and
+whether output hit its bound, so truncation is data the user can see rather than
+a silent loss.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

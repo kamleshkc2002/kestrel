@@ -449,6 +449,12 @@ specific remediation rather than simply hiding a feature without explanation.
 
 ## 9. Security & permissions
 
+- **Command bar privacy:** the bar ranks a bounded in-memory catalog and the results the
+  application already gathered; it must not build a filesystem-wide index, and file results
+  come only from user-configured roots with depth and entry budgets. Learned ranking stores
+  command identifiers, counts, and pins only — never query text — and must be inspectable
+  and resettable. Script and launcher actions use resolved executables, no shell, timeouts,
+  and bounded output, and a provider that is unavailable must not remove portable commands.
 - **Least privilege:** run as a normal user; no root, no setuid binary, no root daemon.
 - **Portals:** screen capture and recording go through the XDG `ScreenCast` portal (user
   consent, per-session, revocable).

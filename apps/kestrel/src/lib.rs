@@ -1,6 +1,7 @@
 //! Application-level configuration and runtime composition without UI ownership.
 
 mod autostart;
+mod command_bar;
 mod config;
 mod runtime;
 mod snippets;
@@ -8,6 +9,10 @@ mod status_notifier;
 pub mod view_model;
 
 pub use autostart::{AutostartError, DESKTOP_FILE_NAME, autostart_path, disable, enable};
+pub use command_bar::{
+    CURRENT_RANKING_SCHEMA_VERSION, LoadedRanking, RankingEntry, RankingFile, load_ranking,
+    ranking_path, save_ranking,
+};
 pub use config::{
     ConfigurationLoadError, ConfigurationWarning, LoadedConfiguration, configuration_path,
     export_file, export_string, import_file, import_string, load, save,
@@ -34,13 +39,34 @@ pub use view_model::{
     AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
     CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel,
     ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
-    ClipboardPreviewViewModel, ClipboardViewModel, ConfigurationWarningViewModel,
-    ConfirmationViewModel, FeatureLifecycleViewModel, FeatureViewModel,
-    MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
+    CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
+    ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
+    FeatureViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
     QuickToggleViewModel, RemediationViewModel, SnippetBoundsViewModel, SnippetDraft,
     SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
 };
+
+/// One command bar action requested from the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandBarCommand {
+    /// Runs the ranked result with this identifier.
+    Run(String),
+    Pin {
+        id: String,
+        pinned: bool,
+    },
+}
+
+/// One command bar provider switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandProviderSwitch {
+    Applications(bool),
+    Files(bool),
+    Scripts(bool),
+    Emoji(bool),
+}
 
 /// One snippet library action requested from the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +179,12 @@ pub enum ApplicationCommand {
     SetSnippetLimit(SnippetLimit),
     SetSnippetProvider(SnippetProviderPreference),
     SetSnippetExpansionTiming(SnippetExpansionTiming),
+    /// Runs the command bar query whose results the window shows.
+    CommandQuery(String),
+    CommandBar(CommandBarCommand),
+    ResetCommandRanking,
+    SetCommandResultLimit(u32),
+    SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
     Quit,

@@ -25,6 +25,15 @@ pub struct WindowView {
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
     /// The retained snippet panel, for the same reason.
     snippet_panel: std::cell::RefCell<Option<SnippetPanel>>,
+    /// The retained command bar panel, for the same reason.
+    command_panel: std::cell::RefCell<Option<CommandPanel>>,
+}
+
+/// The reusable parts of the command bar group.
+struct CommandPanel {
+    container: gtk::Box,
+    status: gtk::Label,
+    results: gtk::Box,
 }
 
 /// The reusable parts of the snippet group.
@@ -107,6 +116,7 @@ impl WindowView {
             monitor_container: std::cell::RefCell::new(page.monitor_container),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
+            command_panel: std::cell::RefCell::new(page.command_panel),
         }
     }
 
@@ -116,6 +126,20 @@ impl WindowView {
         *self.monitor_container.borrow_mut() = page.monitor_container;
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
+        *self.command_panel.borrow_mut() = page.command_panel;
+    }
+
+    /// Updates the command bar in place, preserving the query field.
+    pub fn set_command_bar(&self, command_bar: &kestrel::CommandBarViewModel) {
+        let panel = self.command_panel.borrow();
+        let Some(panel) = panel.as_ref() else {
+            return;
+        };
+        panel.status.set_text(&command_bar.status);
+        while let Some(child) = panel.results.first_child() {
+            child.unparent();
+        }
+        fill_command_panel(panel, command_bar, &self.commands);
     }
 
     /// Updates the clipboard group in place, preserving the search field.
@@ -180,6 +204,7 @@ struct PageBuild {
     monitor_container: Option<gtk::Box>,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
+    command_panel: Option<CommandPanel>,
 }
 
 fn build_page(
@@ -218,12 +243,16 @@ fn build_page(
     let mut monitor_container = None;
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
+    let mut command_panel = None;
     for panel in &view_model.panel_sections {
         if !panel.visible {
             continue;
         }
         match panel.section {
             PanelSection::QuickControls => {
+                let panel = build_command_panel(&view_model.command_bar, commands);
+                page.append(&panel.container);
+                command_panel = Some(panel);
                 if !view_model.quick_toggles.is_empty() {
                     page.append(&build_quick_toggle_group(
                         &view_model.quick_toggles,
@@ -264,6 +293,7 @@ fn build_page(
         monitor_container,
         clipboard_panel,
         snippet_panel,
+        command_panel,
     }
 }
 
@@ -1083,6 +1113,36 @@ fn build_settings_group(
         ));
     }
     group.add(&snippet_group);
+
+    let command_bar = &view_model.command_bar;
+    let command_group = adw::PreferencesGroup::builder()
+        .title("Command bar")
+        .description(
+            "How many ranked results the bar shows. Provider switches and the learned ranking \
+             live in the command bar panel; file roots and scripts are configured in the \
+             configuration file.",
+        )
+        .build();
+    let results = adw::SpinRow::with_range(
+        f64::from(kestrel_core::MIN_COMMAND_RESULTS),
+        f64::from(kestrel_core::MAX_COMMAND_RESULTS),
+        1.0,
+    );
+    results.set_title("Result count");
+    results.set_subtitle("Largest number of ranked results the bar shows.");
+    results.set_value(f64::from(command_bar.max_results));
+    results.set_numeric(true);
+    let sender = commands.clone();
+    results.connect_value_notify(move |spin| {
+        let value = spin.value().max(0.0) as u32;
+        let _ = sender.try_send(ApplicationCommand::SetCommandResultLimit(value));
+    });
+    command_group.add(&results);
+    filter_rows.push((
+        results.clone().upcast(),
+        "command bar results limit launcher".to_owned(),
+    ));
+    group.add(&command_group);
 
     let io_row = adw::ActionRow::builder()
         .title("Configuration files")
@@ -1912,6 +1972,212 @@ fn text_view_row(
     row.add_suffix(&scroller);
     panel.editor.append(&row);
     view
+}
+
+/// Builds the retained command bar: query field, providers, and results.
+fn build_command_panel(
+    command_bar: &kestrel::CommandBarViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> CommandPanel {
+    let container = gtk::Box::new(Orientation::Vertical, 12);
+    let group = adw::PreferencesGroup::builder()
+        .title("Command bar")
+        .description(
+            "One keyboard-first surface for Kestrel commands, snippets, applications, computed \
+             values, and configured scripts. Commands that need no desktop integration always \
+             work.",
+        )
+        .build();
+
+    let query = gtk::SearchEntry::builder()
+        .placeholder_text("Run a command, search applications, compute a value")
+        .hexpand(true)
+        .build();
+    query.update_property(&[
+        Property::Label("Command bar query"),
+        Property::Description(
+            "Ranks Kestrel commands, snippets, applications, computed values, emoji, and \
+             configured scripts",
+        ),
+    ]);
+    let query_row = adw::ActionRow::new();
+    query_row.set_title("Query");
+    query_row.add_suffix(&query);
+    query_row.set_activatable_widget(Some(&query));
+    let sender = commands.clone();
+    query.connect_search_changed(move |entry| {
+        let _ = sender.try_send(ApplicationCommand::CommandQuery(entry.text().to_string()));
+    });
+    if !command_bar.query.is_empty() {
+        query.set_text(&command_bar.query);
+    }
+    group.add(&query_row);
+
+    let status = gtk::Label::new(Some(&command_bar.status));
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.add_css_class("dim-label");
+    let status_row = adw::ActionRow::new();
+    status_row.set_title("State");
+    status_row.add_suffix(&status);
+    group.add(&status_row);
+
+    for provider in &command_bar.providers {
+        let row = adw::ActionRow::builder()
+            .title(provider.label)
+            .subtitle(&provider.status)
+            .subtitle_lines(0)
+            .build();
+        let toggle = gtk::Switch::builder()
+            .active(provider.enabled)
+            .valign(Align::Center)
+            .build();
+        toggle.update_property(&[Property::Label(&format!("{} results", provider.label))]);
+        toggle.set_tooltip_text(Some(provider.provider.requirement()));
+        let sender = commands.clone();
+        let kind = provider.provider;
+        toggle.connect_state_set(move |_, enabled| {
+            let switch = match kind {
+                kestrel::CommandProvider::Applications => {
+                    kestrel::CommandProviderSwitch::Applications(enabled)
+                }
+                kestrel::CommandProvider::Files => kestrel::CommandProviderSwitch::Files(enabled),
+                kestrel::CommandProvider::Scripts => {
+                    kestrel::CommandProviderSwitch::Scripts(enabled)
+                }
+                kestrel::CommandProvider::Emoji => kestrel::CommandProviderSwitch::Emoji(enabled),
+            };
+            let _ = sender.try_send(ApplicationCommand::SetCommandProvider(switch));
+            gtk::glib::Propagation::Proceed
+        });
+        row.add_suffix(&toggle);
+        row.set_activatable_widget(Some(&toggle));
+        group.add(&row);
+    }
+
+    // The learned ranking is inspectable and resettable, and holds identifiers
+    // and counts only.
+    let ranking_summary = if command_bar.ranking_entries.is_empty() {
+        "Nothing learned yet".to_string()
+    } else {
+        command_bar
+            .ranking_entries
+            .iter()
+            .take(5)
+            .map(|entry| {
+                format!(
+                    "{}{} ×{}",
+                    if entry.pinned { "★ " } else { "" },
+                    entry.id,
+                    entry.uses
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let ranking_row = adw::ActionRow::builder()
+        .title("Learned ranking")
+        .subtitle(format!(
+            "{ranking_summary} · identifiers and counts only, never your queries"
+        ))
+        .subtitle_lines(0)
+        .build();
+    let reset = gtk::Button::with_label("Reset");
+    reset.update_property(&[Property::Label("Reset command ranking")]);
+    reset.set_tooltip_text(Some("Drop every pin and learned count"));
+    let sender = commands.clone();
+    reset.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::ResetCommandRanking);
+    });
+    ranking_row.add_suffix(&reset);
+    group.add(&ranking_row);
+
+    let results = gtk::Box::new(Orientation::Vertical, 6);
+    let panel = CommandPanel {
+        container: container.clone(),
+        status,
+        results: results.clone(),
+    };
+    fill_command_panel(&panel, command_bar, commands);
+    group.add(&results);
+    container.append(&group);
+    panel
+}
+
+/// Fills the ranked result rows.
+fn fill_command_panel(
+    panel: &CommandPanel,
+    command_bar: &kestrel::CommandBarViewModel,
+    commands: &Sender<ApplicationCommand>,
+) {
+    if command_bar.results.is_empty() {
+        let row = adw::ActionRow::builder()
+            .title(if command_bar.query.trim().is_empty() {
+                "Type to search"
+            } else {
+                "No results"
+            })
+            .subtitle(if command_bar.running {
+                "Commands, snippets, applications, computed values, and emoji are searched together."
+            } else {
+                "Enable commands.bar in the Feature Hub to use the command bar."
+            })
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label("No command results")]);
+        panel.results.append(&row);
+        return;
+    }
+
+    for result in &command_bar.results {
+        let detail = if result.uses > 0 {
+            format!("{} · used {} time(s)", result.detail, result.uses)
+        } else {
+            result.detail.clone()
+        };
+        let row = adw::ActionRow::builder()
+            .title(format!("{} · {}", result.source, result.title))
+            .subtitle(detail)
+            .subtitle_lines(0)
+            .build();
+        row.update_property(&[Property::Label(&format!(
+            "{} result {}",
+            result.source, result.title
+        ))]);
+
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let run = gtk::Button::with_label(result.action_label);
+        run.update_property(&[Property::Label(&format!(
+            "{} {}",
+            result.action_label, result.title
+        ))]);
+        run.set_tooltip_text(Some(&format!("Matched on {}", result.matched_on)));
+        let sender = commands.clone();
+        let id = result.id.clone();
+        run.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::CommandBar(
+                kestrel::CommandBarCommand::Run(id.clone()),
+            ));
+        });
+        controls.append(&run);
+
+        let pin = gtk::Button::with_label(if result.pinned { "Unpin" } else { "Pin" });
+        pin.update_property(&[Property::Label(&format!("Pin {}", result.title))]);
+        let sender = commands.clone();
+        let id = result.id.clone();
+        let pinned = result.pinned;
+        pin.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::CommandBar(
+                kestrel::CommandBarCommand::Pin {
+                    id: id.clone(),
+                    pinned: !pinned,
+                },
+            ));
+        });
+        controls.append(&pin);
+        row.add_suffix(&controls);
+        panel.results.append(&row);
+    }
 }
 
 /// Which service entity a volume or mute control addresses.

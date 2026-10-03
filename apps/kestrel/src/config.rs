@@ -9,14 +9,14 @@ use kestrel_core::{
     FeatureConfiguration, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
     MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
     MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
-    MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_MONITOR_HISTORY_SAMPLES,
-    MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES,
-    MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
-    MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS,
-    MIN_SNIPPET_CLIPBOARD_BYTES, MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
-    MonitorReadout, PanelSection, PanelSectionConfiguration, SnippetExpansionTiming,
-    SnippetProviderPreference, StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
-    validate_feature_id,
+    MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_COMMAND_FILE_ROOTS,
+    MAX_COMMAND_RESULTS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
+    MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS,
+    MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES,
+    MIN_COMMAND_RESULTS, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
+    MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS, MonitorReadout, PanelSection,
+    PanelSectionConfiguration, SnippetExpansionTiming, SnippetProviderPreference,
+    StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -195,6 +195,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_audio(&mut loaded, document.get("audio"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
     parse_snippets(&mut loaded, document.get("snippets"));
+    parse_command_bar(&mut loaded, document.get("command_bar"));
     Ok(loaded)
 }
 
@@ -724,6 +725,133 @@ fn parse_snippets(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>)
                 format!("The expansion timing value is invalid and was ignored: {error}"),
             )),
         }
+    }
+}
+
+fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(section) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "command_bar",
+            "The command_bar value must be a TOML table.",
+        ));
+        return;
+    };
+
+    if let Some(value) = section.get("max_results") {
+        match u32::deserialize(value.clone()) {
+            Ok(results) if (MIN_COMMAND_RESULTS..=MAX_COMMAND_RESULTS).contains(&results) => {
+                loaded.configuration.command_bar.max_results = results;
+            }
+            _ => loaded.warnings.push(warning(
+                "command_bar.max_results",
+                format!(
+                    "The result count must be between {MIN_COMMAND_RESULTS} and \
+                     {MAX_COMMAND_RESULTS}; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    for (key, target) in [
+        (
+            "enable_applications",
+            &mut loaded.configuration.command_bar.enable_applications,
+        ),
+        (
+            "enable_files",
+            &mut loaded.configuration.command_bar.enable_files,
+        ),
+        (
+            "enable_scripts",
+            &mut loaded.configuration.command_bar.enable_scripts,
+        ),
+        (
+            "enable_emoji",
+            &mut loaded.configuration.command_bar.enable_emoji,
+        ),
+    ] {
+        if let Some(value) = section.get(key) {
+            match bool::deserialize(value.clone()) {
+                Ok(parsed) => *target = parsed,
+                Err(error) => loaded.warnings.push(warning(
+                    &format!("command_bar.{key}"),
+                    format!("The value is invalid and was ignored: {error}"),
+                )),
+            }
+        }
+    }
+
+    if let Some(roots) = section.get("file_roots") {
+        match Vec::<String>::deserialize(roots.clone()) {
+            Ok(parsed)
+                if parsed.len() <= MAX_COMMAND_FILE_ROOTS
+                    && parsed.iter().all(|root| root.trim().starts_with('/')) =>
+            {
+                loaded.configuration.command_bar.file_roots = parsed;
+            }
+            _ => loaded.warnings.push(warning(
+                "command_bar.file_roots",
+                format!(
+                    "File roots must be at most {MAX_COMMAND_FILE_ROOTS} absolute paths; the \
+                     default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(scripts) = section.get("scripts") {
+        match Vec::<kestrel_core::CommandScriptConfiguration>::deserialize(scripts.clone()) {
+            Ok(parsed) => {
+                // A malformed script is dropped on its own so one typo cannot
+                // invalidate the whole table.
+                let mut accepted = Vec::new();
+                let mut names: Vec<String> = Vec::new();
+                for (index, script) in parsed.into_iter().enumerate() {
+                    let location = format!("command_bar.scripts[{index}]");
+                    if let Err(error) = script.validate() {
+                        loaded
+                            .warnings
+                            .push(warning(&location, format!("Script was ignored: {error:?}")));
+                        continue;
+                    }
+                    let name = script.name.trim().to_string();
+                    if names.contains(&name) {
+                        loaded.warnings.push(warning(
+                            &location,
+                            format!("Script \"{name}\" is a duplicate and was ignored"),
+                        ));
+                        continue;
+                    }
+                    names.push(name);
+                    accepted.push(script);
+                }
+                loaded.configuration.command_bar.scripts = accepted;
+            }
+            Err(error) => loaded.warnings.push(warning(
+                "command_bar.scripts",
+                format!("Script definitions are invalid and were ignored: {error}"),
+            )),
+        }
+    }
+
+    // The assembled table must be self-consistent: an inconsistent one keeps the
+    // user's provider switches but drops the roots that cannot be trusted.
+    if let Err(error) = loaded.configuration.command_bar.validate() {
+        let existing = loaded.configuration.command_bar.clone();
+        loaded.configuration.command_bar = kestrel_core::CommandBarConfiguration {
+            max_results: existing.max_results,
+            enable_applications: existing.enable_applications,
+            enable_files: false,
+            enable_scripts: existing.enable_scripts,
+            enable_emoji: existing.enable_emoji,
+            file_roots: Vec::new(),
+            scripts: existing.scripts,
+        };
+        loaded.warnings.push(warning(
+            "command_bar",
+            format!("The command bar configuration was inconsistent and was repaired: {error:?}"),
+        ));
     }
 }
 
@@ -1376,6 +1504,108 @@ expansion_timing = "vibes"
         assert!(!exported.contains("{{date}}"));
         assert!(!exported.contains("{{clipboard}}"));
         assert!(!exported.contains("Address"));
+    }
+
+    #[test]
+    fn command_bar_table_parses_providers_roots_and_scripts() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[command_bar]
+max_results = 20
+enable_applications = true
+enable_files = true
+enable_scripts = true
+enable_emoji = false
+file_roots = ["/home/user/Documents", "/srv/notes"]
+
+[[command_bar.scripts]]
+name = "Restart audio"
+executable = "systemctl"
+args = ["--user", "restart", "pipewire"]
+timeout_millis = 4000
+output_bytes = 2048
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        let command_bar = loaded.configuration.command_bar.clone();
+        assert_eq!(command_bar.max_results, 20);
+        assert!(command_bar.enable_files);
+        assert!(!command_bar.enable_emoji);
+        assert_eq!(command_bar.file_roots.len(), 2);
+        assert_eq!(command_bar.scripts.len(), 1);
+        assert_eq!(command_bar.scripts[0].name, "Restart audio");
+        assert_eq!(command_bar.scripts[0].args.len(), 3);
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn malformed_command_bar_fields_are_isolated() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[command_bar]
+max_results = 5000
+enable_files = "yes"
+file_roots = ["relative/path"]
+[[command_bar.scripts]]
+name = ""
+executable = "//bad//path"
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.command_bar.max_results,
+            kestrel_core::DEFAULT_COMMAND_RESULTS
+        );
+        assert!(!loaded.configuration.command_bar.enable_files);
+        assert!(loaded.configuration.command_bar.file_roots.is_empty());
+        for location in [
+            "command_bar.max_results",
+            "command_bar.enable_files",
+            "command_bar.file_roots",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location),
+                "{location} must report an isolated warning"
+            );
+        }
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "command_bar.scripts[0]"),
+            "the malformed script definition must be reported and dropped"
+        );
+        assert!(
+            loaded.configuration.command_bar.scripts.is_empty(),
+            "malformed script definitions never survive loading"
+        );
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn file_search_needs_a_root_and_relative_roots_are_refused() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[command_bar]
+enable_files = true
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert!(
+            !loaded.configuration.command_bar.enable_files,
+            "file search without a root is turned off rather than indexing anything"
+        );
+        assert_eq!(loaded.configuration.validate(), Ok(()));
     }
 
     #[test]

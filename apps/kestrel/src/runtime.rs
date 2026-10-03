@@ -4,20 +4,25 @@ use crate::{
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
         AudioPresentation, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
-        MonitorPresentation, MonitorViewModel, SnippetQuery, SnippetsPresentation,
+        CommandBarPresentation, CommandBarQuery, MonitorPresentation, MonitorViewModel,
+        SnippetQuery, SnippetsPresentation,
     },
 };
 use kestrel_core::{
-    AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, CostLevel,
-    FeatureConfigurationSnapshot, FeatureSpec, ResourceCost,
+    AlertKind, ApplicationConfiguration, CapabilityEvidence, CapabilityReport, CapabilityStatus,
+    CostLevel, FeatureConfigurationSnapshot, FeatureSpec, ResourceCost,
 };
 use kestrel_platform::{
-    StaticCapabilityProbe,
+    CapabilityProbe, StaticCapabilityProbe,
+    applications::{
+        ApplicationEntry, ExternalLauncher, application_directories, scan_applications,
+    },
     audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
     clipboard::{
         ArboardClipboardBackend, ClipboardBackend, ClipboardCapabilityProbe,
         FEATURE_ID as CLIPBOARD_HISTORY_ID, LogindPrivacyMonitor, discover_provider,
     },
+    launcher::{ScriptOutcome, run_script, search_roots},
     quick_toggles::{
         ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
         QuickToggleError, QuickToggleId,
@@ -35,6 +40,10 @@ use kestrel_services::{
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardMatch, ClipboardPolicy,
         ClipboardPreview, ClipboardServiceError, ClipboardSnapshot,
+    },
+    command_bar::{
+        CommandIndex, CommandItem, CommandRanking, CommandResult, CommandSource, EnabledProviders,
+        SearchInput,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
     snippets::{
@@ -104,6 +113,85 @@ use std::time::Duration;
 /// UI-independent composition root for startup, enablement, and capability refresh.
 /// The stable feature identifier for the snippet library.
 pub const SNIPPETS_ID: &str = "snippets.text";
+/// The stable feature identifier for the command bar.
+pub const COMMAND_BAR_ID: &str = "commands.bar";
+
+/// Capability probe for the command bar: it reports which providers are usable
+/// and never hides the portable ones when an integration is missing.
+pub struct CommandBarProbe {
+    configuration: kestrel_core::CommandBarConfiguration,
+}
+
+impl CommandBarProbe {
+    pub fn new(configuration: kestrel_core::CommandBarConfiguration) -> Self {
+        Self { configuration }
+    }
+}
+
+impl CapabilityProbe for CommandBarProbe {
+    fn probe(&self) -> CapabilityReport {
+        let applications = scan_applications(&application_directories(
+            std::env::var_os("XDG_DATA_HOME").as_deref(),
+            std::env::var_os("XDG_DATA_DIRS").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        ));
+        let launcher = ExternalLauncher::discover();
+        let roots = self.configuration.file_roots.len();
+        let scripts = self.configuration.scripts.len();
+
+        let mut report = CapabilityReport::new(
+            COMMAND_BAR_ID,
+            CapabilityStatus::Supported,
+            format!(
+                "Portable commands plus {} applications, {} scripts, and {} file roots.",
+                if self.configuration.enable_applications {
+                    applications.len().to_string()
+                } else {
+                    "0 (disabled)".to_string()
+                },
+                if self.configuration.enable_scripts {
+                    scripts.to_string()
+                } else {
+                    "0 (disabled)".to_string()
+                },
+                if self.configuration.enable_files {
+                    roots.to_string()
+                } else {
+                    "0 (disabled)".to_string()
+                }
+            ),
+        )
+        .with_selected_backend("In-process command index")
+        .with_evidence(CapabilityEvidence::new("portable_commands", "always"))
+        .with_evidence(CapabilityEvidence::new(
+            "application_count",
+            applications.len().to_string(),
+        ))
+        .with_evidence(CapabilityEvidence::new(
+            "launch_handler",
+            launcher
+                .as_ref()
+                .map(|launcher| launcher.handler_name().to_string())
+                .unwrap_or_else(|_| "unavailable".to_string()),
+        ))
+        .with_evidence(CapabilityEvidence::new("file_roots", roots.to_string()))
+        .with_evidence(CapabilityEvidence::new("scripts", scripts.to_string()));
+
+        if launcher.is_err() {
+            report = report.with_remediation(
+                "Install xdg-open to launch links and applications from the command bar. \
+                 Commands that only use Kestrel data keep working without it.",
+            );
+        }
+        if self.configuration.enable_files && roots == 0 {
+            report = report.with_remediation(
+                "File search needs at least one configured root; Kestrel never indexes the whole \
+                 filesystem.",
+            );
+        }
+        report
+    }
+}
 
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
@@ -117,8 +205,21 @@ pub struct ApplicationRuntime {
     snippet_provider_preference: kestrel_core::SnippetProviderPreference,
     snippet_path: Option<std::path::PathBuf>,
     snippet_warnings: Vec<ConfigurationWarning>,
-    /// Reads the live selection for the `{{clipboard}}` variable.
-    snippet_clipboard: Option<ArboardClipboardBackend>,
+    /// Reads the live selection for the `{{clipboard}}` variable, and places
+    /// command bar values on the clipboard.
+    session_clipboard: Option<ArboardClipboardBackend>,
+    /// The command bar: catalog, learned ranking, scanned applications, launcher.
+    command_index: CommandIndex,
+    command_ranking: CommandRanking,
+    command_ranking_path: Option<std::path::PathBuf>,
+    command_ranking_warnings: Vec<ConfigurationWarning>,
+    command_applications: Vec<ApplicationEntry>,
+    command_application_items: Vec<CommandItem>,
+    command_providers: EnabledProviders,
+    command_file_roots: Vec<std::path::PathBuf>,
+    command_scripts: Vec<kestrel_core::CommandScriptConfiguration>,
+    command_max_results: usize,
+    command_launcher: Option<ExternalLauncher>,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
     alerts: AlertEngine,
     /// The user's Battery-alert preference; the quick toggle can only narrow it.
@@ -219,6 +320,14 @@ impl ApplicationRuntime {
             configuration.feature_enabled(CLIPBOARD_HISTORY_ID),
             ClipboardCapabilityProbe::new(),
         )?;
+        let command_bar =
+            FeatureSpec::new(COMMAND_BAR_ID, "Command bar", CapabilityStatus::Supported)
+                .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        registry.register_probe(
+            command_bar,
+            configuration.feature_enabled(COMMAND_BAR_ID),
+            CommandBarProbe::new(configuration.command_bar.clone()),
+        )?;
         let snippets = FeatureSpec::new(SNIPPETS_ID, "Text snippets", CapabilityStatus::Supported)
             .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
         registry.register_probe(
@@ -280,6 +389,27 @@ impl ApplicationRuntime {
             });
         }
         let snippet_service = Self::build_snippet_service(configuration);
+        let command_applications = Self::scan_command_applications(configuration);
+        let command_application_items = Self::application_items(&command_applications);
+        let command_index = CommandIndex::new(
+            Self::snippet_items(&loaded_snippets.library),
+            &configuration.command_bar.scripts,
+        );
+        let command_ranking_path = crate::command_bar::ranking_path();
+        let loaded_ranking = command_ranking_path
+            .as_deref()
+            .map(crate::command_bar::load_ranking)
+            .unwrap_or_default();
+        let command_providers = Self::providers_from_configuration(configuration);
+        let command_file_roots = configuration
+            .command_bar
+            .file_roots
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
+        let command_max_results = configuration.command_bar.max_results as usize;
+        let command_launcher = ExternalLauncher::discover().ok();
+        let command_ranking_warnings = loaded_ranking.warnings;
 
         let mut runtime = Self {
             registry,
@@ -299,7 +429,18 @@ impl ApplicationRuntime {
             snippet_provider_preference: configuration.snippets.preferred_provider,
             snippet_path,
             snippet_warnings,
-            snippet_clipboard: Self::build_snippet_clipboard(),
+            session_clipboard: Self::build_snippet_clipboard(),
+            command_index,
+            command_ranking: loaded_ranking.ranking,
+            command_ranking_path,
+            command_ranking_warnings,
+            command_applications,
+            command_application_items,
+            command_providers,
+            command_file_roots,
+            command_scripts: configuration.command_bar.scripts.clone(),
+            command_max_results,
+            command_launcher,
             system_monitor: SystemMonitorService::new(
                 monitor_source,
                 Duration::from_millis(configuration.monitoring.refresh_interval_millis),
@@ -383,6 +524,17 @@ impl ApplicationRuntime {
         self.snippet_expansion_timing = configuration.snippets.expansion_timing;
         self.snippet_provider_preference = configuration.snippets.preferred_provider;
         self.snippet_service = Self::build_snippet_service(configuration);
+        self.command_scripts = configuration.command_bar.scripts.clone();
+        self.command_providers = Self::providers_from_configuration(configuration);
+        self.command_file_roots = configuration
+            .command_bar
+            .file_roots
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        self.command_max_results = configuration.command_bar.max_results as usize;
+        self.command_applications = Self::scan_command_applications(configuration);
+        self.rebuild_command_index();
         let desired = self
             .registry
             .registrations()
@@ -463,6 +615,7 @@ impl ApplicationRuntime {
             can_undo,
             ClipboardQuery::default(),
             SnippetQuery::default(),
+            CommandBarQuery::default(),
         )
     }
 
@@ -478,6 +631,7 @@ impl ApplicationRuntime {
         can_undo: bool,
         clipboard: ClipboardQuery<'_>,
         snippets: SnippetQuery<'_>,
+        command_bar: CommandBarQuery<'_>,
     ) -> ApplicationViewModel {
         ApplicationViewModel::new(
             self.registrations(),
@@ -507,6 +661,19 @@ impl ApplicationRuntime {
                 matches: snippets.matches,
                 draft: snippets.draft,
                 warnings: &self.snippet_warnings,
+            },
+            CommandBarPresentation {
+                running: self.command_bar_running(),
+                max_results: self.command_max_results as u32,
+                providers: self.command_providers,
+                launcher: self.command_launcher_name(),
+                applications: self.command_applications.len(),
+                file_roots: self.command_file_roots.len(),
+                scripts: self.command_scripts.len(),
+                query: command_bar.query,
+                results: command_bar.results,
+                ranking: &self.command_ranking,
+                warnings: &self.command_ranking_warnings,
             },
             MonitorPresentation {
                 snapshot: self.system_monitor.latest(),
@@ -624,6 +791,221 @@ impl ApplicationRuntime {
             .and_then(|provider| ArboardClipboardBackend::new(provider).ok())
     }
 
+    /// Scans the XDG application directories when the provider is enabled.
+    fn scan_command_applications(
+        configuration: &ApplicationConfiguration,
+    ) -> Vec<ApplicationEntry> {
+        if !configuration.command_bar.enable_applications {
+            return Vec::new();
+        }
+        scan_applications(&application_directories(
+            std::env::var_os("XDG_DATA_HOME").as_deref(),
+            std::env::var_os("XDG_DATA_DIRS").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        ))
+    }
+
+    /// Projects scanned applications into searchable command items.
+    fn application_items(applications: &[ApplicationEntry]) -> Vec<CommandItem> {
+        applications
+            .iter()
+            .enumerate()
+            .map(|(index, application)| {
+                CommandItem::new(
+                    format!("application:{}", application.id),
+                    CommandSource::Application,
+                    application.name.clone(),
+                    application
+                        .comment
+                        .clone()
+                        .unwrap_or_else(|| "Application".to_string()),
+                    kestrel_services::command_bar::CommandAction::OpenApplication { index },
+                )
+            })
+            .collect()
+    }
+
+    /// Projects the snippet library into searchable command items.
+    fn snippet_items(library: &SnippetLibrary) -> Vec<CommandItem> {
+        library
+            .snippets()
+            .iter()
+            .map(|snippet| {
+                CommandItem::new(
+                    format!("snippet:{}", snippet.name),
+                    CommandSource::Snippet,
+                    snippet.name.clone(),
+                    snippet
+                        .folder
+                        .clone()
+                        .unwrap_or_else(|| "Snippet".to_string()),
+                    kestrel_services::command_bar::CommandAction::Kestrel(format!(
+                        "insert_snippet:{}",
+                        snippet.name
+                    )),
+                )
+                .with_keywords(["snippet", "text"])
+            })
+            .collect()
+    }
+
+    /// The provider switches in effect, with file search requiring a root.
+    fn providers_from_configuration(configuration: &ApplicationConfiguration) -> EnabledProviders {
+        EnabledProviders {
+            applications: configuration.command_bar.enable_applications,
+            files: configuration.command_bar.enable_files
+                && !configuration.command_bar.file_roots.is_empty(),
+            scripts: configuration.command_bar.enable_scripts,
+            emoji: configuration.command_bar.enable_emoji,
+        }
+    }
+
+    /// Rebuilds the catalog after the snippet library or scripts changed.
+    fn rebuild_command_index(&mut self) {
+        self.command_index = CommandIndex::new(
+            Self::snippet_items(&self.snippet_library),
+            &self.command_scripts,
+        );
+        self.command_application_items = Self::application_items(&self.command_applications);
+    }
+
+    pub fn command_ranking(&self) -> &CommandRanking {
+        &self.command_ranking
+    }
+
+    pub fn command_ranking_warnings(&self) -> &[ConfigurationWarning] {
+        &self.command_ranking_warnings
+    }
+
+    pub fn command_applications(&self) -> &[ApplicationEntry] {
+        &self.command_applications
+    }
+
+    pub fn command_providers(&self) -> EnabledProviders {
+        self.command_providers
+    }
+
+    pub fn command_launcher_name(&self) -> Option<&str> {
+        self.command_launcher
+            .as_ref()
+            .map(ExternalLauncher::handler_name)
+    }
+
+    pub fn command_scripts(&self) -> &[kestrel_core::CommandScriptConfiguration] {
+        &self.command_scripts
+    }
+
+    /// Whether the command bar registration is running.
+    pub fn command_bar_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == COMMAND_BAR_ID && registration.running)
+    }
+
+    /// Ranks the catalog for one query, gathering bounded file results first.
+    pub fn command_search<'a>(
+        &'a self,
+        query: &str,
+        now: &'a kestrel_platform::snippets::LocalTime,
+    ) -> Vec<CommandResult> {
+        // File results are gathered only when the provider is on and roots are
+        // configured; the walk itself is bounded by depth and entry budget.
+        let files = if self.command_providers.files {
+            search_roots(
+                &self.command_file_roots,
+                query,
+                kestrel_core::MAX_COMMAND_FILE_DEPTH,
+                kestrel_core::MAX_COMMAND_FILE_ENTRIES,
+                8,
+            )
+        } else {
+            Vec::new()
+        };
+        self.command_index.search(SearchInput {
+            query,
+            max_results: self.command_max_results,
+            providers: self.command_providers,
+            applications: &self.command_application_items,
+            files: &files,
+            now: Some(now),
+            ranking: &self.command_ranking,
+            configured_scripts: &self.command_scripts,
+        })
+    }
+
+    /// Records one use of a command and persists the learned ranking.
+    pub fn record_command_use(&mut self, id: &str) -> Result<(), String> {
+        self.command_ranking.record_use(id);
+        self.persist_command_ranking()
+    }
+
+    /// Pins or unpins a command and persists the learned ranking.
+    pub fn set_command_pinned(&mut self, id: &str, pinned: bool) -> Result<(), String> {
+        self.command_ranking.set_pinned(id, pinned);
+        self.persist_command_ranking()
+    }
+
+    /// Drops every pin and count and persists the empty ranking.
+    pub fn reset_command_ranking(&mut self) -> Result<(), String> {
+        self.command_ranking.reset();
+        self.persist_command_ranking()
+    }
+
+    fn persist_command_ranking(&self) -> Result<(), String> {
+        let Some(path) = self.command_ranking_path.as_deref() else {
+            return Err(
+                "no writable ranking file is available; set XDG_DATA_HOME or HOME".to_owned(),
+            );
+        };
+        crate::command_bar::save_ranking(path, &self.command_ranking)
+    }
+
+    /// Places a value on the live clipboard.
+    ///
+    /// Reading and writing share one connection, so a copy from the command bar
+    /// never disturbs the clipboard history service's ownership.
+    pub fn copy_to_clipboard(&mut self, text: &str) -> Result<(), String> {
+        let backend = self
+            .session_clipboard
+            .as_mut()
+            .ok_or_else(|| "no clipboard connection is available for this session".to_string())?;
+        backend.write_text(text).map_err(|error| error.to_string())
+    }
+
+    /// Runs one configured script action.
+    pub fn run_command_script(&self, index: usize) -> Result<ScriptOutcome, String> {
+        let script = self
+            .command_scripts
+            .get(index)
+            .ok_or_else(|| format!("script {index} is not configured"))?;
+        let path_env = std::env::var_os("PATH");
+        run_script(script, path_env.as_deref()).map_err(|error| error.to_string())
+    }
+
+    /// Launches one scanned application.
+    pub fn launch_command_application(&self, index: usize) -> Result<(), String> {
+        let application = self
+            .command_applications
+            .get(index)
+            .ok_or_else(|| format!("application {index} is no longer available"))?;
+        let launcher = self
+            .command_launcher
+            .as_ref()
+            .ok_or_else(|| "no desktop open handler is available".to_string())?;
+        launcher
+            .launch(&application.command)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Opens a link, file, or directory with the desktop handler.
+    pub fn open_command_target(&self, target: &str) -> Result<(), String> {
+        let launcher = self
+            .command_launcher
+            .as_ref()
+            .ok_or_else(|| "no desktop open handler is available".to_string())?;
+        launcher.open(target).map_err(|error| error.to_string())
+    }
+
     /// The snippet library as the window sees it.
     pub fn snippet_library(&self) -> &SnippetLibrary {
         &self.snippet_library
@@ -673,6 +1055,7 @@ impl ApplicationRuntime {
         self.snippet_library
             .upsert(snippet, self.snippet_policy)
             .map_err(|error| error.to_string())?;
+        self.rebuild_command_index();
         self.persist_snippets()
     }
 
@@ -681,6 +1064,7 @@ impl ApplicationRuntime {
         self.snippet_library
             .remove(name)
             .map_err(|error| error.to_string())?;
+        self.rebuild_command_index();
         self.persist_snippets()
     }
 
@@ -704,9 +1088,9 @@ impl ApplicationRuntime {
                 reason: format!("no snippet named \"{name}\" is stored"),
             }
         })?;
-        let clipboard_available = self.snippet_clipboard.is_some();
+        let clipboard_available = self.session_clipboard.is_some();
         let clipboard = self
-            .snippet_clipboard
+            .session_clipboard
             .as_mut()
             .and_then(|backend| backend.read_text().ok().flatten());
         let clock = SystemClock;

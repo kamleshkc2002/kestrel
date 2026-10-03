@@ -11,7 +11,7 @@ use std::{
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
-use kestrel::view_model::{ClipboardQuery, SnippetQuery};
+use kestrel::view_model::{ClipboardQuery, CommandBarQuery, SnippetQuery};
 use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
     ClipboardLifecycle, ClipboardViewModel, ConfigurationWarning, FeaturePreset,
@@ -20,6 +20,7 @@ use kestrel::{
     StatusNotifierIntegration, configuration_path, disable as disable_autostart,
     enable as enable_autostart, export_file, import_file, load, save,
 };
+use kestrel::{CommandBarCommand, CommandProviderSwitch};
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
 };
@@ -45,6 +46,9 @@ const SNIPPET_SEARCH_LIMIT: usize = 100;
 
 struct ControllerState {
     runtime: ApplicationRuntime,
+    /// The application command channel, so a command bar action queues exactly
+    /// the typed command the window would send.
+    commands: Sender<ApplicationCommand>,
     configuration: ApplicationConfiguration,
     warnings: Vec<ConfigurationWarning>,
     preset_snapshot: Option<FeatureConfigurationSnapshot>,
@@ -58,6 +62,9 @@ struct ControllerState {
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
+    /// The command bar query and its ranked results.
+    command_query: String,
+    command_results: Vec<kestrel_services::command_bar::CommandResult>,
 }
 
 impl ControllerState {
@@ -76,7 +83,160 @@ impl ControllerState {
                 matches: &self.snippet_matches,
                 draft: self.snippet_draft.as_ref(),
             },
+            CommandBarQuery {
+                query: &self.command_query,
+                results: &self.command_results,
+            },
         )
+    }
+
+    /// Re-runs the command query so the list reflects a ranking change.
+    fn refresh_command_results(&mut self) {
+        if self.command_query.trim().is_empty() {
+            self.command_results.clear();
+            return;
+        }
+        let clock = kestrel_platform::snippets::SystemClock;
+        let now = kestrel_platform::snippets::Clock::local_time(&clock);
+        self.command_results = self
+            .runtime
+            .command_search(&self.command_query.clone(), &now);
+    }
+
+    /// Runs one ranked result and records its use.
+    fn run_command_result(&mut self, id: &str) -> String {
+        use kestrel_services::command_bar::CommandAction;
+        let Some(result) = self
+            .command_results
+            .iter()
+            .find(|result| result.item.id == id)
+            .cloned()
+        else {
+            return format!("No command result with id \"{id}\"");
+        };
+
+        let outcome = match &result.item.action {
+            CommandAction::InsertText(text) => match self.runtime.copy_to_clipboard(text) {
+                Ok(()) => format!("Copied \"{}\" to the clipboard", result.item.title),
+                Err(error) => format!("The value was not copied: {error}"),
+            },
+            CommandAction::RunScript { index } => match self.runtime.run_command_script(*index) {
+                Ok(outcome) => {
+                    let mut message = format!(
+                        "{} finished with {:?} in {:?}",
+                        outcome.name, outcome.exit_code, outcome.duration
+                    );
+                    if outcome.stdout_truncated || outcome.stderr_truncated {
+                        message.push_str(" (output truncated to the configured bound)");
+                    }
+                    message
+                }
+                Err(error) => format!("Script failed: {error}"),
+            },
+            CommandAction::OpenApplication { index } => {
+                match self.runtime.launch_command_application(*index) {
+                    Ok(()) => format!("Launched {}", result.item.title),
+                    Err(error) => format!("The application was not launched: {error}"),
+                }
+            }
+            CommandAction::OpenFile(path) => {
+                match self
+                    .runtime
+                    .open_command_target(&path.display().to_string())
+                {
+                    Ok(()) => format!("Opened {}", path.display()),
+                    Err(error) => format!("The file was not opened: {error}"),
+                }
+            }
+            CommandAction::OpenUrl(url) => match self.runtime.open_command_target(url) {
+                Ok(()) => format!("Opened {url}"),
+                Err(error) => format!("The link was not opened: {error}"),
+            },
+            CommandAction::Kestrel(action) => match self.run_kestrel_command(action) {
+                Some(message) => message,
+                None => format!("No Kestrel action named \"{action}\""),
+            },
+        };
+
+        // A run is recorded only after it was attempted, and only the identifier
+        // and a count are stored.
+        let _ = self.runtime.record_command_use(id);
+        self.refresh_command_results();
+        outcome
+    }
+
+    /// Maps a command bar action onto an existing application command.
+    fn run_kestrel_command(&mut self, action: &str) -> Option<String> {
+        if let Some(name) = action.strip_prefix("insert_snippet:") {
+            return Some(match self.runtime.insert_snippet(name) {
+                Ok(report) => format!(
+                    "Inserted \"{name}\" ({} bytes via {})",
+                    report.bytes,
+                    report.provider.label()
+                ),
+                Err(error) => format!("Insert failed: {error}"),
+            });
+        }
+
+        if let Some(feature_id) = action.strip_prefix("toggle:") {
+            let snapshot = self
+                .runtime
+                .quick_toggle_snapshots()
+                .find(|snapshot| snapshot.id.feature_id() == feature_id)
+                .cloned()?;
+            let currently_enabled = match &snapshot.observation {
+                Some(observation) => match &observation.control {
+                    kestrel_platform::quick_toggles::QuickToggleControl::Switch {
+                        enabled, ..
+                    } => *enabled,
+                    kestrel_platform::quick_toggles::QuickToggleControl::Level { percentage } => {
+                        *percentage > 0
+                    }
+                    kestrel_platform::quick_toggles::QuickToggleControl::Actions(_) => false,
+                },
+                None => false,
+            };
+            let command = kestrel::QuickToggleCommand {
+                id: snapshot.id,
+                mutation: kestrel::QuickToggleMutation::SetEnabled(!currently_enabled),
+                confirmation_token: None,
+            };
+            return Some(match self.runtime.execute_quick_toggle_command(command) {
+                Some(Ok(_)) => format!("{feature_id} toggled"),
+                Some(Err(error)) => format!("{feature_id} failed: {error}"),
+                None => format!("{feature_id} is not available"),
+            });
+        }
+
+        let command = match action {
+            "open_window" => return Some("The window is already open".to_string()),
+            "refresh" => ApplicationCommand::RefreshCapabilities,
+            "preset_essentials" => {
+                ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Essentials)
+            }
+            "preset_balanced" => ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Balanced),
+            "preset_everything" => {
+                ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Everything)
+            }
+            "undo_preset" => ApplicationCommand::UndoPreset,
+            "wipe_clipboard" => {
+                ApplicationCommand::Clipboard(kestrel_services::clipboard::ClipboardCommand::Wipe)
+            }
+            "clear_selection" => ApplicationCommand::Clipboard(
+                kestrel_services::clipboard::ClipboardCommand::ClearSelection,
+            ),
+            "reset_ranking" => ApplicationCommand::ResetCommandRanking,
+            _ => return None,
+        };
+
+        // Queued through the normal surface so the command bar never bypasses the
+        // single-operation gate or its worker.
+        let queued = self.commands.try_send(command).is_ok();
+        Some(if queued {
+            format!("{action} queued")
+        } else {
+            format!("{action} could not be queued")
+        })
     }
 
     /// Re-runs the snippet search so the list reflects a library change.
@@ -197,6 +357,7 @@ enum TargetedPanel {
     Full,
     Clipboard,
     Snippets,
+    Commands,
 }
 
 /// Cheap change detector for the clipboard snapshot.
@@ -286,6 +447,11 @@ enum ControllerOperation {
     SetSnippetLimit(SnippetLimit),
     SetSnippetProvider(SnippetProviderPreference),
     SetSnippetExpansionTiming(kestrel::SnippetExpansionTiming),
+    CommandQuery(String),
+    CommandBar(CommandBarCommand),
+    ResetCommandRanking,
+    SetCommandResultLimit(u32),
+    SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
 }
@@ -333,9 +499,11 @@ impl ApplicationController {
         } = context;
         let monitor_running = runtime.monitor_is_running();
         let clipboard_running = runtime.clipboard_is_running();
+        let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
                 runtime,
+                commands: state_commands,
                 configuration,
                 warnings,
                 preset_snapshot: None,
@@ -346,6 +514,8 @@ impl ApplicationController {
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
+                command_query: String::new(),
+                command_results: Vec::new(),
             })),
             config_path,
             window: RefCell::new(None),
@@ -434,6 +604,11 @@ impl ApplicationController {
         worker_name: &'static str,
     ) {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Clipboard);
+    }
+
+    /// Queues a command bar operation that updates only the command bar.
+    fn request_command_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
+        self.request_targeted_operation(operation, worker_name, TargetedPanel::Commands);
     }
 
     /// Queues a snippet operation that updates only the snippet group.
@@ -1026,6 +1201,71 @@ impl ControllerState {
                     format!("Expansion timing: {}", timing.label()),
                 )?
             }
+            ControllerOperation::CommandQuery(query) => {
+                self.command_query = query.clone();
+                self.refresh_command_results();
+                if query.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("{} command results", self.command_results.len())
+                }
+            }
+            ControllerOperation::CommandBar(command) => match command {
+                CommandBarCommand::Run(id) => self.run_command_result(&id),
+                CommandBarCommand::Pin { id, pinned } => {
+                    match self.runtime.set_command_pinned(&id, pinned) {
+                        Ok(()) => {
+                            self.refresh_command_results();
+                            format!("{} \"{id}\"", if pinned { "Pinned" } else { "Unpinned" })
+                        }
+                        Err(error) => format!("The pin was not saved: {error}"),
+                    }
+                }
+            },
+            ControllerOperation::ResetCommandRanking => {
+                match self.runtime.reset_command_ranking() {
+                    Ok(()) => {
+                        self.refresh_command_results();
+                        "Command ranking reset".to_owned()
+                    }
+                    Err(error) => format!("The ranking was not reset: {error}"),
+                }
+            }
+            ControllerOperation::SetCommandResultLimit(results) => {
+                let mut candidate = self.configuration.clone();
+                candidate.command_bar.max_results = results;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("The command bar shows at most {results} results"),
+                )?
+            }
+            ControllerOperation::SetCommandProvider(switch) => {
+                let mut candidate = self.configuration.clone();
+                let message = match switch {
+                    CommandProviderSwitch::Applications(enabled) => {
+                        candidate.command_bar.enable_applications = enabled;
+                        format!("Application results {}", if enabled { "on" } else { "off" })
+                    }
+                    CommandProviderSwitch::Files(enabled) => {
+                        candidate.command_bar.enable_files = enabled;
+                        if enabled && candidate.command_bar.file_roots.is_empty() {
+                            "File search stays off until a root is configured".to_owned()
+                        } else {
+                            format!("File results {}", if enabled { "on" } else { "off" })
+                        }
+                    }
+                    CommandProviderSwitch::Scripts(enabled) => {
+                        candidate.command_bar.enable_scripts = enabled;
+                        format!("Script results {}", if enabled { "on" } else { "off" })
+                    }
+                    CommandProviderSwitch::Emoji(enabled) => {
+                        candidate.command_bar.enable_emoji = enabled;
+                        format!("Emoji results {}", if enabled { "on" } else { "off" })
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -1198,6 +1438,7 @@ fn apply_targeted_panel(
         TargetedPanel::Full => view.set_view_model(view_model),
         TargetedPanel::Clipboard => view.set_clipboard(&view_model.clipboard),
         TargetedPanel::Snippets => view.set_snippets(&view_model.snippets),
+        TargetedPanel::Commands => view.set_command_bar(&view_model.command_bar),
     }
 }
 
@@ -1526,6 +1767,26 @@ fn dispatch_commands(
                         ControllerOperation::SetSnippetExpansionTiming(timing),
                         "kestrel-snippet-expansion",
                     ),
+                ApplicationCommand::CommandQuery(query) => controller.request_command_operation(
+                    ControllerOperation::CommandQuery(query),
+                    "kestrel-command-query",
+                ),
+                ApplicationCommand::CommandBar(command) => controller.request_command_operation(
+                    ControllerOperation::CommandBar(command),
+                    "kestrel-command-run",
+                ),
+                ApplicationCommand::ResetCommandRanking => controller.request_command_operation(
+                    ControllerOperation::ResetCommandRanking,
+                    "kestrel-command-reset",
+                ),
+                ApplicationCommand::SetCommandResultLimit(results) => controller.request_operation(
+                    ControllerOperation::SetCommandResultLimit(results),
+                    "kestrel-command-limit",
+                ),
+                ApplicationCommand::SetCommandProvider(switch) => controller.request_operation(
+                    ControllerOperation::SetCommandProvider(switch),
+                    "kestrel-command-provider",
+                ),
                 ApplicationCommand::ImportConfiguration(path) => controller.request_operation(
                     ControllerOperation::ImportConfiguration(path),
                     "kestrel-configuration-import",
