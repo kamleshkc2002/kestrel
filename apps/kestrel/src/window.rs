@@ -2093,6 +2093,7 @@ fn build_command_panel(
         .subtitle_lines(0)
         .build();
     let reset = gtk::Button::with_label("Reset");
+    reset.set_sensitive(command_bar.running);
     reset.update_property(&[Property::Label("Reset command ranking")]);
     reset.set_tooltip_text(Some("Drop every pin and learned count"));
     let sender = commands.clone();

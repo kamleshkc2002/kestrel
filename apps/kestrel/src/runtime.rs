@@ -971,7 +971,11 @@ impl ApplicationRuntime {
     }
 
     /// Records one use of a command and persists the learned ranking.
+    ///
+    /// Like every other ranking write, it is refused while the feature is
+    /// stopped, so a stale or forged request cannot reach the store.
     pub fn record_command_use(&mut self, id: &str) -> Result<(), String> {
+        self.require_command_bar()?;
         self.command_ranking.record_use(id);
         self.persist_command_ranking()
     }
@@ -984,7 +988,11 @@ impl ApplicationRuntime {
     }
 
     /// Drops every pin and count and persists the empty ranking.
+    ///
+    /// The store is only touched while the feature is running, matching
+    /// `set_command_pinned`.
     pub fn reset_command_ranking(&mut self) -> Result<(), String> {
+        self.require_command_bar()?;
         self.command_ranking.reset();
         self.persist_command_ranking()
     }
@@ -1612,6 +1620,9 @@ mod tests {
         let now = SystemClock.local_time();
 
         assert!(!runtime.command_bar_running());
+        // Seed a pin so a refused write can be seen to leave the store alone
+        // rather than mutating before it is rejected.
+        runtime.command_ranking.set_pinned("kestrel:refresh", true);
         assert!(
             runtime.command_search("refresh", &now).is_empty(),
             "a stopped command bar ranks nothing"
@@ -1630,14 +1641,24 @@ mod tests {
                 .copy_to_clipboard("value")
                 .expect_err("copying is gated"),
             runtime
-                .set_command_pinned("kestrel:refresh", true)
+                .set_command_pinned("kestrel:other", true)
                 .expect_err("pinning is gated"),
+            runtime
+                .record_command_use("kestrel:other")
+                .expect_err("recording a use is gated"),
+            runtime
+                .reset_command_ranking()
+                .expect_err("resetting is gated"),
         ] {
             assert!(error.contains("not running"), "unexpected error: {error}");
         }
         assert!(
-            !runtime.command_ranking().is_pinned("kestrel:refresh"),
-            "a refused pin leaves the ranking untouched"
+            runtime.command_ranking().is_pinned("kestrel:refresh"),
+            "a refused reset leaves the seeded ranking untouched"
+        );
+        assert!(
+            !runtime.command_ranking().is_pinned("kestrel:other"),
+            "a refused pin adds nothing"
         );
     }
 
