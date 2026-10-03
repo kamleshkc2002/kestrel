@@ -2,12 +2,11 @@
 //!
 //! The file holds command identifiers, use counts, and pins — never the text a
 //! user searched for. It is created `0600` in a `0700` directory and replaced
-//! atomically, and the window can inspect and reset it.
+//! atomically through an exclusively created temporary file, and the window can
+//! inspect and reset it.
 
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -15,11 +14,9 @@ use kestrel_core::MAX_COMMAND_USAGE_ENTRIES;
 use kestrel_services::command_bar::CommandRanking;
 use serde::{Deserialize, Serialize};
 
-use crate::ConfigurationWarning;
+use crate::{ConfigurationWarning, private_file::write_private_atomic};
 
 pub const CURRENT_RANKING_SCHEMA_VERSION: u32 = 1;
-const FILE_MODE: u32 = 0o600;
-const DIRECTORY_MODE: u32 = 0o700;
 
 /// The on-disk shape of the learned ranking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,12 +138,6 @@ pub fn parse_ranking(contents: &str) -> LoadedRanking {
 
 /// Writes the ranking atomically with private permissions.
 pub fn save_ranking(path: &Path, ranking: &CommandRanking) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "the ranking path has no parent directory".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(DIRECTORY_MODE));
-
     let document = RankingFile {
         schema_version: CURRENT_RANKING_SCHEMA_VERSION,
         pinned: ranking.pinned_entries(),
@@ -158,27 +149,7 @@ pub fn save_ranking(path: &Path, ranking: &CommandRanking) -> Result<(), String>
     };
     let serialized = toml::to_string_pretty(&document)
         .map_err(|error| format!("the ranking could not be serialized: {error}"))?;
-
-    let temporary = path.with_extension(format!("toml.tmp{}", std::process::id()));
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(FILE_MODE)
-            .open(&temporary)
-            .map_err(|error| error.to_string())?;
-        file.write_all(serialized.as_bytes())
-            .map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-    }
-    let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(FILE_MODE));
-    fs::rename(&temporary, path).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        error.to_string()
-    })?;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(FILE_MODE));
-    Ok(())
+    write_private_atomic(path, serialized.as_bytes()).map_err(|error| error.to_string())
 }
 
 fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
@@ -190,7 +161,10 @@ fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
+    use crate::private_file::FILE_MODE;
 
     #[test]
     fn a_missing_ranking_file_loads_empty() {

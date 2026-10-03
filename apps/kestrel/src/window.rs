@@ -1813,19 +1813,23 @@ fn fill_snippet_panel(
         "Editing a stored snippet"
     });
 
-    let name = entry_row(panel, commands, "Name", &draft.name, false);
-    let folder = entry_row(panel, commands, "Folder", &draft.folder, false);
-    let trigger = entry_row(panel, commands, "Trigger", &draft.trigger, false);
-    let content = text_view_row(panel, commands, &draft.content);
+    // The editor is usable exactly while the snippet feature is running.
+    let editable = snippets.running;
+    let name = entry_row(panel, commands, "Name", &draft.name, editable);
+    let folder = entry_row(panel, commands, "Folder", &draft.folder, editable);
+    let trigger = entry_row(panel, commands, "Trigger", &draft.trigger, editable);
+    let content = text_view_row(panel, commands, &draft.content, editable);
 
     let actions = gtk::Box::new(Orientation::Horizontal, 6);
     let new_button = gtk::Button::with_label("New");
+    new_button.set_sensitive(editable);
     new_button.update_property(&[Property::Label("New snippet")]);
     let sender = commands.clone();
     new_button.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::SnippetNew);
     });
     let save = gtk::Button::with_label("Save");
+    save.set_sensitive(editable);
     save.update_property(&[Property::Label("Save snippet")]);
     save.set_tooltip_text(Some(
         "Validate and store the snippet in the private snippet file",
@@ -1888,10 +1892,13 @@ fn fill_snippet_panel(
 
         let controls = gtk::Box::new(Orientation::Horizontal, 6);
         let insert = gtk::Button::with_label("Insert");
-        insert.set_sensitive(snippets.insertion_available);
+        let can_insert = snippets.running && snippets.insertion_available;
+        insert.set_sensitive(can_insert);
         insert.update_property(&[Property::Label(&format!("Insert {}", item.name))]);
-        insert.set_tooltip_text(Some(if snippets.insertion_available {
+        insert.set_tooltip_text(Some(if can_insert {
             "Render the variables and type this snippet into the focused window"
+        } else if !snippets.running {
+            "Enable snippets.text to insert snippets"
         } else {
             "Insertion needs a verified provider"
         }));
@@ -1914,6 +1921,7 @@ fn fill_snippet_panel(
         controls.append(&edit);
 
         let delete = gtk::Button::with_label("Delete");
+        delete.set_sensitive(editable);
         delete.update_property(&[Property::Label(&format!("Delete {}", item.name))]);
         let sender = commands.clone();
         let name = item.name.clone();
@@ -1954,10 +1962,12 @@ fn text_view_row(
     panel: &SnippetPanel,
     _commands: &Sender<ApplicationCommand>,
     value: &str,
+    editable: bool,
 ) -> gtk::TextView {
     let view = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
         .accepts_tab(false)
+        .editable(editable)
         .build();
     view.buffer().set_text(value);
     view.update_property(&[Property::Label("Snippet content")]);
@@ -2147,6 +2157,7 @@ fn fill_command_panel(
 
         let controls = gtk::Box::new(Orientation::Horizontal, 6);
         let run = gtk::Button::with_label(result.action_label);
+        run.set_sensitive(command_bar.running);
         run.update_property(&[Property::Label(&format!(
             "{} {}",
             result.action_label, result.title
@@ -2162,6 +2173,7 @@ fn fill_command_panel(
         controls.append(&run);
 
         let pin = gtk::Button::with_label(if result.pinned { "Unpin" } else { "Pin" });
+        pin.set_sensitive(command_bar.running);
         pin.update_property(&[Property::Label(&format!("Pin {}", result.title))]);
         let sender = commands.clone();
         let id = result.id.clone();

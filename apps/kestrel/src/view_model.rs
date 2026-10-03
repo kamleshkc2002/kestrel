@@ -2899,6 +2899,7 @@ mod tests {
                 files: false,
                 scripts: true,
                 emoji: true,
+                snippets: true,
             },
             launcher: Some("xdg-open"),
             applications: 42,

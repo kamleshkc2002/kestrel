@@ -10,7 +10,8 @@ use std::{
     env,
     error::Error,
     ffi::{OsStr, OsString},
-    fmt, io,
+    fmt,
+    io::{self, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -231,7 +232,9 @@ fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 
 /// Runs a verified provider for one insertion.
 ///
-/// The payload travels as one argument, never through a shell, and provider
+/// The payload travels over the provider's standard input, never through a
+/// shell and never as a command-line argument, so rendered text (including a
+/// `{{clipboard}}` value) is not readable from `/proc/<pid>/cmdline`. Provider
 /// output is discarded: only the exit status is reported, which bounds both the
 /// output size and the failure surface.
 pub struct ExecutableInsertionBackend {
@@ -261,11 +264,11 @@ impl ExecutableInsertionBackend {
     /// happens when a package manager replaces or upgrades the provider. A short
     /// bounded retry turns that transient window into a successful insert
     /// instead of a confusing failure.
-    fn spawn_provider(&self, text: &str) -> Result<std::process::Child, InsertionError> {
+    fn spawn_provider(&self) -> Result<std::process::Child, InsertionError> {
         let mut command = Command::new(&self.executable);
         command
-            .args(self.argument_list(text))
-            .stdin(Stdio::null())
+            .args(self.argument_list())
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         crate::spawn_with_busy_retry(&mut command).map_err(|error| {
@@ -276,22 +279,52 @@ impl ExecutableInsertionBackend {
         })
     }
 
-    fn argument_list(&self, text: &str) -> Vec<OsString> {
+    /// The fixed provider arguments; the text itself arrives on stdin.
+    fn argument_list(&self) -> Vec<OsString> {
         match self.provider {
-            // `--` stops option parsing so snippet text can start with a dash.
-            InsertionProvider::Wtype => vec![OsString::from("--"), OsString::from(text)],
+            // A lone `-` makes wtype read the text to type from stdin.
+            InsertionProvider::Wtype => vec![OsString::from("-")],
             InsertionProvider::Ydotool => vec![
                 OsString::from("type"),
-                OsString::from("--"),
-                OsString::from(text),
+                OsString::from("--file"),
+                OsString::from("-"),
             ],
             InsertionProvider::Xdotool => vec![
                 OsString::from("type"),
                 OsString::from("--clearmodifiers"),
-                OsString::from("--"),
-                OsString::from(text),
+                OsString::from("--file"),
+                OsString::from("-"),
             ],
         }
+    }
+
+    /// Feeds the payload to the provider without blocking the timeout loop.
+    ///
+    /// The write happens on its own thread, so a provider that stops reading
+    /// cannot hold the caller past its deadline; killing the provider closes the
+    /// pipe and ends the writer.
+    fn send_text(&self, child: &mut std::process::Child, text: &str) -> Result<(), InsertionError> {
+        let Some(mut stdin) = child.stdin.take() else {
+            return Err(InsertionError::new(
+                InsertionErrorKind::SpawnFailed,
+                format!("{} did not expose an input pipe", self.provider.label()),
+            ));
+        };
+        let payload = text.as_bytes().to_vec();
+        thread::Builder::new()
+            .name("kestrel-insert-input".to_string())
+            .spawn(move || {
+                // A provider that exits early closes the pipe; that surfaces
+                // through its exit status, so the write result is not needed.
+                let _ = stdin.write_all(&payload);
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                InsertionError::new(
+                    InsertionErrorKind::SpawnFailed,
+                    format!("{} input could not be sent: {error}", self.provider.label()),
+                )
+            })
     }
 }
 
@@ -307,7 +340,12 @@ impl InsertionBackend for ExecutableInsertionBackend {
                 "an empty snippet cannot be inserted",
             ));
         }
-        let mut child = self.spawn_provider(text)?;
+        let mut child = self.spawn_provider()?;
+        if let Err(error) = self.send_text(&mut child, text) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
 
         let deadline = Instant::now() + self.timeout;
         loop {
@@ -672,12 +710,14 @@ mod tests {
     }
 
     #[test]
-    fn insertion_runs_the_provider_without_a_shell_and_reports_its_status() {
+    fn insertion_sends_text_over_stdin_and_never_through_argv() {
         let dir = TempDir::new().expect("temp dir");
         let record = dir.path().join("args.txt");
+        let input = dir.path().join("input.txt");
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\nexit 0\n",
-            record.display()
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\ncat > {}\nexit 0\n",
+            record.display(),
+            input.display()
         );
         let executable = stub(&dir, "wtype", &script);
         let mut backend = ExecutableInsertionBackend::new(
@@ -694,8 +734,41 @@ mod tests {
             .expect("the stub accepts the insertion");
 
         let args = fs::read_to_string(&record).expect("the stub recorded its arguments");
-        assert_eq!(args, "--\nmulti\nline text\n");
+        assert_eq!(
+            args, "-\n",
+            "only the stdin marker is passed; the text is not an argument"
+        );
+        assert!(!args.contains("line text"));
+        let typed = fs::read_to_string(&input).expect("the stub recorded its input");
+        assert_eq!(typed, "multi\nline text");
         assert_eq!(backend.provider(), InsertionProvider::Wtype);
+    }
+
+    #[test]
+    fn every_provider_reads_its_text_from_stdin() {
+        for (provider, expected) in [
+            (InsertionProvider::Wtype, vec!["-"]),
+            (InsertionProvider::Ydotool, vec!["type", "--file", "-"]),
+            (
+                InsertionProvider::Xdotool,
+                vec!["type", "--clearmodifiers", "--file", "-"],
+            ),
+        ] {
+            let backend = ExecutableInsertionBackend::new(
+                InsertionPath {
+                    provider,
+                    executable: std::path::PathBuf::from("/nonexistent"),
+                },
+                500,
+            )
+            .expect("the backend builds");
+            let arguments = backend
+                .argument_list()
+                .into_iter()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(arguments, expected, "{} reads stdin", provider.label());
+        }
     }
 
     #[test]

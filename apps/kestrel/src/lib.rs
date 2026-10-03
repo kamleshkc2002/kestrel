@@ -3,6 +3,7 @@
 mod autostart;
 mod command_bar;
 mod config;
+mod private_file;
 mod runtime;
 mod snippets;
 mod status_notifier;

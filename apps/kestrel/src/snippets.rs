@@ -1,16 +1,15 @@
 //! Private, atomic storage for the user's snippet library.
 //!
 //! Snippets are user-authored text, so they live in the XDG data directory in a
-//! file only the user can read. Writing is atomic (temporary file plus rename)
-//! and every save re-applies the private mode, so a partial or world-readable
-//! file cannot appear. Resolved variable values are never stored: the file
-//! holds the literal `{{...}}` tokens, which is also why a snippet can never
-//! carry clipboard-derived content out of the process.
+//! file only the user can read. Writing is atomic (an exclusively created
+//! temporary file plus rename, then a directory sync) and every save re-applies
+//! the private mode, so a partial, redirected, or world-readable file cannot
+//! appear. Resolved variable values are never stored: the file holds the
+//! literal `{{...}}` tokens, which is also why a snippet can never carry
+//! clipboard-derived content out of the process.
 
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -18,12 +17,10 @@ use kestrel_core::Snippet;
 use kestrel_services::snippets::{SnippetLibrary, SnippetPolicy};
 use serde::{Deserialize, Serialize};
 
-use crate::ConfigurationWarning;
+use crate::{ConfigurationWarning, private_file::write_private_atomic};
 
 /// The snippet file schema this build writes.
 pub const CURRENT_SNIPPET_SCHEMA_VERSION: u32 = 1;
-const FILE_MODE: u32 = 0o600;
-const DIRECTORY_MODE: u32 = 0o700;
 
 /// The on-disk shape of the snippet file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,12 +163,6 @@ pub fn save_snippets(
         .validate(policy)
         .map_err(|error| SnippetStoreError::InvalidLibrary(error.to_string()))?;
 
-    let parent = path.parent().ok_or_else(|| {
-        SnippetStoreError::Io("the snippet path has no parent directory".to_string())
-    })?;
-    fs::create_dir_all(parent).map_err(|error| SnippetStoreError::Io(error.to_string()))?;
-    let _ = fs::set_permissions(parent, fs::Permissions::from_mode(DIRECTORY_MODE));
-
     let document = SnippetFile {
         schema_version: CURRENT_SNIPPET_SCHEMA_VERSION,
         snippets: library.snippets().to_vec(),
@@ -180,28 +171,8 @@ pub fn save_snippets(
         SnippetStoreError::InvalidDocument(format!("snippets could not be serialized: {error}"))
     })?;
 
-    let temporary = path.with_extension(format!("toml.tmp{}", std::process::id()));
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(FILE_MODE)
-            .open(&temporary)
-            .map_err(|error| SnippetStoreError::Io(error.to_string()))?;
-        file.write_all(serialized.as_bytes())
-            .map_err(|error| SnippetStoreError::Io(error.to_string()))?;
-        file.sync_all()
-            .map_err(|error| SnippetStoreError::Io(error.to_string()))?;
-    }
-    // Re-apply the mode in case the file already existed with a wider one.
-    let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(FILE_MODE));
-    fs::rename(&temporary, path).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        SnippetStoreError::Io(error.to_string())
-    })?;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(FILE_MODE));
-    Ok(())
+    write_private_atomic(path, serialized.as_bytes())
+        .map_err(|error| SnippetStoreError::Io(error.to_string()))
 }
 
 fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
@@ -213,7 +184,10 @@ fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
+    use crate::private_file::FILE_MODE;
     use kestrel_core::Snippet;
 
     fn policy() -> SnippetPolicy {
@@ -296,8 +270,11 @@ content = "b"
             .mode()
             & 0o777;
         assert_eq!(mode, FILE_MODE, "the snippet file stays private");
-        assert!(
-            !path.with_extension("toml.tmp0").exists(),
+        assert_eq!(
+            fs::read_dir(path.parent().expect("parent"))
+                .expect("directory is readable")
+                .count(),
+            1,
             "no temporary file is left behind"
         );
 
