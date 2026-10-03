@@ -11,6 +11,7 @@ pub mod audio;
 pub mod clipboard;
 
 pub mod quick_toggles;
+pub mod snippets;
 pub mod system_monitor;
 
 /// The current lifecycle stage of a registered feature.

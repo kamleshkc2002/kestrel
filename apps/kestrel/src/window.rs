@@ -23,6 +23,18 @@ pub struct WindowView {
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
     /// The retained clipboard panel, so a search keeps its text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
+    /// The retained snippet panel, for the same reason.
+    snippet_panel: std::cell::RefCell<Option<SnippetPanel>>,
+}
+
+/// The reusable parts of the snippet group.
+struct SnippetPanel {
+    container: gtk::Box,
+    status: gtk::Label,
+    insertion: gtk::Label,
+    draft_label: gtk::Label,
+    editor: gtk::Box,
+    results: gtk::Box,
 }
 
 /// The reusable parts of the clipboard group.
@@ -94,6 +106,7 @@ impl WindowView {
             commands,
             monitor_container: std::cell::RefCell::new(page.monitor_container),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
+            snippet_panel: std::cell::RefCell::new(page.snippet_panel),
         }
     }
 
@@ -102,6 +115,7 @@ impl WindowView {
         self.content.set_child(Some(&page.clamp));
         *self.monitor_container.borrow_mut() = page.monitor_container;
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
+        *self.snippet_panel.borrow_mut() = page.snippet_panel;
     }
 
     /// Updates the clipboard group in place, preserving the search field.
@@ -118,6 +132,23 @@ impl WindowView {
         // A background capture makes entries exist before any query was run, so
         // the first listing is requested here as well as on a full rebuild.
         request_initial_clipboard_listing(clipboard, &self.commands);
+    }
+
+    /// Updates the snippet group in place, preserving the search field.
+    pub fn set_snippets(&self, snippets: &kestrel::SnippetsViewModel) {
+        let panel = self.snippet_panel.borrow();
+        let Some(panel) = panel.as_ref() else {
+            return;
+        };
+        panel.status.set_text(&snippets.status);
+        panel.insertion.set_text(&snippets.insertion_status);
+        while let Some(child) = panel.results.first_child() {
+            child.unparent();
+        }
+        while let Some(child) = panel.editor.first_child() {
+            child.unparent();
+        }
+        fill_snippet_panel(panel, snippets, &self.commands);
     }
 
     pub fn set_monitor(&self, monitor: &MonitorViewModel) {
@@ -148,6 +179,7 @@ struct PageBuild {
     clamp: adw::Clamp,
     monitor_container: Option<gtk::Box>,
     clipboard_panel: Option<ClipboardPanel>,
+    snippet_panel: Option<SnippetPanel>,
 }
 
 fn build_page(
@@ -185,6 +217,7 @@ fn build_page(
     }
     let mut monitor_container = None;
     let mut clipboard_panel = None;
+    let mut snippet_panel = None;
     for panel in &view_model.panel_sections {
         if !panel.visible {
             continue;
@@ -202,6 +235,9 @@ fn build_page(
                 let panel = build_clipboard_panel(&view_model.clipboard, commands);
                 page.append(&panel.container);
                 clipboard_panel = Some(panel);
+                let panel = build_snippet_panel(&view_model.snippets, commands);
+                page.append(&panel.container);
+                snippet_panel = Some(panel);
             }
             PanelSection::FeatureHub => {
                 page.append(&build_feature_hub_group(
@@ -227,6 +263,7 @@ fn build_page(
         clamp,
         monitor_container,
         clipboard_panel,
+        snippet_panel,
     }
 }
 
@@ -914,6 +951,139 @@ fn build_settings_group(
     }
     group.add(&clipboard_group);
 
+    let snippets = &view_model.snippets;
+    let snippet_group = adw::PreferencesGroup::builder()
+        .title("Snippets")
+        .description(
+            "Library bounds and the insertion provider. Snippets are stored in a private file; \
+             clipboard variables are read once at insert time and never stored.",
+        )
+        .build();
+
+    let snippet_content_kib = snippets.policy.max_content_bytes / 1024;
+    let content = adw::SpinRow::with_range(
+        f64::from(snippets.policy.bounds.min_content_bytes / 1024),
+        f64::from(snippets.policy.bounds.max_content_bytes / 1024),
+        1.0,
+    );
+    content.set_title("Snippet size bound");
+    content.set_subtitle("Largest stored snippet, in kibibytes.");
+    content.set_value(f64::from(snippet_content_kib));
+    content.set_numeric(true);
+    let sender = commands.clone();
+    content.connect_value_notify(move |spin| {
+        let bytes = (spin.value().max(0.0) as u32).saturating_mul(1024);
+        let _ = sender.try_send(ApplicationCommand::SetSnippetLimit(
+            kestrel::SnippetLimit::ContentBytes(bytes),
+        ));
+    });
+    snippet_group.add(&content);
+
+    let clipboard_variable = adw::SpinRow::with_range(
+        f64::from(snippets.policy.bounds.min_clipboard_bytes),
+        f64::from(snippets.policy.bounds.max_clipboard_bytes),
+        64.0,
+    );
+    clipboard_variable.set_title("Clipboard variable bound");
+    clipboard_variable
+        .set_subtitle("How much of the live selection a {{clipboard}} variable may insert.");
+    clipboard_variable.set_value(f64::from(snippets.policy.clipboard_variable_bytes));
+    clipboard_variable.set_numeric(true);
+    let sender = commands.clone();
+    clipboard_variable.connect_value_notify(move |spin| {
+        let bytes = spin.value().max(0.0) as u32;
+        let _ = sender.try_send(ApplicationCommand::SetSnippetLimit(
+            kestrel::SnippetLimit::ClipboardBytes(bytes),
+        ));
+    });
+    snippet_group.add(&clipboard_variable);
+
+    let timeout = adw::SpinRow::with_range(
+        snippets.policy.bounds.min_insert_timeout_millis as f64,
+        snippets.policy.bounds.max_insert_timeout_millis as f64,
+        250.0,
+    );
+    timeout.set_title("Insertion timeout");
+    timeout.set_subtitle("How long one provider run may take, in milliseconds.");
+    timeout.set_value(snippets.policy.insert_timeout_millis as f64);
+    timeout.set_numeric(true);
+    let sender = commands.clone();
+    timeout.connect_value_notify(move |spin| {
+        let millis = spin.value().max(0.0) as u64;
+        let _ = sender.try_send(ApplicationCommand::SetSnippetLimit(
+            kestrel::SnippetLimit::InsertTimeoutMillis(millis),
+        ));
+    });
+    snippet_group.add(&timeout);
+
+    let provider_labels = kestrel::SnippetProviderPreference::ALL
+        .iter()
+        .map(|preference| preference.label())
+        .collect::<Vec<_>>();
+    let provider = adw::ComboRow::builder()
+        .title("Insertion provider")
+        .subtitle("Automatic selection never requests input-device access.")
+        .model(&gtk::StringList::new(&provider_labels))
+        .selected(
+            kestrel::SnippetProviderPreference::ALL
+                .iter()
+                .position(|preference| *preference == snippets.policy.preferred_provider)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let sender = commands.clone();
+    provider.connect_selected_notify(move |row| {
+        let preference = kestrel::SnippetProviderPreference::ALL
+            .get(row.selected() as usize)
+            .copied()
+            .unwrap_or(kestrel::SnippetProviderPreference::Auto);
+        let _ = sender.try_send(ApplicationCommand::SetSnippetProvider(preference));
+    });
+    snippet_group.add(&provider);
+
+    let timing_labels = kestrel::SnippetExpansionTiming::ALL
+        .iter()
+        .map(|timing| timing.label())
+        .collect::<Vec<_>>();
+    let timing = adw::ComboRow::builder()
+        .title("Expansion timing")
+        .subtitle(
+            "Delimiter expansion needs a key-capture provider, which is not available yet; \
+             manual insertion always works when a provider exists.",
+        )
+        .subtitle_lines(0)
+        .model(&gtk::StringList::new(&timing_labels))
+        .selected(
+            kestrel::SnippetExpansionTiming::ALL
+                .iter()
+                .position(|candidate| *candidate == snippets.policy.expansion_timing)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let sender = commands.clone();
+    timing.connect_selected_notify(move |row| {
+        let timing = kestrel::SnippetExpansionTiming::ALL
+            .get(row.selected() as usize)
+            .copied()
+            .unwrap_or(kestrel::SnippetExpansionTiming::Manual);
+        let _ = sender.try_send(ApplicationCommand::SetSnippetExpansionTiming(timing));
+    });
+    snippet_group.add(&timing);
+
+    for row in [
+        content.upcast_ref::<gtk::Widget>().clone(),
+        clipboard_variable.upcast_ref::<gtk::Widget>().clone(),
+        timeout.upcast_ref::<gtk::Widget>().clone(),
+        provider.clone().upcast(),
+        timing.clone().upcast(),
+    ] {
+        filter_rows.push((
+            row,
+            "snippets text library bounds provider insertion".to_owned(),
+        ));
+    }
+    group.add(&snippet_group);
+
     let io_row = adw::ActionRow::builder()
         .title("Configuration files")
         .subtitle("Import or export configuration. Kestrel only emits the selected path command.")
@@ -1433,6 +1603,315 @@ fn build_clipboard_preview_row(
         row.add_suffix(&controls);
     }
     row
+}
+
+/// Builds the retained snippet group: status, editor, search, and results.
+fn build_snippet_panel(
+    snippets: &kestrel::SnippetsViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> SnippetPanel {
+    let container = gtk::Box::new(Orientation::Vertical, 12);
+    let group = adw::PreferencesGroup::builder()
+        .title("Text snippets")
+        .description(
+            "Reusable text with local date, time, time zone, and clipboard variables. \
+             Insertion is only offered when a provider is verified.",
+        )
+        .build();
+
+    let status = gtk::Label::new(Some(&snippets.status));
+    status.set_wrap(true);
+    status.set_xalign(0.0);
+    status.add_css_class("dim-label");
+    let status_row = adw::ActionRow::new();
+    status_row.set_title("Library");
+    status_row.add_suffix(&status);
+    group.add(&status_row);
+
+    let insertion = gtk::Label::new(Some(&snippets.insertion_status));
+    insertion.set_wrap(true);
+    insertion.set_xalign(0.0);
+    insertion.add_css_class("dim-label");
+    let insertion_row = adw::ActionRow::builder()
+        .title("Insertion")
+        .subtitle(snippets.expansion_label)
+        .subtitle_lines(0)
+        .build();
+    insertion_row.add_suffix(&insertion);
+    group.add(&insertion_row);
+
+    if let Some(directory) = &snippets.directory {
+        let row = adw::ActionRow::builder()
+            .title("Storage")
+            .subtitle(format!("Private file directory: {directory}"))
+            .subtitle_lines(0)
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label("Snippet storage directory")]);
+        group.add(&row);
+    }
+    for warning in &snippets.warnings {
+        let row = adw::ActionRow::builder()
+            .title(&warning.feature_id)
+            .subtitle(&warning.message)
+            .subtitle_lines(0)
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label(&format!(
+            "{}: {}",
+            warning.feature_id, warning.message
+        ))]);
+        group.add(&row);
+    }
+
+    let draft_label = gtk::Label::new(None);
+    draft_label.set_wrap(true);
+    draft_label.set_xalign(0.0);
+    draft_label.add_css_class("dim-label");
+    let draft_row = adw::ActionRow::builder()
+        .title("Editor")
+        .subtitle("Name, optional folder, optional trigger, and the snippet text.")
+        .subtitle_lines(0)
+        .build();
+    draft_row.add_suffix(&draft_label);
+    group.add(&draft_row);
+
+    let editor = gtk::Box::new(Orientation::Vertical, 6);
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Search snippets")
+        .hexpand(true)
+        .build();
+    search.update_property(&[
+        Property::Label("Search snippets"),
+        Property::Description("Searches names, folders, triggers, and snippet text"),
+    ]);
+    let search_row = adw::ActionRow::new();
+    search_row.set_title("Search");
+    search_row.add_suffix(&search);
+    search_row.set_activatable_widget(Some(&search));
+    let guard: SearchGuard = std::rc::Rc::new(std::cell::Cell::new(false));
+    let handler_guard = std::rc::Rc::clone(&guard);
+    let sender = commands.clone();
+    search.connect_search_changed(move |entry| {
+        if handler_guard.get() {
+            return;
+        }
+        let _ = sender.try_send(ApplicationCommand::SnippetSearch(entry.text().to_string()));
+    });
+    if !snippets.search_query.is_empty() {
+        guard.set(true);
+        search.set_text(&snippets.search_query);
+        guard.set(false);
+    }
+    group.add(&search_row);
+
+    // Results are filled below; the panel keeps the widgets between updates.
+    let results = gtk::Box::new(Orientation::Vertical, 6);
+    // Snippets load with the library, so the first listing is requested once
+    // when entries exist but nothing has been requested yet.
+    if snippets.running
+        && snippets.search_query.is_empty()
+        && snippets.items.is_empty()
+        && snippets.total > 0
+    {
+        let _ = commands.try_send(ApplicationCommand::SnippetSearch(String::new()));
+    }
+    let panel = SnippetPanel {
+        container: container.clone(),
+        status,
+        insertion,
+        draft_label,
+        editor: editor.clone(),
+        results: results.clone(),
+    };
+    group.add(&editor);
+    fill_snippet_panel(&panel, snippets, commands);
+    group.add(&results);
+    container.append(&group);
+    panel
+}
+
+/// Fills the editor and the result rows for the current snippet state.
+fn fill_snippet_panel(
+    panel: &SnippetPanel,
+    snippets: &kestrel::SnippetsViewModel,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let draft = snippets
+        .draft
+        .clone()
+        .unwrap_or(kestrel::SnippetDraftViewModel {
+            name: String::new(),
+            folder: String::new(),
+            trigger: String::new(),
+            content: String::new(),
+            is_new: true,
+        });
+    panel.draft_label.set_text(if draft.is_new {
+        "New snippet"
+    } else {
+        "Editing a stored snippet"
+    });
+
+    let name = entry_row(panel, commands, "Name", &draft.name, false);
+    let folder = entry_row(panel, commands, "Folder", &draft.folder, false);
+    let trigger = entry_row(panel, commands, "Trigger", &draft.trigger, false);
+    let content = text_view_row(panel, commands, &draft.content);
+
+    let actions = gtk::Box::new(Orientation::Horizontal, 6);
+    let new_button = gtk::Button::with_label("New");
+    new_button.update_property(&[Property::Label("New snippet")]);
+    let sender = commands.clone();
+    new_button.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::SnippetNew);
+    });
+    let save = gtk::Button::with_label("Save");
+    save.update_property(&[Property::Label("Save snippet")]);
+    save.set_tooltip_text(Some(
+        "Validate and store the snippet in the private snippet file",
+    ));
+    let sender = commands.clone();
+    let name_entry = name.clone();
+    let folder_entry = folder.clone();
+    let trigger_entry = trigger.clone();
+    let content_view = content.clone();
+    save.connect_clicked(move |_| {
+        let buffer = content_view.buffer();
+        let text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), false)
+            .to_string();
+        let _ = sender.try_send(ApplicationCommand::Snippet(kestrel::SnippetCommand::Save {
+            name: name_entry.text().to_string(),
+            folder: folder_entry.text().to_string(),
+            trigger: trigger_entry.text().to_string(),
+            content: text,
+        }));
+    });
+    actions.append(&new_button);
+    actions.append(&save);
+    let action_row = adw::ActionRow::new();
+    action_row.set_title("Save");
+    action_row.set_subtitle("An empty folder or trigger stores no value for that field.");
+    action_row.add_suffix(&actions);
+    panel.editor.append(&action_row);
+
+    if snippets.items.is_empty() {
+        let row = adw::ActionRow::builder()
+            .title(if snippets.search_query.trim().is_empty() {
+                "No snippets yet"
+            } else {
+                "No snippets match the search"
+            })
+            .subtitle(if snippets.running {
+                "Fill the editor and press Save, or edit the snippet file directly."
+            } else {
+                "Enable snippets.text in the Feature Hub to use the library."
+            })
+            .sensitive(false)
+            .build();
+        row.update_property(&[Property::Label("No snippets to show")]);
+        panel.results.append(&row);
+        return;
+    }
+
+    for item in &snippets.items {
+        let row = adw::ActionRow::builder()
+            .title(if let Some(folder) = &item.folder {
+                format!("{} · {}", item.name, folder)
+            } else {
+                item.name.clone()
+            })
+            .subtitle(&item.preview)
+            .subtitle_lines(2)
+            .build();
+        row.update_property(&[Property::Label(&format!("{}: {}", item.name, item.preview))]);
+
+        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        let insert = gtk::Button::with_label("Insert");
+        insert.set_sensitive(snippets.insertion_available);
+        insert.update_property(&[Property::Label(&format!("Insert {}", item.name))]);
+        insert.set_tooltip_text(Some(if snippets.insertion_available {
+            "Render the variables and type this snippet into the focused window"
+        } else {
+            "Insertion needs a verified provider"
+        }));
+        let sender = commands.clone();
+        let name = item.name.clone();
+        insert.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Snippet(
+                kestrel::SnippetCommand::Insert(name.clone()),
+            ));
+        });
+        controls.append(&insert);
+
+        let edit = gtk::Button::with_label("Edit");
+        edit.update_property(&[Property::Label(&format!("Edit {}", item.name))]);
+        let sender = commands.clone();
+        let name = item.name.clone();
+        edit.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::SnippetEdit(name.clone()));
+        });
+        controls.append(&edit);
+
+        let delete = gtk::Button::with_label("Delete");
+        delete.update_property(&[Property::Label(&format!("Delete {}", item.name))]);
+        let sender = commands.clone();
+        let name = item.name.clone();
+        delete.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Snippet(
+                kestrel::SnippetCommand::Delete(name.clone()),
+            ));
+        });
+        controls.append(&delete);
+        row.add_suffix(&controls);
+        panel.results.append(&row);
+    }
+}
+
+/// One single-line editor field.
+fn entry_row(
+    panel: &SnippetPanel,
+    _commands: &Sender<ApplicationCommand>,
+    title: &str,
+    value: &str,
+    sensitive: bool,
+) -> gtk::Entry {
+    let entry = gtk::Entry::builder()
+        .text(value)
+        .hexpand(true)
+        .sensitive(sensitive)
+        .build();
+    entry.update_property(&[Property::Label(&format!("Snippet {title}"))]);
+    let row = adw::ActionRow::new();
+    row.set_title(title);
+    row.add_suffix(&entry);
+    panel.editor.append(&row);
+    entry
+}
+
+/// The multi-line snippet body editor.
+fn text_view_row(
+    panel: &SnippetPanel,
+    _commands: &Sender<ApplicationCommand>,
+    value: &str,
+) -> gtk::TextView {
+    let view = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .accepts_tab(false)
+        .build();
+    view.buffer().set_text(value);
+    view.update_property(&[Property::Label("Snippet content")]);
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .min_content_height(96)
+        .child(&view)
+        .build();
+    let row = adw::ActionRow::new();
+    row.set_title("Content");
+    row.add_suffix(&scroller);
+    panel.editor.append(&row);
+    view
 }
 
 /// Which service entity a volume or mute control addresses.

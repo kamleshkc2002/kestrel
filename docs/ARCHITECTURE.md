@@ -334,6 +334,42 @@ background capture, an automatic selection clear, and a lock-time wipe therefore
 all become visible without a user action, and the search field keeps its text
 and focus because only the result rows are rebuilt.
 
+### 5.8 Snippet storage, rendering, and insertion
+
+Snippets are the first feature with user-authored persistent content, so the
+layering is explicit. `kestrel-core` owns the portable definition, the variable
+vocabulary, and the bounds; `kestrel-services` owns the library (name and
+trigger uniqueness, delimiter-shaped triggers, folders, search) and rendering;
+`kestrel-platform` owns the insertion adapters and the session clock; the
+application layer owns the file.
+
+The file lives in the XDG data directory, is created `0600` inside a `0700`
+directory, and is replaced atomically through a temporary file plus rename, so a
+partial or world-readable library cannot appear. Only literal `{{...}}` tokens
+are stored, which is what keeps resolved values — and therefore any
+clipboard-derived text — out of the persisted state and out of the portable
+configuration export.
+
+Rendering is pure: given a clock reading and an optional clipboard value it
+returns the same output every time, so previews use placeholders and never read
+the clock or the selection, while an actual insertion substitutes real values and
+clips the clipboard variable to its bound. An unknown token fails validation at
+the library boundary rather than being expanded at insert time.
+
+Insertion is capability-gated rather than assumed. Discovery resolves an
+executable on `PATH` without a shell and accepts `wtype` and `xdotool`
+automatically; the uinput-based provider is excluded from automatic selection
+because it needs input-device access a user must grant deliberately, and it is
+only used when the configuration names it. With no verified provider the
+capability report carries the missing dependency and its remediation and the
+service refuses to insert, so the feature cannot type text through an
+unvalidated mechanism. A provider run is bounded by a timeout, receives its
+payload as one argument, and reports only a structured outcome.
+
+Trigger expansion timing is stored as user intent and currently reported as
+inactive: delimiter expansion requires a key-capture provider, which the current
+feature set does not include, so only manual insertion inserts text.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

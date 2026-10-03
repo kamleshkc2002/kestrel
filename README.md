@@ -134,6 +134,42 @@ displayed and a vanished device is reported as a repair rather than a failure.
 `[audio] include_inactive_streams` lists corked or idle streams next to playing
 ones; they stay controllable by identifier while hidden.
 
+### Text snippets
+
+`snippets.text` is disabled by default. Once enabled, the library is searchable
+and each snippet is inserted into the focused window through a verified
+provider; the library itself works without one.
+
+Snippets are stored in `$XDG_DATA_HOME/kestrel/snippets.toml` (falling back to
+`~/.local/share`), created with `0600` in a `0700` directory and written
+atomically through a temporary file plus rename. The file holds the literal
+`{{...}}` tokens, never a resolved value, so snippet storage cannot retain
+clipboard-derived text; the portable configuration export carries only the
+library bounds. A malformed entry is skipped with a per-entry warning instead of
+dropping the file.
+
+Variables are rendered locally at insert time: `{{date}}`, `{{time}}`,
+`{{datetime}}`, `{{timezone}}`, and `{{utc_offset}}` come from the session clock,
+and `{{clipboard}}` inserts the live selection clipped to
+`[snippets] clipboard_variable_bytes` (64 B–64 KiB, default 4 KiB). Previews
+render every variable as a placeholder, so a preview never depends on the clock
+or reads the clipboard. An unknown variable, a whitespace trigger, a trigger that
+does not start with a delimiter, or a name or trigger that collides with another
+snippet is rejected with a specific message.
+
+Insertion needs a verified provider. Automatic selection tries `wtype`
+(Wayland virtual-keyboard protocol) and then `xdotool` (X11); `ydotool` is never
+selected automatically because it requires input-device access, and it is only
+used when `[snippets] preferred_provider = "ydotool"` is set deliberately. When
+no provider is verified, the Feature Hub reports the missing dependency with its
+remediation and every insertion action stays disabled. Provider runs use a
+resolved executable path, no shell, a bounded timeout (`[snippets]
+insert_timeout_millis`), discarded output, and structured errors.
+
+Trigger expansion timing is stored (`manual` or `delimiter`) and reported
+honestly: delimiter expansion needs a key-capture provider, which this release
+does not have, so manual insertion is what inserts text today.
+
 ### Desktop integration
 
 Kestrel always provides a normal application window. Its optional

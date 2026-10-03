@@ -23,3 +23,6 @@ kestrel-services = { path = "../../crates/kestrel-services" }
 ksni = { version = "0.3.6", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

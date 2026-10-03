@@ -456,7 +456,13 @@ specific remediation rather than simply hiding a feature without explanation.
   `systemd-inhibit` which is user-session.
 - **Input injection:** snippets use `ydotool`/uinput or `xdotool` on X11; capability is
   detected at runtime and documented. Avoid granting unrestricted access to every input
-  device when a narrower udev or helper configuration is possible.
+  device when a narrower udev or helper configuration is possible. Automatic provider
+  selection must never choose an input-group/uinput path: it is offered only when the user
+  names it explicitly. When no provider is verified, insertion stays disabled and the
+  missing dependency is reported with remediation. Trigger-based expansion additionally
+  needs a key-capture provider, which must not be claimed before one is verified. Snippet
+  storage is a private file; the portable configuration export carries bounds only and
+  never snippet text or a resolved variable value.
 - **Sandboxing:** a Flatpak build is the end state; it must declare portal, D-Bus, and
   device access explicitly. Some hardware/input features may intentionally remain native
   package features rather than weakening the sandbox.
