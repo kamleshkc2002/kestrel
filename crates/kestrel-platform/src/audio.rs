@@ -25,6 +25,48 @@ use pulse::{
 use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "audio.mixer";
+/// The stable feature identifier for global microphone controls.
+pub const MICROPHONE_FEATURE_ID: &str = "audio.microphone";
+
+/// One capture source the server exposes; sink monitors are never included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDevice {
+    pub id: u32,
+    /// The server's source name, used only to make it the default.
+    pub name: String,
+    /// The user-facing label. It is shown in the window and never placed in
+    /// capability evidence.
+    pub description: String,
+    pub volume_percent: u8,
+    pub muted: bool,
+    /// True when this source is the server's current default input.
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDiscovery {
+    pub default_input_name: Option<String>,
+    pub inputs: Vec<InputDevice>,
+}
+
+/// Domain-shaped capture-source operations used by the microphone service.
+pub trait MicrophoneBackend {
+    fn discover_inputs(&mut self) -> Result<InputDiscovery, AudioError>;
+    fn set_input_mute(&mut self, input_id: u32, muted: bool) -> Result<(), AudioError>;
+    /// Makes the named source the server-wide default input.
+    fn set_default_input(&mut self, input_name: &str) -> Result<(), AudioError>;
+}
+
+/// Read-only probe for `audio.microphone`; it only lists sources.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MicrophoneProbe;
+
+impl MicrophoneProbe {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(2);
 const IDLE_SLEEP: Duration = Duration::from_millis(2);
 
@@ -350,6 +392,129 @@ impl AudioBackend for PulseAudioBackend {
     }
 }
 
+impl MicrophoneBackend for PulseAudioBackend {
+    fn discover_inputs(&mut self) -> Result<InputDiscovery, AudioError> {
+        let mut session = PulseSession::connect()?;
+        let default_input_name = session.default_source_name()?;
+        let inputs = session.sources(default_input_name.as_deref())?;
+        Ok(InputDiscovery {
+            default_input_name,
+            inputs,
+        })
+    }
+
+    fn set_input_mute(&mut self, input_id: u32, muted: bool) -> Result<(), AudioError> {
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.introspect().set_source_mute_by_index(
+            input_id,
+            muted,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        if succeeded.get() == Some(true) {
+            Ok(())
+        } else {
+            Err(AudioError::new(
+                AudioErrorKind::Rejected,
+                format!("PulseAudio rejected mute for input {input_id}"),
+            ))
+        }
+    }
+
+    fn set_default_input(&mut self, input_name: &str) -> Result<(), AudioError> {
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.set_default_source(
+            input_name,
+            Box::new(move |success| result.set(Some(success))),
+        );
+        session.drive_operation(&operation)?;
+        if succeeded.get() == Some(true) {
+            Ok(())
+        } else {
+            Err(AudioError::new(
+                AudioErrorKind::Rejected,
+                // The source name identifies the device, so it stays out of
+                // a message that may be shown or logged.
+                "PulseAudio rejected the default input change",
+            ))
+        }
+    }
+}
+
+impl CapabilityProbe for MicrophoneProbe {
+    fn probe(&self) -> CapabilityReport {
+        let discovery = PulseAudioBackend::new().discover_inputs();
+        microphone_capability_for_discovery(&discovery)
+    }
+}
+
+pub fn microphone_capability_for(discovery: &InputDiscovery) -> CapabilityReport {
+    let input_count = discovery.inputs.len();
+    let muted_input_count = discovery.inputs.iter().filter(|input| input.muted).count();
+    let status = if input_count == 0 {
+        CapabilityStatus::Limited {
+            reason: "No microphone or other input device is connected.".to_string(),
+        }
+    } else {
+        CapabilityStatus::Supported
+    };
+    let mut report = CapabilityReport::new(
+        MICROPHONE_FEATURE_ID,
+        status,
+        if input_count == 0 {
+            "No microphone or other input device is connected."
+        } else {
+            "PulseAudio-compatible server exposes capture inputs."
+        },
+    )
+    .with_selected_backend("PulseAudio-compatible protocol via libpulse")
+    .with_alternative("Native PipeWire/WirePlumber graph adapter")
+    .with_evidence(CapabilityEvidence::new(
+        "input_count",
+        input_count.to_string(),
+    ))
+    .with_evidence(CapabilityEvidence::new(
+        "muted_input_count",
+        muted_input_count.to_string(),
+    ));
+    if input_count == 0 {
+        report = report.with_remediation("Connect or enable a microphone or other input device.");
+    }
+    report
+}
+
+pub fn microphone_capability_for_error(error: &AudioError) -> CapabilityReport {
+    CapabilityReport::new(
+        MICROPHONE_FEATURE_ID,
+        CapabilityStatus::Unsupported {
+            reason: error.message.clone(),
+        },
+        "PulseAudio-compatible microphone service is unavailable.",
+    )
+    .with_selected_backend("PulseAudio-compatible protocol via libpulse")
+    .with_alternative("Native PipeWire/WirePlumber graph adapter")
+    .with_remediation(
+        "Start PulseAudio or PipeWire's PulseAudio compatibility service for this user session.",
+    )
+    .with_evidence(CapabilityEvidence::new(
+        "error_kind",
+        format!("{:?}", error.kind),
+    ))
+}
+
+pub fn microphone_capability_for_discovery(
+    discovery: &Result<InputDiscovery, AudioError>,
+) -> CapabilityReport {
+    match discovery {
+        Ok(discovery) => microphone_capability_for(discovery),
+        Err(error) => microphone_capability_for_error(error),
+    }
+}
+
 impl CapabilityProbe for PulseAudioBackend {
     fn probe(&self) -> CapabilityReport {
         let discovery = self.discover_inner();
@@ -616,6 +781,69 @@ impl PulseSession {
             Ok(result.borrow_mut().drain(..).collect())
         }
     }
+    fn default_source_name(&mut self) -> Result<Option<String>, AudioError> {
+        let result = Rc::new(RefCell::new(None));
+        let callback_result = Rc::clone(&result);
+        let operation = self.context.introspect().get_server_info(move |info| {
+            *callback_result.borrow_mut() =
+                Some(info.default_source_name.as_deref().map(str::to_owned));
+        });
+        self.drive_operation(&operation)?;
+        let server = result.borrow_mut().take();
+        server.ok_or_else(|| {
+            AudioError::new(
+                AudioErrorKind::Protocol,
+                "PulseAudio server information was missing",
+            )
+        })
+    }
+
+    fn sources(
+        &mut self,
+        default_input_name: Option<&str>,
+    ) -> Result<Vec<InputDevice>, AudioError> {
+        let result = Rc::new(RefCell::new(Vec::new()));
+        let failed = Rc::new(Cell::new(false));
+        let callback_result = Rc::clone(&result);
+        let callback_failed = Rc::clone(&failed);
+        let callback_default = default_input_name.map(str::to_owned);
+        let operation = self
+            .context
+            .introspect()
+            .get_source_info_list(move |item| match item {
+                ListResult::Item(info) if info.monitor_of_sink.is_none() => {
+                    let name = info
+                        .name
+                        .as_deref()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("input-{}", info.index));
+                    callback_result.borrow_mut().push(InputDevice {
+                        id: info.index,
+                        name: name.clone(),
+                        description: info
+                            .description
+                            .as_deref()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| format!("Input {}", info.index)),
+                        volume_percent: volume_percent(info.volume.avg()),
+                        muted: info.mute,
+                        is_default: callback_default.as_deref() == Some(name.as_str()),
+                    });
+                }
+                ListResult::Item(_) => {}
+                ListResult::Error => callback_failed.set(true),
+                ListResult::End => {}
+            });
+        self.drive_operation(&operation)?;
+        if failed.get() {
+            Err(AudioError::new(
+                AudioErrorKind::Protocol,
+                "PulseAudio input discovery failed",
+            ))
+        } else {
+            Ok(result.borrow_mut().drain(..).collect())
+        }
+    }
 }
 
 impl Drop for PulseSession {
@@ -717,8 +945,9 @@ pub fn capability_for_error(error: &AudioError) -> CapabilityReport {
 #[cfg(test)]
 mod tests {
     use super::{
-        AudioBackend, AudioDiscovery, AudioErrorKind, AudioServer, OutputDevice, PulseAudioBackend,
-        capability_for_discovery, channel_volumes, volume_percent,
+        AudioBackend, AudioDiscovery, AudioErrorKind, AudioServer, InputDevice, InputDiscovery,
+        OutputDevice, PulseAudioBackend, capability_for_discovery, channel_volumes,
+        microphone_capability_for, microphone_capability_for_error, volume_percent,
     };
     use kestrel_core::{CapabilityStatus, MAX_AUDIO_BOOST_PERCENT};
     use libpulse_binding::volume::Volume;
@@ -801,5 +1030,59 @@ mod tests {
 
         assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
         assert_eq!(report.evidence[1].value, "0");
+    }
+    fn input(id: u32, muted: bool) -> InputDevice {
+        InputDevice {
+            id,
+            name: format!("private-source-{id}"),
+            description: format!("Private source {id}"),
+            volume_percent: 100,
+            muted,
+            is_default: id == 1,
+        }
+    }
+
+    #[test]
+    fn microphone_capability_reports_supported_and_sanitized_evidence() {
+        let report = microphone_capability_for(&InputDiscovery {
+            default_input_name: Some("private-source-1".to_string()),
+            inputs: vec![input(1, true), input(2, false)],
+        });
+        assert!(matches!(report.status, CapabilityStatus::Supported));
+        assert_eq!(report.evidence[0].key, "input_count");
+        assert_eq!(report.evidence[0].value, "2");
+        assert_eq!(report.evidence[1].key, "muted_input_count");
+        assert_eq!(report.evidence[1].value, "1");
+        let evidence = report
+            .evidence
+            .iter()
+            .map(|item| format!("{}{}", item.key, item.value))
+            .collect::<String>();
+        assert!(!evidence.contains("private-source"));
+        assert!(!evidence.contains("Private source"));
+    }
+
+    #[test]
+    fn microphone_capability_reports_limited_without_inputs() {
+        let report = microphone_capability_for(&InputDiscovery {
+            default_input_name: None,
+            inputs: Vec::new(),
+        });
+        assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
+        assert!(report.remediation.is_some());
+    }
+
+    #[test]
+    fn microphone_capability_reports_unsupported_errors() {
+        let report = microphone_capability_for_error(&super::AudioError {
+            kind: AudioErrorKind::Unavailable,
+            message: "backend unavailable".to_string(),
+        });
+        assert!(matches!(
+            report.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert_eq!(report.evidence[0].key, "error_kind");
+        assert!(!report.evidence[0].value.contains("private-source"));
     }
 }

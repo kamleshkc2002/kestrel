@@ -4,8 +4,8 @@ use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
     AlertKind, ApplicationCommand, ApplicationViewModel, AudioCycleDirection, AudioOutputViewModel,
     AudioStreamViewModel, AudioViewModel, ConfirmationViewModel, FeatureViewModel,
-    MonitorViewModel, PanelMoveDirection, PanelSection, QuickToggleCommand,
-    QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel,
+    MicrophoneViewModel, MonitorViewModel, PanelMoveDirection, PanelSection, QuickToggleCommand,
+    QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel, SpeedTestViewModel,
 };
 use kestrel_core::AppearancePreference;
 
@@ -21,6 +21,8 @@ pub struct WindowView {
     toasts: adw::ToastOverlay,
     commands: Sender<ApplicationCommand>,
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
+    microphone_container: std::cell::RefCell<Option<gtk::Box>>,
+    speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
     /// The retained clipboard panel, so a search keeps its text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
     /// The retained snippet panel, for the same reason.
@@ -114,6 +116,8 @@ impl WindowView {
             toasts,
             commands,
             monitor_container: std::cell::RefCell::new(page.monitor_container),
+            microphone_container: std::cell::RefCell::new(page.microphone_container),
+            speed_test_container: std::cell::RefCell::new(page.speed_test_container),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
             command_panel: std::cell::RefCell::new(page.command_panel),
@@ -124,6 +128,8 @@ impl WindowView {
         let page = build_page(view_model, &self.window, &self.commands);
         self.content.set_child(Some(&page.clamp));
         *self.monitor_container.borrow_mut() = page.monitor_container;
+        *self.microphone_container.borrow_mut() = page.microphone_container;
+        *self.speed_test_container.borrow_mut() = page.speed_test_container;
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
         *self.command_panel.borrow_mut() = page.command_panel;
@@ -185,6 +191,28 @@ impl WindowView {
         container.append(&build_monitor_group(monitor));
     }
 
+    /// Replaces the microphone group with the latest backend reading.
+    pub fn set_microphone(&self, microphone: &MicrophoneViewModel) {
+        let Some(container) = self.microphone_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_microphone_group(microphone, &self.commands));
+    }
+
+    /// Replaces the speed-test group, keeping its position in the page.
+    pub fn set_speed_test(&self, speed_test: &SpeedTestViewModel) {
+        let Some(container) = self.speed_test_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_speed_test_group(speed_test, &self.commands));
+    }
+
     pub fn set_refreshing(&self, refreshing: bool) {
         self.refresh_button.set_sensitive(!refreshing);
         self.refresh_button.set_tooltip_text(Some(if refreshing {
@@ -202,6 +230,8 @@ impl WindowView {
 struct PageBuild {
     clamp: adw::Clamp,
     monitor_container: Option<gtk::Box>,
+    microphone_container: Option<gtk::Box>,
+    speed_test_container: Option<gtk::Box>,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
     command_panel: Option<CommandPanel>,
@@ -241,6 +271,8 @@ fn build_page(
         page.append(&build_warning_group(view_model));
     }
     let mut monitor_container = None;
+    let mut microphone_container = None;
+    let mut speed_test_container = None;
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
     let mut command_panel = None;
@@ -261,6 +293,10 @@ fn build_page(
                     ));
                 }
                 page.append(&build_audio_controls(&view_model.audio, commands));
+                let microphone = gtk::Box::new(Orientation::Vertical, 0);
+                microphone.append(&build_microphone_group(&view_model.microphone, commands));
+                page.append(&microphone);
+                microphone_container = Some(microphone);
                 let panel = build_clipboard_panel(&view_model.clipboard, commands);
                 page.append(&panel.container);
                 clipboard_panel = Some(panel);
@@ -278,8 +314,13 @@ fn build_page(
             PanelSection::Monitoring => {
                 let container = gtk::Box::new(Orientation::Vertical, 0);
                 container.append(&build_monitor_group(&view_model.monitor));
+                let speed_test = gtk::Box::new(Orientation::Vertical, 0);
+                speed_test.set_margin_top(24);
+                speed_test.append(&build_speed_test_group(&view_model.speed_test, commands));
+                container.append(&speed_test);
                 page.append(&container);
                 monitor_container = Some(container);
+                speed_test_container = Some(speed_test);
             }
         }
     }
@@ -291,6 +332,8 @@ fn build_page(
     PageBuild {
         clamp,
         monitor_container,
+        microphone_container,
+        speed_test_container,
         clipboard_panel,
         snippet_panel,
         command_panel,
@@ -1221,6 +1264,157 @@ fn connect_file_chooser(
         });
         chooser.show();
     });
+}
+
+/// Builds the microphone group from the latest backend reading.
+///
+/// The switch shows a state only when every input agrees; a mixed reading
+/// leaves it off but usable, so one click mutes every input.
+fn build_microphone_group(
+    microphone: &MicrophoneViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Microphone")
+        .description(&microphone.status)
+        .build();
+    if !microphone.running {
+        let row = adw::ActionRow::builder()
+            .title("Microphone control is not running")
+            .subtitle(&microphone.status)
+            .subtitle_lines(0)
+            .sensitive(false)
+            .build();
+        group.add(&row);
+        return group;
+    }
+
+    let controllable = microphone.muted.is_some() || microphone.mixed;
+    let row = adw::ActionRow::builder()
+        .title("Mute all inputs")
+        .subtitle(&microphone.mute_label)
+        .build();
+    let mute = gtk::Switch::builder()
+        .active(microphone.muted.unwrap_or(false))
+        .valign(Align::Center)
+        .sensitive(controllable)
+        .build();
+    mute.update_property(&[Property::Label("Mute all microphone inputs")]);
+    mute.set_tooltip_text(Some("Also available as Ctrl+Shift+M and from the tray"));
+    let sender = commands.clone();
+    mute.connect_state_set(move |_, muted| {
+        let _ = sender.try_send(ApplicationCommand::Microphone(
+            kestrel::MicrophoneCommand::SetMuted(muted),
+        ));
+        // The switch follows the backend reading on the next refresh rather
+        // than claiming the requested state.
+        gtk::glib::Propagation::Stop
+    });
+    row.add_suffix(&mute);
+    row.set_activatable_widget(Some(&mute));
+    group.add(&row);
+
+    if !microphone.inputs.is_empty() {
+        let labels = microphone
+            .inputs
+            .iter()
+            .map(|input| input.label.as_str())
+            .collect::<Vec<_>>();
+        let model = gtk::StringList::new(&labels);
+        let selected = microphone
+            .default_input_id
+            .and_then(|id| microphone.inputs.iter().position(|input| input.id == id))
+            .and_then(|position| u32::try_from(position).ok())
+            .unwrap_or(gtk::INVALID_LIST_POSITION);
+        let combo = adw::ComboRow::builder()
+            .title("Default input")
+            .subtitle(if microphone.default_input_id.is_some() {
+                "The audio server records from this input by default"
+            } else {
+                "No input is the server default"
+            })
+            .model(&model)
+            .selected(selected)
+            .build();
+        combo.update_property(&[Property::Label("Default microphone input")]);
+        let ids = microphone
+            .inputs
+            .iter()
+            .map(|input| input.id)
+            .collect::<Vec<_>>();
+        let sender = commands.clone();
+        combo.connect_selected_notify(move |combo| {
+            let Some(input_id) = usize::try_from(combo.selected())
+                .ok()
+                .and_then(|position| ids.get(position))
+            else {
+                return;
+            };
+            let _ = sender.try_send(ApplicationCommand::Microphone(
+                kestrel::MicrophoneCommand::SetDefaultInput {
+                    input_id: *input_id,
+                },
+            ));
+        });
+        group.add(&combo);
+    }
+    if let Some(message) = &microphone.message {
+        let notice = adw::ActionRow::builder()
+            .title("Input disconnected")
+            .subtitle(message)
+            .subtitle_lines(0)
+            .build();
+        group.add(&notice);
+    }
+    group
+}
+
+/// Builds the speed-test group with its disclosure above the Start button.
+fn build_speed_test_group(
+    speed_test: &SpeedTestViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Network speed test")
+        .description(&speed_test.disclosure)
+        .build();
+    let row = adw::ActionRow::builder()
+        .title("Speed test")
+        .subtitle(&speed_test.status)
+        .subtitle_lines(0)
+        .build();
+    let start = gtk::Button::with_label("Start");
+    start.set_valign(Align::Center);
+    start.set_sensitive(speed_test.can_start);
+    start.update_property(&[Property::Label("Start network speed test")]);
+    let sender = commands.clone();
+    start.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::StartSpeedTest);
+    });
+    let cancel = gtk::Button::with_label("Cancel");
+    cancel.set_valign(Align::Center);
+    cancel.set_sensitive(speed_test.can_cancel);
+    cancel.update_property(&[Property::Label("Cancel network speed test")]);
+    let sender = commands.clone();
+    cancel.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::CancelSpeedTest);
+    });
+    row.add_suffix(&start);
+    row.add_suffix(&cancel);
+    group.add(&row);
+    if let Some(progress) = speed_test.progress {
+        let bar = gtk::ProgressBar::builder()
+            .fraction(progress)
+            .show_text(true)
+            .margin_top(6)
+            .build();
+        bar.set_text(speed_test.phase_label.as_deref());
+        group.add(&bar);
+    }
+    for line in &speed_test.result_lines {
+        group.add(&adw::ActionRow::builder().title(line).build());
+    }
+    group
 }
 
 fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {

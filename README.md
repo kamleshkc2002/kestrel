@@ -134,6 +134,52 @@ displayed and a vanished device is reported as a repair rather than a failure.
 `[audio] include_inactive_streams` lists corked or idle streams next to playing
 ones; they stay controllable by identifier while hidden.
 
+### Microphone
+
+`audio.microphone` is disabled by default and is part of the Essentials preset.
+It reads the same PulseAudio-compatible server through `libpulse` and lists
+capture inputs only; sink monitor sources are never offered as microphones.
+
+The mute switch mutes or unmutes every input, so changing the default input
+cannot silently reopen capture. Its state is always the server's reading:
+every command re-reads the server before acting and again afterwards, a mixed
+reading is reported as "n of m inputs muted" rather than as muted or live, and a
+failed read shows the state as unknown instead of the last answer. The running
+control re-reads the server every two seconds, so mute changes made by hardware
+keys or another mixer appear without a manual refresh. The default-input
+selector sets the server default; when the default device disconnects, Kestrel
+says so and claims no default until the server names one.
+
+The mute toggle is also available as `Ctrl+Shift+M` in the window, as
+**Toggle microphone mute** in the command bar, and from the tray menu.
+Capability evidence carries input counts only, never device names. System-wide
+global shortcuts remain unavailable until a portable adapter is registered.
+
+### Network speed test
+
+`network.speed_test` is disabled by default and only runs when you press
+**Start** (or choose **Run network speed test** in the command bar). The panel
+shows, before anything is sent, which host is contacted
+(`speed.cloudflare.com`, operated by Cloudflare, which sees your IP address),
+how much data each direction may transfer, and how long each phase may take.
+
+A run measures latency (median of three requests on one connection), download,
+and upload through the system `curl`, resolved from `PATH` and started without
+a shell, with `~/.curlrc` ignored, HTTPS only, and redirects not followed.
+Kestrel counts the downloaded bytes itself and stops the transfer at the
+configured size; the upload is exactly the configured number of bytes. Cancel
+stops the run immediately and ends curl's whole process group, and disabling
+the feature cancels a run in progress. Failures are reported by kind (name
+resolution, connection, TLS, HTTP status, timeout) without curl's own messages,
+which can contain addresses.
+
+```toml
+[speed_test]
+download_megabytes = 25 # 1–90
+upload_megabytes = 10   # 0–25; 0 skips the upload phase
+timeout_seconds = 30    # 5–120, applied to each phase
+```
+
 ### Text snippets
 
 `snippets.text` is disabled by default. Once enabled, the library is searchable

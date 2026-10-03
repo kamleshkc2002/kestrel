@@ -12,11 +12,14 @@ use kestrel_core::{
     MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_COMMAND_FILE_ROOTS,
     MAX_COMMAND_RESULTS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
     MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS,
-    MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES,
-    MIN_COMMAND_RESULTS, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
-    MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS, MonitorReadout, PanelSection,
-    PanelSectionConfiguration, SnippetExpansionTiming, SnippetProviderPreference,
-    StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
+    MAX_SPEED_TEST_DOWNLOAD_MEGABYTES, MAX_SPEED_TEST_TIMEOUT_SECONDS,
+    MAX_SPEED_TEST_UPLOAD_MEGABYTES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
+    MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES, MIN_COMMAND_RESULTS,
+    MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES, MIN_SNIPPET_CONTENT_BYTES,
+    MIN_SNIPPET_INSERT_TIMEOUT_MILLIS, MIN_SPEED_TEST_DOWNLOAD_MEGABYTES,
+    MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout, PanelSection, PanelSectionConfiguration,
+    SnippetExpansionTiming, SnippetProviderPreference, StartupConfiguration,
+    UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -193,6 +196,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_startup(&mut loaded, document.get("startup"));
     parse_monitoring(&mut loaded, document.get("monitoring"));
     parse_audio(&mut loaded, document.get("audio"));
+    parse_speed_test(&mut loaded, document.get("speed_test"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
     parse_snippets(&mut loaded, document.get("snippets"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
@@ -527,6 +531,68 @@ fn parse_audio(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
             Err(error) => loaded.warnings.push(warning(
                 "audio.include_inactive_streams",
                 format!("The inactive-stream preference is invalid and was ignored: {error}"),
+            )),
+        }
+    }
+}
+
+fn parse_speed_test(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(speed_test) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "speed_test",
+            "The speed_test value must be a TOML table.",
+        ));
+        return;
+    };
+
+    if let Some(download) = speed_test.get("download_megabytes") {
+        match u32::deserialize(download.clone()) {
+            Ok(megabytes)
+                if (MIN_SPEED_TEST_DOWNLOAD_MEGABYTES..=MAX_SPEED_TEST_DOWNLOAD_MEGABYTES)
+                    .contains(&megabytes) =>
+            {
+                loaded.configuration.speed_test.download_megabytes = megabytes;
+            }
+            _ => loaded.warnings.push(warning(
+                "speed_test.download_megabytes",
+                format!(
+                    "Download size must be between {MIN_SPEED_TEST_DOWNLOAD_MEGABYTES} and \
+                     {MAX_SPEED_TEST_DOWNLOAD_MEGABYTES} megabytes; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(upload) = speed_test.get("upload_megabytes") {
+        match u32::deserialize(upload.clone()) {
+            Ok(megabytes) if megabytes <= MAX_SPEED_TEST_UPLOAD_MEGABYTES => {
+                loaded.configuration.speed_test.upload_megabytes = megabytes;
+            }
+            _ => loaded.warnings.push(warning(
+                "speed_test.upload_megabytes",
+                format!(
+                    "Upload size must be between 0 and {MAX_SPEED_TEST_UPLOAD_MEGABYTES} \
+                     megabytes; the default was retained."
+                ),
+            )),
+        }
+    }
+
+    if let Some(timeout) = speed_test.get("timeout_seconds") {
+        match u32::deserialize(timeout.clone()) {
+            Ok(seconds)
+                if (MIN_SPEED_TEST_TIMEOUT_SECONDS..=MAX_SPEED_TEST_TIMEOUT_SECONDS)
+                    .contains(&seconds) =>
+            {
+                loaded.configuration.speed_test.timeout_seconds = seconds;
+            }
+            _ => loaded.warnings.push(warning(
+                "speed_test.timeout_seconds",
+                format!(
+                    "Timeout must be between {MIN_SPEED_TEST_TIMEOUT_SECONDS} and \
+                     {MAX_SPEED_TEST_TIMEOUT_SECONDS} seconds; the default was retained."
+                ),
             )),
         }
     }
@@ -1300,6 +1366,78 @@ include_inactive_streams = "sometimes"
 
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.audio, configuration.audio);
+        assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn speed_test_table_parses_every_field() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[speed_test]
+download_megabytes = 40
+upload_megabytes = 20
+timeout_seconds = 60
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.speed_test,
+            kestrel_core::SpeedTestConfiguration {
+                download_megabytes: 40,
+                upload_megabytes: 20,
+                timeout_seconds: 60,
+            }
+        );
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn malformed_speed_test_fields_are_isolated() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[speed_test]
+download_megabytes = 0
+upload_megabytes = 51
+timeout_seconds = "slow"
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.speed_test,
+            kestrel_core::SpeedTestConfiguration::default()
+        );
+        for location in [
+            "speed_test.download_megabytes",
+            "speed_test.upload_megabytes",
+            "speed_test.timeout_seconds",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location),
+                "{location} must report an isolated warning"
+            );
+        }
+    }
+
+    #[test]
+    fn speed_test_policy_survives_export_round_trip() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.speed_test.download_megabytes = 75;
+        configuration.speed_test.upload_megabytes = 0;
+        configuration.speed_test.timeout_seconds = 90;
+
+        let exported = export_string(&configuration).expect("configuration exports");
+        assert!(exported.contains("[speed_test]"));
+        assert!(exported.contains("download_megabytes = 75"));
+
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(reloaded.configuration.speed_test, configuration.speed_test);
         assert!(reloaded.warnings.is_empty());
     }
 

@@ -125,6 +125,17 @@ impl Tray for KestrelTray {
                 ..StandardItem::default()
             }
             .into(),
+            StandardItem {
+                label: "Toggle microphone mute".to_owned(),
+                icon_name: "audio-input-microphone-symbolic".to_owned(),
+                activate: Box::new(|tray: &mut Self| {
+                    tray.send(ApplicationCommand::Microphone(
+                        kestrel_services::microphone::MicrophoneCommand::ToggleMute,
+                    ))
+                }),
+                ..StandardItem::default()
+            }
+            .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "Quit".to_owned(),

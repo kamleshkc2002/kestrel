@@ -27,6 +27,7 @@ pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
+pub use kestrel_services::microphone::MicrophoneCommand;
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{ApplicationRuntime, FeaturePreset};
@@ -43,10 +44,12 @@ pub use view_model::{
     ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
     CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
     ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
-    FeatureViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    FeatureViewModel, MicrophoneInputViewModel, MicrophoneViewModel,
+    MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
     QuickToggleViewModel, RemediationViewModel, SnippetBoundsViewModel, SnippetDraft,
     SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
+    SpeedTestViewModel,
 };
 
 /// One command bar action requested from the window.
@@ -154,6 +157,12 @@ pub enum ApplicationCommand {
     },
     /// A mixer mutation applied through the opt-in audio service.
     Audio(AudioCommand),
+    /// A microphone mutation applied through the backend-reading service.
+    Microphone(MicrophoneCommand),
+    /// Starts a user-requested network speed test.
+    StartSpeedTest,
+    /// Cancels the active network speed test.
+    CancelSpeedTest,
     /// The amplification ceiling for the mixer, between 100% and the hard cap.
     SetAudioBoostPercent(u8),
     SetAudioOutputSwitch(AudioOutputSwitch),

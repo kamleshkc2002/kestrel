@@ -4,8 +4,9 @@ use crate::{
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
         AudioPresentation, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
-        CommandBarPresentation, CommandBarQuery, MonitorPresentation, MonitorViewModel,
-        SnippetQuery, SnippetsPresentation,
+        CommandBarPresentation, CommandBarQuery, MicrophonePresentation, MicrophoneViewModel,
+        MonitorPresentation, MonitorViewModel, SnippetQuery, SnippetsPresentation,
+        SpeedTestPresentation, SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -18,7 +19,9 @@ use kestrel_platform::{
         ApplicationEntry, ExternalLauncher, application_directories, launch_desktop_entry,
         scan_applications,
     },
-    audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
+    audio::{
+        FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID, MicrophoneProbe, PulseAudioBackend,
+    },
     clipboard::{
         ArboardClipboardBackend, ClipboardBackend, ClipboardCapabilityProbe,
         FEATURE_ID as CLIPBOARD_HISTORY_ID, LogindPrivacyMonitor, discover_provider,
@@ -32,6 +35,7 @@ use kestrel_platform::{
         Clock, ExecutableInsertionBackend, InsertionProvider, SnippetInsertionProbe, SystemClock,
         discover_insertion_provider,
     },
+    speed_test::{CurlSpeedTestBackend, FEATURE_ID as SPEED_TEST_ID, SpeedTestProbe},
     system_monitor::{FEATURE_ID as SYSTEM_MONITOR_ID, ProcSysMonitor},
 };
 use kestrel_services::{
@@ -46,11 +50,15 @@ use kestrel_services::{
         CommandIndex, CommandItem, CommandRanking, CommandResult, CommandSource, EnabledProviders,
         SearchInput,
     },
+    microphone::{
+        MicrophoneCommand, MicrophoneCommandResult, MicrophoneService, MicrophoneSnapshot,
+    },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
     snippets::{
         InsertionReport, RenderContext, SnippetInsertionService, SnippetLibrary, SnippetMatch,
         SnippetPolicy, SnippetServiceError,
     },
+    speed_test::{SpeedTestPolicy, SpeedTestService, SpeedTestSnapshot},
     system_monitor::{HistorySummary, RefreshOutcome, SystemMonitorService, SystemSnapshot},
 };
 /// A built-in enablement policy for the configurable features.
@@ -208,6 +216,8 @@ impl CapabilityProbe for CommandBarProbe {
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
     audio_mixer: AudioMixerService<PulseAudioBackend>,
+    microphone: MicrophoneService<PulseAudioBackend>,
+    speed_test: SpeedTestService<CurlSpeedTestBackend>,
     clipboard_history: ClipboardHistoryService,
     /// Snippet library state, its capability-gated insert path, and its file.
     snippet_library: SnippetLibrary,
@@ -316,6 +326,29 @@ impl ApplicationRuntime {
             audio_mixer,
             configuration.feature_enabled(AUDIO_MIXER_ID),
             audio_backend,
+        )?;
+
+        let microphone = FeatureSpec::new(
+            MICROPHONE_FEATURE_ID,
+            "Microphone",
+            CapabilityStatus::Supported,
+        )
+        .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::Low));
+        registry.register_probe(
+            microphone,
+            configuration.feature_enabled(MICROPHONE_FEATURE_ID),
+            MicrophoneProbe::new(),
+        )?;
+        let speed_test = FeatureSpec::new(
+            SPEED_TEST_ID,
+            "Network speed test",
+            CapabilityStatus::Supported,
+        )
+        .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        registry.register_probe(
+            speed_test,
+            configuration.feature_enabled(SPEED_TEST_ID),
+            SpeedTestProbe,
         )?;
         let clipboard_history = FeatureSpec::new(
             CLIPBOARD_HISTORY_ID,
@@ -430,6 +463,11 @@ impl ApplicationRuntime {
                 AudioPolicy::from_configuration(&configuration.audio),
             )
             .expect("the validated audio policy is valid"),
+            microphone: MicrophoneService::new(PulseAudioBackend::new()),
+            speed_test: SpeedTestService::new(
+                CurlSpeedTestBackend::discover(),
+                SpeedTestPolicy::from_configuration(&configuration.speed_test),
+            ),
             clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::from_configuration(
                 &configuration.clipboard,
             ))
@@ -479,6 +517,9 @@ impl ApplicationRuntime {
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
         }
+        if self.microphone_is_running() {
+            let _ = self.microphone.refresh();
+        }
         self.refresh_quick_toggles();
     }
 
@@ -497,6 +538,9 @@ impl ApplicationRuntime {
         // must resample audio as well as re-probe capabilities.
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
+        }
+        if self.microphone_is_running() {
+            let _ = self.microphone.refresh();
         }
         self.refresh_quick_toggles();
         Ok(())
@@ -522,6 +566,13 @@ impl ApplicationRuntime {
             .expect("the validated audio policy is valid");
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
+        }
+        self.speed_test
+            .set_policy(SpeedTestPolicy::from_configuration(
+                &configuration.speed_test,
+            ));
+        if self.microphone_is_running() {
+            let _ = self.microphone.refresh();
         }
         if self.clipboard_history_is_running() {
             let _ = self
@@ -653,6 +704,14 @@ impl ApplicationRuntime {
                 running: self.audio_mixer_is_running(),
                 policy: self.audio_mixer.policy(),
             },
+            MicrophonePresentation {
+                snapshot: self.microphone.latest(),
+                running: self.microphone_is_running(),
+            },
+            SpeedTestPresentation {
+                snapshot: self.speed_test.snapshot(),
+                running: self.speed_test_is_running(),
+            },
             ClipboardPresentation {
                 snapshot: Some(self.clipboard_history.latest()),
                 running: self.clipboard_history_is_running(),
@@ -777,11 +836,100 @@ impl ApplicationRuntime {
         )
     }
 
+    /// Whether the microphone control's registration is running.
+    pub fn microphone_is_running(&self) -> bool {
+        self.registry.registrations().any(|registration| {
+            registration.feature.id == MICROPHONE_FEATURE_ID && registration.running
+        })
+    }
+
+    /// The latest backend reading; `Unknown` mute state when nothing was read.
+    pub fn microphone_snapshot(&self) -> &MicrophoneSnapshot {
+        self.microphone.latest()
+    }
+
+    /// Applies a microphone command only while the control is running.
+    pub fn execute_microphone_command(
+        &mut self,
+        command: MicrophoneCommand,
+    ) -> Option<MicrophoneCommandResult> {
+        self.microphone_is_running()
+            .then(|| self.microphone.execute(command))
+    }
+
+    /// Re-reads the audio server, returning whether the visible state changed.
+    ///
+    /// Mute can change outside Kestrel, so the periodic tick calls this; a
+    /// stopped control is never polled.
+    pub fn refresh_microphone(&mut self) -> bool {
+        if !self.microphone_is_running() {
+            return false;
+        }
+        let before = self.microphone.latest().clone();
+        let _ = self.microphone.refresh();
+        self.microphone.latest() != &before
+    }
+
+    /// Presents the microphone control on its own, for in-place updates.
+    pub fn microphone_view_model(&self) -> MicrophoneViewModel {
+        MicrophoneViewModel::from_presentation(MicrophonePresentation {
+            snapshot: self.microphone.latest(),
+            running: self.microphone_is_running(),
+        })
+    }
+
+    /// Whether the speed-test registration is running.
+    ///
+    /// A running registration only makes a test *startable*; nothing is ever
+    /// transferred until `start_speed_test` is called.
+    pub fn speed_test_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == SPEED_TEST_ID && registration.running)
+    }
+
+    /// Starts one user-requested speed test.
+    pub fn start_speed_test(&mut self) -> Result<(), String> {
+        self.require_speed_test()?;
+        self.speed_test.start().map_err(|error| error.to_string())
+    }
+
+    /// Cancels the speed test in progress.
+    pub fn cancel_speed_test(&mut self) -> Result<(), String> {
+        self.require_speed_test()?;
+        self.speed_test.cancel().map_err(|error| error.to_string())
+    }
+
+    fn require_speed_test(&self) -> Result<(), String> {
+        if self.speed_test_is_running() {
+            Ok(())
+        } else {
+            Err(
+                "The network speed test is not running; enable network.speed_test in the \
+                 Feature Hub"
+                    .to_owned(),
+            )
+        }
+    }
+
+    pub fn speed_test_snapshot(&self) -> SpeedTestSnapshot {
+        self.speed_test.snapshot()
+    }
+
+    /// Presents the speed test on its own, for in-place progress updates.
+    pub fn speed_test_view_model(&self) -> SpeedTestViewModel {
+        SpeedTestViewModel::from_presentation(SpeedTestPresentation {
+            snapshot: self.speed_test.snapshot(),
+            running: self.speed_test_is_running(),
+        })
+    }
+
     /// Applies an audio command only while the opt-in mixer service is running.
     pub fn execute_audio_command(&mut self, command: AudioCommand) -> Option<AudioCommandResult> {
         self.audio_mixer_is_running()
             .then(|| self.audio_mixer.execute(command))
     }
+
     /// Discovers an insertion provider and builds the capability-gated service.
     fn build_snippet_service(
         configuration: &ApplicationConfiguration,
@@ -1236,6 +1384,15 @@ impl ApplicationRuntime {
     }
 
     fn reconcile_resources(&mut self) {
+        // Neither feature may leave a claim or a transfer behind once stopped:
+        // the microphone forgets its last reading, and a running speed test is
+        // cancelled and its worker joined.
+        if !self.microphone_is_running() {
+            self.microphone.reset();
+        }
+        if !self.speed_test_is_running() {
+            self.speed_test.stop();
+        }
         if self.clipboard_history_is_running() {
             if !self.clipboard_worker_is_running() {
                 let _ = self.start_clipboard_history();
@@ -1326,6 +1483,7 @@ impl ApplicationRuntime {
                 feature_id,
                 SYSTEM_MONITOR_ID
                     | AUDIO_MIXER_ID
+                    | MICROPHONE_FEATURE_ID
                     | kestrel_platform::quick_toggles::KEEP_AWAKE_ID
                     | kestrel_platform::quick_toggles::SCREEN_LOCK_ID
             ),
@@ -1343,14 +1501,16 @@ mod tests {
     use crate::STATUS_NOTIFIER_ID;
     use kestrel_core::{AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
-        audio::FEATURE_ID as AUDIO_MIXER_ID,
+        audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
         clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
         quick_toggles::{ALL_QUICK_TOGGLES, KEEP_AWAKE_ID, SCREEN_LOCK_ID},
+        speed_test::FEATURE_ID as SPEED_TEST_ID,
         system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
     };
     use kestrel_services::{
         audio::{AudioAvailability, AudioCommand},
         clipboard::{ClipboardCommand, ClipboardLifecycle},
+        microphone::MicrophoneCommand,
     };
     use std::time::Duration;
 
@@ -1530,6 +1690,56 @@ mod tests {
     }
 
     #[test]
+    fn disabled_microphone_service_reports_unknown_and_rejects_commands() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+        assert_eq!(
+            runtime.microphone_snapshot().mute,
+            kestrel_services::microphone::MicrophoneMuteState::Unknown
+        );
+        assert!(
+            runtime
+                .execute_microphone_command(MicrophoneCommand::ToggleMute)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_disabled_speed_test_never_starts_or_transfers() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+
+        let error = runtime
+            .start_speed_test()
+            .expect_err("a stopped feature cannot run a test");
+
+        assert!(error.contains("network.speed_test"), "{error}");
+        assert_eq!(
+            runtime.speed_test_snapshot().status,
+            kestrel_services::speed_test::SpeedTestStatus::Idle
+        );
+        assert!(runtime.cancel_speed_test().is_err());
+    }
+
+    #[test]
+    fn only_the_wider_presets_include_the_on_demand_speed_test() {
+        assert!(!ApplicationRuntime::preset_enabled(
+            FeaturePreset::Essentials,
+            SPEED_TEST_ID
+        ));
+        assert!(ApplicationRuntime::preset_enabled(
+            FeaturePreset::Balanced,
+            SPEED_TEST_ID
+        ));
+        assert!(ApplicationRuntime::preset_enabled(
+            FeaturePreset::Essentials,
+            MICROPHONE_FEATURE_ID
+        ));
+    }
+
+    #[test]
     fn clipboard_history_is_inert_until_explicitly_enabled() {
         let mut runtime =
             ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
@@ -1572,7 +1782,11 @@ mod tests {
         {
             let expected = matches!(
                 registration.feature.id,
-                SYSTEM_MONITOR_ID | AUDIO_MIXER_ID | KEEP_AWAKE_ID | SCREEN_LOCK_ID
+                SYSTEM_MONITOR_ID
+                    | AUDIO_MIXER_ID
+                    | MICROPHONE_FEATURE_ID
+                    | KEEP_AWAKE_ID
+                    | SCREEN_LOCK_ID
             );
             assert_eq!(
                 registration.enabled, expected,

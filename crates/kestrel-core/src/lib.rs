@@ -129,6 +129,21 @@ pub const DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 64 * 1024;
 pub const MAX_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 1024 * 1024;
 pub const MAX_COMMAND_USAGE_ENTRIES: usize = 200;
 pub const MAX_COMMAND_ALIAS_CHARS: usize = 32;
+/// User-initiated network speed-test bounds.
+///
+/// The download ceiling stays below 100 MB because the speed-test provider
+/// refuses requests of that size; the upload ceiling is kept conservative for
+/// metered and asymmetric links.
+pub const MIN_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 1;
+pub const DEFAULT_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 25;
+pub const MAX_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 90;
+pub const DEFAULT_SPEED_TEST_UPLOAD_MEGABYTES: u32 = 10;
+pub const MAX_SPEED_TEST_UPLOAD_MEGABYTES: u32 = 25;
+pub const MIN_SPEED_TEST_TIMEOUT_SECONDS: u32 = 5;
+pub const DEFAULT_SPEED_TEST_TIMEOUT_SECONDS: u32 = 30;
+pub const MAX_SPEED_TEST_TIMEOUT_SECONDS: u32 = 120;
+pub const SPEED_TEST_BYTES_PER_MEGABYTE: u64 = 1_000_000;
+
 pub const MIN_COMMAND_QUERY_CHARS: usize = 1;
 
 /// One user-configured local script action.
@@ -423,6 +438,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub audio: AudioConfiguration,
     #[serde(default)]
+    pub speed_test: SpeedTestConfiguration,
+    #[serde(default)]
     pub clipboard: ClipboardConfiguration,
     #[serde(default)]
     pub snippets: SnippetConfiguration,
@@ -439,6 +456,7 @@ impl Default for ApplicationConfiguration {
             startup: StartupConfiguration::default(),
             monitoring: MonitorConfiguration::default(),
             audio: AudioConfiguration::default(),
+            speed_test: SpeedTestConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
             command_bar: CommandBarConfiguration::default(),
@@ -503,6 +521,7 @@ impl ApplicationConfiguration {
         }
         self.ui.validate()?;
         self.audio.validate()?;
+        self.speed_test.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
         self.command_bar.validate()?;
@@ -873,6 +892,65 @@ impl AudioConfiguration {
         if self.disconnect_volume_percent > UNAMPLIFIED_AUDIO_VOLUME_PERCENT {
             return Err(ConfigurationError::InvalidAudioDisconnectVolumePercent {
                 percent: self.disconnect_volume_percent,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// User intent for the on-demand, bounded network speed test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeedTestConfiguration {
+    #[serde(default = "default_speed_test_download_megabytes")]
+    pub download_megabytes: u32,
+    #[serde(default = "default_speed_test_upload_megabytes")]
+    pub upload_megabytes: u32,
+    #[serde(default = "default_speed_test_timeout_seconds")]
+    pub timeout_seconds: u32,
+}
+
+fn default_speed_test_download_megabytes() -> u32 {
+    DEFAULT_SPEED_TEST_DOWNLOAD_MEGABYTES
+}
+
+fn default_speed_test_upload_megabytes() -> u32 {
+    DEFAULT_SPEED_TEST_UPLOAD_MEGABYTES
+}
+
+fn default_speed_test_timeout_seconds() -> u32 {
+    DEFAULT_SPEED_TEST_TIMEOUT_SECONDS
+}
+
+impl Default for SpeedTestConfiguration {
+    fn default() -> Self {
+        Self {
+            download_megabytes: DEFAULT_SPEED_TEST_DOWNLOAD_MEGABYTES,
+            upload_megabytes: DEFAULT_SPEED_TEST_UPLOAD_MEGABYTES,
+            timeout_seconds: DEFAULT_SPEED_TEST_TIMEOUT_SECONDS,
+        }
+    }
+}
+
+impl SpeedTestConfiguration {
+    /// Validates transfer bounds and the per-phase timeout.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_SPEED_TEST_DOWNLOAD_MEGABYTES..=MAX_SPEED_TEST_DOWNLOAD_MEGABYTES)
+            .contains(&self.download_megabytes)
+        {
+            return Err(ConfigurationError::InvalidSpeedTestDownloadMegabytes {
+                megabytes: self.download_megabytes,
+            });
+        }
+        if self.upload_megabytes > MAX_SPEED_TEST_UPLOAD_MEGABYTES {
+            return Err(ConfigurationError::InvalidSpeedTestUploadMegabytes {
+                megabytes: self.upload_megabytes,
+            });
+        }
+        if !(MIN_SPEED_TEST_TIMEOUT_SECONDS..=MAX_SPEED_TEST_TIMEOUT_SECONDS)
+            .contains(&self.timeout_seconds)
+        {
+            return Err(ConfigurationError::InvalidSpeedTestTimeoutSeconds {
+                seconds: self.timeout_seconds,
             });
         }
         Ok(())
@@ -1425,6 +1503,9 @@ pub enum ConfigurationError {
     InvalidAlertCooldown { kind: AlertKind, seconds: u64 },
     InvalidAudioBoostPercent { percent: u8 },
     InvalidAudioDisconnectVolumePercent { percent: u8 },
+    InvalidSpeedTestDownloadMegabytes { megabytes: u32 },
+    InvalidSpeedTestUploadMegabytes { megabytes: u32 },
+    InvalidSpeedTestTimeoutSeconds { seconds: u32 },
     InvalidClipboardMaxItems { items: u32 },
     InvalidClipboardItemBytes { bytes: u32 },
     InvalidClipboardImageBytes { bytes: u32 },

@@ -294,6 +294,19 @@ as owned diagnostics (`last_reconcile`, `last_switch`) and surfaced in the
 window, so device loss produces a reported repair rather than stale routing or a
 feature failure.
 
+`audio.microphone` is a separate feature on the same adapter, so microphone
+policy never widens the mixer's responsibilities. The platform layer exposes a
+`MicrophoneBackend` over capture sources (sink monitors excluded); the service
+derives the mute state from the inputs the server reports — `Muted`, `Live`,
+`Mixed`, `NoInputs`, or `Unknown` when nothing trustworthy was read. Commands
+re-read the server before validating and after mutating, global mute applies to
+every input, and a partial failure is reported while the snapshot shows the
+real result. A failed read or a stopped feature resets the snapshot to
+`Unknown`, and a vanished default input clears the default claim, so no stale
+mute or preferred-device state can be presented. The running control is polled
+on a bounded two-second cadence because PulseAudio subscriptions would require a
+long-lived connection the mixer does not hold yet. Evidence carries counts only.
+
 ### 5.7 Clipboard retention, ownership, and queries
 
 `clipboard.history` is an opt-in, memory-only service. Retained content lives in
@@ -388,16 +401,38 @@ Providers are classified by what they need. Portable providers (Kestrel actions,
 snippets, math, units, dates, links, emoji) answer without any desktop
 integration, so a missing provider reduces coverage instead of hiding results.
 Integration providers are capability-checked: XDG application directories are
-scanned with a file budget, `xdg-open` must resolve before anything is launched
-or opened, and file search runs only inside user-configured roots with depth,
-entry, and match budgets that skip hidden and symlinked directories. Nothing
-constructs a filesystem-wide index in any configuration.
+scanned with a file budget, applications launch through GIO's desktop-entry
+support (which applies `Terminal=true`, `TryExec`, and field codes), `xdg-open`
+must resolve before links and files are opened, and file search runs only inside
+user-configured roots with depth, entry, and match budgets that skip hidden and
+symlinked directories. Nothing constructs a filesystem-wide index in any
+configuration.
 
 Every action that leaves the process goes through a bounded adapter: a resolved
 executable, one argv vector, no shell, a timeout, and capped output read on
 dedicated threads. Script outcomes carry the exit status, the duration, and
 whether output hit its bound, so truncation is data the user can see rather than
 a silent loss.
+
+### 5.10 Network speed test
+
+`network.speed_test` never runs on its own: enabling the feature makes a test
+startable, and only an explicit start command spawns the named
+`kestrel-speed-test` worker. `kestrel-core` owns the transfer bounds and the
+`[speed_test]` contract; the provider (host and operator) is a typed platform
+constant, and the window renders the disclosure built from it and the plan
+before the Start control.
+
+The platform adapter is a bounded executable adapter over the system `curl`:
+resolved path, no shell, `--disable` so no curlrc applies, HTTPS only, no
+redirects, a per-phase timeout, and its own process group so cancel and timeout
+end every descendant. Kestrel counts the download stream itself and stops it at
+the planned size, and writes exactly the planned upload payload, so the bound
+does not depend on the server. curl's stderr is discarded because it can name
+resolved addresses; exit codes map to typed failures with Kestrel-authored
+messages. The service publishes progress through a generation counter so the
+periodic tick only rebuilds the panel when something changed, and `stop()` —
+called when the feature is disabled and on drop — cancels and joins the worker.
 
 ## 6. Feature-service lifecycle
 
