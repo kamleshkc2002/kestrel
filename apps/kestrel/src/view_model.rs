@@ -1,16 +1,19 @@
 use kestrel_core::{
     AlertKind, AppearancePreference, ApplicationConfiguration, CapabilityStatus, CostLevel,
     MonitorConfiguration, MonitorReadout, PanelSection, Permission, ResourceCost,
+    SnippetExpansionTiming, SnippetProviderPreference,
 };
 use kestrel_platform::quick_toggles::{
     MutationConfirmation, QuickToggleControl, QuickToggleId, ToggleAction,
 };
+use kestrel_platform::snippets::InsertionProvider;
 use kestrel_services::{
     ServiceLifecycle, ServiceRegistration,
     alerts::{ActiveAlert, AlertPolicy, AlertSnapshot},
     audio::{AudioAvailability, AudioPolicy, AudioSnapshot},
     clipboard::{ClipboardMatch, ClipboardPreview, ClipboardSnapshot},
     quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
+    snippets::{SnippetLibrary, SnippetMatch, SnippetPolicy},
     system_monitor::{HistorySummary, SystemSnapshot},
 };
 
@@ -1002,6 +1005,231 @@ fn format_age(age: std::time::Duration) -> String {
     }
 }
 
+/// A snippet being edited in the window, before it is validated and saved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnippetDraft {
+    pub name: String,
+    pub folder: String,
+    pub trigger: String,
+    pub content: String,
+}
+
+/// The window's clipboard query state, owned by the application.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClipboardQuery<'a> {
+    pub query: &'a str,
+    pub matches: &'a [ClipboardMatch],
+    pub preview: Option<&'a ClipboardPreview>,
+}
+
+/// The window's snippet query and editor state, owned by the application.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SnippetQuery<'a> {
+    pub query: &'a str,
+    pub matches: &'a [SnippetMatch],
+    pub draft: Option<&'a SnippetDraft>,
+}
+
+/// Owned inputs used to construct snippet presentation state.
+pub(crate) struct SnippetsPresentation<'a> {
+    pub library: &'a SnippetLibrary,
+    pub policy: SnippetPolicy,
+    pub running: bool,
+    /// The verified insertion provider, when discovery found one.
+    pub provider: Option<InsertionProvider>,
+    pub unavailable_reason: Option<&'a str>,
+    pub directory: Option<String>,
+    pub expansion_timing: SnippetExpansionTiming,
+    /// The configured provider preference, which may differ from what was found.
+    pub provider_preference: SnippetProviderPreference,
+    pub search_query: &'a str,
+    pub matches: &'a [SnippetMatch],
+    pub draft: Option<&'a SnippetDraft>,
+    pub warnings: &'a [ConfigurationWarning],
+}
+
+/// Immutable presentation state for the snippet library panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnippetsViewModel {
+    pub running: bool,
+    pub status: String,
+    pub insertion_status: String,
+    pub insertion_available: bool,
+    pub provider: Option<&'static str>,
+    pub transport: Option<&'static str>,
+    pub directory: Option<String>,
+    pub expansion_label: &'static str,
+    pub expansion_active: bool,
+    pub search_query: String,
+    pub items: Vec<SnippetItemViewModel>,
+    pub total: usize,
+    pub folders: Vec<String>,
+    pub draft: Option<SnippetDraftViewModel>,
+    pub warnings: Vec<ConfigurationWarningViewModel>,
+    pub policy: SnippetPolicyViewModel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnippetItemViewModel {
+    pub name: String,
+    pub folder: Option<String>,
+    pub trigger: Option<String>,
+    pub detail: String,
+    pub preview: String,
+    pub preview_truncated: bool,
+    pub variables: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnippetDraftViewModel {
+    pub name: String,
+    pub folder: String,
+    pub trigger: String,
+    pub content: String,
+    pub is_new: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnippetPolicyViewModel {
+    pub max_content_bytes: u32,
+    pub clipboard_variable_bytes: u32,
+    pub insert_timeout_millis: u64,
+    pub preferred_provider: SnippetProviderPreference,
+    pub expansion_timing: SnippetExpansionTiming,
+    pub bounds: SnippetBoundsViewModel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnippetBoundsViewModel {
+    pub min_content_bytes: u32,
+    pub max_content_bytes: u32,
+    pub min_clipboard_bytes: u32,
+    pub max_clipboard_bytes: u32,
+    pub min_insert_timeout_millis: u64,
+    pub max_insert_timeout_millis: u64,
+}
+
+impl SnippetsViewModel {
+    pub(crate) fn from_presentation(presentation: SnippetsPresentation<'_>) -> Self {
+        let policy = SnippetPolicyViewModel {
+            max_content_bytes: presentation.policy.max_content_bytes,
+            clipboard_variable_bytes: presentation.policy.clipboard_variable_bytes,
+            insert_timeout_millis: presentation.policy.insert_timeout.as_millis() as u64,
+            preferred_provider: presentation.provider_preference,
+            expansion_timing: presentation.expansion_timing,
+            bounds: SnippetBoundsViewModel {
+                min_content_bytes: kestrel_core::MIN_SNIPPET_CONTENT_BYTES,
+                max_content_bytes: kestrel_core::MAX_SNIPPET_CONTENT_BYTES,
+                min_clipboard_bytes: kestrel_core::MIN_SNIPPET_CLIPBOARD_BYTES,
+                max_clipboard_bytes: kestrel_core::MAX_SNIPPET_CLIPBOARD_BYTES,
+                min_insert_timeout_millis: kestrel_core::MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
+                max_insert_timeout_millis: kestrel_core::MAX_SNIPPET_INSERT_TIMEOUT_MILLIS,
+            },
+        };
+        let provider = presentation.provider;
+        let insertion_available = provider.is_some();
+        let insertion_status = match provider {
+            Some(provider) => format!(
+                "Insertion uses {} ({})",
+                provider.label(),
+                provider.transport()
+            ),
+            None => presentation
+                .unavailable_reason
+                .map(str::to_owned)
+                .unwrap_or_else(|| "no verified insertion provider".to_owned()),
+        };
+        let expansion_active = insertion_available
+            && presentation.expansion_timing == SnippetExpansionTiming::Delimiter
+            && false;
+        let items = presentation
+            .matches
+            .iter()
+            .map(|matched| SnippetItemViewModel {
+                name: matched.name.clone(),
+                folder: matched.folder.clone(),
+                trigger: matched.trigger.clone(),
+                detail: snippet_detail(matched),
+                preview: matched.preview.clone(),
+                preview_truncated: matched.preview_truncated,
+                variables: matched
+                    .variables
+                    .iter()
+                    .map(|variable| variable.label())
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let total = presentation.library.len();
+
+        Self {
+            running: presentation.running,
+            status: if presentation.running {
+                let mut status = format!("{} of {total} snippets shown", items.len());
+                if !presentation.library.folders().is_empty() {
+                    status.push_str(&format!(
+                        " · {} folders",
+                        presentation.library.folders().len()
+                    ));
+                }
+                status.push_str(&format!(
+                    " · content bound {}",
+                    format_clipboard_bytes(presentation.policy.max_content_bytes as usize)
+                ));
+                status
+            } else {
+                "Text snippets are not running. Enable snippets.text in the Feature Hub.".to_owned()
+            },
+            insertion_status,
+            insertion_available,
+            provider: provider.map(InsertionProvider::label),
+            transport: provider.map(InsertionProvider::transport),
+            directory: presentation.directory,
+            expansion_label: presentation.expansion_timing.label(),
+            expansion_active,
+            search_query: presentation.search_query.to_owned(),
+            items,
+            total,
+            folders: presentation.library.folders(),
+            draft: presentation.draft.map(|draft| SnippetDraftViewModel {
+                name: draft.name.clone(),
+                folder: draft.folder.clone(),
+                trigger: draft.trigger.clone(),
+                content: draft.content.clone(),
+                is_new: draft.name.trim().is_empty(),
+            }),
+            warnings: presentation
+                .warnings
+                .iter()
+                .map(ConfigurationWarningViewModel::from)
+                .collect(),
+            policy,
+        }
+    }
+}
+
+fn snippet_detail(matched: &SnippetMatch) -> String {
+    let mut parts = Vec::new();
+    if let Some(folder) = &matched.folder {
+        parts.push(folder.clone());
+    }
+    if let Some(trigger) = &matched.trigger {
+        parts.push(format!("trigger {trigger}"));
+    }
+    if matched.variables.is_empty() {
+        parts.push("no variables".to_owned());
+    } else {
+        parts.push(
+            matched
+                .variables
+                .iter()
+                .map(|variable| variable.token())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    parts.join(" · ")
+}
+
 /// Immutable presentation state for the normal Kestrel window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplicationViewModel {
@@ -1009,6 +1237,7 @@ pub struct ApplicationViewModel {
     pub quick_toggles: Vec<QuickToggleViewModel>,
     pub audio: AudioViewModel,
     pub clipboard: ClipboardViewModel,
+    pub snippets: SnippetsViewModel,
     pub monitor: MonitorViewModel,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub appearance: AppearancePreference,
@@ -1026,6 +1255,7 @@ impl ApplicationViewModel {
         quick_toggles: impl Iterator<Item = &'a QuickToggleSnapshot>,
         audio: AudioPresentation<'a>,
         clipboard: ClipboardPresentation<'a>,
+        snippets: SnippetsPresentation<'a>,
         monitor: MonitorPresentation<'a>,
         warnings: &[ConfigurationWarning],
         configuration: &ApplicationConfiguration,
@@ -1050,6 +1280,7 @@ impl ApplicationViewModel {
                 .collect(),
             audio: AudioViewModel::from_presentation(&configuration.audio, audio),
             clipboard: ClipboardViewModel::from_presentation(&configuration.clipboard, clipboard),
+            snippets: SnippetsViewModel::from_presentation(snippets),
             monitor: MonitorViewModel::from_configuration(&configuration.monitoring, monitor),
             warnings: warnings
                 .iter()
@@ -1435,6 +1666,7 @@ mod tests {
         ApplicationViewModel, AudioPresentation, CapabilityKindViewModel,
         CapabilityStatusViewModel, ClipboardPresentation, ClipboardViewModel,
         FeatureLifecycleViewModel, FeatureViewModel, MonitorPresentation, MonitorViewModel,
+        SnippetsPresentation, SnippetsViewModel,
     };
     use kestrel_core::{
         AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec,
@@ -1448,6 +1680,7 @@ mod tests {
         audio::{AudioAvailability, AudioPolicy, AudioReconcileOutcome, AudioSnapshot},
         clipboard::{ClipboardItemMetadata, ClipboardMatch, ClipboardPreview, ClipboardSnapshot},
         quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
+        snippets::{SnippetLibrary, SnippetPolicy},
     };
 
     use crate::ConfigurationWarning;
@@ -1585,6 +1818,20 @@ mod tests {
                 policy: AudioPolicy::default(),
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -1619,6 +1866,20 @@ mod tests {
                 policy: AudioPolicy::default(),
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -1662,6 +1923,20 @@ mod tests {
                 policy: AudioPolicy::default(),
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -1976,6 +2251,20 @@ mod tests {
                 policy: AudioPolicy::default(),
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2023,6 +2312,20 @@ mod tests {
                 policy,
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2095,6 +2398,20 @@ mod tests {
                 policy,
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2136,6 +2453,20 @@ mod tests {
                 policy: AudioPolicy::default(),
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2206,6 +2537,92 @@ mod tests {
         ]
     }
 
+    fn snippet_library() -> SnippetLibrary {
+        let mut library = SnippetLibrary::default();
+        library
+            .upsert(
+                kestrel_core::Snippet::new(
+                    "Address",
+                    Some("Contact".to_string()),
+                    Some(";addr".to_string()),
+                    "Street 1 {{date}} {{clipboard}}",
+                ),
+                SnippetPolicy::default(),
+            )
+            .expect("snippet is valid");
+        library
+    }
+
+    fn snippet_presentation<'a>(
+        library: &'a SnippetLibrary,
+        matches: &'a [kestrel_services::snippets::SnippetMatch],
+    ) -> SnippetsPresentation<'a> {
+        SnippetsPresentation {
+            library,
+            policy: SnippetPolicy::default(),
+            running: true,
+            provider: Some(kestrel_platform::snippets::InsertionProvider::Wtype),
+            unavailable_reason: None,
+            directory: Some("/tmp/example/kestrel".to_string()),
+            expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+            provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+            search_query: "",
+            matches,
+            draft: None,
+            warnings: &[],
+        }
+    }
+
+    #[test]
+    fn snippets_presentation_names_the_provider_and_previews_deterministically() {
+        let library = snippet_library();
+        let matches = library.search("", 10, SnippetPolicy::default());
+        let snippets =
+            SnippetsViewModel::from_presentation(snippet_presentation(&library, &matches));
+
+        assert!(snippets.insertion_available);
+        assert_eq!(snippets.provider, Some("wtype"));
+        assert_eq!(
+            snippets.transport,
+            Some("Wayland virtual-keyboard protocol")
+        );
+        assert!(snippets.insertion_status.contains("wtype"));
+        assert_eq!(snippets.total, 1);
+        assert_eq!(snippets.folders, vec!["Contact"]);
+        assert_eq!(snippets.items.len(), 1);
+        assert_eq!(snippets.items[0].name, "Address");
+        assert_eq!(snippets.items[0].trigger.as_deref(), Some(";addr"));
+        assert!(
+            snippets.items[0].preview.contains("«date»")
+                && snippets.items[0].preview.contains("«clipboard»"),
+            "previews keep variables as placeholders instead of reading live values: {}",
+            snippets.items[0].preview
+        );
+        assert!(snippets.items[0].detail.contains("{{date}}"));
+        assert!(
+            !snippets.expansion_active,
+            "manual timing never claims trigger expansion"
+        );
+    }
+
+    #[test]
+    fn snippets_presentation_disables_insertion_without_a_provider() {
+        let library = snippet_library();
+        let matches = library.search("", 10, SnippetPolicy::default());
+        let mut presentation = snippet_presentation(&library, &matches);
+        presentation.provider = None;
+        presentation.unavailable_reason = Some("no verified insertion provider was found");
+
+        let snippets = SnippetsViewModel::from_presentation(presentation);
+
+        assert!(!snippets.insertion_available);
+        assert_eq!(snippets.provider, None);
+        assert_eq!(
+            snippets.insertion_status,
+            "no verified insertion provider was found"
+        );
+    }
+
     #[test]
     fn stopped_clipboard_presentation_points_at_the_feature_hub() {
         let configuration = ApplicationConfiguration::default();
@@ -2218,6 +2635,20 @@ mod tests {
                 policy: AudioPolicy::default(),
             },
             ClipboardPresentation::default(),
+            SnippetsPresentation {
+                library: &SnippetLibrary::default(),
+                policy: SnippetPolicy::default(),
+                running: false,
+                provider: None,
+                unavailable_reason: None,
+                directory: None,
+                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
+                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
+                search_query: "",
+                matches: &[],
+                draft: None,
+                warnings: &[],
+            },
             MonitorPresentation {
                 snapshot: None,
                 history: None,

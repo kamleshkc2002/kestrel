@@ -11,10 +11,12 @@ use std::{
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
+use kestrel::view_model::{ClipboardQuery, SnippetQuery};
 use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
     ClipboardLifecycle, ClipboardViewModel, ConfigurationWarning, FeaturePreset,
     LoadedConfiguration, MonitorReadout, MonitorViewModel, PanelMoveDirection, PanelSection,
+    SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch, SnippetProviderPreference,
     StatusNotifierIntegration, configuration_path, disable as disable_autostart,
     enable as enable_autostart, export_file, import_file, load, save,
 };
@@ -38,6 +40,8 @@ type SharedState = Arc<Mutex<ControllerState>>;
 const CLIPBOARD_SEARCH_LIMIT: usize = 50;
 /// The largest preview the window may request for one entry.
 const CLIPBOARD_PREVIEW_BYTES: usize = 2048;
+/// The most snippets one search request returns.
+const SNIPPET_SEARCH_LIMIT: usize = 100;
 
 struct ControllerState {
     runtime: ApplicationRuntime,
@@ -50,18 +54,36 @@ struct ControllerState {
     clipboard_preview: Option<kestrel_services::clipboard::ClipboardPreview>,
     /// The last clipboard state delivered to the window.
     clipboard_fingerprint: Option<ClipboardFingerprint>,
+    /// The application's snippet query, its results, and the open editor.
+    snippet_query: String,
+    snippet_matches: Vec<SnippetMatch>,
+    snippet_draft: Option<SnippetDraft>,
 }
 
 impl ControllerState {
     fn view_model(&self) -> ApplicationViewModel {
-        self.runtime.view_model_with_clipboard(
+        self.runtime.view_model_with_panels(
             &self.warnings,
             &self.configuration,
             self.preset_snapshot.is_some(),
-            &self.clipboard_query,
-            &self.clipboard_matches,
-            self.clipboard_preview.as_ref(),
+            ClipboardQuery {
+                query: &self.clipboard_query,
+                matches: &self.clipboard_matches,
+                preview: self.clipboard_preview.as_ref(),
+            },
+            SnippetQuery {
+                query: &self.snippet_query,
+                matches: &self.snippet_matches,
+                draft: self.snippet_draft.as_ref(),
+            },
         )
+    }
+
+    /// Re-runs the snippet search so the list reflects a library change.
+    fn refresh_snippet_matches(&mut self) {
+        self.snippet_matches = self
+            .runtime
+            .snippet_matches(&self.snippet_query, SNIPPET_SEARCH_LIMIT);
     }
 
     /// Re-runs the current clipboard query so the list reflects a mutation.
@@ -168,6 +190,15 @@ fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
     ))
 }
 
+/// Which part of the window a completed operation refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TargetedPanel {
+    #[default]
+    Full,
+    Clipboard,
+    Snippets,
+}
+
 /// Cheap change detector for the clipboard snapshot.
 ///
 /// The worker publishes on every poll, so the tick compares this fingerprint
@@ -248,6 +279,13 @@ enum ControllerOperation {
     SetClipboardLimit(kestrel::ClipboardLimit),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
+    Snippet(SnippetCommand),
+    SnippetSearch(String),
+    SnippetEdit(String),
+    SnippetNew,
+    SetSnippetLimit(SnippetLimit),
+    SetSnippetProvider(SnippetProviderPreference),
+    SetSnippetExpansionTiming(kestrel::SnippetExpansionTiming),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
 }
@@ -266,8 +304,8 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
     refreshing: Cell<bool>,
-    /// True while the queued operation should update only the clipboard group.
-    clipboard_update: Cell<bool>,
+    /// Which panel a queued clipboard or snippet operation updates in place.
+    targeted: Cell<TargetedPanel>,
     monitoring: Cell<bool>,
     /// Mirrors the monitor registration so a disabled feature never spawns tick workers.
     monitor_running: Cell<bool>,
@@ -305,11 +343,14 @@ impl ApplicationController {
                 clipboard_matches: Vec::new(),
                 clipboard_preview: None,
                 clipboard_fingerprint: None,
+                snippet_query: String::new(),
+                snippet_matches: Vec::new(),
+                snippet_draft: None,
             })),
             config_path,
             window: RefCell::new(None),
             refreshing: Cell::new(false),
-            clipboard_update: Cell::new(false),
+            targeted: Cell::new(TargetedPanel::Full),
             monitoring: Cell::new(false),
             monitor_running: Cell::new(monitor_running),
             clipboard_running: Cell::new(clipboard_running),
@@ -387,21 +428,36 @@ impl ApplicationController {
     }
 
     /// Queues a clipboard operation that updates only the clipboard group.
-    ///
-    /// The group owns the search field, so a full page rebuild while the user
-    /// types would steal focus and lose the query.
     fn request_clipboard_operation(
         &self,
         operation: ControllerOperation,
         worker_name: &'static str,
     ) {
+        self.request_targeted_operation(operation, worker_name, TargetedPanel::Clipboard);
+    }
+
+    /// Queues a snippet operation that updates only the snippet group.
+    fn request_snippet_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
+        self.request_targeted_operation(operation, worker_name, TargetedPanel::Snippets);
+    }
+
+    /// Queues an operation that updates one panel instead of the whole page.
+    ///
+    /// Those panels own their search fields, so a full page rebuild while the
+    /// user types would steal focus and lose the query.
+    fn request_targeted_operation(
+        &self,
+        operation: ControllerOperation,
+        worker_name: &'static str,
+        panel: TargetedPanel,
+    ) {
         // The single-operation gate is checked first so a rejected request
-        // never leaves the targeted-update flag set.
+        // never leaves the targeted-update state set.
         if self.refreshing.get() {
             self.request_operation(operation, worker_name);
             return;
         }
-        self.clipboard_update.set(true);
+        self.targeted.set(panel);
         self.request_operation(operation, worker_name);
     }
 
@@ -412,17 +468,13 @@ impl ApplicationController {
             return;
         };
         view.set_refreshing(false);
-        let clipboard_only = self.clipboard_update.replace(false);
+        let targeted = self.targeted.replace(TargetedPanel::Full);
         match result {
             Ok((view_model, message)) => {
                 apply_color_scheme(view_model.appearance);
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
-                if clipboard_only {
-                    view.set_clipboard(&view_model.clipboard);
-                } else {
-                    view.set_view_model(&view_model);
-                }
+                apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
                 }
@@ -431,11 +483,7 @@ impl ApplicationController {
                 let view_model = self.current_view_model();
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
-                if clipboard_only {
-                    view.set_clipboard(&view_model.clipboard);
-                } else {
-                    view.set_view_model(&view_model);
-                }
+                apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
         }
@@ -859,6 +907,125 @@ impl ControllerState {
                     ),
                 )?
             }
+            ControllerOperation::Snippet(command) => match command {
+                SnippetCommand::Insert(name) => match self.runtime.insert_snippet(&name) {
+                    Ok(report) => {
+                        let mut message = format!(
+                            "Inserted \"{name}\" ({} bytes via {})",
+                            report.bytes,
+                            report.provider.label()
+                        );
+                        if report.clipboard_truncated {
+                            message.push_str(" · clipboard variable clipped to the bound");
+                        }
+                        if report.clipboard_empty {
+                            message.push_str(" · the live selection was empty");
+                        }
+                        message
+                    }
+                    Err(error) => format!("Insert failed: {error}"),
+                },
+                SnippetCommand::Save {
+                    name,
+                    folder,
+                    trigger,
+                    content,
+                } => {
+                    let snippet = kestrel_core::Snippet::new(
+                        name.trim().to_string(),
+                        optional_field(folder),
+                        optional_field(trigger),
+                        content,
+                    );
+                    let label = snippet.name.clone();
+                    match self.runtime.save_snippet(snippet) {
+                        Ok(()) => {
+                            self.refresh_snippet_matches();
+                            format!("Snippet \"{label}\" saved")
+                        }
+                        Err(error) => format!("Snippet was not saved: {error}"),
+                    }
+                }
+                SnippetCommand::Delete(name) => match self.runtime.delete_snippet(&name) {
+                    Ok(()) => {
+                        self.refresh_snippet_matches();
+                        if self
+                            .snippet_draft
+                            .as_ref()
+                            .is_some_and(|draft| draft.name == name)
+                        {
+                            self.snippet_draft = None;
+                        }
+                        format!("Snippet \"{name}\" deleted")
+                    }
+                    Err(error) => format!("Snippet was not deleted: {error}"),
+                },
+            },
+            ControllerOperation::SnippetSearch(query) => {
+                self.snippet_query = query.clone();
+                self.refresh_snippet_matches();
+                if query.trim().is_empty() {
+                    // The window shows a count in its status line, so the initial
+                    // listing does not need a toast.
+                    String::new()
+                } else {
+                    format!("{} snippets match \"{query}\"", self.snippet_matches.len())
+                }
+            }
+            ControllerOperation::SnippetEdit(name) => {
+                match self.runtime.snippet_library().get(&name) {
+                    Some(snippet) => {
+                        self.snippet_draft = Some(SnippetDraft {
+                            name: snippet.name.clone(),
+                            folder: snippet.folder.clone().unwrap_or_default(),
+                            trigger: snippet.trigger.clone().unwrap_or_default(),
+                            content: snippet.content.clone(),
+                        });
+                        format!("Editing \"{name}\"")
+                    }
+                    None => format!("No snippet named \"{name}\" is stored"),
+                }
+            }
+            ControllerOperation::SnippetNew => {
+                self.snippet_draft = Some(SnippetDraft::default());
+                "New snippet editor opened".to_owned()
+            }
+            ControllerOperation::SetSnippetLimit(limit) => {
+                let mut candidate = self.configuration.clone();
+                let message = match limit {
+                    SnippetLimit::ContentBytes(bytes) => {
+                        candidate.snippets.max_content_bytes = bytes;
+                        format!("Snippet content is bounded to {bytes} bytes")
+                    }
+                    SnippetLimit::ClipboardBytes(bytes) => {
+                        candidate.snippets.clipboard_variable_bytes = bytes;
+                        format!("The clipboard variable is bounded to {bytes} bytes")
+                    }
+                    SnippetLimit::InsertTimeoutMillis(millis) => {
+                        candidate.snippets.insert_timeout_millis = millis;
+                        format!("Insertion times out after {millis} ms")
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetSnippetProvider(preference) => {
+                let mut candidate = self.configuration.clone();
+                candidate.snippets.preferred_provider = preference;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Insertion provider preference: {}", preference.label()),
+                )?
+            }
+            ControllerOperation::SetSnippetExpansionTiming(timing) => {
+                let mut candidate = self.configuration.clone();
+                candidate.snippets.expansion_timing = timing;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Expansion timing: {}", timing.label()),
+                )?
+            }
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -1009,6 +1176,28 @@ fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
         kestrel::AudioCommand::SetOutputMute { .. } => "Output mute",
         kestrel::AudioCommand::SetDefaultOutput { .. } => "Default output",
         kestrel::AudioCommand::CycleOutput { .. } => "Output cycle",
+    }
+}
+
+/// Trims a snippet field and treats an empty value as absent.
+fn optional_field(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Applies a completed operation to the whole page or to one panel.
+///
+/// The clipboard and snippet panels own their search fields, so refreshing them
+/// in place keeps the query and the focus while the user types.
+fn apply_targeted_panel(
+    view: &WindowView,
+    view_model: &ApplicationViewModel,
+    targeted: TargetedPanel,
+) {
+    match targeted {
+        TargetedPanel::Full => view.set_view_model(view_model),
+        TargetedPanel::Clipboard => view.set_clipboard(&view_model.clipboard),
+        TargetedPanel::Snippets => view.set_snippets(&view_model.snippets),
     }
 }
 
@@ -1307,6 +1496,35 @@ fn dispatch_commands(
                     .request_operation(
                         ControllerOperation::SetClipboardPastePlainText(plain),
                         "kestrel-clipboard-paste",
+                    ),
+                ApplicationCommand::Snippet(command) => controller.request_snippet_operation(
+                    ControllerOperation::Snippet(command),
+                    "kestrel-snippet",
+                ),
+                ApplicationCommand::SnippetSearch(query) => controller.request_snippet_operation(
+                    ControllerOperation::SnippetSearch(query),
+                    "kestrel-snippet-search",
+                ),
+                ApplicationCommand::SnippetEdit(name) => controller.request_snippet_operation(
+                    ControllerOperation::SnippetEdit(name),
+                    "kestrel-snippet-edit",
+                ),
+                ApplicationCommand::SnippetNew => controller.request_snippet_operation(
+                    ControllerOperation::SnippetNew,
+                    "kestrel-snippet-new",
+                ),
+                ApplicationCommand::SetSnippetLimit(limit) => controller.request_operation(
+                    ControllerOperation::SetSnippetLimit(limit),
+                    "kestrel-snippet-limit",
+                ),
+                ApplicationCommand::SetSnippetProvider(preference) => controller.request_operation(
+                    ControllerOperation::SetSnippetProvider(preference),
+                    "kestrel-snippet-provider",
+                ),
+                ApplicationCommand::SetSnippetExpansionTiming(timing) => controller
+                    .request_operation(
+                        ControllerOperation::SetSnippetExpansionTiming(timing),
+                        "kestrel-snippet-expansion",
                     ),
                 ApplicationCommand::ImportConfiguration(path) => controller.request_operation(
                     ControllerOperation::ImportConfiguration(path),

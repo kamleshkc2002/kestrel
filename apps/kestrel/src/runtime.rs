@@ -1,9 +1,10 @@
 use crate::{
     ApplicationViewModel, ConfigurationWarning,
+    snippets::{save_snippets, snippet_path},
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
-        AudioPresentation, ClipboardPresentation, ClipboardViewModel, MonitorPresentation,
-        MonitorViewModel,
+        AudioPresentation, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
+        MonitorPresentation, MonitorViewModel, SnippetQuery, SnippetsPresentation,
     },
 };
 use kestrel_core::{
@@ -14,12 +15,16 @@ use kestrel_platform::{
     StaticCapabilityProbe,
     audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
     clipboard::{
-        ArboardClipboardBackend, ClipboardCapabilityProbe, FEATURE_ID as CLIPBOARD_HISTORY_ID,
-        LogindPrivacyMonitor, discover_provider,
+        ArboardClipboardBackend, ClipboardBackend, ClipboardCapabilityProbe,
+        FEATURE_ID as CLIPBOARD_HISTORY_ID, LogindPrivacyMonitor, discover_provider,
     },
     quick_toggles::{
         ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
         QuickToggleError, QuickToggleId,
+    },
+    snippets::{
+        Clock, ExecutableInsertionBackend, InsertionProvider, SnippetInsertionProbe, SystemClock,
+        discover_insertion_provider,
     },
     system_monitor::{FEATURE_ID as SYSTEM_MONITOR_ID, ProcSysMonitor},
 };
@@ -32,6 +37,10 @@ use kestrel_services::{
         ClipboardPreview, ClipboardServiceError, ClipboardSnapshot,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
+    snippets::{
+        InsertionReport, RenderContext, SnippetInsertionService, SnippetLibrary, SnippetMatch,
+        SnippetPolicy, SnippetServiceError,
+    },
     system_monitor::{HistorySummary, RefreshOutcome, SystemMonitorService, SystemSnapshot},
 };
 /// A built-in enablement policy for the configurable features.
@@ -93,10 +102,23 @@ const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
 use std::time::Duration;
 
 /// UI-independent composition root for startup, enablement, and capability refresh.
+/// The stable feature identifier for the snippet library.
+pub const SNIPPETS_ID: &str = "snippets.text";
+
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
     audio_mixer: AudioMixerService<PulseAudioBackend>,
     clipboard_history: ClipboardHistoryService,
+    /// Snippet library state, its capability-gated insert path, and its file.
+    snippet_library: SnippetLibrary,
+    snippet_service: SnippetInsertionService<ExecutableInsertionBackend>,
+    snippet_policy: SnippetPolicy,
+    snippet_expansion_timing: kestrel_core::SnippetExpansionTiming,
+    snippet_provider_preference: kestrel_core::SnippetProviderPreference,
+    snippet_path: Option<std::path::PathBuf>,
+    snippet_warnings: Vec<ConfigurationWarning>,
+    /// Reads the live selection for the `{{clipboard}}` variable.
+    snippet_clipboard: Option<ArboardClipboardBackend>,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
     alerts: AlertEngine,
     /// The user's Battery-alert preference; the quick toggle can only narrow it.
@@ -197,6 +219,13 @@ impl ApplicationRuntime {
             configuration.feature_enabled(CLIPBOARD_HISTORY_ID),
             ClipboardCapabilityProbe::new(),
         )?;
+        let snippets = FeatureSpec::new(SNIPPETS_ID, "Text snippets", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        registry.register_probe(
+            snippets,
+            configuration.feature_enabled(SNIPPETS_ID),
+            SnippetInsertionProbe::new(configuration.snippets.preferred_provider),
+        )?;
         let global_shortcuts = FeatureSpec::new(
             GLOBAL_SHORTCUTS_ID,
             "Global shortcuts",
@@ -235,6 +264,23 @@ impl ApplicationRuntime {
                 QuickToggleCapabilityProbe::new(quick_toggle_backend.clone(), id),
             )?;
         }
+        let snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
+        let snippet_path = snippet_path();
+        let loaded_snippets = snippet_path
+            .as_deref()
+            .map(|path| crate::snippets::load_snippets(path, snippet_policy))
+            .unwrap_or_default();
+        let mut snippet_warnings = loaded_snippets.warnings;
+        if snippet_path.is_none() {
+            snippet_warnings.push(ConfigurationWarning {
+                feature_id: "snippets".to_owned(),
+                reason: "No writable data directory was resolved, so snippets cannot be stored. \
+                         Set XDG_DATA_HOME or HOME."
+                    .to_owned(),
+            });
+        }
+        let snippet_service = Self::build_snippet_service(configuration);
+
         let mut runtime = Self {
             registry,
             audio_mixer: AudioMixerService::with_policy(
@@ -246,6 +292,14 @@ impl ApplicationRuntime {
                 &configuration.clipboard,
             ))
             .expect("the validated clipboard policy is valid"),
+            snippet_library: loaded_snippets.library,
+            snippet_service,
+            snippet_policy,
+            snippet_expansion_timing: configuration.snippets.expansion_timing,
+            snippet_provider_preference: configuration.snippets.preferred_provider,
+            snippet_path,
+            snippet_warnings,
+            snippet_clipboard: Self::build_snippet_clipboard(),
             system_monitor: SystemMonitorService::new(
                 monitor_source,
                 Duration::from_millis(configuration.monitoring.refresh_interval_millis),
@@ -323,6 +377,12 @@ impl ApplicationRuntime {
                     &configuration.clipboard,
                 ));
         }
+        // Provider preference, timeout, and snippet bounds are all re-derived, so
+        // a configuration change re-runs discovery and re-tunes the policy.
+        self.snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
+        self.snippet_expansion_timing = configuration.snippets.expansion_timing;
+        self.snippet_provider_preference = configuration.snippets.preferred_provider;
+        self.snippet_service = Self::build_snippet_service(configuration);
         let desired = self
             .registry
             .registrations()
@@ -397,21 +457,27 @@ impl ApplicationRuntime {
         configuration: &ApplicationConfiguration,
         can_undo: bool,
     ) -> ApplicationViewModel {
-        self.view_model_with_clipboard(warnings, configuration, can_undo, "", &[], None)
+        self.view_model_with_panels(
+            warnings,
+            configuration,
+            can_undo,
+            ClipboardQuery::default(),
+            SnippetQuery::default(),
+        )
     }
 
     /// Builds the view model with the application's current clipboard query.
     ///
     /// Search results and previews are produced by explicit, bounded requests,
     /// so only the values the user asked to see are rendered.
-    pub fn view_model_with_clipboard(
+    /// Builds the view model with the window's clipboard and snippet state.
+    pub fn view_model_with_panels(
         &self,
         warnings: &[ConfigurationWarning],
         configuration: &ApplicationConfiguration,
         can_undo: bool,
-        clipboard_query: &str,
-        clipboard_matches: &[ClipboardMatch],
-        clipboard_preview: Option<&ClipboardPreview>,
+        clipboard: ClipboardQuery<'_>,
+        snippets: SnippetQuery<'_>,
     ) -> ApplicationViewModel {
         ApplicationViewModel::new(
             self.registrations(),
@@ -424,9 +490,23 @@ impl ApplicationRuntime {
             ClipboardPresentation {
                 snapshot: Some(self.clipboard_history.latest()),
                 running: self.clipboard_history_is_running(),
-                search_query: clipboard_query,
-                matches: clipboard_matches,
-                preview: clipboard_preview,
+                search_query: clipboard.query,
+                matches: clipboard.matches,
+                preview: clipboard.preview,
+            },
+            SnippetsPresentation {
+                library: &self.snippet_library,
+                policy: self.snippet_policy,
+                running: self.snippets_running(),
+                provider: self.snippet_provider(),
+                unavailable_reason: self.snippet_unavailable_reason(),
+                directory: self.snippet_directory(),
+                expansion_timing: self.snippet_expansion_timing,
+                provider_preference: self.snippet_provider_preference,
+                search_query: snippets.query,
+                matches: snippets.matches,
+                draft: snippets.draft,
+                warnings: &self.snippet_warnings,
             },
             MonitorPresentation {
                 snapshot: self.system_monitor.latest(),
@@ -523,6 +603,125 @@ impl ApplicationRuntime {
         self.audio_mixer_is_running()
             .then(|| self.audio_mixer.execute(command))
     }
+    /// Discovers an insertion provider and builds the capability-gated service.
+    fn build_snippet_service(
+        configuration: &ApplicationConfiguration,
+    ) -> SnippetInsertionService<ExecutableInsertionBackend> {
+        let discovery = discover_insertion_provider(configuration.snippets.preferred_provider)
+            .and_then(|path| {
+                ExecutableInsertionBackend::new(path, configuration.snippets.insert_timeout_millis)
+            });
+        SnippetInsertionService::new(discovery)
+    }
+
+    /// Opens a second clipboard reader for the `{{clipboard}}` variable.
+    ///
+    /// Reading never takes ownership, so it cannot disturb the clipboard
+    /// history service's selection.
+    fn build_snippet_clipboard() -> Option<ArboardClipboardBackend> {
+        discover_provider()
+            .ok()
+            .and_then(|provider| ArboardClipboardBackend::new(provider).ok())
+    }
+
+    /// The snippet library as the window sees it.
+    pub fn snippet_library(&self) -> &SnippetLibrary {
+        &self.snippet_library
+    }
+
+    pub fn snippet_policy(&self) -> SnippetPolicy {
+        self.snippet_policy
+    }
+
+    pub fn snippet_warnings(&self) -> &[ConfigurationWarning] {
+        &self.snippet_warnings
+    }
+
+    /// Whether the snippet registration is running.
+    pub fn snippets_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == SNIPPETS_ID && registration.running)
+    }
+
+    /// The verified insertion provider, when one exists.
+    pub fn snippet_provider(&self) -> Option<InsertionProvider> {
+        self.snippet_service.provider()
+    }
+
+    /// Why insertion stays disabled, when no provider was verified.
+    pub fn snippet_unavailable_reason(&self) -> Option<&str> {
+        self.snippet_service.unavailable_reason()
+    }
+
+    /// The directory holding the snippet file, for the window's status line.
+    pub fn snippet_directory(&self) -> Option<String> {
+        self.snippet_path
+            .as_deref()
+            .and_then(|path| path.parent())
+            .map(|parent| parent.display().to_string())
+    }
+
+    /// Searches the library; previews render variables as placeholders.
+    pub fn snippet_matches(&self, query: &str, limit: usize) -> Vec<SnippetMatch> {
+        self.snippet_library
+            .search(query, limit, self.snippet_policy)
+    }
+
+    /// Saves or replaces a snippet and persists the library.
+    pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), String> {
+        self.snippet_library
+            .upsert(snippet, self.snippet_policy)
+            .map_err(|error| error.to_string())?;
+        self.persist_snippets()
+    }
+
+    /// Removes a snippet and persists the library.
+    pub fn delete_snippet(&mut self, name: &str) -> Result<(), String> {
+        self.snippet_library
+            .remove(name)
+            .map_err(|error| error.to_string())?;
+        self.persist_snippets()
+    }
+
+    fn persist_snippets(&self) -> Result<(), String> {
+        let Some(path) = self.snippet_path.as_deref() else {
+            return Err(
+                "no writable snippet file is available; set XDG_DATA_HOME or HOME".to_owned(),
+            );
+        };
+        save_snippets(path, &self.snippet_library, self.snippet_policy)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Renders one snippet and types it, if a provider is verified.
+    ///
+    /// The clipboard variable is read here, once, through a read-only
+    /// connection, and the render clips it to the configured bound.
+    pub fn insert_snippet(&mut self, name: &str) -> Result<InsertionReport, SnippetServiceError> {
+        let snippet = self.snippet_library.get(name).cloned().ok_or_else(|| {
+            SnippetServiceError::ExpansionUnavailable {
+                reason: format!("no snippet named \"{name}\" is stored"),
+            }
+        })?;
+        let clipboard_available = self.snippet_clipboard.is_some();
+        let clipboard = self
+            .snippet_clipboard
+            .as_mut()
+            .and_then(|backend| backend.read_text().ok().flatten());
+        let clock = SystemClock;
+        let local_time = clock.local_time();
+        let timezone = clock.timezone_name();
+        let context = RenderContext {
+            local_time: Some(local_time),
+            timezone: Some(timezone.as_str()),
+            clipboard: clipboard.as_deref(),
+            clipboard_available,
+        };
+        self.snippet_service
+            .insert(&snippet, self.snippet_policy, &context)
+    }
+
     /// Returns metadata about retained clipboard items without exposing their contents.
     pub fn clipboard_snapshot(&self) -> ClipboardSnapshot {
         self.clipboard_history.latest()

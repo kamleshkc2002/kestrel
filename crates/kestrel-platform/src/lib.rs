@@ -10,6 +10,7 @@ pub mod clipboard;
 
 pub mod notifications;
 pub mod quick_toggles;
+pub mod snippets;
 pub mod system_monitor;
 
 /// Produces a non-interactive capability report for one feature adapter.

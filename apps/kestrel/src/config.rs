@@ -10,10 +10,13 @@ use kestrel_core::{
     MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
     MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
     MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_MONITOR_HISTORY_SAMPLES,
-    MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
+    MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES,
+    MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
     MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS,
-    MonitorReadout, PanelSection, PanelSectionConfiguration, StartupConfiguration,
-    UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
+    MIN_SNIPPET_CLIPBOARD_BYTES, MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
+    MonitorReadout, PanelSection, PanelSectionConfiguration, SnippetExpansionTiming,
+    SnippetProviderPreference, StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
+    validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -191,6 +194,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_monitoring(&mut loaded, document.get("monitoring"));
     parse_audio(&mut loaded, document.get("audio"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
+    parse_snippets(&mut loaded, document.get("snippets"));
     Ok(loaded)
 }
 
@@ -646,6 +650,80 @@ fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>
                  per-entry bounds were lowered to it."
             ),
         ));
+    }
+}
+
+fn parse_snippets(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(snippets) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "snippets",
+            "The snippets value must be a TOML table.",
+        ));
+        return;
+    };
+
+    let bounded = |loaded: &mut LoadedConfiguration, key: &str, minimum: u64, maximum: u64| {
+        if let Some(value) = snippets.get(key) {
+            match u64::deserialize(value.clone()) {
+                Ok(parsed) if (minimum..=maximum).contains(&parsed) => Some(parsed),
+                _ => {
+                    loaded.warnings.push(warning(
+                        &format!("snippets.{key}"),
+                        format!(
+                            "The value must be between {minimum} and {maximum}; the default was \
+                             retained."
+                        ),
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some(bytes) = bounded(
+        loaded,
+        "max_content_bytes",
+        u64::from(MIN_SNIPPET_CONTENT_BYTES),
+        u64::from(MAX_SNIPPET_CONTENT_BYTES),
+    ) {
+        loaded.configuration.snippets.max_content_bytes = bytes as u32;
+    }
+    if let Some(bytes) = bounded(
+        loaded,
+        "clipboard_variable_bytes",
+        u64::from(MIN_SNIPPET_CLIPBOARD_BYTES),
+        u64::from(MAX_SNIPPET_CLIPBOARD_BYTES),
+    ) {
+        loaded.configuration.snippets.clipboard_variable_bytes = bytes as u32;
+    }
+    if let Some(millis) = bounded(
+        loaded,
+        "insert_timeout_millis",
+        MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
+        MAX_SNIPPET_INSERT_TIMEOUT_MILLIS,
+    ) {
+        loaded.configuration.snippets.insert_timeout_millis = millis;
+    }
+    if let Some(value) = snippets.get("preferred_provider") {
+        match SnippetProviderPreference::deserialize(value.clone()) {
+            Ok(parsed) => loaded.configuration.snippets.preferred_provider = parsed,
+            Err(error) => loaded.warnings.push(warning(
+                "snippets.preferred_provider",
+                format!("The insertion provider preference is invalid and was ignored: {error}"),
+            )),
+        }
+    }
+    if let Some(value) = snippets.get("expansion_timing") {
+        match SnippetExpansionTiming::deserialize(value.clone()) {
+            Ok(parsed) => loaded.configuration.snippets.expansion_timing = parsed,
+            Err(error) => loaded.warnings.push(warning(
+                "snippets.expansion_timing",
+                format!("The expansion timing value is invalid and was ignored: {error}"),
+            )),
+        }
     }
 }
 
@@ -1214,6 +1292,90 @@ max_item_bytes = 1048576
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.clipboard, configuration.clipboard);
         assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn snippets_table_parses_bounds_provider_and_timing() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[snippets]
+max_content_bytes = 4096
+clipboard_variable_bytes = 128
+insert_timeout_millis = 750
+preferred_provider = "xdotool"
+expansion_timing = "delimiter"
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        let snippets = loaded.configuration.snippets;
+        assert_eq!(snippets.max_content_bytes, 4096);
+        assert_eq!(snippets.clipboard_variable_bytes, 128);
+        assert_eq!(snippets.insert_timeout_millis, 750);
+        assert_eq!(
+            snippets.preferred_provider,
+            kestrel_core::SnippetProviderPreference::Xdotool
+        );
+        assert_eq!(
+            snippets.expansion_timing,
+            kestrel_core::SnippetExpansionTiming::Delimiter
+        );
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn malformed_snippet_fields_are_isolated() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[snippets]
+max_content_bytes = 0
+clipboard_variable_bytes = 0
+insert_timeout_millis = 1
+preferred_provider = "telepathy"
+expansion_timing = "vibes"
+"#,
+        )
+        .expect("document itself is valid TOML");
+
+        assert_eq!(
+            loaded.configuration.snippets,
+            kestrel_core::SnippetConfiguration::default()
+        );
+        for location in [
+            "snippets.max_content_bytes",
+            "snippets.clipboard_variable_bytes",
+            "snippets.insert_timeout_millis",
+            "snippets.preferred_provider",
+            "snippets.expansion_timing",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location),
+                "{location} must report an isolated warning"
+            );
+        }
+        assert_eq!(loaded.configuration.validate(), Ok(()));
+    }
+
+    #[test]
+    fn export_carries_snippet_bounds_but_never_snippet_content() {
+        // Snippet text lives in its own private file, and the portable export
+        // must carry neither that text nor a resolved variable value.
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.snippets.max_content_bytes = 4096;
+
+        let exported = export_string(&configuration).expect("configuration exports");
+
+        assert!(exported.contains("[snippets]"));
+        assert!(exported.contains("max_content_bytes = 4096"));
+        assert!(!exported.contains("{{date}}"));
+        assert!(!exported.contains("{{clipboard}}"));
+        assert!(!exported.contains("Address"));
     }
 
     #[test]

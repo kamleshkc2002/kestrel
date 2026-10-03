@@ -3,8 +3,9 @@
 mod autostart;
 mod config;
 mod runtime;
+mod snippets;
 mod status_notifier;
-mod view_model;
+pub mod view_model;
 
 pub use autostart::{AutostartError, DESKTOP_FILE_NAME, autostart_path, disable, enable};
 pub use config::{
@@ -15,12 +16,18 @@ pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, MonitorReadout,
     PanelSection,
 };
+pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
+pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{ApplicationRuntime, FeaturePreset};
+pub use snippets::{
+    CURRENT_SNIPPET_SCHEMA_VERSION, LoadedSnippets, SnippetFile, SnippetStoreError, load_snippets,
+    save_snippets, snippet_path,
+};
 pub use status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration};
 pub use view_model::{
     ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
@@ -31,8 +38,32 @@ pub use view_model::{
     ConfirmationViewModel, FeatureLifecycleViewModel, FeatureViewModel,
     MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
-    QuickToggleViewModel, RemediationViewModel,
+    QuickToggleViewModel, RemediationViewModel, SnippetBoundsViewModel, SnippetDraft,
+    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
 };
+
+/// One snippet library action requested from the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnippetCommand {
+    /// Renders and types one stored snippet.
+    Insert(String),
+    /// Validates and stores a definition, replacing one with the same name.
+    Save {
+        name: String,
+        folder: String,
+        trigger: String,
+        content: String,
+    },
+    Delete(String),
+}
+
+/// One snippet bound edited from the settings controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnippetLimit {
+    ContentBytes(u32),
+    ClipboardBytes(u32),
+    InsertTimeoutMillis(u64),
+}
 
 /// One bounded clipboard retention value edited from the settings controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +142,17 @@ pub enum ApplicationCommand {
     SetClipboardLimit(ClipboardLimit),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
+    /// Runs one snippet library action.
+    Snippet(SnippetCommand),
+    /// Runs the snippet search whose results the window shows.
+    SnippetSearch(String),
+    /// Loads one stored snippet into the editor.
+    SnippetEdit(String),
+    /// Opens an empty editor for a new snippet.
+    SnippetNew,
+    SetSnippetLimit(SnippetLimit),
+    SetSnippetProvider(SnippetProviderPreference),
+    SetSnippetExpansionTiming(SnippetExpansionTiming),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
     Quit,

@@ -92,6 +92,24 @@ pub const DEFAULT_CLIPBOARD_AGE_HOURS: u32 = 24;
 pub const MAX_CLIPBOARD_AGE_HOURS: u32 = 24 * 30;
 pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 86_400;
 
+// Text-snippet bounds. Snippet content is user-authored text that lives in a
+// private file, so these bounds protect the file, the insert path, and the
+// clipboard variable that a snippet may reference.
+pub const MIN_SNIPPET_CONTENT_BYTES: u32 = 1;
+pub const DEFAULT_SNIPPET_CONTENT_BYTES: u32 = 64 * 1024;
+pub const MAX_SNIPPET_CONTENT_BYTES: u32 = 1024 * 1024;
+pub const MIN_SNIPPET_NAME_CHARS: usize = 1;
+pub const MAX_SNIPPET_NAME_CHARS: usize = 64;
+pub const MAX_SNIPPET_FOLDER_CHARS: usize = 64;
+pub const MAX_SNIPPET_TRIGGER_CHARS: usize = 32;
+pub const MAX_SNIPPET_VARIABLES: usize = 32;
+pub const MIN_SNIPPET_CLIPBOARD_BYTES: u32 = 64;
+pub const DEFAULT_SNIPPET_CLIPBOARD_BYTES: u32 = 4096;
+pub const MAX_SNIPPET_CLIPBOARD_BYTES: u32 = 64 * 1024;
+pub const MIN_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 250;
+pub const DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 2_000;
+pub const MAX_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 10_000;
+
 /// The user's preferred appearance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -232,6 +250,8 @@ pub struct ApplicationConfiguration {
     pub audio: AudioConfiguration,
     #[serde(default)]
     pub clipboard: ClipboardConfiguration,
+    #[serde(default)]
+    pub snippets: SnippetConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -244,6 +264,7 @@ impl Default for ApplicationConfiguration {
             monitoring: MonitorConfiguration::default(),
             audio: AudioConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
+            snippets: SnippetConfiguration::default(),
         }
     }
 }
@@ -306,6 +327,7 @@ impl ApplicationConfiguration {
         self.ui.validate()?;
         self.audio.validate()?;
         self.clipboard.validate()?;
+        self.snippets.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
         if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
@@ -799,6 +821,417 @@ impl ClipboardConfiguration {
     }
 }
 
+/// A variable a snippet may reference, rendered locally at insert time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SnippetVariable {
+    Date,
+    Time,
+    DateTime,
+    Timezone,
+    UtcOffset,
+    Clipboard,
+}
+
+impl SnippetVariable {
+    pub const ALL: [SnippetVariable; 6] = [
+        SnippetVariable::Date,
+        SnippetVariable::Time,
+        SnippetVariable::DateTime,
+        SnippetVariable::Timezone,
+        SnippetVariable::UtcOffset,
+        SnippetVariable::Clipboard,
+    ];
+
+    /// The literal token a snippet author writes.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Date => "{{date}}",
+            Self::Time => "{{time}}",
+            Self::DateTime => "{{datetime}}",
+            Self::Timezone => "{{timezone}}",
+            Self::UtcOffset => "{{utc_offset}}",
+            Self::Clipboard => "{{clipboard}}",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Date => "Local date",
+            Self::Time => "Local time",
+            Self::DateTime => "Local date and time",
+            Self::Timezone => "Local time zone",
+            Self::UtcOffset => "Local UTC offset",
+            Self::Clipboard => "Clipboard text",
+        }
+    }
+
+    /// Whether rendering this variable reads the live clipboard.
+    pub const fn reads_clipboard(self) -> bool {
+        matches!(self, Self::Clipboard)
+    }
+
+    pub fn parse(token: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|variable| variable.token() == token)
+    }
+}
+
+/// A portable snippet definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snippet {
+    pub name: String,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub trigger: Option<String>,
+    pub content: String,
+}
+
+impl Snippet {
+    pub fn new(
+        name: impl Into<String>,
+        folder: Option<String>,
+        trigger: Option<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            folder,
+            trigger,
+            content: content.into(),
+        }
+    }
+
+    /// Variables this snippet references, in first-appearance order.
+    pub fn variables(&self) -> Vec<SnippetVariable> {
+        let mut found = Vec::new();
+        for token in variable_tokens(&self.content) {
+            if let Some(variable) = SnippetVariable::parse(token) {
+                if !found.contains(&variable) {
+                    found.push(variable);
+                }
+            }
+        }
+        found
+    }
+
+    /// Validates one snippet without comparing it to the rest of the library.
+    pub fn validate(&self, max_content_bytes: u32) -> Result<(), SnippetError> {
+        let name = self.name.trim();
+        if name.chars().count() < MIN_SNIPPET_NAME_CHARS {
+            return Err(SnippetError::EmptyName);
+        }
+        if name.chars().count() > MAX_SNIPPET_NAME_CHARS {
+            return Err(SnippetError::NameTooLong {
+                name: self.name.clone(),
+            });
+        }
+        if let Some(folder) = self.folder.as_deref().map(str::trim) {
+            if folder.is_empty() {
+                return Err(SnippetError::EmptyFolder);
+            }
+            if folder.chars().count() > MAX_SNIPPET_FOLDER_CHARS {
+                return Err(SnippetError::FolderTooLong {
+                    folder: folder.to_owned(),
+                });
+            }
+        }
+        if let Some(trigger) = self.trigger.as_deref().map(str::trim) {
+            if trigger.is_empty() {
+                return Err(SnippetError::EmptyTrigger);
+            }
+            if trigger.chars().count() > MAX_SNIPPET_TRIGGER_CHARS {
+                return Err(SnippetError::TriggerTooLong {
+                    trigger: trigger.to_owned(),
+                });
+            }
+            if trigger.chars().any(char::is_whitespace) {
+                return Err(SnippetError::TriggerContainsWhitespace {
+                    trigger: trigger.to_owned(),
+                });
+            }
+        }
+        if self.content.len() > max_content_bytes as usize {
+            return Err(SnippetError::ContentTooLong {
+                bytes: self.content.len(),
+                maximum: max_content_bytes,
+            });
+        }
+        let mut variables = 0usize;
+        for token in variable_tokens(&self.content) {
+            match SnippetVariable::parse(token) {
+                Some(variable) => {
+                    variables += 1;
+                    if variables > MAX_SNIPPET_VARIABLES {
+                        return Err(SnippetError::TooManyVariables {
+                            maximum: MAX_SNIPPET_VARIABLES,
+                        });
+                    }
+                    let _ = variable;
+                }
+                None => {
+                    return Err(SnippetError::UnknownVariable {
+                        token: token.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Collects `{{...}}` tokens from snippet content.
+pub fn variable_tokens(content: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start..];
+        let Some(end) = after.find("}}") else {
+            break;
+        };
+        tokens.push(&after[..end + 2]);
+        rest = &after[end + 2..];
+    }
+    tokens
+}
+
+/// A rejected snippet definition or library operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnippetError {
+    EmptyName,
+    NameTooLong {
+        name: String,
+    },
+    DuplicateName {
+        name: String,
+    },
+    EmptyFolder,
+    FolderTooLong {
+        folder: String,
+    },
+    EmptyTrigger,
+    TriggerTooLong {
+        trigger: String,
+    },
+    TriggerContainsWhitespace {
+        trigger: String,
+    },
+    DuplicateTrigger {
+        trigger: String,
+    },
+    /// A trigger must start with a non-alphanumeric delimiter.
+    TriggerNotDelimited {
+        trigger: String,
+    },
+    ContentTooLong {
+        bytes: usize,
+        maximum: u32,
+    },
+    TooManyVariables {
+        maximum: usize,
+    },
+    UnknownVariable {
+        token: String,
+    },
+    UnknownSnippet {
+        name: String,
+    },
+}
+
+impl std::fmt::Display for SnippetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyName => formatter.write_str("a snippet needs a name"),
+            Self::NameTooLong { name } => write!(
+                formatter,
+                "snippet name \"{name}\" is longer than {MAX_SNIPPET_NAME_CHARS} characters"
+            ),
+            Self::DuplicateName { name } => {
+                write!(formatter, "a snippet named \"{name}\" already exists")
+            }
+            Self::EmptyFolder => formatter.write_str("a snippet folder needs a name"),
+            Self::FolderTooLong { folder } => write!(
+                formatter,
+                "folder \"{folder}\" is longer than {MAX_SNIPPET_FOLDER_CHARS} characters"
+            ),
+            Self::EmptyTrigger => formatter.write_str("a snippet trigger cannot be empty"),
+            Self::TriggerTooLong { trigger } => write!(
+                formatter,
+                "trigger \"{trigger}\" is longer than {MAX_SNIPPET_TRIGGER_CHARS} characters"
+            ),
+            Self::TriggerContainsWhitespace { trigger } => write!(
+                formatter,
+                "trigger \"{trigger}\" must not contain whitespace"
+            ),
+            Self::DuplicateTrigger { trigger } => write!(
+                formatter,
+                "trigger \"{trigger}\" is already used by another snippet"
+            ),
+            Self::TriggerNotDelimited { trigger } => write!(
+                formatter,
+                "trigger \"{trigger}\" must start with a non-alphanumeric delimiter"
+            ),
+            Self::ContentTooLong { bytes, maximum } => write!(
+                formatter,
+                "snippet content is {bytes} bytes, above the {maximum} byte bound"
+            ),
+            Self::TooManyVariables { maximum } => {
+                write!(
+                    formatter,
+                    "a snippet may reference at most {maximum} variables"
+                )
+            }
+            Self::UnknownVariable { token } => {
+                write!(formatter, "\"{token}\" is not a supported variable")
+            }
+            Self::UnknownSnippet { name } => {
+                write!(formatter, "no snippet named \"{name}\" is stored")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SnippetError {}
+
+/// User intent for the snippet library and its insert path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnippetConfiguration {
+    #[serde(default = "default_snippet_content_bytes")]
+    pub max_content_bytes: u32,
+    #[serde(default = "default_snippet_clipboard_bytes")]
+    pub clipboard_variable_bytes: u32,
+    #[serde(default = "default_snippet_insert_timeout_millis")]
+    pub insert_timeout_millis: u64,
+    #[serde(default)]
+    pub preferred_provider: SnippetProviderPreference,
+    #[serde(default)]
+    pub expansion_timing: SnippetExpansionTiming,
+}
+
+/// How a snippet's trigger is expected to expand.
+///
+/// Expansion needs a key-capture provider; until one is verified, only manual
+/// insertion inserts text, and the stored preference is reported as unavailable
+/// rather than silently ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetExpansionTiming {
+    /// Insert only when the user asks.
+    #[default]
+    Manual,
+    /// Expand when a trigger is followed by a delimiter in the focused window.
+    Delimiter,
+}
+
+impl SnippetExpansionTiming {
+    pub const ALL: [SnippetExpansionTiming; 2] = [
+        SnippetExpansionTiming::Manual,
+        SnippetExpansionTiming::Delimiter,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual insertion only",
+            Self::Delimiter => "Expand on a delimiter (needs key capture)",
+        }
+    }
+}
+
+/// Which insertion provider Kestrel may use.
+///
+/// `Auto` deliberately never selects the uinput-based provider: joining the
+/// input group is an explicit setup decision, so it must be requested here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetProviderPreference {
+    #[default]
+    Auto,
+    Wtype,
+    Ydotool,
+    Xdotool,
+}
+
+impl SnippetProviderPreference {
+    pub const ALL: [SnippetProviderPreference; 4] = [
+        SnippetProviderPreference::Auto,
+        SnippetProviderPreference::Wtype,
+        SnippetProviderPreference::Ydotool,
+        SnippetProviderPreference::Xdotool,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Automatic (no input-group access)",
+            Self::Wtype => "wtype (Wayland virtual keyboard)",
+            Self::Ydotool => "ydotool (uinput; requires input-device access)",
+            Self::Xdotool => "xdotool (X11)",
+        }
+    }
+
+    /// The provider name as it appears on `PATH`, when one is pinned.
+    pub const fn executable(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Wtype => Some("wtype"),
+            Self::Ydotool => Some("ydotool"),
+            Self::Xdotool => Some("xdotool"),
+        }
+    }
+}
+
+fn default_snippet_content_bytes() -> u32 {
+    DEFAULT_SNIPPET_CONTENT_BYTES
+}
+
+fn default_snippet_clipboard_bytes() -> u32 {
+    DEFAULT_SNIPPET_CLIPBOARD_BYTES
+}
+
+fn default_snippet_insert_timeout_millis() -> u64 {
+    DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS
+}
+
+impl Default for SnippetConfiguration {
+    fn default() -> Self {
+        Self {
+            max_content_bytes: DEFAULT_SNIPPET_CONTENT_BYTES,
+            clipboard_variable_bytes: DEFAULT_SNIPPET_CLIPBOARD_BYTES,
+            insert_timeout_millis: DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS,
+            preferred_provider: SnippetProviderPreference::default(),
+            expansion_timing: SnippetExpansionTiming::default(),
+        }
+    }
+}
+
+impl SnippetConfiguration {
+    /// Validates the snippet bounds and the insertion timeout.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_SNIPPET_CONTENT_BYTES..=MAX_SNIPPET_CONTENT_BYTES)
+            .contains(&self.max_content_bytes)
+        {
+            return Err(ConfigurationError::InvalidSnippetContentBytes {
+                bytes: self.max_content_bytes,
+            });
+        }
+        if !(MIN_SNIPPET_CLIPBOARD_BYTES..=MAX_SNIPPET_CLIPBOARD_BYTES)
+            .contains(&self.clipboard_variable_bytes)
+        {
+            return Err(ConfigurationError::InvalidSnippetClipboardBytes {
+                bytes: self.clipboard_variable_bytes,
+            });
+        }
+        if !(MIN_SNIPPET_INSERT_TIMEOUT_MILLIS..=MAX_SNIPPET_INSERT_TIMEOUT_MILLIS)
+            .contains(&self.insert_timeout_millis)
+        {
+            return Err(ConfigurationError::InvalidSnippetInsertTimeout {
+                millis: self.insert_timeout_millis,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// An invalid portable configuration contract.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigurationError {
@@ -821,6 +1254,9 @@ pub enum ConfigurationError {
     InvalidClipboardTotalBytes { bytes: u32 },
     InvalidClipboardAgeHours { hours: u32 },
     InvalidClipboardClearSeconds { seconds: u64 },
+    InvalidSnippetContentBytes { bytes: u32 },
+    InvalidSnippetClipboardBytes { bytes: u32 },
+    InvalidSnippetInsertTimeout { millis: u64 },
 }
 
 // f64 cannot derive Eq; retaining Eq keeps error matching ergonomic while
@@ -950,10 +1386,12 @@ mod tests {
         MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
         MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
         MAX_CLIPBOARD_MAX_ITEMS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
-        MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
-        MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MonitorReadout,
-        PanelSection, PanelSectionConfiguration, ResourceCost, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
-        UiConfiguration,
+        MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SNIPPET_NAME_CHARS,
+        MAX_SNIPPET_VARIABLES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
+        MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
+        MonitorReadout, PanelSection, PanelSectionConfiguration, ResourceCost, Snippet,
+        SnippetConfiguration, SnippetError, SnippetExpansionTiming, SnippetProviderPreference,
+        SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, UiConfiguration, variable_tokens,
     };
 
     #[test]
@@ -1326,6 +1764,154 @@ mod tests {
         );
         assert!(clipboard.paste_plain_text);
         assert_eq!(clipboard.validate(), Ok(()));
+    }
+
+    #[test]
+    fn snippet_validation_covers_names_folders_triggers_content_and_variables() {
+        let bounds = super::DEFAULT_SNIPPET_CONTENT_BYTES;
+        let valid = Snippet::new(
+            "Address",
+            Some("Contact".to_string()),
+            Some(";addr".to_string()),
+            "123 Example Street\n{{date}}",
+        );
+        assert_eq!(valid.validate(bounds), Ok(()));
+        assert_eq!(valid.variables(), vec![SnippetVariable::Date]);
+
+        assert_eq!(
+            Snippet::new("   ", None, None, "x").validate(bounds),
+            Err(SnippetError::EmptyName)
+        );
+        assert_eq!(
+            Snippet::new("x".repeat(MAX_SNIPPET_NAME_CHARS + 1), None, None, "x").validate(bounds),
+            Err(SnippetError::NameTooLong {
+                name: "x".repeat(MAX_SNIPPET_NAME_CHARS + 1)
+            })
+        );
+        assert_eq!(
+            Snippet::new("a", Some("   ".to_string()), None, "x").validate(bounds),
+            Err(SnippetError::EmptyFolder)
+        );
+        assert_eq!(
+            Snippet::new("a", None, Some(";a b".to_string()), "x").validate(bounds),
+            Err(SnippetError::TriggerContainsWhitespace {
+                trigger: ";a b".to_string()
+            })
+        );
+        assert_eq!(
+            Snippet::new("a", None, Some(String::new()), "x").validate(bounds),
+            Err(SnippetError::EmptyTrigger)
+        );
+        assert_eq!(
+            Snippet::new("a", None, None, "x".repeat(20)).validate(8),
+            Err(SnippetError::ContentTooLong {
+                bytes: 20,
+                maximum: 8
+            })
+        );
+        assert_eq!(
+            Snippet::new("a", None, None, "{{today}}").validate(bounds),
+            Err(SnippetError::UnknownVariable {
+                token: "{{today}}".to_string()
+            })
+        );
+        assert_eq!(
+            Snippet::new(
+                "a",
+                None,
+                None,
+                "{{date}} ".repeat(MAX_SNIPPET_VARIABLES + 1)
+            )
+            .validate(MAX_SNIPPET_CONTENT_BYTES),
+            Err(SnippetError::TooManyVariables {
+                maximum: MAX_SNIPPET_VARIABLES
+            })
+        );
+    }
+
+    #[test]
+    fn snippet_variables_are_documented_tokens_with_clipboard_marked() {
+        assert_eq!(SnippetVariable::ALL.len(), 6);
+        assert_eq!(SnippetVariable::Date.token(), "{{date}}");
+        assert_eq!(
+            SnippetVariable::parse("{{clipboard}}"),
+            Some(SnippetVariable::Clipboard)
+        );
+        assert_eq!(SnippetVariable::parse("{{nope}}"), None);
+        assert!(SnippetVariable::Clipboard.reads_clipboard());
+        assert!(!SnippetVariable::Date.reads_clipboard());
+        let labels = SnippetVariable::ALL
+            .iter()
+            .map(|variable| (variable.token(), variable.label()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            labels.len(),
+            SnippetVariable::ALL.len(),
+            "every variable has a unique token and a label"
+        );
+
+        // An unterminated token is left alone rather than treated as a variable.
+        assert!(variable_tokens("half {{date").is_empty());
+        assert_eq!(
+            variable_tokens("{{date}} and {{time}}"),
+            vec!["{{date}}", "{{time}}"]
+        );
+    }
+
+    #[test]
+    fn snippet_configuration_bounds_are_enforced() {
+        assert_eq!(SnippetConfiguration::default().validate(), Ok(()));
+
+        for bytes in [0, MAX_SNIPPET_CONTENT_BYTES + 1] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.snippets.max_content_bytes = bytes;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidSnippetContentBytes { bytes })
+            );
+        }
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.snippets.clipboard_variable_bytes = MIN_SNIPPET_CLIPBOARD_BYTES - 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidSnippetClipboardBytes {
+                bytes: MIN_SNIPPET_CLIPBOARD_BYTES - 1
+            })
+        );
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.snippets.insert_timeout_millis = MAX_SNIPPET_INSERT_TIMEOUT_MILLIS + 1;
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidSnippetInsertTimeout {
+                millis: MAX_SNIPPET_INSERT_TIMEOUT_MILLIS + 1
+            })
+        );
+
+        assert_eq!(
+            ApplicationConfiguration::default()
+                .snippets
+                .max_content_bytes,
+            super::DEFAULT_SNIPPET_CONTENT_BYTES
+        );
+        assert_eq!(
+            SnippetConfiguration::default().preferred_provider,
+            SnippetProviderPreference::Auto,
+            "automatic selection never opts into input-group access"
+        );
+        assert_eq!(SnippetProviderPreference::ALL.len(), 4);
+        assert_eq!(SnippetProviderPreference::Auto.executable(), None);
+        assert_eq!(
+            SnippetProviderPreference::Ydotool.executable(),
+            Some("ydotool")
+        );
+        assert_eq!(
+            SnippetConfiguration::default().expansion_timing,
+            SnippetExpansionTiming::Manual,
+            "trigger expansion is opt-in because it needs key capture"
+        );
+        assert_eq!(SnippetExpansionTiming::ALL.len(), 2);
     }
 
     #[test]
