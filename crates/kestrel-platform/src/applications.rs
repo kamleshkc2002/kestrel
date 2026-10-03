@@ -2,7 +2,9 @@
 //!
 //! Only the standard XDG application directories are read, and only the fields
 //! the bar needs; nothing is indexed globally and no command line is ever passed
-//! through a shell.
+//! through a shell. Applications are started through GIO's desktop-entry
+//! support, which understands `Terminal=true`, the `Exec` field codes, and
+//! `TryExec`, so Kestrel does not reimplement the desktop-entry specification.
 
 use std::{
     env,
@@ -13,6 +15,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
+
+use gio::prelude::AppInfoExt;
 
 pub const FEATURE_ID: &str = "commands.bar";
 /// The largest number of desktop entries the bar will consider.
@@ -28,7 +32,13 @@ pub struct ApplicationEntry {
     pub comment: Option<String>,
     /// The parsed command line: program plus arguments, never a shell string.
     pub command: Vec<String>,
+    /// Whether the entry asks to run inside a terminal (`Terminal=true`).
     pub terminal: bool,
+    /// The desktop file this entry was read from, set by `scan_applications`.
+    ///
+    /// Launching goes through this file rather than the parsed command line, so
+    /// the desktop's own rules (terminal wrapping, field codes) apply.
+    pub source: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +139,8 @@ pub fn scan_applications(roots: &[PathBuf]) -> Vec<ApplicationEntry> {
             let Ok(contents) = fs::read_to_string(&path) else {
                 continue;
             };
-            if let Some(entry) = parse_desktop_entry(&id, &contents) {
+            if let Some(mut entry) = parse_desktop_entry(&id, &contents) {
+                entry.source = Some(path);
                 entries.push(entry);
                 if entries.len() >= MAX_APPLICATIONS {
                     return entries;
@@ -188,7 +199,38 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
         comment,
         command,
         terminal,
+        source: None,
     })
+}
+
+/// Launches a scanned application through GIO's desktop-entry support.
+///
+/// GIO honours `Terminal=true` by wrapping the command in a terminal emulator
+/// it can find, expands the `Exec` field codes (none of which carry arguments
+/// here), and refuses an entry whose `TryExec` program is missing. The child is
+/// detached by GIO; nothing is waited for and no shell interprets arguments.
+/// A failure, including "no terminal emulator was found", is returned as a
+/// structured error rather than ignored.
+pub fn launch_desktop_entry(entry: &ApplicationEntry) -> Result<(), DesktopError> {
+    let Some(source) = entry.source.as_deref() else {
+        return Err(DesktopError::new(
+            DesktopErrorKind::LaunchFailed,
+            format!("{} has no desktop file to launch", entry.name),
+        ));
+    };
+    let Some(info) = gio::DesktopAppInfo::from_filename(source) else {
+        return Err(DesktopError::new(
+            DesktopErrorKind::NotAvailable,
+            format!("{} is not a launchable desktop entry", entry.name),
+        ));
+    };
+    info.launch(&[], None::<&gio::AppLaunchContext>)
+        .map_err(|error| {
+            DesktopError::new(
+                DesktopErrorKind::LaunchFailed,
+                format!("{} could not be launched: {}", entry.name, error.message()),
+            )
+        })
 }
 
 /// Splits an `Exec` value into an argv, dropping desktop field codes.
@@ -377,8 +419,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ExternalLauncher, MAX_APPLICATIONS, application_directories, parse_desktop_entry,
-        parse_exec, resolve_executable, scan_applications,
+        DesktopErrorKind, ExternalLauncher, MAX_APPLICATIONS, application_directories,
+        launch_desktop_entry, parse_desktop_entry, parse_exec, resolve_executable,
+        scan_applications,
     };
 
     fn write(dir: &TempDir, name: &str, contents: &str) -> std::path::PathBuf {
@@ -595,5 +638,110 @@ mod tests {
         assert_eq!(recorded, "1\nhttps://example.com\n");
 
         assert!(launcher.open("").is_err());
+    }
+
+    #[test]
+    fn scanned_entries_launch_through_gio_with_their_own_exec() {
+        let dir = TempDir::new().expect("temp dir");
+        let marker = dir.path().join("launched.txt");
+        // Running the script through `sh` keeps the test independent of the
+        // script's executable bit.
+        let script = write(
+            &dir,
+            "run.sh",
+            &format!("echo launched > {}\n", marker.display()),
+        );
+        write(
+            &dir,
+            "probe.desktop",
+            &format!(
+                "[Desktop Entry]\nType=Application\nName=Probe\nExec=/bin/sh {} %U\n",
+                script.display()
+            ),
+        );
+
+        let entries = scan_applications(&[dir.path().to_path_buf()]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].source.as_deref(),
+            Some(dir.path().join("probe.desktop").as_path()),
+            "scanning records the file an entry came from"
+        );
+
+        launch_desktop_entry(&entries[0]).expect("GIO launches the entry");
+
+        for _ in 0..200 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(
+            fs::read_to_string(&marker).expect("the launched program ran"),
+            "launched\n"
+        );
+    }
+
+    #[test]
+    fn launching_reports_structured_errors_instead_of_failing_silently() {
+        let dir = TempDir::new().expect("temp dir");
+        let mut entry = parse_desktop_entry(
+            "x.desktop",
+            "[Desktop Entry]\nType=Application\nName=X\nExec=/bin/true\n",
+        )
+        .expect("a launchable entry parses");
+
+        // A parsed-only entry has no desktop file to hand to GIO.
+        assert_eq!(
+            launch_desktop_entry(&entry)
+                .expect_err("no source file")
+                .kind,
+            DesktopErrorKind::LaunchFailed
+        );
+
+        entry.source = Some(dir.path().join("missing.desktop"));
+        assert_eq!(
+            launch_desktop_entry(&entry)
+                .expect_err("the file does not exist")
+                .kind,
+            DesktopErrorKind::NotAvailable
+        );
+
+        // GIO refuses an entry whose TryExec program is not installed.
+        let path = write(
+            &dir,
+            "gone.desktop",
+            "[Desktop Entry]\nType=Application\nName=Gone\nExec=/bin/true\n\
+             TryExec=/definitely/not/installed\n",
+        );
+        entry.source = Some(path);
+        assert_eq!(
+            launch_desktop_entry(&entry)
+                .expect_err("TryExec is missing")
+                .kind,
+            DesktopErrorKind::NotAvailable
+        );
+    }
+
+    #[test]
+    fn gio_sees_the_terminal_request_it_honours_at_launch() {
+        // Launching a terminal entry would open a terminal window, so the test
+        // checks that GIO reads the same flag the scan reports instead.
+        let dir = TempDir::new().expect("temp dir");
+        write(
+            &dir,
+            "tui.desktop",
+            "[Desktop Entry]\nType=Application\nName=Tui\nExec=/bin/true\nTerminal=true\n",
+        );
+
+        let entries = scan_applications(&[dir.path().to_path_buf()]);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].terminal);
+        let source = entries[0].source.as_deref().expect("scan records the file");
+        let info = gio::DesktopAppInfo::from_filename(source).expect("GIO loads the entry");
+        assert!(
+            info.boolean("Terminal"),
+            "GIO applies its terminal wrapping"
+        );
     }
 }

@@ -15,7 +15,8 @@ use kestrel_core::{
 use kestrel_platform::{
     CapabilityProbe, StaticCapabilityProbe,
     applications::{
-        ApplicationEntry, ExternalLauncher, application_directories, scan_applications,
+        ApplicationEntry, ExternalLauncher, application_directories, launch_desktop_entry,
+        scan_applications,
     },
     audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
     clipboard::{
@@ -138,9 +139,9 @@ impl CapabilityProbe for CommandBarProbe {
         let launcher = ExternalLauncher::discover();
         let roots = self.configuration.file_roots.len();
         let scripts = self.configuration.scripts.len();
-        // Entries that need a terminal are not launchable without one, so they
-        // are counted and reported instead of being offered as inert results.
-        let terminal_only = applications
+        // Entries that ask for a terminal are launched through GIO, which finds
+        // the terminal emulator; the count is reported so it is visible.
+        let terminal_entries = applications
             .iter()
             .filter(|application| application.terminal)
             .count();
@@ -171,11 +172,11 @@ impl CapabilityProbe for CommandBarProbe {
         .with_evidence(CapabilityEvidence::new("portable_commands", "always"))
         .with_evidence(CapabilityEvidence::new(
             "application_count",
-            (applications.len() - terminal_only).to_string(),
+            applications.len().to_string(),
         ))
         .with_evidence(CapabilityEvidence::new(
-            "terminal_applications_skipped",
-            terminal_only.to_string(),
+            "terminal_applications",
+            terminal_entries.to_string(),
         ))
         .with_evidence(CapabilityEvidence::new(
             "launch_handler",
@@ -189,8 +190,9 @@ impl CapabilityProbe for CommandBarProbe {
 
         if launcher.is_err() {
             report = report.with_remediation(
-                "Install xdg-open to launch links and applications from the command bar. \
-                 Commands that only use Kestrel data keep working without it.",
+                "Install xdg-open to open links and files from the command bar. Applications \
+                 launch through the desktop's own launcher, and commands that only use \
+                 Kestrel data keep working without it.",
             );
         }
         if self.configuration.enable_files && roots == 0 {
@@ -677,11 +679,7 @@ impl ApplicationRuntime {
                 max_results: self.command_max_results as u32,
                 providers: self.command_providers,
                 launcher: self.command_launcher_name(),
-                applications: self
-                    .command_applications
-                    .iter()
-                    .filter(|application| !application.terminal)
-                    .count(),
+                applications: self.command_applications.len(),
                 file_roots: self.command_file_roots.len(),
                 scripts: self.command_scripts.len(),
                 query: command_bar.query,
@@ -820,15 +818,10 @@ impl ApplicationRuntime {
     }
 
     /// Projects scanned applications into searchable command items.
-    ///
-    /// Entries that require a terminal are left out: launching them without one
-    /// makes shells and TUIs exit immediately. The index each item carries still
-    /// addresses the full scanned list.
     fn application_items(applications: &[ApplicationEntry]) -> Vec<CommandItem> {
         applications
             .iter()
             .enumerate()
-            .filter(|(_, application)| !application.terminal)
             .map(|(index, application)| {
                 CommandItem::new(
                     format!("application:{}", application.id),
@@ -1029,26 +1022,17 @@ impl ApplicationRuntime {
         run_script(script, path_env.as_deref()).map_err(|error| error.to_string())
     }
 
-    /// Launches one scanned application.
+    /// Launches one scanned application through the desktop's own launcher.
+    ///
+    /// GIO applies the entry's `Terminal=true`, `TryExec` and `Exec` field-code
+    /// rules, so this does not depend on `xdg-open` being installed.
     pub fn launch_command_application(&self, index: usize) -> Result<(), String> {
         self.require_command_bar()?;
         let application = self
             .command_applications
             .get(index)
             .ok_or_else(|| format!("application {index} is no longer available"))?;
-        if application.terminal {
-            return Err(format!(
-                "{} needs a terminal, which the command bar does not launch",
-                application.name
-            ));
-        }
-        let launcher = self
-            .command_launcher
-            .as_ref()
-            .ok_or_else(|| "no desktop open handler is available".to_string())?;
-        launcher
-            .launch(&application.command)
-            .map_err(|error| error.to_string())
+        launch_desktop_entry(application).map_err(|error| error.to_string())
     }
 
     /// Opens a link, file, or directory with the desktop handler.
@@ -1616,6 +1600,7 @@ mod tests {
             comment: None,
             command: vec![name.to_lowercase()],
             terminal,
+            source: None,
         }
     }
 
@@ -1717,7 +1702,7 @@ mod tests {
     }
 
     #[test]
-    fn applications_that_need_a_terminal_are_not_offered_or_launched() {
+    fn applications_that_need_a_terminal_are_offered_and_launched_through_their_desktop_file() {
         let entries = vec![
             application("top.desktop", "Top", true),
             application("editor.desktop", "Editor", false),
@@ -1725,11 +1710,15 @@ mod tests {
 
         let items = ApplicationRuntime::application_items(&entries);
 
-        assert_eq!(items.len(), 1, "the terminal-only entry is skipped");
+        assert_eq!(
+            items.len(),
+            2,
+            "terminal entries are offered like any other"
+        );
         assert_eq!(
             items[0].action,
-            CommandAction::OpenApplication { index: 1 },
-            "items still address the full scanned list"
+            CommandAction::OpenApplication { index: 0 },
+            "items address the scanned list"
         );
 
         let mut configuration = ApplicationConfiguration::default();
@@ -1738,11 +1727,19 @@ mod tests {
             .expect("feature ID is valid");
         let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
         runtime.start();
+        // An entry that was never read from a desktop file has nothing for GIO to
+        // launch; the failure is reported rather than started some other way.
         runtime.command_applications = entries;
         let error = runtime
             .launch_command_application(0)
-            .expect_err("a terminal-only entry is refused");
-        assert!(error.contains("needs a terminal"), "{error}");
+            .expect_err("an entry without a desktop file cannot launch");
+        assert!(error.contains("no desktop file"), "{error}");
+        assert!(
+            runtime
+                .launch_command_application(9)
+                .expect_err("unknown index")
+                .contains("no longer available")
+        );
     }
 
     #[test]

@@ -1355,19 +1355,15 @@ impl CommandProvider {
 
 impl CommandBarViewModel {
     pub(crate) fn from_presentation(presentation: CommandBarPresentation<'_>) -> Self {
-        let launcher = presentation.launcher;
         let providers = vec![
             CommandProviderViewModel {
                 provider: CommandProvider::Applications,
                 label: CommandProvider::Applications.label(),
                 enabled: presentation.providers.applications,
+                // Applications launch through the desktop's own launcher, so a
+                // missing `xdg-open` does not affect them.
                 status: if !presentation.providers.applications {
                     "Disabled".to_string()
-                } else if launcher.is_none() {
-                    format!(
-                        "{} applications scanned; launching needs xdg-open",
-                        presentation.applications
-                    )
                 } else {
                     format!("{} applications scanned", presentation.applications)
                 },
@@ -1468,7 +1464,7 @@ fn command_bar_status(
         presentation.max_results
     );
     if presentation.launcher.is_none() {
-        status.push_str(" · launching unavailable (no xdg-open)");
+        status.push_str(" · links and files cannot be opened (no xdg-open)");
     }
     if !presentation.ranking.entries().is_empty() {
         status.push_str(&format!(
@@ -2976,10 +2972,13 @@ mod tests {
             "a missing launcher is reported while portable commands keep working: {}",
             command_bar.status
         );
-        assert!(command_bar.providers.iter().any(|provider| {
-            provider.provider == CommandProvider::Applications
-                && provider.status.contains("needs xdg-open")
-        }));
+        assert!(
+            command_bar.providers.iter().any(|provider| {
+                provider.provider == CommandProvider::Applications
+                    && provider.status == "42 applications scanned"
+            }),
+            "applications launch through GIO, so a missing xdg-open is not reported against them"
+        );
     }
 
     #[test]
