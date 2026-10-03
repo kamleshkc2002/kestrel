@@ -170,6 +170,40 @@ Trigger expansion timing is stored (`manual` or `delimiter`) and reported
 honestly: delimiter expansion needs a key-capture provider, which this release
 does not have, so manual insertion is what inserts text today.
 
+### Command bar
+
+`commands.bar` is disabled by default. When enabled it ranks one keyboard-first
+surface over Kestrel commands, snippets, applications, computed values, and
+configured scripts. Providers that need no desktop integration — Kestrel
+actions, snippets, math, units, dates, links, and emoji — always answer, so a
+missing integration never leaves the bar empty.
+
+Ranking is bounded and local: fuzzy matching prefers prefixes, contiguous runs,
+and shorter labels; pins and learned use counts decide ties. The learned state is
+a private file (mode `600`, written atomically) that maps command identifiers to
+counts and pins — it has no field for query text, so nothing a user types is
+retained. The window shows those identifiers and counts and can reset them, and
+`kestrel:reset-command-ranking` is available as a command.
+
+Computed providers are deterministic and offline: arithmetic is evaluated by a
+small built-in parser, units convert inside one family (temperature is affine),
+dates render from the local clock, and links are only accepted when they look
+like a host. Emoji come from a built-in table.
+
+Search never indexes the filesystem. File results appear only inside the
+`[command_bar] file_roots` a user configures, walked with a depth, entry, and
+match budget that also skips hidden and symlinked directories; with no roots the
+provider stays off. Applications come from the standard XDG application
+directories, and launching, opening a link, or opening a file requires a
+resolved `xdg-open`.
+
+Script actions are explicit configuration: each entry declares a resolved
+executable or a `PATH` name, its arguments, a timeout (250 ms–60 s), and an
+output bound (1 KiB–1 MiB). They run without a shell, arguments are passed
+verbatim, output is read on capped reader threads, and a timeout, a missing
+executable, or truncated output is reported as a structured outcome rather than
+a silent truncation. A non-zero exit status is data, not a transport failure.
+
 ### Desktop integration
 
 Kestrel always provides a normal application window. Its optional

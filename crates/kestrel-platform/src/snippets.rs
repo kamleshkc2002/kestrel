@@ -26,9 +26,6 @@ use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "snippets.text";
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
-/// Spawn attempts used when a provider binary is momentarily busy.
-const SPAWN_ATTEMPTS: usize = 5;
-const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertionProvider {
@@ -265,36 +262,18 @@ impl ExecutableInsertionBackend {
     /// bounded retry turns that transient window into a successful insert
     /// instead of a confusing failure.
     fn spawn_provider(&self, text: &str) -> Result<std::process::Child, InsertionError> {
-        let mut last_error = None;
-        for attempt in 0..SPAWN_ATTEMPTS {
-            match Command::new(&self.executable)
-                .args(self.argument_list(text))
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                Ok(child) => return Ok(child),
-                Err(error) => {
-                    let busy = is_text_file_busy(&error);
-                    last_error = Some((error, busy));
-                    if !busy || attempt + 1 == SPAWN_ATTEMPTS {
-                        break;
-                    }
-                    thread::sleep(SPAWN_RETRY_DELAY);
-                }
-            }
-        }
-        let (error, busy) = last_error.expect("a spawn attempt ran");
-        let detail = if busy {
-            format!("{error} (the provider executable was busy)")
-        } else {
-            error.to_string()
-        };
-        Err(InsertionError::new(
-            InsertionErrorKind::SpawnFailed,
-            format!("{} could not be started: {detail}", self.provider.label()),
-        ))
+        let mut command = Command::new(&self.executable);
+        command
+            .args(self.argument_list(text))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::spawn_with_busy_retry(&mut command).map_err(|error| {
+            InsertionError::new(
+                InsertionErrorKind::SpawnFailed,
+                format!("{} could not be started: {error}", self.provider.label()),
+            )
+        })
     }
 
     fn argument_list(&self, text: &str) -> Vec<OsString> {
@@ -558,11 +537,6 @@ impl InsertionError {
     }
 }
 
-/// True when `exec` failed because the binary is open for writing elsewhere.
-pub fn is_text_file_busy(error: &io::Error) -> bool {
-    error.raw_os_error() == Some(libc::ETXTBSY)
-}
-
 /// Reads a path's executable bit, used by callers that validate a configured
 /// provider before using it.
 pub fn is_executable(path: &Path) -> bool {
@@ -779,8 +753,8 @@ mod tests {
         let busy = std::io::Error::from_raw_os_error(libc::ETXTBSY);
         let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
 
-        assert!(super::is_text_file_busy(&busy));
-        assert!(!super::is_text_file_busy(&missing));
+        assert!(crate::is_text_file_busy(&busy));
+        assert!(!crate::is_text_file_busy(&missing));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use kestrel_platform::CapabilityProbe;
 pub mod alerts;
 pub mod audio;
 pub mod clipboard;
+pub mod command_bar;
 
 pub mod quick_toggles;
 pub mod snippets;

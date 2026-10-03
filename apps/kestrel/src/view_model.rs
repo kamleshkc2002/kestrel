@@ -1030,6 +1030,13 @@ pub struct SnippetQuery<'a> {
     pub draft: Option<&'a SnippetDraft>,
 }
 
+/// The window's command bar query state, owned by the application.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandBarQuery<'a> {
+    pub query: &'a str,
+    pub results: &'a [kestrel_services::command_bar::CommandResult],
+}
+
 /// Owned inputs used to construct snippet presentation state.
 pub(crate) struct SnippetsPresentation<'a> {
     pub library: &'a SnippetLibrary,
@@ -1230,6 +1237,252 @@ fn snippet_detail(matched: &SnippetMatch) -> String {
     parts.join(" · ")
 }
 
+/// Owned inputs used to construct command bar presentation state.
+pub(crate) struct CommandBarPresentation<'a> {
+    pub running: bool,
+    pub max_results: u32,
+    pub providers: kestrel_services::command_bar::EnabledProviders,
+    /// Which integration providers are actually usable right now.
+    pub launcher: Option<&'a str>,
+    pub applications: usize,
+    pub file_roots: usize,
+    pub scripts: usize,
+    /// The query and its ranked results, owned by the application.
+    pub query: &'a str,
+    pub results: &'a [kestrel_services::command_bar::CommandResult],
+    pub ranking: &'a kestrel_services::command_bar::CommandRanking,
+    pub warnings: &'a [ConfigurationWarning],
+}
+
+impl Default for CommandBarPresentation<'_> {
+    fn default() -> Self {
+        Self {
+            running: false,
+            max_results: kestrel_core::DEFAULT_COMMAND_RESULTS,
+            providers: kestrel_services::command_bar::EnabledProviders::default(),
+            launcher: None,
+            applications: 0,
+            file_roots: 0,
+            scripts: 0,
+            query: "",
+            results: &[],
+            ranking: &EMPTY_COMMAND_RANKING,
+            warnings: &[],
+        }
+    }
+}
+
+/// A shared empty ranking so a default presentation borrows instead of owning.
+static EMPTY_COMMAND_RANKING: kestrel_services::command_bar::CommandRanking =
+    kestrel_services::command_bar::CommandRanking::EMPTY;
+
+/// Immutable presentation state for the command bar panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandBarViewModel {
+    pub running: bool,
+    pub status: String,
+    pub query: String,
+    pub max_results: u32,
+    pub providers: Vec<CommandProviderViewModel>,
+    pub results: Vec<CommandResultViewModel>,
+    pub ranking_entries: Vec<CommandRankingViewModel>,
+    pub pinned: Vec<String>,
+    pub warnings: Vec<ConfigurationWarningViewModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandProviderViewModel {
+    pub provider: CommandProvider,
+    pub label: &'static str,
+    pub enabled: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandResultViewModel {
+    pub id: String,
+    pub source: &'static str,
+    pub title: String,
+    pub detail: String,
+    pub matched_on: &'static str,
+    pub pinned: bool,
+    pub uses: u32,
+    pub action_label: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRankingViewModel {
+    pub id: String,
+    pub uses: u32,
+    pub pinned: bool,
+}
+
+/// The integration providers the window can switch on or off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandProvider {
+    Applications,
+    Files,
+    Scripts,
+    Emoji,
+}
+
+impl CommandProvider {
+    pub const ALL: [CommandProvider; 4] = [
+        CommandProvider::Applications,
+        CommandProvider::Files,
+        CommandProvider::Scripts,
+        CommandProvider::Emoji,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Applications => "Applications",
+            Self::Files => "Files (configured roots)",
+            Self::Scripts => "Scripts",
+            Self::Emoji => "Emoji",
+        }
+    }
+
+    pub const fn requirement(self) -> &'static str {
+        match self {
+            Self::Applications => "XDG application directories",
+            Self::Files => "At least one configured root; Kestrel never indexes everything",
+            Self::Scripts => "Script definitions in the configuration",
+            Self::Emoji => "Built in",
+        }
+    }
+}
+
+impl CommandBarViewModel {
+    pub(crate) fn from_presentation(presentation: CommandBarPresentation<'_>) -> Self {
+        let launcher = presentation.launcher;
+        let providers = vec![
+            CommandProviderViewModel {
+                provider: CommandProvider::Applications,
+                label: CommandProvider::Applications.label(),
+                enabled: presentation.providers.applications,
+                status: if !presentation.providers.applications {
+                    "Disabled".to_string()
+                } else if launcher.is_none() {
+                    format!(
+                        "{} applications scanned; launching needs xdg-open",
+                        presentation.applications
+                    )
+                } else {
+                    format!("{} applications scanned", presentation.applications)
+                },
+            },
+            CommandProviderViewModel {
+                provider: CommandProvider::Files,
+                label: CommandProvider::Files.label(),
+                enabled: presentation.providers.files,
+                status: if presentation.file_roots == 0 {
+                    "No roots configured; nothing is indexed".to_string()
+                } else {
+                    format!("{} configured roots", presentation.file_roots)
+                },
+            },
+            CommandProviderViewModel {
+                provider: CommandProvider::Scripts,
+                label: CommandProvider::Scripts.label(),
+                enabled: presentation.providers.scripts,
+                status: format!("{} script definitions", presentation.scripts),
+            },
+            CommandProviderViewModel {
+                provider: CommandProvider::Emoji,
+                label: CommandProvider::Emoji.label(),
+                enabled: presentation.providers.emoji,
+                status: "Built in".to_string(),
+            },
+        ];
+
+        let results = presentation
+            .results
+            .iter()
+            .map(|result| CommandResultViewModel {
+                id: result.item.id.clone(),
+                source: result.item.source.label(),
+                title: result.item.title.clone(),
+                detail: result.item.subtitle.clone(),
+                matched_on: result.matched_on,
+                pinned: result.pinned,
+                uses: result.usage,
+                action_label: command_action_label(&result.item.action),
+            })
+            .collect::<Vec<_>>();
+
+        let ranking_entries = presentation
+            .ranking
+            .entries()
+            .into_iter()
+            .map(|(id, uses)| CommandRankingViewModel {
+                pinned: presentation.ranking.is_pinned(&id),
+                id,
+                uses,
+            })
+            .collect::<Vec<_>>();
+
+        Self {
+            running: presentation.running,
+            status: command_bar_status(&presentation, providers.as_slice()),
+            query: presentation.query.to_owned(),
+            max_results: presentation.max_results,
+            providers,
+            results,
+            ranking_entries,
+            pinned: presentation.ranking.pinned_entries(),
+            warnings: presentation
+                .warnings
+                .iter()
+                .map(ConfigurationWarningViewModel::from)
+                .collect(),
+        }
+    }
+}
+
+fn command_action_label(action: &kestrel_services::command_bar::CommandAction) -> &'static str {
+    use kestrel_services::command_bar::CommandAction;
+    match action {
+        CommandAction::Kestrel(_) => "Run",
+        CommandAction::InsertText(_) => "Copy",
+        CommandAction::RunScript { .. } => "Run script",
+        CommandAction::OpenApplication { .. } => "Launch",
+        CommandAction::OpenFile(_) => "Open file",
+        CommandAction::OpenUrl(_) => "Open link",
+    }
+}
+
+fn command_bar_status(
+    presentation: &CommandBarPresentation<'_>,
+    providers: &[CommandProviderViewModel],
+) -> String {
+    if !presentation.running {
+        return "The command bar is not running. Enable commands.bar in the Feature Hub."
+            .to_string();
+    }
+    let enabled = providers.iter().filter(|provider| provider.enabled).count();
+    let mut status = format!(
+        "{} of {} providers enabled · at most {} results",
+        enabled,
+        providers.len(),
+        presentation.max_results
+    );
+    if presentation.launcher.is_none() {
+        status.push_str(" · launching unavailable (no xdg-open)");
+    }
+    if !presentation.ranking.entries().is_empty() {
+        status.push_str(&format!(
+            " · {} learned identifiers, {} pinned",
+            presentation.ranking.entries().len(),
+            presentation.ranking.pinned_entries().len()
+        ));
+    }
+    if let Some(warning) = presentation.warnings.first() {
+        status.push_str(&format!(" · {}", warning.reason));
+    }
+    status
+}
+
 /// Immutable presentation state for the normal Kestrel window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplicationViewModel {
@@ -1238,6 +1491,7 @@ pub struct ApplicationViewModel {
     pub audio: AudioViewModel,
     pub clipboard: ClipboardViewModel,
     pub snippets: SnippetsViewModel,
+    pub command_bar: CommandBarViewModel,
     pub monitor: MonitorViewModel,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub appearance: AppearancePreference,
@@ -1256,6 +1510,7 @@ impl ApplicationViewModel {
         audio: AudioPresentation<'a>,
         clipboard: ClipboardPresentation<'a>,
         snippets: SnippetsPresentation<'a>,
+        command_bar: CommandBarPresentation<'a>,
         monitor: MonitorPresentation<'a>,
         warnings: &[ConfigurationWarning],
         configuration: &ApplicationConfiguration,
@@ -1281,6 +1536,7 @@ impl ApplicationViewModel {
             audio: AudioViewModel::from_presentation(&configuration.audio, audio),
             clipboard: ClipboardViewModel::from_presentation(&configuration.clipboard, clipboard),
             snippets: SnippetsViewModel::from_presentation(snippets),
+            command_bar: CommandBarViewModel::from_presentation(command_bar),
             monitor: MonitorViewModel::from_configuration(&configuration.monitoring, monitor),
             warnings: warnings
                 .iter()
@@ -1665,8 +1921,9 @@ mod tests {
     use super::{
         ApplicationViewModel, AudioPresentation, CapabilityKindViewModel,
         CapabilityStatusViewModel, ClipboardPresentation, ClipboardViewModel,
-        FeatureLifecycleViewModel, FeatureViewModel, MonitorPresentation, MonitorViewModel,
-        SnippetsPresentation, SnippetsViewModel,
+        CommandBarPresentation, CommandBarViewModel, CommandProvider, FeatureLifecycleViewModel,
+        FeatureViewModel, MonitorPresentation, MonitorViewModel, SnippetsPresentation,
+        SnippetsViewModel,
     };
     use kestrel_core::{
         AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec,
@@ -1832,6 +2089,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -1880,6 +2138,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -1937,6 +2196,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2265,6 +2525,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2326,6 +2587,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2412,6 +2674,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2467,6 +2730,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,
@@ -2623,6 +2887,100 @@ mod tests {
         );
     }
 
+    fn command_presentation<'a>(
+        results: &'a [kestrel_services::command_bar::CommandResult],
+        ranking: &'a kestrel_services::command_bar::CommandRanking,
+    ) -> CommandBarPresentation<'a> {
+        CommandBarPresentation {
+            running: true,
+            max_results: 12,
+            providers: kestrel_services::command_bar::EnabledProviders {
+                applications: true,
+                files: false,
+                scripts: true,
+                emoji: true,
+            },
+            launcher: Some("xdg-open"),
+            applications: 42,
+            file_roots: 0,
+            scripts: 2,
+            query: "2+2",
+            results,
+            ranking,
+            warnings: &[],
+        }
+    }
+
+    #[test]
+    fn command_bar_reports_providers_and_results_without_hiding_portable_ones() {
+        let index = kestrel_services::command_bar::CommandIndex::new(Vec::new(), &[]);
+        let ranking = kestrel_services::command_bar::CommandRanking::default();
+        let now = kestrel_platform::snippets::LocalTime {
+            year: 2026,
+            month: 10,
+            day: 2,
+            hour: 9,
+            minute: 5,
+            second: 7,
+            utc_offset_seconds: 7200,
+        };
+        let results = index.search(kestrel_services::command_bar::SearchInput {
+            query: "2+2",
+            max_results: 5,
+            providers: kestrel_services::command_bar::EnabledProviders::default(),
+            applications: &[],
+            files: &[],
+            now: Some(&now),
+            ranking: &ranking,
+            configured_scripts: &[],
+        });
+        let command_bar =
+            CommandBarViewModel::from_presentation(command_presentation(&results, &ranking));
+
+        assert!(command_bar.running);
+        assert_eq!(command_bar.results.len(), 1);
+        assert_eq!(command_bar.results[0].source, "Math");
+        assert_eq!(command_bar.results[0].title, "2+2 = 4");
+        assert_eq!(command_bar.results[0].action_label, "Copy");
+        assert_eq!(command_bar.providers.len(), 4);
+        assert!(
+            command_bar
+                .providers
+                .iter()
+                .any(|provider| provider.provider == CommandProvider::Files && !provider.enabled),
+            "a disabled provider is reported, not hidden"
+        );
+        assert!(
+            command_bar.status.contains("launcher") || command_bar.status.contains("providers")
+        );
+    }
+
+    #[test]
+    fn command_bar_exposes_the_learned_ranking_and_handles_a_missing_launcher() {
+        let mut ranking = kestrel_services::command_bar::CommandRanking::default();
+        ranking.record_use("kestrel:refresh");
+        ranking.record_use("kestrel:refresh");
+        ranking.set_pinned("snippet:Address", true);
+        let mut presentation = command_presentation(&[], &ranking);
+        presentation.launcher = None;
+
+        let command_bar = CommandBarViewModel::from_presentation(presentation);
+
+        assert_eq!(command_bar.ranking_entries.len(), 1);
+        assert_eq!(command_bar.ranking_entries[0].id, "kestrel:refresh");
+        assert_eq!(command_bar.ranking_entries[0].uses, 2);
+        assert_eq!(command_bar.pinned, vec!["snippet:Address".to_string()]);
+        assert!(
+            command_bar.status.contains("no xdg-open"),
+            "a missing launcher is reported while portable commands keep working: {}",
+            command_bar.status
+        );
+        assert!(command_bar.providers.iter().any(|provider| {
+            provider.provider == CommandProvider::Applications
+                && provider.status.contains("needs xdg-open")
+        }));
+    }
+
     #[test]
     fn stopped_clipboard_presentation_points_at_the_feature_hub() {
         let configuration = ApplicationConfiguration::default();
@@ -2649,6 +3007,7 @@ mod tests {
                 draft: None,
                 warnings: &[],
             },
+            CommandBarPresentation::default(),
             MonitorPresentation {
                 snapshot: None,
                 history: None,

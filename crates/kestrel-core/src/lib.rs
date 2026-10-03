@@ -110,6 +110,180 @@ pub const MIN_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 250;
 pub const DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 2_000;
 pub const MAX_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 10_000;
 
+// Command-bar bounds. The bar is keyboard-first and bounded by construction: it
+// never builds a filesystem-wide index, and its learned ranking stores command
+// identifiers and counts only.
+pub const MIN_COMMAND_RESULTS: u32 = 5;
+pub const DEFAULT_COMMAND_RESULTS: u32 = 12;
+pub const MAX_COMMAND_RESULTS: u32 = 50;
+pub const MAX_COMMAND_FILE_ROOTS: usize = 8;
+pub const MAX_COMMAND_FILE_DEPTH: u32 = 4;
+pub const MAX_COMMAND_FILE_ENTRIES: u32 = 2000;
+pub const MAX_COMMAND_SCRIPTS: usize = 16;
+pub const MAX_COMMAND_SCRIPT_ARGS: usize = 16;
+pub const MIN_COMMAND_SCRIPT_TIMEOUT_MILLIS: u64 = 250;
+pub const DEFAULT_COMMAND_SCRIPT_TIMEOUT_MILLIS: u64 = 5_000;
+pub const MAX_COMMAND_SCRIPT_TIMEOUT_MILLIS: u64 = 60_000;
+pub const MIN_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 1024;
+pub const DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 64 * 1024;
+pub const MAX_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 1024 * 1024;
+pub const MAX_COMMAND_USAGE_ENTRIES: usize = 200;
+pub const MAX_COMMAND_ALIAS_CHARS: usize = 32;
+pub const MIN_COMMAND_QUERY_CHARS: usize = 1;
+
+/// One user-configured local script action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandScriptConfiguration {
+    pub name: String,
+    /// An absolute path or a bare executable name resolved on `PATH`.
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default = "default_command_script_timeout")]
+    pub timeout_millis: u64,
+    #[serde(default = "default_command_script_output")]
+    pub output_bytes: u32,
+}
+
+fn default_command_script_timeout() -> u64 {
+    DEFAULT_COMMAND_SCRIPT_TIMEOUT_MILLIS
+}
+
+fn default_command_script_output() -> u32 {
+    DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES
+}
+
+/// User intent for the command bar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandBarConfiguration {
+    #[serde(default = "default_command_results")]
+    pub max_results: u32,
+    #[serde(default = "default_true")]
+    pub enable_applications: bool,
+    /// File search runs only inside the configured roots, never globally.
+    #[serde(default)]
+    pub enable_files: bool,
+    #[serde(default = "default_true")]
+    pub enable_scripts: bool,
+    #[serde(default = "default_true")]
+    pub enable_emoji: bool,
+    #[serde(default)]
+    pub file_roots: Vec<String>,
+    #[serde(default)]
+    pub scripts: Vec<CommandScriptConfiguration>,
+}
+
+fn default_command_results() -> u32 {
+    DEFAULT_COMMAND_RESULTS
+}
+
+impl Default for CommandBarConfiguration {
+    fn default() -> Self {
+        Self {
+            max_results: DEFAULT_COMMAND_RESULTS,
+            enable_applications: true,
+            enable_files: false,
+            enable_scripts: true,
+            enable_emoji: true,
+            file_roots: Vec::new(),
+            scripts: Vec::new(),
+        }
+    }
+}
+
+impl CommandBarConfiguration {
+    /// Validates result bounds, file roots, and script definitions.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_COMMAND_RESULTS..=MAX_COMMAND_RESULTS).contains(&self.max_results) {
+            return Err(ConfigurationError::InvalidCommandResults {
+                results: self.max_results,
+            });
+        }
+        if self.enable_files && self.file_roots.is_empty() {
+            return Err(ConfigurationError::MissingCommandFileRoot);
+        }
+        if self.file_roots.len() > MAX_COMMAND_FILE_ROOTS {
+            return Err(ConfigurationError::TooManyCommandFileRoots {
+                roots: self.file_roots.len(),
+            });
+        }
+        let mut seen_roots: Vec<&str> = Vec::new();
+        for root in &self.file_roots {
+            let trimmed = root.trim();
+            if trimmed.is_empty() || !trimmed.starts_with('/') {
+                return Err(ConfigurationError::InvalidCommandFileRoot { root: root.clone() });
+            }
+            if seen_roots.contains(&trimmed) {
+                return Err(ConfigurationError::DuplicateCommandFileRoot {
+                    root: trimmed.to_string(),
+                });
+            }
+            seen_roots.push(trimmed);
+        }
+        if self.scripts.len() > MAX_COMMAND_SCRIPTS {
+            return Err(ConfigurationError::TooManyCommandScripts {
+                scripts: self.scripts.len(),
+            });
+        }
+        let mut seen_scripts: Vec<&str> = Vec::new();
+        for script in &self.scripts {
+            script.validate()?;
+            let name = script.name.trim();
+            if seen_scripts.contains(&name) {
+                return Err(ConfigurationError::DuplicateCommandScriptName {
+                    name: name.to_string(),
+                });
+            }
+            seen_scripts.push(name);
+        }
+        Ok(())
+    }
+}
+
+impl CommandScriptConfiguration {
+    /// Validates one script definition on its own.
+    ///
+    /// This lets a loader drop a single malformed entry instead of rejecting the
+    /// whole table.
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        let name = self.name.trim();
+        if name.is_empty() || name.chars().count() > MAX_COMMAND_ALIAS_CHARS {
+            return Err(ConfigurationError::InvalidCommandScriptName {
+                name: self.name.clone(),
+            });
+        }
+        let executable = self.executable.trim();
+        let bare_name = !executable.is_empty() && !executable.contains('/');
+        if executable.is_empty() || ((!executable.starts_with('/')) && !bare_name) {
+            return Err(ConfigurationError::InvalidCommandScriptExecutable {
+                executable: self.executable.clone(),
+            });
+        }
+        if self.args.len() > MAX_COMMAND_SCRIPT_ARGS {
+            return Err(ConfigurationError::InvalidCommandScriptArgs {
+                name: name.to_string(),
+            });
+        }
+        if !(MIN_COMMAND_SCRIPT_TIMEOUT_MILLIS..=MAX_COMMAND_SCRIPT_TIMEOUT_MILLIS)
+            .contains(&self.timeout_millis)
+        {
+            return Err(ConfigurationError::InvalidCommandScriptTimeout {
+                name: name.to_string(),
+                millis: self.timeout_millis,
+            });
+        }
+        if !(MIN_COMMAND_SCRIPT_OUTPUT_BYTES..=MAX_COMMAND_SCRIPT_OUTPUT_BYTES)
+            .contains(&self.output_bytes)
+        {
+            return Err(ConfigurationError::InvalidCommandScriptOutput {
+                name: name.to_string(),
+                bytes: self.output_bytes,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// The user's preferred appearance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -252,6 +426,8 @@ pub struct ApplicationConfiguration {
     pub clipboard: ClipboardConfiguration,
     #[serde(default)]
     pub snippets: SnippetConfiguration,
+    #[serde(default)]
+    pub command_bar: CommandBarConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -265,6 +441,7 @@ impl Default for ApplicationConfiguration {
             audio: AudioConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
+            command_bar: CommandBarConfiguration::default(),
         }
     }
 }
@@ -328,6 +505,7 @@ impl ApplicationConfiguration {
         self.audio.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
+        self.command_bar.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
         if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
@@ -1257,6 +1435,18 @@ pub enum ConfigurationError {
     InvalidSnippetContentBytes { bytes: u32 },
     InvalidSnippetClipboardBytes { bytes: u32 },
     InvalidSnippetInsertTimeout { millis: u64 },
+    InvalidCommandResults { results: u32 },
+    MissingCommandFileRoot,
+    TooManyCommandFileRoots { roots: usize },
+    InvalidCommandFileRoot { root: String },
+    DuplicateCommandFileRoot { root: String },
+    TooManyCommandScripts { scripts: usize },
+    InvalidCommandScriptName { name: String },
+    DuplicateCommandScriptName { name: String },
+    InvalidCommandScriptExecutable { executable: String },
+    InvalidCommandScriptArgs { name: String },
+    InvalidCommandScriptTimeout { name: String, millis: u64 },
+    InvalidCommandScriptOutput { name: String, bytes: u32 },
 }
 
 // f64 cannot derive Eq; retaining Eq keeps error matching ergonomic while
