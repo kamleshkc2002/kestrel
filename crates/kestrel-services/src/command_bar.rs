@@ -741,6 +741,9 @@ pub struct EnabledProviders {
     pub files: bool,
     pub scripts: bool,
     pub emoji: bool,
+    /// Snippet results, which depend on the snippet feature being live rather
+    /// than on a command bar setting.
+    pub snippets: bool,
 }
 
 impl Default for EnabledProviders {
@@ -750,6 +753,7 @@ impl Default for EnabledProviders {
             files: false,
             scripts: true,
             emoji: true,
+            snippets: true,
         }
     }
 }
@@ -850,8 +854,10 @@ impl CommandIndex {
         for item in &self.builtins {
             consider(item, 20);
         }
-        for item in &self.snippets {
-            consider(item, 15);
+        if input.providers.snippets {
+            for item in &self.snippets {
+                consider(item, 15);
+            }
         }
         if input.providers.scripts {
             for item in &self.scripts {
@@ -1463,6 +1469,39 @@ mod tests {
         });
         assert_eq!(date[0].item.source, CommandSource::Date);
         assert_eq!(date[0].item.title, "2026-10-03");
+    }
+
+    #[test]
+    fn snippets_are_offered_only_while_their_provider_is_on() {
+        let index = index();
+        let ranking = empty_ranking();
+        let search = |snippets: bool| {
+            index.search(SearchInput {
+                query: "address",
+                max_results: 10,
+                providers: EnabledProviders {
+                    snippets,
+                    ..EnabledProviders::default()
+                },
+                applications: &[],
+                files: &[],
+                now: Some(&NOW),
+                ranking: &ranking,
+                configured_scripts: &[],
+            })
+        };
+
+        assert!(
+            search(true)
+                .iter()
+                .any(|result| result.item.source == CommandSource::Snippet)
+        );
+        assert!(
+            search(false)
+                .iter()
+                .all(|result| result.item.source != CommandSource::Snippet),
+            "a stopped snippet feature contributes no runnable results"
+        );
     }
 
     #[test]

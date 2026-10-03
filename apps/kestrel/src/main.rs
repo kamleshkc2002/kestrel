@@ -106,6 +106,12 @@ impl ControllerState {
     /// Runs one ranked result and records its use.
     fn run_command_result(&mut self, id: &str) -> String {
         use kestrel_services::command_bar::CommandAction;
+        // Results can outlive the feature that produced them (a stale row, a
+        // queued click), so the lifecycle is checked before anything runs.
+        if !self.runtime.command_bar_running() {
+            return "The command bar is not running; enable commands.bar in the Feature Hub"
+                .to_owned();
+        }
         let Some(result) = self
             .command_results
             .iter()
@@ -478,6 +484,10 @@ struct ApplicationController {
     /// Mirrors the clipboard registration so background captures reach the window.
     clipboard_running: Cell<bool>,
     monitor_started_at: Instant,
+    /// The newest command bar query that arrived while another operation was
+    /// running. Typing outpaces the single-operation gate, so only the latest
+    /// text is kept and run when the gate opens.
+    pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
     refresh_results: Sender<RefreshResult>,
     tick_results: Sender<TickUpdate>,
@@ -525,6 +535,7 @@ impl ApplicationController {
             monitor_running: Cell::new(monitor_running),
             clipboard_running: Cell::new(clipboard_running),
             monitor_started_at: Instant::now(),
+            pending_command_query: RefCell::new(None),
             notifier,
             refresh_results,
             tick_results,
@@ -607,8 +618,29 @@ impl ApplicationController {
     }
 
     /// Queues a command bar operation that updates only the command bar.
+    ///
+    /// A query that arrives while another operation runs is remembered rather
+    /// than dropped, and the newest one is run as soon as the gate opens. That
+    /// keeps the rows shown in step with the text in the field.
     fn request_command_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
+        if let ControllerOperation::CommandQuery(query) = &operation {
+            if self.refreshing.get() {
+                *self.pending_command_query.borrow_mut() = Some(query.clone());
+                return;
+            }
+        }
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Commands);
+    }
+
+    /// Runs the query that was held back while the previous operation finished.
+    fn dispatch_pending_command_query(&self) {
+        let Some(query) = self.pending_command_query.borrow_mut().take() else {
+            return;
+        };
+        self.request_command_operation(
+            ControllerOperation::CommandQuery(query),
+            "kestrel-command-query",
+        );
     }
 
     /// Queues a snippet operation that updates only the snippet group.
@@ -637,6 +669,11 @@ impl ApplicationController {
     }
 
     fn finish_refresh(&self, result: RefreshResult) {
+        self.apply_refresh_result(result);
+        self.dispatch_pending_command_query();
+    }
+
+    fn apply_refresh_result(&self, result: RefreshResult) {
         self.refreshing.set(false);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {

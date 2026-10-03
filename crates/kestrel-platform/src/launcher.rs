@@ -10,9 +10,10 @@ use std::{
     ffi::OsStr,
     fmt,
     io::Read,
-    os::unix::fs::PermissionsExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
@@ -22,6 +23,11 @@ use kestrel_core::CommandScriptConfiguration;
 use crate::applications::resolve_executable;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// How long output readers get to reach end-of-file after the script exits.
+///
+/// A descendant that inherited the output pipes keeps them open past the
+/// script's own exit; this bound keeps that from stalling the caller.
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptErrorKind {
@@ -87,13 +93,17 @@ pub fn run_script(
         .args(&script.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // A dedicated process group lets a timeout end the script together
+        // with every descendant it started.
+        .process_group(0);
     let mut child = crate::spawn_with_busy_retry(&mut command).map_err(|error| {
         ScriptError::new(
             ScriptErrorKind::SpawnFailed,
             format!("{} could not be started: {error}", script.name),
         )
     })?;
+    let group = child.id() as libc::pid_t;
 
     // Output is read on dedicated threads with a hard cap, so a chatty script
     // cannot exhaust memory and cannot deadlock the exit-status wait.
@@ -110,8 +120,7 @@ pub fn run_script(
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                terminate(&mut child, group);
                 return Err(ScriptError::new(
                     ScriptErrorKind::Failed,
                     format!("{} could not be waited for: {error}", script.name),
@@ -119,8 +128,7 @@ pub fn run_script(
             }
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate(&mut child, group);
             return Err(ScriptError::new(
                 ScriptErrorKind::TimedOut,
                 format!(
@@ -132,8 +140,23 @@ pub fn run_script(
         thread::sleep(POLL_INTERVAL);
     };
 
-    let (stdout, stdout_truncated) = join_reader(stdout_reader);
-    let (stderr, stderr_truncated) = join_reader(stderr_reader);
+    // The script has exited, but a descendant may still hold the output pipes.
+    // Readers get a short, fixed window; past it the group is ended and the run
+    // is reported as bounded rather than waited on indefinitely.
+    let drain_deadline = Instant::now() + OUTPUT_DRAIN_GRACE;
+    let stdout = collect_output(stdout_reader, drain_deadline);
+    let stderr = collect_output(stderr_reader, drain_deadline);
+    let (Some((stdout, stdout_truncated)), Some((stderr, stderr_truncated))) = (stdout, stderr)
+    else {
+        kill_group(group);
+        return Err(ScriptError::new(
+            ScriptErrorKind::TimedOut,
+            format!(
+                "{} left a background process holding its output open and was stopped",
+                script.name
+            ),
+        ));
+    };
 
     Ok(ScriptOutcome {
         name: script.name.clone(),
@@ -147,13 +170,34 @@ pub fn run_script(
     })
 }
 
-type BoundedReader = thread::JoinHandle<(String, bool)>;
+type BoundedReader = Receiver<(String, bool)>;
+
+/// Ends the script's whole process group and reaps its leader.
+fn terminate(child: &mut Child, group: libc::pid_t) {
+    kill_group(group);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Sends `SIGKILL` to every member of a script's process group.
+fn kill_group(group: libc::pid_t) {
+    // SAFETY: `kill` has no memory-safety preconditions. The negative id
+    // addresses the process group created for this script, and a group with no
+    // members simply yields `ESRCH`, which is ignored.
+    unsafe {
+        libc::kill(-group, libc::SIGKILL);
+    }
+}
 
 fn spawn_bounded_reader<R: Read + Send + 'static>(pipe: R, limit: usize) -> BoundedReader {
+    let (sender, receiver) = mpsc::channel();
     thread::Builder::new()
         .name("kestrel-script-output".to_string())
-        .spawn(move || read_bounded(pipe, limit))
-        .expect("spawning an output reader cannot fail at this size")
+        .spawn(move || {
+            let _ = sender.send(read_bounded(pipe, limit));
+        })
+        .expect("spawning an output reader cannot fail at this size");
+    receiver
 }
 
 fn read_bounded<R: Read>(mut pipe: R, limit: usize) -> (String, bool) {
@@ -185,10 +229,14 @@ fn read_bounded<R: Read>(mut pipe: R, limit: usize) -> (String, bool) {
     (String::from_utf8_lossy(&collected).into_owned(), truncated)
 }
 
-fn join_reader(reader: Option<BoundedReader>) -> (String, bool) {
-    match reader {
-        Some(handle) => handle.join().unwrap_or_else(|_| (String::new(), false)),
-        None => (String::new(), false),
+/// Waits for one reader until `deadline`; `None` means the pipe stayed open.
+fn collect_output(reader: Option<BoundedReader>, deadline: Instant) -> Option<(String, bool)> {
+    let receiver = reader?;
+    match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(output) => Some(output),
+        Err(RecvTimeoutError::Timeout) => None,
+        // A reader that ended without a result has nothing to report.
+        Err(RecvTimeoutError::Disconnected) => Some((String::new(), false)),
     }
 }
 
@@ -279,7 +327,11 @@ pub fn is_executable(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
 
     use tempfile::TempDir;
 
@@ -397,6 +449,92 @@ mod tests {
         )
         .expect_err("a slow script times out");
         assert_eq!(error.kind, ScriptErrorKind::TimedOut);
+    }
+
+    /// True once a process has exited; a zombie awaiting reaping counts as gone.
+    fn process_is_gone(pid: i32) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.trim_start().chars().next())
+                .is_none_or(|state| state == 'Z'),
+        }
+    }
+
+    #[test]
+    fn a_timeout_ends_the_script_and_every_descendant() {
+        let dir = TempDir::new().expect("temp dir");
+        let pid_file = dir.path().join("descendant.pid");
+        let executable = script(
+            &dir,
+            "spawner",
+            &format!(
+                "#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n",
+                pid_file.display()
+            ),
+        );
+        let path_env = std::ffi::OsString::from(dir.path().as_os_str());
+
+        let started = Instant::now();
+        let error = run_script(
+            &configuration(
+                "Spawner",
+                executable.to_str().unwrap(),
+                Vec::new(),
+                400,
+                1_024,
+            ),
+            Some(&path_env),
+        )
+        .expect_err("the script times out");
+
+        assert_eq!(error.kind, ScriptErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the timeout does not wait for the descendant"
+        );
+        let pid: i32 = fs::read_to_string(&pid_file)
+            .expect("the script recorded its descendant")
+            .trim()
+            .parse()
+            .expect("the recorded id is a number");
+        let mut gone = false;
+        for _ in 0..100 {
+            if process_is_gone(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "the descendant must not outlive the timed-out script");
+    }
+
+    #[test]
+    fn a_descendant_holding_the_output_open_cannot_stall_the_caller() {
+        let dir = TempDir::new().expect("temp dir");
+        let executable = script(&dir, "leaver", "#!/bin/sh\nsleep 30 &\nexit 0\n");
+        let path_env = std::ffi::OsString::from(dir.path().as_os_str());
+
+        let started = Instant::now();
+        let error = run_script(
+            &configuration(
+                "Leaver",
+                executable.to_str().unwrap(),
+                Vec::new(),
+                20_000,
+                1_024,
+            ),
+            Some(&path_env),
+        )
+        .expect_err("a script that leaves its output open is stopped");
+
+        assert_eq!(error.kind, ScriptErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "output collection is bounded, not tied to the descendant: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

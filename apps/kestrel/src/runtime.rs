@@ -15,7 +15,8 @@ use kestrel_core::{
 use kestrel_platform::{
     CapabilityProbe, StaticCapabilityProbe,
     applications::{
-        ApplicationEntry, ExternalLauncher, application_directories, scan_applications,
+        ApplicationEntry, ExternalLauncher, application_directories, launch_desktop_entry,
+        scan_applications,
     },
     audio::{FEATURE_ID as AUDIO_MIXER_ID, PulseAudioBackend},
     clipboard::{
@@ -138,6 +139,12 @@ impl CapabilityProbe for CommandBarProbe {
         let launcher = ExternalLauncher::discover();
         let roots = self.configuration.file_roots.len();
         let scripts = self.configuration.scripts.len();
+        // Entries that ask for a terminal are launched through GIO, which finds
+        // the terminal emulator; the count is reported so it is visible.
+        let terminal_entries = applications
+            .iter()
+            .filter(|application| application.terminal)
+            .count();
 
         let mut report = CapabilityReport::new(
             COMMAND_BAR_ID,
@@ -168,6 +175,10 @@ impl CapabilityProbe for CommandBarProbe {
             applications.len().to_string(),
         ))
         .with_evidence(CapabilityEvidence::new(
+            "terminal_applications",
+            terminal_entries.to_string(),
+        ))
+        .with_evidence(CapabilityEvidence::new(
             "launch_handler",
             launcher
                 .as_ref()
@@ -179,8 +190,9 @@ impl CapabilityProbe for CommandBarProbe {
 
         if launcher.is_err() {
             report = report.with_remediation(
-                "Install xdg-open to launch links and applications from the command bar. \
-                 Commands that only use Kestrel data keep working without it.",
+                "Install xdg-open to open links and files from the command bar. Applications \
+                 launch through the desktop's own launcher, and commands that only use \
+                 Kestrel data keep working without it.",
             );
         }
         if self.configuration.enable_files && roots == 0 {
@@ -857,6 +869,9 @@ impl ApplicationRuntime {
                 && !configuration.command_bar.file_roots.is_empty(),
             scripts: configuration.command_bar.enable_scripts,
             emoji: configuration.command_bar.enable_emoji,
+            // Snippet results follow the snippet feature's lifecycle at search
+            // time, not a command bar setting.
+            snippets: true,
         }
     }
 
@@ -902,12 +917,34 @@ impl ApplicationRuntime {
             .any(|registration| registration.feature.id == COMMAND_BAR_ID && registration.running)
     }
 
+    /// Fails unless the command bar registration is running.
+    ///
+    /// Every command bar effect passes through this, so a disabled or
+    /// unavailable feature cannot be driven by a stale or forged request.
+    fn require_command_bar(&self) -> Result<(), String> {
+        if self.command_bar_running() {
+            Ok(())
+        } else {
+            Err("the command bar is not running; enable commands.bar in the Feature Hub".to_owned())
+        }
+    }
+
     /// Ranks the catalog for one query, gathering bounded file results first.
+    ///
+    /// A command bar that is not running returns nothing, and snippet results
+    /// appear only while the snippet feature is running too.
     pub fn command_search<'a>(
         &'a self,
         query: &str,
         now: &'a kestrel_platform::snippets::LocalTime,
     ) -> Vec<CommandResult> {
+        if !self.command_bar_running() {
+            return Vec::new();
+        }
+        let providers = EnabledProviders {
+            snippets: self.snippets_running(),
+            ..self.command_providers
+        };
         // File results are gathered only when the provider is on and roots are
         // configured; the walk itself is bounded by depth and entry budget.
         let files = if self.command_providers.files {
@@ -924,7 +961,7 @@ impl ApplicationRuntime {
         self.command_index.search(SearchInput {
             query,
             max_results: self.command_max_results,
-            providers: self.command_providers,
+            providers,
             applications: &self.command_application_items,
             files: &files,
             now: Some(now),
@@ -941,6 +978,7 @@ impl ApplicationRuntime {
 
     /// Pins or unpins a command and persists the learned ranking.
     pub fn set_command_pinned(&mut self, id: &str, pinned: bool) -> Result<(), String> {
+        self.require_command_bar()?;
         self.command_ranking.set_pinned(id, pinned);
         self.persist_command_ranking()
     }
@@ -965,6 +1003,7 @@ impl ApplicationRuntime {
     /// Reading and writing share one connection, so a copy from the command bar
     /// never disturbs the clipboard history service's ownership.
     pub fn copy_to_clipboard(&mut self, text: &str) -> Result<(), String> {
+        self.require_command_bar()?;
         let backend = self
             .session_clipboard
             .as_mut()
@@ -974,6 +1013,7 @@ impl ApplicationRuntime {
 
     /// Runs one configured script action.
     pub fn run_command_script(&self, index: usize) -> Result<ScriptOutcome, String> {
+        self.require_command_bar()?;
         let script = self
             .command_scripts
             .get(index)
@@ -982,23 +1022,22 @@ impl ApplicationRuntime {
         run_script(script, path_env.as_deref()).map_err(|error| error.to_string())
     }
 
-    /// Launches one scanned application.
+    /// Launches one scanned application through the desktop's own launcher.
+    ///
+    /// GIO applies the entry's `Terminal=true`, `TryExec` and `Exec` field-code
+    /// rules, so this does not depend on `xdg-open` being installed.
     pub fn launch_command_application(&self, index: usize) -> Result<(), String> {
+        self.require_command_bar()?;
         let application = self
             .command_applications
             .get(index)
             .ok_or_else(|| format!("application {index} is no longer available"))?;
-        let launcher = self
-            .command_launcher
-            .as_ref()
-            .ok_or_else(|| "no desktop open handler is available".to_string())?;
-        launcher
-            .launch(&application.command)
-            .map_err(|error| error.to_string())
+        launch_desktop_entry(application).map_err(|error| error.to_string())
     }
 
     /// Opens a link, file, or directory with the desktop handler.
     pub fn open_command_target(&self, target: &str) -> Result<(), String> {
+        self.require_command_bar()?;
         let launcher = self
             .command_launcher
             .as_ref()
@@ -1051,38 +1090,56 @@ impl ApplicationRuntime {
     }
 
     /// Saves or replaces a snippet and persists the library.
+    ///
+    /// The change is applied to a copy and written first; the live library and
+    /// the command catalog change only once the write succeeded, so a failed
+    /// save cannot leave a rejected edit active or be persisted later by an
+    /// unrelated save.
     pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), String> {
-        self.snippet_library
+        let mut candidate = self.snippet_library.clone();
+        candidate
             .upsert(snippet, self.snippet_policy)
             .map_err(|error| error.to_string())?;
+        self.persist_snippets(&candidate)?;
+        self.snippet_library = candidate;
         self.rebuild_command_index();
-        self.persist_snippets()
+        Ok(())
     }
 
     /// Removes a snippet and persists the library.
+    ///
+    /// Like a save, the removal only takes effect once the write succeeded.
     pub fn delete_snippet(&mut self, name: &str) -> Result<(), String> {
-        self.snippet_library
-            .remove(name)
-            .map_err(|error| error.to_string())?;
+        let mut candidate = self.snippet_library.clone();
+        candidate.remove(name).map_err(|error| error.to_string())?;
+        self.persist_snippets(&candidate)?;
+        self.snippet_library = candidate;
         self.rebuild_command_index();
-        self.persist_snippets()
+        Ok(())
     }
 
-    fn persist_snippets(&self) -> Result<(), String> {
+    fn persist_snippets(&self, library: &SnippetLibrary) -> Result<(), String> {
         let Some(path) = self.snippet_path.as_deref() else {
             return Err(
                 "no writable snippet file is available; set XDG_DATA_HOME or HOME".to_owned(),
             );
         };
-        save_snippets(path, &self.snippet_library, self.snippet_policy)
-            .map_err(|error| error.to_string())
+        save_snippets(path, library, self.snippet_policy).map_err(|error| error.to_string())
     }
 
     /// Renders one snippet and types it, if a provider is verified.
     ///
     /// The clipboard variable is read here, once, through a read-only
     /// connection, and the render clips it to the configured bound.
+    ///
+    /// Insertion types into another application, so it is refused unless the
+    /// snippet feature is running, whichever surface requested it.
     pub fn insert_snippet(&mut self, name: &str) -> Result<InsertionReport, SnippetServiceError> {
+        if !self.snippets_running() {
+            return Err(SnippetServiceError::ExpansionUnavailable {
+                reason: "snippets.text is not running; enable it in the Feature Hub".to_owned(),
+            });
+        }
         let snippet = self.snippet_library.get(name).cloned().ok_or_else(|| {
             SnippetServiceError::ExpansionUnavailable {
                 reason: format!("no snippet named \"{name}\" is stored"),
@@ -1288,6 +1345,18 @@ mod tests {
         clipboard::{ClipboardCommand, ClipboardLifecycle},
     };
     use std::time::Duration;
+
+    use super::COMMAND_BAR_ID;
+    use kestrel_core::Snippet;
+    use kestrel_platform::{
+        applications::ApplicationEntry,
+        snippets::{Clock, SystemClock},
+    };
+    use kestrel_services::{
+        command_bar::{CommandAction, CommandSource},
+        snippets::{SnippetLibrary, SnippetServiceError},
+    };
+    use tempfile::TempDir;
 
     #[test]
     fn startup_keeps_unavailable_features_visible() {
@@ -1522,5 +1591,206 @@ mod tests {
             .expect("preset undo applies");
 
         assert_eq!(configuration.features, original_features);
+    }
+
+    fn application(id: &str, name: &str, terminal: bool) -> ApplicationEntry {
+        ApplicationEntry {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            comment: None,
+            command: vec![name.to_lowercase()],
+            terminal,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn a_disabled_command_bar_neither_searches_nor_acts() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+        let now = SystemClock.local_time();
+
+        assert!(!runtime.command_bar_running());
+        assert!(
+            runtime.command_search("refresh", &now).is_empty(),
+            "a stopped command bar ranks nothing"
+        );
+        for error in [
+            runtime
+                .run_command_script(0)
+                .expect_err("scripts are gated"),
+            runtime
+                .launch_command_application(0)
+                .expect_err("launching is gated"),
+            runtime
+                .open_command_target("https://example.com")
+                .expect_err("opening is gated"),
+            runtime
+                .copy_to_clipboard("value")
+                .expect_err("copying is gated"),
+            runtime
+                .set_command_pinned("kestrel:refresh", true)
+                .expect_err("pinning is gated"),
+        ] {
+            assert!(error.contains("not running"), "unexpected error: {error}");
+        }
+        assert!(
+            !runtime.command_ranking().is_pinned("kestrel:refresh"),
+            "a refused pin leaves the ranking untouched"
+        );
+    }
+
+    #[test]
+    fn an_enabled_command_bar_ranks_but_hides_snippets_while_they_are_stopped() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(COMMAND_BAR_ID, true)
+            .expect("feature ID is valid");
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+        let now = SystemClock.local_time();
+        assert!(runtime.command_bar_running());
+        assert!(!runtime.snippets_running());
+
+        runtime
+            .snippet_library
+            .upsert(
+                Snippet::new("Zq Greeting", None, None, "hello"),
+                runtime.snippet_policy,
+            )
+            .expect("snippet is valid");
+        runtime.rebuild_command_index();
+
+        assert!(
+            runtime
+                .command_search("refresh", &now)
+                .iter()
+                .any(|result| result.item.id == "kestrel:refresh"),
+            "portable commands answer while the bar runs"
+        );
+        assert!(
+            runtime
+                .command_search("zq greeting", &now)
+                .iter()
+                .all(|result| result.item.source != CommandSource::Snippet),
+            "a stopped snippet feature offers nothing to run"
+        );
+    }
+
+    #[test]
+    fn snippet_insertion_requires_the_running_feature() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+        runtime
+            .snippet_library
+            .upsert(
+                Snippet::new("Greeting", None, None, "hello"),
+                runtime.snippet_policy,
+            )
+            .expect("snippet is valid");
+
+        let error = runtime
+            .insert_snippet("Greeting")
+            .expect_err("a stopped feature must not type text");
+
+        assert!(matches!(
+            &error,
+            SnippetServiceError::ExpansionUnavailable { reason } if reason.contains("not running")
+        ));
+    }
+
+    #[test]
+    fn applications_that_need_a_terminal_are_offered_and_launched_through_their_desktop_file() {
+        let entries = vec![
+            application("top.desktop", "Top", true),
+            application("editor.desktop", "Editor", false),
+        ];
+
+        let items = ApplicationRuntime::application_items(&entries);
+
+        assert_eq!(
+            items.len(),
+            2,
+            "terminal entries are offered like any other"
+        );
+        assert_eq!(
+            items[0].action,
+            CommandAction::OpenApplication { index: 0 },
+            "items address the scanned list"
+        );
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(COMMAND_BAR_ID, true)
+            .expect("feature ID is valid");
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+        // An entry that was never read from a desktop file has nothing for GIO to
+        // launch; the failure is reported rather than started some other way.
+        runtime.command_applications = entries;
+        let error = runtime
+            .launch_command_application(0)
+            .expect_err("an entry without a desktop file cannot launch");
+        assert!(error.contains("no desktop file"), "{error}");
+        assert!(
+            runtime
+                .launch_command_application(9)
+                .expect_err("unknown index")
+                .contains("no longer available")
+        );
+    }
+
+    #[test]
+    fn a_failed_snippet_write_leaves_the_library_unchanged() {
+        let dir = TempDir::new().expect("temp dir");
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "a regular file").expect("blocker is written");
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.snippet_library = SnippetLibrary::default();
+        runtime
+            .snippet_library
+            .upsert(
+                Snippet::new("Keep", None, None, "kept"),
+                runtime.snippet_policy,
+            )
+            .expect("snippet is valid");
+        // The parent of this path is a regular file, so every write fails.
+        runtime.snippet_path = Some(blocker.join("snippets.toml"));
+
+        runtime
+            .save_snippet(Snippet::new("Rejected", None, None, "nope"))
+            .expect_err("the write fails");
+        assert!(
+            runtime.snippet_library().get("Rejected").is_none(),
+            "a snippet that was not saved must not stay active"
+        );
+
+        runtime.delete_snippet("Keep").expect_err("the write fails");
+        assert!(
+            runtime.snippet_library().get("Keep").is_some(),
+            "a snippet that was not deleted must stay"
+        );
+
+        // Once the store is writable the same operations take effect and persist.
+        let path = dir.path().join("data/snippets.toml");
+        runtime.snippet_path = Some(path.clone());
+        runtime
+            .save_snippet(Snippet::new("Greeting", None, None, "hello"))
+            .expect("the save succeeds");
+        let reloaded = crate::load_snippets(&path, runtime.snippet_policy());
+        assert!(reloaded.warnings.is_empty());
+        assert_eq!(reloaded.library.names(), vec!["Keep", "Greeting"]);
+
+        runtime.delete_snippet("Keep").expect("the delete succeeds");
+        assert!(runtime.snippet_library().get("Keep").is_none());
+        assert_eq!(
+            crate::load_snippets(&path, runtime.snippet_policy())
+                .library
+                .names(),
+            vec!["Greeting"]
+        );
     }
 }
