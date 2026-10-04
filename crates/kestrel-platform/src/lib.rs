@@ -1,8 +1,6 @@
-//! Narrow, dependency-light seams for future Linux session and OS adapters.
-//!
-//! This crate translates runtime facts into `kestrel-core` values. It does not
-//! define product policy, own GTK widgets, or introduce a particular
-//! display-server, D-Bus, portal, audio, or async-runtime implementation.
+//! Dependency-light seams for Linux session and OS adapters.
+//! Translates runtime facts into `kestrel-core` values while leaving product policy,
+//! UI, display server, bus, portal, audio, and async runtime to callers.
 
 use kestrel_core::CapabilityReport;
 pub mod applications;
@@ -16,21 +14,16 @@ pub mod snippets;
 pub mod speed_test;
 pub mod system_monitor;
 
-/// How many times a spawn is retried when the executable is momentarily busy.
+/// Number of retries while an executable is momentarily busy.
 const SPAWN_ATTEMPTS: usize = 5;
 const SPAWN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
 
-/// True when `exec` failed because the binary is open for writing elsewhere.
-///
-/// A package manager replacing a provider binary produces exactly this window.
+/// Whether `exec` failed because another process is writing the binary.
 pub fn is_text_file_busy(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(libc::ETXTBSY)
 }
 
-/// Spawns a command, retrying briefly while the executable is busy.
-///
-/// Every adapter that starts a resolved executable goes through this, so a
-/// transient `ETXTBSY` becomes a successful run rather than a confusing failure.
+/// Spawns a command, retrying briefly on `ETXTBSY`.
 pub(crate) fn spawn_with_busy_retry(
     command: &mut std::process::Command,
 ) -> std::io::Result<std::process::Child> {
@@ -47,22 +40,21 @@ pub(crate) fn spawn_with_busy_retry(
     }
 }
 
-/// Produces a non-interactive capability report for one feature adapter.
+/// Produces a non-interactive capability report for one adapter.
 ///
-/// Concrete implementations may inspect a user session only when their
-/// feature-specific Phase 1 work has selected and validated that adapter.
+/// Session inspection occurs only after feature-specific adapter validation.
 pub trait CapabilityProbe: Send {
     fn probe(&self) -> CapabilityReport;
 }
 
-/// A fixed report useful for composition tests and unsupported adapter paths.
+/// Fixed report for composition tests and unsupported adapters.
 #[derive(Debug, Clone)]
 pub struct StaticCapabilityProbe {
     report: CapabilityReport,
 }
 
 impl StaticCapabilityProbe {
-    /// Creates a probe that returns the supplied report without performing I/O.
+    /// Returns the supplied report with no I/O.
     pub fn new(report: CapabilityReport) -> Self {
         Self { report }
     }

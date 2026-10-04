@@ -1,8 +1,5 @@
-//! Bounded local script actions and root-scoped file search.
-//!
-//! Scripts run with a resolved executable, no shell, a timeout, and a bounded
-//! output capture. File search only walks the roots a user configured, with a
-//! depth and entry budget, so the bar never builds a filesystem-wide index.
+//! Bounded local scripts and root-scoped file search.
+//! Scripts use resolved executables, no shell, timeouts, and bounded output.
 
 use std::{
     env,
@@ -23,15 +20,14 @@ use kestrel_core::CommandScriptConfiguration;
 use crate::applications::resolve_executable;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2);
-/// How long output readers get to reach end-of-file after the script exits.
+/// Grace period for output readers after script exit.
 ///
-/// A descendant that inherited the output pipes keeps them open past the
-/// script's own exit; this bound keeps that from stalling the caller.
+/// Descendants may retain pipes; this bound prevents indefinite stalls.
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptErrorKind {
-    /// The configured executable could not be resolved.
+    /// Configured executable resolution failed.
     MissingExecutable,
     SpawnFailed,
     TimedOut,
@@ -62,14 +58,14 @@ impl fmt::Display for ScriptError {
 
 impl Error for ScriptError {}
 
-/// The bounded result of one script run.
+/// Bounded result of one script run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptOutcome {
     pub name: String,
     pub executable: PathBuf,
     pub exit_code: Option<i32>,
     pub stdout: String,
-    /// True when output reached the configured byte bound.
+    /// Whether output reached its byte bound.
     pub stdout_truncated: bool,
     pub stderr: String,
     pub stderr_truncated: bool,
@@ -94,8 +90,7 @@ pub fn run_script(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // A dedicated process group lets a timeout end the script together
-        // with every descendant it started.
+        // A process group lets timeout terminate all descendants.
         .process_group(0);
     let mut child = crate::spawn_with_busy_retry(&mut command).map_err(|error| {
         ScriptError::new(
@@ -105,8 +100,7 @@ pub fn run_script(
     })?;
     let group = child.id() as libc::pid_t;
 
-    // Output is read on dedicated threads with a hard cap, so a chatty script
-    // cannot exhaust memory and cannot deadlock the exit-status wait.
+    // Dedicated readers cap output and avoid blocking the exit-status wait.
     let limit = script.output_bytes as usize;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -140,9 +134,7 @@ pub fn run_script(
         thread::sleep(POLL_INTERVAL);
     };
 
-    // The script has exited, but a descendant may still hold the output pipes.
-    // Readers get a short, fixed window; past it the group is ended and the run
-    // is reported as bounded rather than waited on indefinitely.
+    // Descendants may retain pipes; drain briefly, then stop the group.
     let drain_deadline = Instant::now() + OUTPUT_DRAIN_GRACE;
     let stdout = collect_output(stdout_reader, drain_deadline);
     let stderr = collect_output(stderr_reader, drain_deadline);
@@ -172,18 +164,16 @@ pub fn run_script(
 
 type BoundedReader = Receiver<(String, bool)>;
 
-/// Ends the script's whole process group and reaps its leader.
+/// Ends the whole process group and reaps its leader.
 fn terminate(child: &mut Child, group: libc::pid_t) {
     kill_group(group);
     let _ = child.kill();
     let _ = child.wait();
 }
 
-/// Sends `SIGKILL` to every member of a script's process group.
+/// Sends `SIGKILL` to every member of a process group.
 fn kill_group(group: libc::pid_t) {
-    // SAFETY: `kill` has no memory-safety preconditions. The negative id
-    // addresses the process group created for this script, and a group with no
-    // members simply yields `ESRCH`, which is ignored.
+    // SAFETY: The negative ID targets this run's process group; `ESRCH` is harmless.
     unsafe {
         libc::kill(-group, libc::SIGKILL);
     }
@@ -212,7 +202,7 @@ fn read_bounded<R: Read>(mut pipe: R, limit: usize) -> (String, bool) {
                     let remaining = limit.saturating_sub(collected.len());
                     collected.extend_from_slice(&chunk[..remaining]);
                     truncated = true;
-                    // Drain the rest so the child is never blocked on a full pipe.
+                    // Drain remaining bytes so the child can finish despite a full pipe.
                     let mut discard = [0u8; 4096];
                     while pipe
                         .read(&mut discard)
@@ -235,17 +225,13 @@ fn collect_output(reader: Option<BoundedReader>, deadline: Instant) -> Option<(S
     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(output) => Some(output),
         Err(RecvTimeoutError::Timeout) => None,
-        // A reader that ended without a result has nothing to report.
         Err(RecvTimeoutError::Disconnected) => Some((String::new(), false)),
     }
 }
 
-/// Finds files under the configured roots whose name contains `query`.
+/// Finds bounded, shallow files under configured roots.
 ///
-/// The walk is breadth-first and bounded by depth, by the number of entries
-/// visited, and by the number of matches returned; symlinked directories are not
-/// followed and hidden directories are skipped, so the search stays predictable
-/// and cannot loop.
+/// Breadth-first traversal skips hidden and symlinked directories and is deterministic.
 pub fn search_roots(
     roots: &[PathBuf],
     query: &str,
@@ -257,7 +243,7 @@ pub fn search_roots(
     if needle.is_empty() || max_matches == 0 {
         return Vec::new();
     }
-    // Matches keep their depth so nearer files can be offered first.
+    // Preserve depth so nearer matches sort first.
     let mut matches: Vec<(u32, PathBuf)> = Vec::new();
     let mut visited = 0u32;
     let mut queue: Vec<(PathBuf, u32)> = roots
@@ -295,30 +281,29 @@ pub fn search_roots(
             }
         }
         children.sort();
-        // Depth-first order over a stable, sorted child list keeps output
-        // deterministic without recursion.
+        // Sorted children keep traversal deterministic with iterative traversal.
         for child in children.into_iter().rev() {
             queue.push((child, depth + 1));
         }
     }
 
-    // Nearer files first, then lexicographic order, so the list is stable.
+    // Nearer files first, then lexicographic order.
     matches.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     matches.truncate(max_matches);
     matches.into_iter().map(|(_, path)| path).collect()
 }
 
-/// Resolves the environment's `PATH` for script runs.
+/// Returns the process `PATH` used for script runs.
 pub fn process_path() -> Option<std::ffi::OsString> {
     env::var_os("PATH")
 }
 
-/// Validates that a configured root exists and is a directory.
+/// Whether a configured root is an existing directory.
 pub fn root_is_usable(root: &Path) -> bool {
     root.is_dir() && root.metadata().map(|m| m.is_dir()).unwrap_or(false)
 }
 
-/// True when a path is executable by this user.
+/// Whether this user can execute a path.
 pub fn is_executable(path: &Path) -> bool {
     path.metadata()
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -451,7 +436,7 @@ mod tests {
         assert_eq!(error.kind, ScriptErrorKind::TimedOut);
     }
 
-    /// True once a process has exited; a zombie awaiting reaping counts as gone.
+    /// Whether a process has exited; zombies awaiting reaping count as gone.
     fn process_is_gone(pid: i32) -> bool {
         match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Err(_) => true,

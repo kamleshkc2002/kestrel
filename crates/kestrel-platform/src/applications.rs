@@ -1,10 +1,5 @@
-//! Desktop-entry discovery and external launching, without a shell.
-//!
-//! Only the standard XDG application directories are read, and only the fields
-//! the bar needs; nothing is indexed globally and no command line is ever passed
-//! through a shell. Applications are started through GIO's desktop-entry
-//! support, which understands `Terminal=true`, the `Exec` field codes, and
-//! `TryExec`, so Kestrel does not reimplement the desktop-entry specification.
+//! Desktop-entry discovery and launching through GIO.
+//! XDG directories and GIO provide direct command launching.
 
 use std::{
     env,
@@ -30,14 +25,10 @@ pub struct ApplicationEntry {
     pub id: String,
     pub name: String,
     pub comment: Option<String>,
-    /// The parsed command line: program plus arguments, never a shell string.
+    /// The parsed command line contains the program and its arguments.
     pub command: Vec<String>,
-    /// Whether the entry asks to run inside a terminal (`Terminal=true`).
     pub terminal: bool,
-    /// The desktop file this entry was read from, set by `scan_applications`.
-    ///
-    /// Launching goes through this file rather than the parsed command line, so
-    /// the desktop's own rules (terminal wrapping, field codes) apply.
+    /// Launching uses this file so GIO applies desktop-entry rules.
     pub source: Option<PathBuf>,
 }
 
@@ -99,12 +90,7 @@ pub fn application_directories(
     roots
 }
 
-/// Scans the XDG application directories for launchable entries.
-///
-/// Entries marked hidden, non-displayable, or without a command line are
-/// skipped, and the earlier directory wins for a duplicated identifier. The scan
-/// stops at `MAX_APPLICATION_FILES` visited files and returns at most
-/// `MAX_APPLICATIONS` entries in a stable order.
+/// Scans XDG directories with duplicate, file, and result bounds.
 pub fn scan_applications(roots: &[PathBuf]) -> Vec<ApplicationEntry> {
     let mut entries: Vec<ApplicationEntry> = Vec::new();
     let mut visited = 0usize;
@@ -203,14 +189,8 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
     })
 }
 
-/// Launches a scanned application through GIO's desktop-entry support.
-///
-/// GIO honours `Terminal=true` by wrapping the command in a terminal emulator
-/// it can find, expands the `Exec` field codes (none of which carry arguments
-/// here), and refuses an entry whose `TryExec` program is missing. The child is
-/// detached by GIO; nothing is waited for and no shell interprets arguments.
-/// A failure, including "no terminal emulator was found", is returned as a
-/// structured error rather than ignored.
+/// Launches through GIO so Terminal, Exec, and TryExec rules apply.
+/// The child is detached; launch failures are returned as structured errors.
 pub fn launch_desktop_entry(entry: &ApplicationEntry) -> Result<(), DesktopError> {
     let Some(source) = entry.source.as_deref() else {
         return Err(DesktopError::new(
@@ -233,11 +213,7 @@ pub fn launch_desktop_entry(entry: &ApplicationEntry) -> Result<(), DesktopError
         })
 }
 
-/// Splits an `Exec` value into an argv, dropping desktop field codes.
-///
-/// Quoting rules from the specification are honoured for the common cases, and
-/// every field code (`%U`, `%f`, …) is removed because the bar launches without
-/// arguments of its own.
+/// Splits an `Exec` value into argv, honoring quotes and dropping field codes.
 pub fn parse_exec(exec: &str) -> Option<Vec<String>> {
     let mut argv: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -298,7 +274,7 @@ pub fn parse_exec(exec: &str) -> Option<Vec<String>> {
     Some(argv)
 }
 
-/// Resolves an executable on `PATH` without a shell.
+/// Resolves an executable on `PATH` for direct launching.
 pub fn resolve_executable(name: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
     if name.starts_with('/') {
         return is_executable(Path::new(name)).then(|| PathBuf::from(name));
@@ -322,10 +298,7 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Launches a program or opens a URL through the desktop handler.
-///
-/// The child is detached: nothing is waited for, no output is inherited, and no
-/// shell interprets the arguments.
+/// Launches a program or URL through the desktop handler, detached and shell-free.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalLauncher {
     handler: PathBuf,
@@ -333,7 +306,7 @@ pub struct ExternalLauncher {
 }
 
 impl ExternalLauncher {
-    /// Uses `xdg-open` when it is present on `PATH`.
+    /// Finds `xdg-open` on `PATH`.
     pub fn discover() -> Result<Self, DesktopError> {
         let path_env = env::var_os("PATH");
         Self::discover_with(path_env.as_deref())
@@ -356,7 +329,7 @@ impl ExternalLauncher {
         &self.handler_name
     }
 
-    /// Starts a program with its own arguments, detached.
+    /// Starts a detached program with its arguments.
     pub fn launch(&self, command: &[String]) -> Result<(), DesktopError> {
         let Some((program, args)) = command.split_first() else {
             return Err(DesktopError::new(
@@ -387,7 +360,7 @@ impl ExternalLauncher {
             })
     }
 
-    /// Opens one target (URL, file, or directory) with the desktop handler.
+    /// Opens a target through the desktop handler.
     pub fn open(&self, target: &str) -> Result<(), DesktopError> {
         if target.is_empty() {
             return Err(DesktopError::new(
@@ -503,7 +476,6 @@ mod tests {
             "ignored.txt",
             "[Desktop Entry]\nType=Application\nName=Ignored\nExec=/bin/true\n",
         );
-        // A duplicate identifier in a later directory must not replace the first.
         write(
             &second,
             "alpha.desktop",
@@ -541,7 +513,6 @@ mod tests {
         );
         assert!(roots.contains(&std::path::PathBuf::from("/usr/share/applications")));
 
-        // A missing data home falls back to HOME, and a relative entry is skipped.
         let roots = application_directories(
             None,
             Some(std::ffi::OsStr::new("relative:/opt/share")),
@@ -644,8 +615,6 @@ mod tests {
     fn scanned_entries_launch_through_gio_with_their_own_exec() {
         let dir = TempDir::new().expect("temp dir");
         let marker = dir.path().join("launched.txt");
-        // Running the script through `sh` keeps the test independent of the
-        // script's executable bit.
         let script = write(
             &dir,
             "run.sh",
@@ -691,7 +660,6 @@ mod tests {
         )
         .expect("a launchable entry parses");
 
-        // A parsed-only entry has no desktop file to hand to GIO.
         assert_eq!(
             launch_desktop_entry(&entry)
                 .expect_err("no source file")
@@ -707,7 +675,6 @@ mod tests {
             DesktopErrorKind::NotAvailable
         );
 
-        // GIO refuses an entry whose TryExec program is not installed.
         let path = write(
             &dir,
             "gone.desktop",
@@ -725,8 +692,6 @@ mod tests {
 
     #[test]
     fn gio_sees_the_terminal_request_it_honours_at_launch() {
-        // Launching a terminal entry would open a terminal window, so the test
-        // checks that GIO reads the same flag the scan reports instead.
         let dir = TempDir::new().expect("temp dir");
         write(
             &dir,

@@ -1,11 +1,6 @@
-//! Capability-gated clipboard ownership and session privacy events.
-//!
-//! Text is read, owned, and released through `arboard`, which keeps selection
-//! ownership for the lifetime of its connection. Rich entries (images and file
-//! lists) are transferred as bounded payloads over the same Wayland
-//! data-control protocol so Kestrel never has to decode or re-encode them:
-//! an image entry is the original PNG bytes, and a file entry is the
-//! `text/uri-list` payload.
+//! Capability-gated clipboard ownership and privacy events.
+//! Text uses `arboard`; rich Wayland entries use bounded PNG and `text/uri-list`
+//! payloads in their encoded form.
 
 use std::{
     env,
@@ -41,18 +36,18 @@ use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "clipboard.history";
 const PRIVACY_METHOD_TIMEOUT: Duration = Duration::from_millis(500);
-/// The canonical PNG MIME type offered and requested on Wayland.
+/// Canonical PNG MIME type for Wayland.
 pub const PNG_MIME: &str = "image/png";
-/// The canonical file-list MIME type offered and requested on Wayland.
+/// Canonical file-list MIME type for Wayland.
 pub const URI_LIST_MIME: &str = "text/uri-list";
-/// The text MIME types Kestrel offers when it owns a text selection.
+/// Plain-text MIME types offered for owned selections.
 const TEXT_MIMES: [&str; 4] = [
     "text/plain;charset=utf-8",
     "text/plain",
     "UTF8_STRING",
     "STRING",
 ];
-/// How long a released selection may take to stop being served.
+/// How long a released selection may remain served.
 const OWNERSHIP_RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 const RELEASE_POLL: Duration = Duration::from_millis(2);
 
@@ -71,7 +66,7 @@ impl ClipboardProvider {
     }
 }
 
-/// The kinds of clipboard entry Kestrel can read, own, and restore.
+/// Clipboard entry kinds Kestrel can read, own, and restore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardEntryKind {
     Text,
@@ -94,7 +89,7 @@ impl ClipboardEntryKind {
         }
     }
 
-    /// The evidence key this kind reports through capability reports.
+    /// Evidence key for this kind.
     pub const fn evidence_key(self) -> &'static str {
         match self {
             Self::Text => "text_entries",
@@ -104,11 +99,9 @@ impl ClipboardEntryKind {
     }
 }
 
-/// Which entry kinds one provider can capture and re-own.
+/// Entry kinds a provider can capture and re-own.
 ///
-/// Support is per capability: Wayland data-control can carry PNG images and
-/// `text/uri-list` payloads, while the X11 compatibility path is text-only
-/// because richer formats would require decoding and re-encoding pixels.
+/// X11 is text-only; Wayland data-control also carries PNG and URI lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ClipboardKindSupport {
     pub text: bool,
@@ -136,7 +129,7 @@ impl ClipboardKindSupport {
         }
     }
 
-    /// A compact evidence value such as `text,image,files`.
+    /// Compact evidence value such as `text,image,files`.
     pub fn evidence_value(self) -> String {
         ClipboardEntryKind::ALL
             .into_iter()
@@ -151,7 +144,7 @@ impl ClipboardKindSupport {
     }
 }
 
-/// A selection Kestrel captured and therefore owns until something replaces it.
+/// A captured selection Kestrel owns until replaced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OwnedSelection {
     Text(String),
@@ -183,7 +176,7 @@ pub enum ClipboardErrorKind {
     ContentUnavailable,
     ReadFailed,
     WriteFailed,
-    /// The selection exists but is larger than the caller's bound.
+    /// The selection exceeds the caller's size bound.
     Oversize,
     PrivacyMonitorFailed,
 }
@@ -222,7 +215,7 @@ fn unsupported_kind(kind: ClipboardEntryKind, provider: ClipboardProvider) -> Cl
     )
 }
 
-/// Validates the PNG signature and returns the IHDR dimensions without decoding.
+/// Validates PNG and reads IHDR dimensions from encoded bytes.
 pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
@@ -233,11 +226,9 @@ pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
-/// Parses a `text/uri-list` payload into bounded local file paths.
+/// Parses bounded local paths from a `text/uri-list`.
 ///
-/// Comments (`#`) and blank lines are ignored, non-`file://` entries are
-/// skipped rather than fetched, duplicates are dropped, and at most
-/// `max_entries` paths are returned.
+/// Comments, blanks, non-file entries, and duplicates are skipped.
 pub fn parse_uri_list(payload: &str, max_entries: usize) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     for line in payload.lines() {
@@ -260,7 +251,7 @@ pub fn parse_uri_list(payload: &str, max_entries: usize) -> Vec<String> {
     paths
 }
 
-/// Encodes local paths as a `text/uri-list` payload.
+/// Encodes local paths as a `text/uri-list`.
 pub fn encode_uri_list(paths: &[String]) -> String {
     let mut payload = String::new();
     for path in paths {
@@ -306,7 +297,7 @@ fn is_text_mime(mime: &str) -> bool {
 pub trait ClipboardBackend: Send + 'static {
     fn provider(&self) -> ClipboardProvider;
 
-    /// The entry kinds this provider can capture, own, and restore.
+    /// Entry kinds this provider can capture, own, and restore.
     fn kind_support(&self) -> ClipboardKindSupport {
         ClipboardKindSupport::TEXT_ONLY
     }
@@ -314,15 +305,14 @@ pub trait ClipboardBackend: Send + 'static {
     fn read_text(&mut self) -> Result<Option<String>, ClipboardError>;
     fn write_text(&mut self, text: &str) -> Result<(), ClipboardError>;
 
-    /// The highest-priority kind the live selection currently offers.
+    /// Highest-priority kind offered by the live selection.
     ///
-    /// `Ok(None)` means the provider cannot enumerate selection types, so the
-    /// caller must fall back to reading text.
+    /// `Ok(None)` means type enumeration is unavailable; callers should read text.
     fn offered_kind(&mut self) -> Result<Option<ClipboardEntryKind>, ClipboardError> {
         Ok(None)
     }
 
-    /// Reads at most `max_bytes` of PNG data; `None` when no image is offered.
+    /// Reads bounded PNG data, or `None` when no image is offered.
     fn read_image_png(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>, ClipboardError> {
         let _ = max_bytes;
         Err(unsupported_kind(ClipboardEntryKind::Image, self.provider()))
@@ -333,7 +323,7 @@ pub trait ClipboardBackend: Send + 'static {
         Err(unsupported_kind(ClipboardEntryKind::Image, self.provider()))
     }
 
-    /// Reads at most `max_entries` local paths; `None` when no file list is offered.
+    /// Reads bounded local paths, or `None` when no file list is offered.
     fn read_file_list(
         &mut self,
         max_entries: usize,
@@ -347,11 +337,11 @@ pub trait ClipboardBackend: Send + 'static {
         Err(unsupported_kind(ClipboardEntryKind::Files, self.provider()))
     }
 
-    /// Clears the live selection only when it still is exactly `expected`.
+    /// Clears the live selection only when it matches `expected`.
     fn clear_if_matches(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError>;
 }
 
-/// A selection Kestrel is currently serving on Wayland, plus its serving thread.
+/// A Wayland selection Kestrel serves, with its serving thread.
 struct ServedSelection {
     owned: OwnedSelection,
     handle: Option<JoinHandle<()>>,
@@ -359,7 +349,7 @@ struct ServedSelection {
 }
 
 impl ServedSelection {
-    /// True while Kestrel still owns the selection (nobody took it over).
+    /// Whether Kestrel still owns the selection.
     fn is_alive(&self) -> bool {
         self.handle
             .as_ref()
@@ -370,7 +360,7 @@ impl ServedSelection {
 pub struct ArboardClipboardBackend {
     provider: ClipboardProvider,
     clipboard: Clipboard,
-    /// Rich selections are served by a dedicated data-control connection.
+    /// Rich selections use a dedicated data-control connection.
     served: Option<ServedSelection>,
 }
 
@@ -389,8 +379,7 @@ impl ArboardClipboardBackend {
         })
     }
 
-    /// Releases any served rich selection, waiting briefly for the server loop
-    /// to observe the takeover. Never blocks indefinitely.
+    /// Releases rich selections, waiting briefly for takeover observation.
     fn release_served(&mut self) {
         let Some(mut served) = self.served.take() else {
             return;
@@ -410,18 +399,15 @@ impl ArboardClipboardBackend {
         if handle.is_finished() {
             let _ = handle.join();
         }
-        // A still-running serve loop is detached rather than joined: it exits
-        // as soon as it observes the takeover, and blocking here would stall the
-        // clipboard worker.
+        // Detach a still-running loop; it exits after observing takeover.
     }
 
-    /// Serves `owned` over data-control until something replaces the selection.
+    /// Serves `owned` until another source replaces the selection.
     fn serve(&mut self, owned: OwnedSelection) -> Result<(), ClipboardError> {
         let mut options = Options::new();
         options.foreground(true);
         let prepared = match &owned {
-            // Text is offered under every common plain-text MIME type so that
-            // any consumer can paste it.
+            // Offer text under common MIME types for broad paste compatibility.
             OwnedSelection::Text(text) => options.prepare_copy_multi(
                 TEXT_MIMES
                     .iter()
@@ -507,11 +493,9 @@ impl ArboardClipboardBackend {
         }
     }
 
-    /// Releases the text selection through data-control, falling back to arboard.
+    /// Releases text via data-control, falling back to arboard.
     ///
-    /// The text selection is created by arboard's own data-control connection;
-    /// clearing it with the same protocol family is the path that actually
-    /// removes the source from the compositor.
+    /// The same protocol family removes arboard's compositor-owned selection.
     fn release_text_selection(&mut self) -> Result<(), ClipboardError> {
         if self.provider == ClipboardProvider::WaylandDataControl
             && clear(
@@ -530,7 +514,7 @@ impl ArboardClipboardBackend {
         })
     }
 
-    /// Releases a rich selection Kestrel still owns when it matches `expected`.
+    /// Releases a matching rich selection Kestrel still owns.
     fn clear_served_if_matches(
         &mut self,
         expected: &OwnedSelection,
@@ -539,15 +523,11 @@ impl ArboardClipboardBackend {
             return Ok(false);
         };
         if served.owned != *expected || !served.is_alive() {
-            // Something else replaced the selection, or Kestrel never owned it.
+            // Another source replaced the selection, or Kestrel's ownership ended.
             self.served = None;
             return Ok(false);
         }
-        // `release_served` tears down Kestrel's own data-control source, which
-        // is the only selection Kestrel is allowed to clear. A foreign source
-        // that still exposes the same bytes (an X11 bridge, for example) is not
-        // Kestrel's to release, and re-published content is visible to the user
-        // because the next poll captures it again.
+        // Only Kestrel's own data-control source may be cleared.
         self.release_served();
         Ok(true)
     }
@@ -577,13 +557,12 @@ impl ClipboardBackend for ArboardClipboardBackend {
     }
 
     fn write_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        // Taking over the selection also ends whatever Kestrel served before.
+        // Taking ownership ends any rich selection Kestrel served.
         if self.served.is_some() {
             self.release_served();
         }
         if self.provider == ClipboardProvider::WaylandDataControl {
-            // One ownership mechanism for every kind: Kestrel serves the
-            // selection it owns and releases it through the same path.
+            // Serve and release every Wayland kind through one mechanism.
             return self.serve(OwnedSelection::Text(text.to_owned()));
         }
         self.clipboard.set_text(text.to_owned()).map_err(|error| {
@@ -623,7 +602,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
         if self.provider != ClipboardProvider::WaylandDataControl {
             return Err(unsupported_kind(ClipboardEntryKind::Image, self.provider));
         }
-        // Never read a selection Kestrel itself is serving: the payload is already known.
+        // Reuse the payload Kestrel is serving; its contents are known.
         if let Some(served) = self.served.as_ref() {
             if served.is_alive() {
                 if let OwnedSelection::ImagePng(bytes) = &served.owned {
@@ -664,7 +643,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
                 return Ok(None);
             }
         }
-        // A file list is text; bound the raw payload generously before parsing.
+        // File lists are text; bound the raw payload before parsing.
         let Some(payload) = self.read_mime(URI_LIST_MIME, max_entries * 4096)? else {
             return Ok(None);
         };
@@ -690,8 +669,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
         if self.provider == ClipboardProvider::WaylandDataControl {
             return self.clear_served_if_matches(expected);
         }
-        // The X11 compatibility path keeps arboard's ownership and compares the
-        // live selection before releasing it.
+        // X11 keeps arboard ownership and compares the live selection first.
         let OwnedSelection::Text(text) = expected else {
             return Ok(false);
         };
@@ -879,7 +857,7 @@ pub fn discover_provider() -> Result<ClipboardProvider, ClipboardError> {
     Ok(ClipboardProvider::X11)
 }
 
-/// The entry-kind support reported for a provider.
+/// Returns entry-kind support for a provider.
 pub fn kind_support_for(provider: ClipboardProvider) -> ClipboardKindSupport {
     match provider {
         ClipboardProvider::WaylandDataControl => ClipboardKindSupport::ALL,
@@ -962,7 +940,7 @@ mod tests {
         b'I', b'H', b'D', b'R', // chunk type
         0x00, 0x00, 0x07, 0x80, // width 1920
         0x00, 0x00, 0x04, 0x38, // height 1080
-        0x08, 0x06, 0x00, 0x00, 0x00, // bit depth, color type, compression, filter, interlace
+        0x08, 0x06, 0x00, 0x00, 0x00, // PNG format fields
         0x00, 0x00, 0x00, 0x00, 0x00, // CRC placeholder
     ];
 

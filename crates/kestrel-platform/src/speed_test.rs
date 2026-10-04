@@ -1,8 +1,5 @@
-//! User-initiated, bounded network diagnostics through the system `curl`.
-//!
-//! The adapter deliberately owns the transfer limits and process lifecycle. In
-//! particular, curl's diagnostics are never returned because stderr may contain
-//! addresses or other network identifiers.
+//! User-initiated, bounded network diagnostics through `curl`.
+//! Curl stderr stays private because it may contain addresses or identifiers.
 
 use std::{
     env, fmt,
@@ -157,7 +154,7 @@ pub struct CurlSpeedTestBackend {
 }
 
 impl CurlSpeedTestBackend {
-    /// Resolves curl once, without starting a process or touching the network.
+    /// Resolves curl using local `PATH` inspection.
     pub fn discover() -> Self {
         Self {
             executable: resolve_executable("curl", env::var_os("PATH").as_deref()),
@@ -395,10 +392,7 @@ impl CurlSpeedTestBackend {
         progress: &mut dyn FnMut(SpeedTestProgress),
     ) -> Result<(u64, Option<u64>), SpeedTestError> {
         let mut command = self.command(executable, plan.phase_timeout);
-        // `--upload-file -` streams stdin as the request body instead of
-        // buffering the whole payload first, so the bytes written are the bytes
-        // in flight. An empty `Expect:` header stops curl from waiting for a
-        // `100 Continue` that would otherwise be counted as upload time.
+        // Stream stdin as the request body; suppress `100 Continue` upload delay.
         command
             .arg("--upload-file")
             .arg("-")
@@ -471,8 +465,7 @@ impl CurlSpeedTestBackend {
         let mut fields = output.split_whitespace();
         let speed = fields.next().and_then(|value| value.parse::<f64>().ok());
         let reported = fields.next().and_then(|value| value.parse::<u64>().ok());
-        // Over HTTP/1.1 a streamed body is chunk-encoded, so curl's byte count
-        // includes framing and can exceed the payload; it must never be short.
+        // HTTP/1.1 chunk framing may inflate curl's byte count; reported bytes must meet the sent-byte count.
         if sent != plan.upload_bytes || !reported.is_some_and(|size| size >= sent) {
             return Err(SpeedTestError::new(
                 SpeedTestErrorKind::Protocol,
@@ -499,11 +492,9 @@ fn spawn(mut command: Command) -> Result<(Child, libc::pid_t), SpeedTestError> {
     Ok((child, group))
 }
 
-/// Sends `SIGKILL` to every member of a curl run's process group.
+/// Sends `SIGKILL` to every member of a curl process group.
 fn kill_group(group: libc::pid_t) {
-    // SAFETY: `kill` has no memory-safety preconditions. The negative id
-    // addresses the process group created for this run, and a group with no
-    // members simply yields `ESRCH`, which is ignored.
+    // SAFETY: The negative ID targets this run's group; `ESRCH` is harmless.
     unsafe {
         libc::kill(-group, libc::SIGKILL);
     }
@@ -552,10 +543,9 @@ fn wait_process(
     }
 }
 
-/// Maps curl's documented exit codes to typed failures.
+/// Maps curl exit codes to typed failures.
 ///
-/// The messages are Kestrel's own: curl's stderr is never read because it can
-/// name resolved addresses and other network identifiers.
+/// Curl stderr stays private because it may contain resolved addresses or identifiers.
 fn error_for_exit(code: Option<i32>) -> SpeedTestError {
     let (kind, message) = match code {
         Some(6) => (
@@ -650,10 +640,9 @@ fn spawn_download_reader(
     receiver
 }
 
-/// Writes exactly `total` zero bytes, publishing progress as it goes.
+/// Writes exactly `total` zero bytes and publishes progress.
 ///
-/// The payload is bounded by construction. When curl exits or is killed the
-/// pipe closes, the write fails, and the thread ends on its own.
+/// The bounded pipe ends the writer when curl exits or is killed.
 fn spawn_upload_writer(
     mut stdin: impl Write + Send + 'static,
     total: u64,
@@ -732,16 +721,14 @@ mod tests {
         SpeedTestErrorKind, SpeedTestPhase, SpeedTestPlan,
     };
 
-    /// Writes an executable `curl` stand-in that logs each invocation's arguments.
+    /// Writes a curl stand-in that logs invocation arguments.
     ///
-    /// `body` decides what each phase does; the latency phase is the only one
-    /// whose arguments contain neither `--upload-file` nor `--output -`.
+    /// Latency is the sole phase with no upload or download arguments.
     fn stub(dir: &TempDir, body: &str) -> PathBuf {
         let path = dir.path().join("curl");
         let log = dir.path().join("invocations");
         fs::create_dir(&log).expect("log directory is created");
-        // One file per run: the latency write-out format itself contains a
-        // newline, so a line-per-run log would miscount.
+        // A file per run avoids newline ambiguity in latency output.
         let script = format!(
             "#!/bin/sh\nn=$(ls {log} | wc -l)\nprintf '%s' \"$*\" > {log}/$n\n{body}\n",
             log = log.display()
@@ -777,7 +764,6 @@ mod tests {
         }
     }
 
-    /// True once a process has exited; a zombie awaiting reaping counts as gone.
     fn process_is_gone(pid: i32) -> bool {
         match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Err(_) => true,

@@ -1,12 +1,6 @@
-//! Atomic, private file replacement shared by Kestrel's user-data stores.
+//! Atomic, private replacement for user-data files.
 //!
-//! Data files (snippets, learned command ranking) are written to a temporary
-//! file created exclusively in the target directory, synced, and renamed over
-//! the destination. Exclusive creation (`O_EXCL`) never follows a symbolic link
-//! and never truncates an existing file, so another process of the same user
-//! cannot redirect a save onto a file it does not own by pre-creating the
-//! temporary path. The parent directory is synced after the rename so a
-//! successful save survives a power loss.
+//! Exclusive temporary creation prevents symlink redirection; directory sync makes renames durable.
 
 use std::{
     ffi::{OsStr, OsString},
@@ -18,16 +12,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Files are readable and writable by their owner only.
+/// Owner-only file mode.
 pub(crate) const FILE_MODE: u32 = 0o600;
-/// Directories holding Kestrel data are private to the user.
+/// Owner-only directory mode.
 const DIRECTORY_MODE: u32 = 0o700;
-/// How many distinct temporary names are tried before giving up.
+/// Temporary-name attempts before failure.
 const TEMPORARY_ATTEMPTS: u32 = 16;
 
 static TEMPORARY_SERIAL: AtomicU64 = AtomicU64::new(0);
 
-/// Replaces `path` with `contents` atomically, with owner-only permissions.
+/// Atomically replaces `path` with owner-only permissions.
 pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -50,15 +44,14 @@ pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<(
     }
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(FILE_MODE));
 
-    // The rename is durable only once the directory entry is. Some filesystems
-    // refuse to sync a directory; the data itself is already in place then.
+    // Directory sync makes the rename durable where supported.
     if let Ok(directory) = File::open(parent) {
         let _ = directory.sync_all();
     }
     Ok(())
 }
 
-/// Creates a new, uniquely named, owner-only temporary file beside the target.
+/// Creates a unique owner-only temporary file beside the target.
 fn create_temporary(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, File)> {
     for _ in 0..TEMPORARY_ATTEMPTS {
         let nanos = SystemTime::now()
@@ -77,7 +70,7 @@ fn create_temporary(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, Fi
             .open(&candidate)
         {
             Ok(file) => return Ok((candidate, file)),
-            // Someone else holds this name (a file or a link): never reuse it.
+            // A name held by another file or link is skipped.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -138,8 +131,7 @@ mod tests {
         fs::write(&victim, "keep me").expect("victim is written");
         let path = dir.path().join("data.toml");
 
-        // The previous scheme wrote to `<file>.tmp<pid>`, so a link planted
-        // there redirected the truncating write onto the victim.
+        // The old predictable name let a planted link redirect writes.
         let planted = dir
             .path()
             .join(format!("data.toml.tmp{}", std::process::id()));

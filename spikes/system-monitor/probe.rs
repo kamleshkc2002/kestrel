@@ -1,7 +1,3 @@
-// Kestrel Phase 0 spike: system-monitor capability probe (read-only).
-// std-only; compiled with rustc, NOT a Cargo workspace member.
-// Emits a structured JSON report: capability status + evidence + remediation.
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -221,7 +217,7 @@ impl Ctx {
 }
 
 fn bench_read(path: &Path, iterations: u32) -> Json {
-    let _ = fs::read_to_string(path); // warm page cache / open path
+    let _ = fs::read_to_string(path); // warm the page cache
     let mut ns = Vec::with_capacity(iterations as usize);
     for _ in 0..iterations {
         let t0 = Instant::now();
@@ -684,7 +680,6 @@ fn os_release_field(text: &str, key: &str) -> Option<String> {
 fn main() {
     let mut ctx = Ctx { issues: Vec::new() };
 
-    // Machine facts (no network identifiers / MACs / IPs).
     let kernel = read_opt(Path::new("/proc/sys/kernel/osrelease")).unwrap_or_else(|| "unknown".into());
     let os_release = read_opt(Path::new("/etc/os-release")).unwrap_or_default();
     let pretty_name = os_release_field(&os_release, "PRETTY_NAME").unwrap_or_else(|| "unknown".into());
@@ -697,7 +692,6 @@ fn main() {
         })
         .unwrap_or_else(|| "unknown".into());
 
-    // Probes.
     let stat = probe_proc_stat(&mut ctx);
     let meminfo = probe_proc_meminfo(&mut ctx);
     let loadavg = probe_proc_loadavg(&mut ctx);
@@ -707,7 +701,6 @@ fn main() {
     let hwmon = probe_hwmon(&mut ctx);
     let power = probe_power(&mut ctx);
 
-    // Sampling cost.
     let mut sampling = Vec::new();
     for p in ["/proc/stat", "/proc/meminfo", "/proc/loadavg", "/proc/uptime", "/proc/net/dev"] {
         sampling.push(bench_read(Path::new(p), 1000));
@@ -729,7 +722,6 @@ fn main() {
         ("logical_cpus".to_string(), i(jint(&stat, "per_cpu_lines"))),
     ]);
 
-    // Derived capability signals.
     let cpu_ok = jbool(&stat, "ok");
     let mem_ok = jbool(&meminfo, "ok");
     let net_ok = jbool(&net_dev, "ok");

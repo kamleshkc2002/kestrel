@@ -1,9 +1,6 @@
-//! Private storage for the command bar's learned ranking.
+//! Private storage for learned command ranking.
 //!
-//! The file holds command identifiers, use counts, and pins — never the text a
-//! user searched for. It is created `0600` in a `0700` directory and replaced
-//! atomically through an exclusively created temporary file, and the window can
-//! inspect and reset it.
+//! Stored data consists of identifiers, counts, and pins; search text stays out.
 
 use std::{
     fs,
@@ -18,7 +15,7 @@ use crate::{ConfigurationWarning, private_file::write_private_atomic};
 
 pub const CURRENT_RANKING_SCHEMA_VERSION: u32 = 1;
 
-/// The on-disk shape of the learned ranking.
+/// On-disk learned ranking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RankingFile {
     pub schema_version: u32,
@@ -50,7 +47,7 @@ pub struct LoadedRanking {
     pub warnings: Vec<ConfigurationWarning>,
 }
 
-/// `$XDG_DATA_HOME/kestrel/command_ranking.toml`, else `$HOME/.local/share/...`.
+/// XDG data path for command ranking.
 pub fn ranking_path() -> Option<PathBuf> {
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .filter(|value| !value.is_empty())
@@ -63,7 +60,7 @@ pub fn ranking_path() -> Option<PathBuf> {
     Some(data_home.join("kestrel").join("command_ranking.toml"))
 }
 
-/// Loads the learned ranking, ignoring a missing or unreadable file.
+/// Loads ranking, ignoring missing or unreadable files.
 pub fn load_ranking(path: &Path) -> LoadedRanking {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -85,7 +82,7 @@ pub fn load_ranking(path: &Path) -> LoadedRanking {
     parse_ranking(&contents)
 }
 
-/// Parses a ranking document, dropping malformed entries with a warning.
+/// Parses ranking and warns about malformed entries.
 pub fn parse_ranking(contents: &str) -> LoadedRanking {
     let document: RankingFile = match toml::from_str(contents) {
         Ok(document) => document,
@@ -136,7 +133,7 @@ pub fn parse_ranking(contents: &str) -> LoadedRanking {
     }
 }
 
-/// Writes the ranking atomically with private permissions.
+/// Atomically writes ranking with private permissions.
 pub fn save_ranking(path: &Path, ranking: &CommandRanking) -> Result<(), String> {
     let document = RankingFile {
         schema_version: CURRENT_RANKING_SCHEMA_VERSION,
@@ -203,7 +200,7 @@ mod tests {
     fn the_ranking_file_never_contains_query_text() {
         let mut ranking = CommandRanking::default();
         let typed = "quarterly revenue numbers";
-        // Searching is what the user types, and it is never recorded.
+        // Search text stays out of the ranking file.
         let _ = kestrel_services::command_bar::fuzzy_score(typed, "kestrel:refresh");
         ranking.record_use("kestrel:refresh");
 

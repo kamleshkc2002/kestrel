@@ -32,11 +32,11 @@ use kestrel_services::alerts::notification_text;
 use window::WindowView;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
-/// How often a running microphone control re-reads the audio server.
+/// Poll interval for the microphone control.
 const MICROPHONE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
-/// A periodic tick: each field is `None` when that feature produced no new state.
+/// Fields are `None` when unchanged.
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
     clipboard: Option<ClipboardViewModel>,
@@ -46,34 +46,28 @@ struct TickUpdate {
 
 type SharedState = Arc<Mutex<ControllerState>>;
 
-/// The entries one search request may return to the window.
+/// Maximum entries returned per clipboard search.
 const CLIPBOARD_SEARCH_LIMIT: usize = 50;
-/// The largest preview the window may request for one entry.
+/// Maximum bytes in one clipboard preview.
 const CLIPBOARD_PREVIEW_BYTES: usize = 2048;
-/// The most snippets one search request returns.
+/// Maximum snippets returned per search.
 const SNIPPET_SEARCH_LIMIT: usize = 100;
 
 struct ControllerState {
     runtime: ApplicationRuntime,
-    /// The application command channel, so a command bar action queues exactly
-    /// the typed command the window would send.
+    /// Routes command-bar actions through the normal application channel.
     commands: Sender<ApplicationCommand>,
     configuration: ApplicationConfiguration,
     warnings: Vec<ConfigurationWarning>,
     preset_snapshot: Option<FeatureConfigurationSnapshot>,
-    /// The application's current clipboard query and its bounded results.
     clipboard_query: String,
     clipboard_matches: Vec<kestrel_services::clipboard::ClipboardMatch>,
     clipboard_preview: Option<kestrel_services::clipboard::ClipboardPreview>,
-    /// The last clipboard state delivered to the window.
     clipboard_fingerprint: Option<ClipboardFingerprint>,
-    /// The last speed-test generation delivered to the window.
     speed_test_generation: u64,
-    /// The application's snippet query, its results, and the open editor.
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
-    /// The command bar query and its ranked results.
     command_query: String,
     command_results: Vec<kestrel_services::command_bar::CommandResult>,
 }
@@ -101,7 +95,6 @@ impl ControllerState {
         )
     }
 
-    /// Re-runs the command query so the list reflects a ranking change.
     fn refresh_command_results(&mut self) {
         if self.command_query.trim().is_empty() {
             self.command_results.clear();
@@ -114,11 +107,9 @@ impl ControllerState {
             .command_search(&self.command_query.clone(), &now);
     }
 
-    /// Runs one ranked result and records its use.
     fn run_command_result(&mut self, id: &str) -> String {
         use kestrel_services::command_bar::CommandAction;
-        // Results can outlive the feature that produced them (a stale row, a
-        // queued click), so the lifecycle is checked before anything runs.
+        // Reject stale results before acting.
         if !self.runtime.command_bar_running() {
             return "The command bar is not running; enable commands.bar in the Feature Hub"
                 .to_owned();
@@ -175,14 +166,12 @@ impl ControllerState {
             },
         };
 
-        // A run is recorded only after it was attempted, and only the identifier
-        // and a count are stored.
+        // Record only attempted IDs and counts.
         let _ = self.runtime.record_command_use(id);
         self.refresh_command_results();
         outcome
     }
 
-    /// Maps a command bar action onto an existing application command.
     fn run_kestrel_command(&mut self, action: &str) -> Option<String> {
         if let Some(name) = action.strip_prefix("insert_snippet:") {
             return Some(match self.runtime.insert_snippet(name) {
@@ -248,8 +237,7 @@ impl ControllerState {
             _ => return None,
         };
 
-        // Queued through the normal surface so the command bar never bypasses the
-        // single-operation gate or its worker.
+        // Route through the operation gate and worker.
         let queued = self.commands.try_send(command).is_ok();
         Some(if queued {
             format!("{action} queued")
@@ -258,14 +246,12 @@ impl ControllerState {
         })
     }
 
-    /// Re-runs the snippet search so the list reflects a library change.
     fn refresh_snippet_matches(&mut self) {
         self.snippet_matches = self
             .runtime
             .snippet_matches(&self.snippet_query, SNIPPET_SEARCH_LIMIT);
     }
 
-    /// Re-runs the current clipboard query so the list reflects a mutation.
     fn refresh_clipboard_matches(&mut self) {
         self.clipboard_preview = None;
         match self
@@ -278,10 +264,7 @@ impl ControllerState {
     }
 }
 
-/// Samples the monitor, delivers alerts, and reports clipboard changes.
-///
-/// The state mutex is held only for the sample, for recording delivery results,
-/// and for one clipboard comparison; never across the blocking notification call.
+/// Samples state and notifies while the controller lock is released.
 fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
@@ -295,8 +278,7 @@ fn run_tick(
         let tick = guard.runtime.sample_monitor(observed_at);
         let microphone = (microphone_due && guard.runtime.refresh_microphone())
             .then(|| guard.runtime.microphone_view_model());
-        // Progress is published only when the service reports a new generation,
-        // so an idle speed test costs one comparison per tick.
+        // Publish only on generation changes.
         let generation = guard.runtime.speed_test_snapshot().generation;
         let speed_test = (generation != guard.speed_test_generation).then(|| {
             guard.speed_test_generation = generation;
@@ -319,8 +301,7 @@ fn run_tick(
     }
 }
 
-/// Delivers alert notifications outside the controller lock, then reports the
-/// resulting monitor presentation state.
+/// Delivers alerts outside the controller lock.
 fn deliver_alerts(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
@@ -346,7 +327,6 @@ fn deliver_alerts(
     guard.runtime.monitor_view_model(&guard.configuration)
 }
 
-/// Builds clipboard presentation state when the worker's snapshot changed.
 fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
     let mut guard = state
         .lock()
@@ -357,9 +337,7 @@ fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
         return None;
     }
     guard.clipboard_fingerprint = Some(fingerprint);
-    // The row list is produced by an explicit query, so re-run the current one
-    // when the snapshot changed: a background capture must appear in the list,
-    // not only in the retained count.
+    // Refresh the explicit query so background captures appear in results.
     let refreshed = {
         let query = &guard.clipboard_query;
         guard
@@ -386,7 +364,6 @@ fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
     ))
 }
 
-/// Which part of the window a completed operation refreshes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum TargetedPanel {
     #[default]
@@ -394,16 +371,12 @@ enum TargetedPanel {
     Clipboard,
     Snippets,
     Commands,
-    /// The microphone group, so a mute click keeps the scroll position.
+    /// Keeps mute updates from resetting scroll.
     Microphone,
-    /// The speed-test group, which the tick then keeps current.
     SpeedTest,
 }
 
-/// Cheap change detector for the clipboard snapshot.
-///
-/// The worker publishes on every poll, so the tick compares this fingerprint
-/// instead of rebuilding presentation state (or touching widgets) each time.
+/// Fingerprinting avoids rebuilding presentation on every worker poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ClipboardFingerprint {
     lifecycle: ClipboardLifecycle,
@@ -499,7 +472,6 @@ enum ControllerOperation {
     ExportConfiguration(PathBuf),
 }
 
-/// Channels, paths, and adapters that the application loop hands to the controller.
 struct ControllerContext {
     config_path: Option<PathBuf>,
     refresh_results: Sender<RefreshResult>,
@@ -513,23 +485,17 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
     refreshing: Cell<bool>,
-    /// Which panel a queued clipboard or snippet operation updates in place.
     targeted: Cell<TargetedPanel>,
     monitoring: Cell<bool>,
-    /// Mirrors the monitor registration so a disabled feature never spawns tick workers.
+    /// Mirrors registration state; disabled features spawn no tick workers.
     monitor_running: Cell<bool>,
-    /// Mirrors the clipboard registration so background captures reach the window.
     clipboard_running: Cell<bool>,
-    /// Mirrors the microphone registration; only a live control is re-read.
     microphone_running: Cell<bool>,
-    /// Mirrors the speed-test registration so progress reaches the window.
     speed_test_running: Cell<bool>,
     monitor_started_at: Instant,
-    /// When the microphone was last re-read, bounding backend polling to 2 s.
+    /// Bounds backend polling to the two-second interval.
     microphone_last_refresh: Cell<Instant>,
-    /// The newest command bar query that arrived while another operation was
-    /// running. Typing outpaces the single-operation gate, so only the latest
-    /// text is kept and run when the gate opens.
+    /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
     refresh_results: Sender<RefreshResult>,
@@ -657,7 +623,6 @@ impl ApplicationController {
         }
     }
 
-    /// Queues a clipboard operation that updates only the clipboard group.
     fn request_clipboard_operation(
         &self,
         operation: ControllerOperation,
@@ -666,11 +631,7 @@ impl ApplicationController {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Clipboard);
     }
 
-    /// Queues a command bar operation that updates only the command bar.
-    ///
-    /// A query that arrives while another operation runs is remembered rather
-    /// than dropped, and the newest one is run as soon as the gate opens. That
-    /// keeps the rows shown in step with the text in the field.
+    /// Queues command-bar work; the newest query survives a busy worker.
     fn request_command_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
         if let ControllerOperation::CommandQuery(query) = &operation {
             if self.refreshing.get() {
@@ -681,7 +642,6 @@ impl ApplicationController {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Commands);
     }
 
-    /// Runs the query that was held back while the previous operation finished.
     fn dispatch_pending_command_query(&self) {
         let Some(query) = self.pending_command_query.borrow_mut().take() else {
             return;
@@ -692,23 +652,18 @@ impl ApplicationController {
         );
     }
 
-    /// Queues a snippet operation that updates only the snippet group.
     fn request_snippet_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Snippets);
     }
 
-    /// Queues an operation that updates one panel instead of the whole page.
-    ///
-    /// Those panels own their search fields, so a full page rebuild while the
-    /// user types would steal focus and lose the query.
+    /// Targeted updates preserve panel queries and focus.
     fn request_targeted_operation(
         &self,
         operation: ControllerOperation,
         worker_name: &'static str,
         panel: TargetedPanel,
     ) {
-        // The single-operation gate is checked first so a rejected request
-        // never leaves the targeted-update state set.
+        // Check the operation gate before recording the targeted panel.
         if self.refreshing.get() {
             self.request_operation(operation, worker_name);
             return;
@@ -758,8 +713,7 @@ impl ApplicationController {
         if self.refreshing.get() || self.monitoring.replace(true) {
             return;
         }
-        // Microphone state can change outside Kestrel (hardware keys, other
-        // mixers), so a live control is re-read on a bounded cadence.
+        // Hardware keys and other mixers can change mute state externally.
         let microphone_due = self.microphone_running.get() && {
             let now = Instant::now();
             let due = now.duration_since(self.microphone_last_refresh.get())
@@ -1117,8 +1071,7 @@ impl ControllerState {
                         let shown = matches.len();
                         self.clipboard_matches = matches;
                         if query.trim().is_empty() {
-                            // An empty query is the initial listing; it updates
-                            // the list without a toast.
+                            // The initial listing shows its count in the window.
                             String::new()
                         } else {
                             format!("{shown} entries match \"{query}\"")
@@ -1273,8 +1226,6 @@ impl ControllerState {
                 self.snippet_query = query.clone();
                 self.refresh_snippet_matches();
                 if query.trim().is_empty() {
-                    // The window shows a count in its status line, so the initial
-                    // listing does not need a toast.
                     String::new()
                 } else {
                     format!("{} snippets match \"{query}\"", self.snippet_matches.len())
@@ -1539,7 +1490,6 @@ fn move_monitor_readout(
     true
 }
 
-/// Names the mixer operation that a status message refers to.
 fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
     match command {
         kestrel::AudioCommand::SetStreamVolume { .. } => "Stream volume",
@@ -1552,16 +1502,11 @@ fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
     }
 }
 
-/// Trims a snippet field and treats an empty value as absent.
 fn optional_field(value: String) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Applies a completed operation to the whole page or to one panel.
-///
-/// The clipboard and snippet panels own their search fields, so refreshing them
-/// in place keeps the query and the focus while the user types.
 fn apply_targeted_panel(
     view: &WindowView,
     view_model: &ApplicationViewModel,
@@ -1577,7 +1522,6 @@ fn apply_targeted_panel(
     }
 }
 
-/// Names the clipboard operation that a status message refers to.
 fn clipboard_command_summary(command: &kestrel::ClipboardCommand) -> &'static str {
     match command {
         kestrel::ClipboardCommand::Refresh => "Clipboard refresh",
@@ -2075,10 +2019,7 @@ mod tests {
         std::fs::remove_file(path).expect("invalid fixture can be removed");
     }
 
-    /// A disabled monitor feature must not acquire sampling resources: no worker thread
-    /// is spawned and no result is published, so the acceptance criterion "uninstalled or
-    /// disabled features acquire no runtime resources" is directly observable here. The
-    /// enabled counterpart proves the same path still samples.
+    /// Disabled ticks spawn no worker or result; enabled ticks still sample.
     #[test]
     fn monitor_ticks_are_inert_while_the_feature_is_disabled() {
         use super::{ApplicationController, ControllerContext};

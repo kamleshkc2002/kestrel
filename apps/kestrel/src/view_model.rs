@@ -22,19 +22,17 @@ use kestrel_services::{
 
 use crate::ConfigurationWarning;
 
-/// Owned inputs used to construct monitoring presentation state.
+/// Inputs for the monitor view.
 pub(crate) struct MonitorPresentation<'a> {
     pub snapshot: Option<&'a SystemSnapshot>,
     pub history: Option<HistorySummary>,
     pub alerts: AlertSnapshot,
     pub running: bool,
-    /// Effective alert rules, including gates applied outside the configuration
-    /// (such as the `power.battery-alerts` quick toggle). The configuration stays
-    /// the user's intent; the policy is what the engine actually enforces.
+    /// Effective rules after quick-toggle gates.
     pub policy: Option<&'a AlertPolicy>,
 }
 
-/// Immutable presentation state for one system-monitor panel.
+/// Monitor panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorViewModel {
     pub running: bool,
@@ -81,7 +79,7 @@ pub struct AlertRuleViewModel {
 }
 
 impl MonitorViewModel {
-    /// Single source of truth for monitoring presentation.
+    /// Builds the monitor presentation.
     pub(crate) fn from_configuration(
         configuration: &MonitorConfiguration,
         presentation: MonitorPresentation<'_>,
@@ -93,8 +91,7 @@ impl MonitorViewModel {
             .copied()
             .map(|readout| monitor_readout(snapshot, readout))
             .collect();
-        // Settings rows follow the configured order first, then the readouts that are
-        // currently hidden, so the move arrows describe the list they actually reorder.
+        // Configured readouts come first; hidden ones follow.
         let visible_count = configuration.readouts.len();
         let mut ordered = configuration.readouts.clone();
         ordered.extend(
@@ -263,8 +260,7 @@ fn temperature(value: f64) -> String {
 }
 
 fn issue_reason(snapshot: &SystemSnapshot, readout: MonitorReadout) -> Option<String> {
-    // Exact platform source strings: a substring match would attribute another
-    // family's failure (for example `/proc/diskstats`) to this readout.
+    // Match exact platform sources to avoid cross-family errors.
     let matches = |source: &str| match readout {
         MonitorReadout::Cpu => source == "/proc/stat",
         MonitorReadout::Memory | MonitorReadout::Swap => source == "/proc/meminfo",
@@ -453,27 +449,27 @@ fn monitor_readout(
     }
 }
 
-/// Owned inputs used to construct audio mixer presentation state.
+/// Inputs for the audio view.
 pub(crate) struct AudioPresentation<'a> {
-    /// The mixer snapshot; `None` before the opt-in service has produced one.
+    /// Snapshot, if the opt-in service has produced one.
     pub snapshot: Option<&'a AudioSnapshot>,
-    /// Whether the opt-in mixer registration is currently running.
+    /// Whether the mixer registration is running.
     pub running: bool,
-    /// The effective mixer policy, which the snapshot does not carry.
+    /// Effective mixer policy.
     pub policy: AudioPolicy,
 }
 
-/// Immutable presentation state for the audio mixer panel.
+/// Audio mixer panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioViewModel {
     pub running: bool,
     pub status: String,
-    /// The last output switch or device-loss reconciliation, when one happened.
+    /// Last switch or device-loss message.
     pub message: Option<String>,
     pub boost_ceiling_percent: u8,
     pub max_boost_percent: u8,
     pub output_groups: Vec<AudioOutputGroupViewModel>,
-    /// The flat output list in discovery order, used by routing selectors.
+    /// Outputs in discovery order.
     pub outputs: Vec<AudioOutputViewModel>,
     pub streams: Vec<AudioStreamViewModel>,
     pub default_output_id: Option<u32>,
@@ -481,7 +477,7 @@ pub struct AudioViewModel {
     pub policy: AudioPolicyViewModel,
 }
 
-/// One group of output devices that share a hardware card.
+/// Outputs sharing a hardware card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioOutputGroupViewModel {
     pub label: String,
@@ -492,7 +488,7 @@ pub struct AudioOutputGroupViewModel {
 pub struct AudioOutputViewModel {
     pub id: u32,
     pub title: String,
-    /// The backend device name, shown so two similar devices stay distinguishable.
+    /// Backend name distinguishing similar devices.
     pub name: String,
     pub detail: String,
     pub is_default: bool,
@@ -644,19 +640,19 @@ pub struct MicrophoneInputViewModel {
     pub is_default: bool,
 }
 
-/// The microphone control, derived only from the latest backend reading.
+/// Microphone state from the latest backend reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MicrophoneViewModel {
     pub running: bool,
     pub status: String,
     pub mute_label: String,
-    /// `Some` only when every input agrees; never guessed from earlier UI state.
+    /// `Some` only when all inputs agree.
     pub muted: Option<bool>,
-    /// Some inputs are muted and others live; a global mute still applies.
+    /// Whether inputs have mixed mute states.
     pub mixed: bool,
     pub inputs: Vec<MicrophoneInputViewModel>,
     pub default_input_id: Option<u32>,
-    /// A device-loss notice from the last refresh.
+    /// Device-loss notice from the last refresh.
     pub message: Option<String>,
 }
 
@@ -739,7 +735,7 @@ pub(crate) struct SpeedTestPresentation {
     pub running: bool,
 }
 
-/// The speed-test group: disclosure first, then controls and results.
+/// Speed-test panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpeedTestViewModel {
     pub running: bool,
@@ -824,7 +820,7 @@ impl SpeedTestViewModel {
     }
 }
 
-/// Formats a bit rate in Mbit/s with one decimal.
+/// Formats bits per second as Mbit/s.
 fn megabits(bits_per_second: u64) -> String {
     format!("{:.1}", bits_per_second as f64 / 1_000_000.0)
 }
@@ -849,7 +845,7 @@ fn audio_status(snapshot: &AudioSnapshot) -> String {
             } else {
                 format!(" ({hidden} inactive hidden)")
             };
-            // The snapshot may list inactive streams, so count only playing ones here.
+            // Inactive streams are excluded from the playing count.
             let playing = snapshot
                 .streams
                 .iter()
@@ -934,26 +930,23 @@ fn audio_stream_detail(
     parts.join(" · ")
 }
 
-/// Owned inputs used to construct clipboard presentation state.
+/// Inputs for the clipboard view.
 #[derive(Default)]
 pub(crate) struct ClipboardPresentation<'a> {
-    /// Metadata-only service snapshot; it never carries clipboard content.
+    /// Metadata only; no clipboard content.
     pub snapshot: Option<ClipboardSnapshot>,
     pub running: bool,
-    /// The explicit search that produced `matches`, echoed for the search field.
     pub search_query: &'a str,
-    /// Bounded previews returned by an explicit search request.
     pub matches: &'a [ClipboardMatch],
-    /// The one entry preview the user explicitly asked for.
     pub preview: Option<&'a ClipboardPreview>,
 }
 
-/// Immutable presentation state for the clipboard history panel.
+/// Clipboard history panel state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardViewModel {
     pub running: bool,
     pub status: String,
-    /// Which entry kinds the active provider can capture.
+    /// Entry kinds supported by the active provider.
     pub kind_support: String,
     pub search_query: String,
     pub items: Vec<ClipboardItemViewModel>,
@@ -1074,8 +1067,7 @@ impl ClipboardViewModel {
             };
         };
 
-        // Rows come from the explicit search result, so the window only ever
-        // renders content the user asked to see.
+        // Render only explicit search matches.
         let items = presentation
             .matches
             .iter()
@@ -1207,7 +1199,7 @@ fn format_age(age: std::time::Duration) -> String {
     }
 }
 
-/// A snippet being edited in the window, before it is validated and saved.
+/// A snippet draft before validation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SnippetDraft {
     pub name: String,
@@ -1216,7 +1208,7 @@ pub struct SnippetDraft {
     pub content: String,
 }
 
-/// The window's clipboard query state, owned by the application.
+/// Clipboard query state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClipboardQuery<'a> {
     pub query: &'a str,
@@ -1224,7 +1216,7 @@ pub struct ClipboardQuery<'a> {
     pub preview: Option<&'a ClipboardPreview>,
 }
 
-/// The window's snippet query and editor state, owned by the application.
+/// Snippet query and draft state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SnippetQuery<'a> {
     pub query: &'a str,
@@ -1232,24 +1224,24 @@ pub struct SnippetQuery<'a> {
     pub draft: Option<&'a SnippetDraft>,
 }
 
-/// The window's command bar query state, owned by the application.
+/// Command-bar query state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommandBarQuery<'a> {
     pub query: &'a str,
     pub results: &'a [kestrel_services::command_bar::CommandResult],
 }
 
-/// Owned inputs used to construct snippet presentation state.
+/// Inputs for the snippet view.
 pub(crate) struct SnippetsPresentation<'a> {
     pub library: &'a SnippetLibrary,
     pub policy: SnippetPolicy,
     pub running: bool,
-    /// The verified insertion provider, when discovery found one.
+    /// Verified insertion provider, if any.
     pub provider: Option<InsertionProvider>,
     pub unavailable_reason: Option<&'a str>,
     pub directory: Option<String>,
     pub expansion_timing: SnippetExpansionTiming,
-    /// The configured provider preference, which may differ from what was found.
+    /// Configured preference, which may differ from discovery.
     pub provider_preference: SnippetProviderPreference,
     pub search_query: &'a str,
     pub matches: &'a [SnippetMatch],
@@ -1257,7 +1249,7 @@ pub(crate) struct SnippetsPresentation<'a> {
     pub warnings: &'a [ConfigurationWarning],
 }
 
-/// Immutable presentation state for the snippet library panel.
+/// Snippet library panel state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetsViewModel {
     pub running: bool,
@@ -1439,17 +1431,17 @@ fn snippet_detail(matched: &SnippetMatch) -> String {
     parts.join(" · ")
 }
 
-/// Owned inputs used to construct command bar presentation state.
+/// Inputs for the command-bar view.
 pub(crate) struct CommandBarPresentation<'a> {
     pub running: bool,
     pub max_results: u32,
     pub providers: kestrel_services::command_bar::EnabledProviders,
-    /// Which integration providers are actually usable right now.
+    /// Providers usable in this session.
     pub launcher: Option<&'a str>,
     pub applications: usize,
     pub file_roots: usize,
     pub scripts: usize,
-    /// The query and its ranked results, owned by the application.
+    /// Query and ranked results.
     pub query: &'a str,
     pub results: &'a [kestrel_services::command_bar::CommandResult],
     pub ranking: &'a kestrel_services::command_bar::CommandRanking,
@@ -1474,11 +1466,11 @@ impl Default for CommandBarPresentation<'_> {
     }
 }
 
-/// A shared empty ranking so a default presentation borrows instead of owning.
+/// Shared empty ranking for default presentations.
 static EMPTY_COMMAND_RANKING: kestrel_services::command_bar::CommandRanking =
     kestrel_services::command_bar::CommandRanking::EMPTY;
 
-/// Immutable presentation state for the command bar panel.
+/// Command-bar panel state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandBarViewModel {
     pub running: bool,
@@ -1519,7 +1511,7 @@ pub struct CommandRankingViewModel {
     pub pinned: bool,
 }
 
-/// The integration providers the window can switch on or off.
+/// Providers available to the command bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandProvider {
     Applications,
@@ -1562,8 +1554,7 @@ impl CommandBarViewModel {
                 provider: CommandProvider::Applications,
                 label: CommandProvider::Applications.label(),
                 enabled: presentation.providers.applications,
-                // Applications launch through the desktop's own launcher, so a
-                // missing `xdg-open` does not affect them.
+                // Applications launch through desktop-entry handling.
                 status: if !presentation.providers.applications {
                     "Disabled".to_string()
                 } else {
@@ -1681,7 +1672,7 @@ fn command_bar_status(
     status
 }
 
-/// Immutable presentation state for the normal Kestrel window.
+/// State for the main window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplicationViewModel {
     pub features: Vec<FeatureViewModel>,
@@ -1701,8 +1692,7 @@ pub struct ApplicationViewModel {
 }
 
 impl ApplicationViewModel {
-    // Each presentation is an independent borrowed projection of one service;
-    // grouping them would only move the same fields behind another struct.
+    // Separate borrowed projections keep the service fields direct.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new<'a>(
         registrations: impl Iterator<Item = &'a ServiceRegistration>,
@@ -1759,7 +1749,7 @@ impl ApplicationViewModel {
     }
 }
 
-/// Presentation state for configured panel placement and visibility.
+/// Panel placement and visibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelSectionViewModel {
     pub section: PanelSection,
@@ -1775,7 +1765,7 @@ impl From<&kestrel_core::PanelSectionConfiguration> for PanelSectionViewModel {
     }
 }
 
-/// Conservative resource-use labels disclosed by the feature hub.
+/// Feature-hub resource costs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceCostViewModel {
     pub idle: CostLevel,
@@ -1929,7 +1919,7 @@ impl From<&ToggleAction> for QuickToggleActionViewModel {
         }
     }
 }
-/// A distinct action users can take to improve a capability state.
+/// An action improving a capability state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemediationViewModel {
     pub title: &'static str,
@@ -1946,7 +1936,7 @@ fn remediation_title(status: &CapabilityStatus) -> &'static str {
     }
 }
 
-/// Presentation state for one registered feature.
+/// State for one registered feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeatureViewModel {
     pub id: String,
@@ -1997,7 +1987,7 @@ impl From<&ServiceRegistration> for FeatureViewModel {
     }
 }
 
-/// User-facing lifecycle state, independent of service enum formatting.
+/// User-facing lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeatureLifecycleViewModel {
     Registered,
@@ -2028,7 +2018,7 @@ impl From<ServiceLifecycle> for FeatureLifecycleViewModel {
     }
 }
 
-/// Presentation state for one capability report.
+/// State for one capability report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityViewModel {
     pub status: CapabilityStatusViewModel,
@@ -2037,14 +2027,14 @@ pub struct CapabilityViewModel {
     pub remediation: Option<RemediationViewModel>,
 }
 
-/// Stable, user-facing capability status and its optional detail.
+/// Capability status and optional detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityStatusViewModel {
     pub kind: CapabilityKindViewModel,
     pub label: &'static str,
     pub detail: Option<String>,
 }
-/// Semantic capability state used by presentation layers without string matching.
+/// Semantic capability state for presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityKindViewModel {
     Supported,
@@ -2102,7 +2092,7 @@ fn permission_label(permission: Permission) -> &'static str {
     }
 }
 
-/// Presentation state for one isolated configuration warning.
+/// One isolated configuration warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigurationWarningViewModel {
     pub feature_id: String,
@@ -2476,8 +2466,7 @@ mod tests {
                 .expect("all settings are represented")
                 .visible
         );
-        // Settings rows follow the configured order first, then the hidden readouts, and
-        // their arrows describe the list the move commands actually reorder.
+        // Configured rows precede hidden rows; arrows follow that order.
         let settings = &monitor.readout_settings;
         assert_eq!(settings[0].readout, MonitorReadout::Gpu);
         assert_eq!(settings[1].readout, MonitorReadout::Cpu);
@@ -2493,8 +2482,7 @@ mod tests {
     fn alert_rules_expose_the_gated_effective_state() {
         use kestrel_services::alerts::AlertPolicy;
 
-        // The configuration keeps the user's intent; the policy carries the gate that
-        // the engine enforces (for example the battery-alerts quick toggle).
+        // Policy carries quick-toggle gates over configuration intent.
         let configuration = MonitorConfiguration::default();
         assert!(configuration.alerts.battery.enabled);
         let mut policy = AlertPolicy::from_configuration(&configuration.alerts);
@@ -2531,8 +2519,7 @@ mod tests {
         use kestrel_services::system_monitor::SystemSnapshot;
         use std::time::Duration;
 
-        // `/proc/diskstats` contains "stat"; a substring match would show the disk
-        // failure as the CPU explanation.
+        // Exact source matching prevents `/proc/diskstats` from explaining CPU.
         let snapshot = SystemSnapshot {
             observed_at: Duration::from_secs(1),
             cpu_usage_percent: None,
@@ -3344,7 +3331,7 @@ mod tests {
     fn clipboard_rows_are_empty_without_an_explicit_search() {
         let configuration = ApplicationConfiguration::default();
         let snapshot = clipboard_snapshot();
-        // The service snapshot is metadata-only: no query means no row content.
+        // No query means no row content.
         let clipboard = ClipboardViewModel::from_presentation(
             &configuration.clipboard,
             ClipboardPresentation {

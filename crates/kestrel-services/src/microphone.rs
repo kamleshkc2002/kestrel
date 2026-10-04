@@ -1,4 +1,4 @@
-//! Runtime-agnostic policy and state for microphone controls.
+//! Runtime-agnostic microphone policy and state.
 
 use std::fmt;
 
@@ -412,7 +412,7 @@ mod tests {
             discoveries: VecDeque::from([
                 Ok(discovery(vec![input(1, false, true)])),
                 Ok(discovery(vec![input(1, true, true)])),
-                // Another application unmuted the input after Kestrel muted it.
+                // Another application changed the mute state.
                 Ok(discovery(vec![input(1, false, true)])),
                 Ok(discovery(vec![input(1, true, true)])),
             ]),

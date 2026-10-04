@@ -1,9 +1,7 @@
-//! Bounded, in-memory clipboard history with deterministic ownership cleanup.
+//! Bounded, in-memory clipboard history.
 //!
-//! Retained content is memory-only, owned by this service, and never written to
-//! disk. Presentation state (`ClipboardSnapshot`) carries metadata only; content
-//! leaves the worker solely through an explicit, bounded search or preview
-//! request, and through copying an entry back to the live selection.
+//! Retained content stays memory-only; published snapshots expose metadata, and
+//! content leaves only through bounded requests or copying an entry back.
 
 use std::{
     collections::VecDeque,
@@ -31,11 +29,8 @@ pub const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub const DEFAULT_IMAGE_POLL_INTERVAL: Duration = Duration::from_secs(1);
-/// The largest history the service will ever retain, regardless of configuration.
 pub const MAX_HISTORY_ITEMS: usize = 1000;
-/// The largest preview the service returns for one explicit request.
 pub const MAX_PREVIEW_BYTES: usize = 4096;
-/// The largest preview attached to one search match.
 pub const MAX_MATCH_PREVIEW_CHARS: usize = 160;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,13 +43,9 @@ pub struct ClipboardPolicy {
     pub max_age: Duration,
     pub poll_interval: Duration,
     pub image_poll_interval: Duration,
-    /// Clears only the live selection this long after Kestrel took it over.
-    ///
-    /// Saved entries are never touched by this timer.
+    /// Clears only the live selection after Kestrel takes it over.
     pub selection_clear_after: Option<Duration>,
-    /// Skips capturing content that matches a documented sensitive pattern.
     pub filter_sensitive: bool,
-    /// Whether the quick-paste action copies the plain-text form of an entry.
     pub paste_plain_text: bool,
 }
 
@@ -115,7 +106,6 @@ impl ClipboardPolicy {
 }
 
 impl ClipboardPolicy {
-    /// Projects the portable configuration contract into service policy.
     pub fn from_configuration(configuration: &kestrel_core::ClipboardConfiguration) -> Self {
         let defaults = Self::default();
         Self {
@@ -135,11 +125,7 @@ impl ClipboardPolicy {
     }
 }
 
-/// A documented sensitive-content pattern.
-///
-/// These are heuristics: they deliberately favor catching obvious secrets and
-/// therefore produce documented false positives (a commit hash, a base64 blob in
-/// prose, or a code sample mentioning `password=`).
+/// A sensitive-content heuristic; false positives are intentional.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SensitivePattern {
     pub id: &'static str,
@@ -169,7 +155,6 @@ pub const SENSITIVE_PATTERNS: [SensitivePattern; 5] = [
     },
 ];
 
-/// Returns the first matching sensitive pattern, if the text looks secret.
 pub fn match_sensitive(text: &str) -> Option<&'static str> {
     if text.contains("-----BEGIN ") && text.contains("PRIVATE KEY-----") {
         return Some(SENSITIVE_PATTERNS[0].id);
@@ -194,7 +179,6 @@ pub fn match_sensitive(text: &str) -> Option<&'static str> {
     None
 }
 
-/// The character set an opaque token is expected to use.
 fn is_secret_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'+' | b'/' | b'=')
 }
@@ -325,7 +309,7 @@ pub enum ClipboardLifecycle {
     Unavailable,
 }
 
-/// Non-sensitive metadata for one retained entry.
+/// Metadata for one retained entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardItemMetadata {
     pub id: u64,
@@ -333,9 +317,7 @@ pub struct ClipboardItemMetadata {
     pub size_bytes: usize,
     pub age: Duration,
     pub pinned: bool,
-    /// Pixel dimensions for image entries, parsed from the PNG header.
     pub image_dimensions: Option<(u32, u32)>,
-    /// Path count for file entries.
     pub file_count: Option<usize>,
 }
 
@@ -349,7 +331,7 @@ pub struct ClipboardSnapshot {
     pub pinned_items: usize,
     pub rejected_oversize_items: u64,
     pub filtered_sensitive_items: u64,
-    /// How often the automatic selection clear released the live clipboard.
+    /// Count of automatic live-selection clears.
     pub selection_clears: u64,
     pub wipe_count: u64,
     pub last_filtered_pattern: Option<&'static str>,
@@ -375,7 +357,6 @@ impl ClipboardSnapshot {
     }
 }
 
-/// One bounded search result: metadata plus an explicitly requested preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardMatch {
     pub id: u64,
@@ -383,7 +364,7 @@ pub struct ClipboardMatch {
     pub preview: String,
 }
 
-/// One bounded content preview, returned only for an explicit request.
+/// A bounded preview returned for an explicit request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardPreview {
     pub id: u64,
@@ -398,10 +379,7 @@ pub struct ClipboardPreview {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardCommand {
     Refresh,
-    /// Copies an entry back to the live selection.
-    ///
-    /// With `plain_text`, text is normalized (ANSI escapes and trailing
-    /// whitespace removed) and file entries are copied as their paths.
+    /// Copies an entry back, normalizing text when requested.
     CopyItem {
         item_id: u64,
         plain_text: bool,
@@ -413,14 +391,13 @@ pub enum ClipboardCommand {
         item_id: u64,
         pinned: bool,
     },
-    /// Replaces the text of one retained text entry.
     ReplaceText {
         item_id: u64,
         text: String,
     },
-    /// Clears only the live selection; retained entries stay.
+    /// Clears the live selection; retained entries stay.
     ClearSelection,
-    /// Clears the live selection and every retained entry.
+    /// Clears the live selection and all retained entries.
     Wipe,
 }
 
@@ -457,12 +434,10 @@ enum WorkerCommand {
         ClipboardCommand,
         Sender<Result<ClipboardSnapshot, ClipboardServiceError>>,
     ),
-    /// Applies a validated policy without dropping retained entries.
     SetPolicy(
         ClipboardPolicy,
         Sender<Result<ClipboardSnapshot, ClipboardServiceError>>,
     ),
-    /// Content reads are explicit and bounded; they never enter the snapshot.
     Query(
         ClipboardQuery,
         Sender<Result<ClipboardQueryResult, ClipboardServiceError>>,
@@ -470,7 +445,7 @@ enum WorkerCommand {
     Stop(Sender<()>),
 }
 
-/// An explicit, bounded content request served by the clipboard worker.
+/// An explicit, bounded content request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardQuery {
     Search { query: String, limit: usize },
@@ -554,10 +529,6 @@ impl ClipboardHistoryService {
             })?
     }
 
-    /// Searches retained entries and returns bounded previews for the matches.
-    ///
-    /// This is the only path that returns retained content besides an explicit
-    /// preview, and the result never reaches the published snapshot.
     pub fn search(
         &self,
         query: &str,
@@ -572,7 +543,7 @@ impl ClipboardHistoryService {
         }
     }
 
-    /// Returns one bounded preview for an explicit display request.
+    /// Returns one bounded preview for an explicit request.
     pub fn preview(
         &self,
         item_id: u64,
@@ -584,7 +555,7 @@ impl ClipboardHistoryService {
         }
     }
 
-    /// Applies a new policy to the running worker; retained entries survive.
+    /// Applies a policy while retaining existing entries.
     pub fn set_policy(
         &self,
         policy: ClipboardPolicy,
@@ -692,7 +663,6 @@ impl ClipboardEntryContent {
         }
     }
 
-    /// True when two entries hold identical content.
     fn same_content(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Text(left), Self::Text(right)) => left.as_str() == right.as_str(),
@@ -713,7 +683,7 @@ impl ClipboardEntryContent {
     }
 }
 
-/// What the worker last saw in the live selection, for change detection.
+/// Last-seen selection used for change detection.
 enum ObservedSelection {
     Text(Zeroizing<String>),
     ImagePng(Zeroizing<Vec<u8>>),
@@ -778,9 +748,7 @@ impl HistoryStore {
         }
     }
 
-    /// Retains `content` when it is new, within bounds, and not filtered.
-    ///
-    /// Returns the stored item identifier so the caller can re-own it.
+    /// Stores new, bounded, unfiltered content and returns its ID.
     fn capture(&mut self, content: ClipboardEntryContent, now: Instant) -> CaptureOutcome {
         self.prune(now);
         if content.size_bytes() == 0 {
@@ -820,13 +788,10 @@ impl HistoryStore {
         }
         match content {
             ClipboardEntryContent::Text(text) => match_sensitive(text),
-            // File names are not scanned: the documented patterns describe
-            // content, and flagging paths would hide ordinary file copies.
             _ => None,
         }
     }
 
-    /// Per-kind byte bounds plus the file-count bound.
     fn within_bounds(&self, content: &ClipboardEntryContent) -> bool {
         match content {
             ClipboardEntryContent::Text(text) => text.len() <= self.policy.max_item_bytes,
@@ -840,8 +805,7 @@ impl HistoryStore {
         }
     }
 
-    /// Drops the oldest unpinned entry first; pinned entries never bypass the
-    /// count and total-byte bounds.
+    /// Evicts oldest unpinned entries while enforcing both bounds.
     fn enforce_bounds(&mut self) {
         while self.items.len() > self.policy.max_items
             || self.total_bytes() > self.policy.max_total_bytes
@@ -851,7 +815,7 @@ impl HistoryStore {
         }
     }
 
-    /// Age pruning skips pinned entries; lock, sleep, stop, and wipe still clear them.
+    /// Age pruning skips pinned entries.
     fn prune(&mut self, now: Instant) {
         let max_age = self.policy.max_age;
         self.items.retain(|item| {
@@ -1071,7 +1035,6 @@ fn match_preview(text: &str) -> String {
         .replace(['\n', '\r'], " ")
 }
 
-/// Keeps the published snapshot and the worker side effects in one place.
 struct WorkerState<B, P> {
     policy: ClipboardPolicy,
     backend: B,
@@ -1156,7 +1119,6 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
 }
 
 impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
-    /// Handles lock/sleep: session privacy still clears everything Kestrel holds.
     fn poll_privacy(&mut self, snapshot: &Arc<Mutex<ClipboardSnapshot>>) -> bool {
         match self.privacy.poll_events() {
             Ok(events) if !events.is_empty() => {
@@ -1173,7 +1135,6 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// One polling pass: auto-clear, then capture whatever is new.
     fn tick(&mut self) {
         let now = Instant::now();
         self.history.prune(now);
@@ -1188,20 +1149,18 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         let kind = match offered {
             Some(kind) if self.support.supports(kind) => Some(kind),
             Some(_) => None,
-            // Providers that cannot enumerate types fall back to text.
+            // Type-enumeration fallback uses text.
             None if !self.support.image && !self.support.files => Some(ClipboardEntryKind::Text),
             None => None,
         };
         let Some(kind) = kind else {
             if offered.is_none() && (self.support.image || self.support.files) {
-                // A selection may have been replaced by something Kestrel does
-                // not capture (for example rich text only).
                 self.observed = None;
             }
             return;
         };
 
-        // Rich payloads are only read on the slower rich cadence.
+        // Rich payloads use a slower polling cadence.
         if kind != ClipboardEntryKind::Text {
             let due = self.last_rich_probe.is_none_or(|last| {
                 now.saturating_duration_since(last) >= self.policy.image_poll_interval
@@ -1252,8 +1211,6 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             }
             CaptureOutcome::Duplicate => self.observed = Some(observed),
             CaptureOutcome::Filtered(_pattern) => {
-                // Filtered content is not retained and is not re-owned: Kestrel
-                // must not extend the lifetime of a secret it refuses to keep.
                 self.observed = Some(observed);
             }
             CaptureOutcome::Oversize | CaptureOutcome::Empty => self.observed = Some(observed),
@@ -1303,7 +1260,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// Oversize selections are counted as a bound rejection, not as a failure.
+    /// Oversize selections count as bound rejections.
     fn record_read_error(&mut self, error: ClipboardError) {
         if error.kind == kestrel_platform::clipboard::ClipboardErrorKind::Oversize {
             self.history.rejected_oversize_items =
@@ -1325,7 +1282,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// Clears only the live selection once the automatic interval has elapsed.
+    /// Clears only the live selection after the interval elapses.
     fn auto_clear_selection(&mut self, now: Instant) {
         let Some(interval) = self.policy.selection_clear_after else {
             return;
@@ -1336,7 +1293,6 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         if now.saturating_duration_since(since) < interval {
             return;
         }
-        // Saved entries are deliberately untouched by this path.
         match self.clear_owned() {
             Ok(true) => {
                 self.history.selection_clears = self.history.selection_clears.saturating_add(1);
@@ -1346,7 +1302,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// Clears the live selection when Kestrel still owns it, and forgets it.
+    /// Clears the live selection if Kestrel still owns it.
     fn clear_owned(&mut self) -> Result<bool, ClipboardError> {
         let Some(owned) = self.owned.take() else {
             self.owned_since = None;
@@ -1370,7 +1326,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// Releases the owned selection and drops every retained entry.
+    /// Releases the owned selection and retained history.
     fn wipe_owned(&mut self) {
         if let Some(owned) = self.owned.take() {
             if let Err(error) = self.backend.clear_if_matches(&owned) {
@@ -1405,9 +1361,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                     .content(item_id)
                     .ok_or(ClipboardServiceError::UnknownItem { item_id })?;
                 let normalize = plain_text || self.policy.paste_plain_text;
-                // `owned` must be exactly the payload Kestrel just wrote: it is
-                // what a later release compares against, and `observed` must
-                // match it so the next poll does not treat it as new content.
+                // Track the exact payload for ownership and change detection.
                 let (observed, owned) = match content {
                     ClipboardEntryContent::Text(text) => {
                         let payload = if normalize {
@@ -1544,9 +1498,7 @@ mod tests {
         current: Option<FakeSelection>,
         clears: usize,
         writes: Vec<FakeSelection>,
-        /// When set, rich reads fail with this error.
         read_error: Option<ClipboardError>,
-        /// When set, the fake reports only this offered kind.
         offered: Option<ClipboardEntryKind>,
     }
 
@@ -1695,8 +1647,6 @@ mod tests {
         super::ClipboardEntryContent::Text(zeroize::Zeroizing::new(value.to_string()))
     }
 
-    // ---- bounds, eviction, and pins -------------------------------------
-
     #[test]
     fn store_enforces_per_kind_bounds_and_deduplicates() {
         let now = Instant::now();
@@ -1796,7 +1746,6 @@ mod tests {
             "a pinned entry is exempt from age pruning"
         );
 
-        // Pins never bypass the count bound.
         let mut store = new_store();
         store.capture(text("keep"), now);
         store.set_pinned(1, true).expect("pin succeeds");
@@ -1816,8 +1765,6 @@ mod tests {
             "wipe clears pinned entries as well: lock, sleep, and stop must not leave content behind"
         );
     }
-
-    // ---- search, preview, edit, delete ----------------------------------
 
     #[test]
     fn search_matches_text_files_and_image_labels_with_bounded_previews() {
@@ -1862,7 +1809,6 @@ mod tests {
         );
         assert_eq!(store.search("", 1).len(), 1, "the limit is honoured");
 
-        // Match previews are bound by characters, independent of the item byte bound.
         let long = "x".repeat(MAX_MATCH_PREVIEW_CHARS * 2);
         let mut store = HistoryStore::new(ClipboardPolicy {
             max_item_bytes: 4096,
@@ -1981,8 +1927,6 @@ mod tests {
         assert_eq!(store.delete(&[42]), 0);
     }
 
-    // ---- sensitive filtering --------------------------------------------
-
     #[test]
     fn sensitive_patterns_cover_documented_heuristics() {
         assert_eq!(
@@ -2010,8 +1954,7 @@ mod tests {
         );
         assert_eq!(SENSITIVE_PATTERNS.len(), 5);
 
-        // Documented false-positive boundary: a 40-character git SHA stays a
-        // commit hash, while a 64-character digest is flagged.
+        // 40-character SHAs remain ordinary values; longer digests are secrets.
         assert_eq!(match_sensitive(&"a1b2c3d4e5".repeat(4)), None);
         assert_eq!(
             match_sensitive("A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6"),
@@ -2054,8 +1997,6 @@ mod tests {
         );
     }
 
-    // ---- plain text ------------------------------------------------------
-
     #[test]
     fn plain_text_strips_escape_sequences_and_trailing_whitespace() {
         assert_eq!(
@@ -2066,8 +2007,6 @@ mod tests {
         assert_eq!(plain_text("no escapes").as_str(), "no escapes");
         assert_eq!(plain_text("µnicode ✓  ").as_str(), "µnicode ✓");
     }
-
-    // ---- worker behavior -------------------------------------------------
 
     fn wait_for_items(service: &ClipboardHistoryService, expected: usize) {
         for _ in 0..200 {
@@ -2082,7 +2021,6 @@ mod tests {
         );
     }
 
-    /// The service under test plus the fake selection and privacy event log.
     type FakeHarness = (
         ClipboardHistoryService,
         Arc<Mutex<FakeState>>,
@@ -2350,7 +2288,6 @@ mod tests {
             Some(FakeSelection::Files(files))
         );
 
-        // Oversize rich payloads are counted, not retained.
         state.lock().expect("fake state").current = Some(FakeSelection::Image(vec![0u8; 512]));
         for _ in 0..200 {
             if service.latest().rejected_oversize_items > 0 {

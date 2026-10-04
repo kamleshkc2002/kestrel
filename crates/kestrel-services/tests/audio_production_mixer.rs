@@ -1,13 +1,9 @@
-//! Production check for the PulseAudio-compatible audio adapter.
-//!
-//! `cargo test --workspace` must tolerate machines without an audio server, so
-//! this test skips when no server is reachable. It is read-only: it never changes
-//! the session's default output, device volumes, or stream routing.
+//! Read-only production check for the PulseAudio-compatible adapter; runs when a
+//! server is available and skips otherwise.
 
 use kestrel_platform::audio::{AudioBackend, PulseAudioBackend};
 use kestrel_services::audio::{AudioCommand, AudioCommandError, AudioMixerService, AudioPolicy};
 
-/// Returns a backend only when the real server answers discovery.
 fn reachable_backend() -> Option<PulseAudioBackend> {
     let mut backend = PulseAudioBackend::new();
     match backend.discover() {
@@ -30,7 +26,6 @@ fn discovery_and_policy_projection_work_against_a_live_server() {
             .expect("the built-in policy is valid");
     let snapshot = service.refresh().expect("the live server is discoverable");
 
-    // Structural invariants that must hold for any real session graph.
     assert!(
         snapshot
             .outputs
@@ -59,8 +54,7 @@ fn discovery_and_policy_projection_work_against_a_live_server() {
         assert!(!group.1.is_empty());
     }
 
-    // The configured ceiling must reject a boosted request before any backend call
-    // and must report the effective maximum instead of clamping silently.
+    // Rejects before any backend call and reports the effective maximum.
     if let Some(output) = snapshot.default_output() {
         let output_id = output.id;
         let failure = service
@@ -91,8 +85,7 @@ fn out_of_range_stream_requests_never_reach_the_server() {
         .outputs
         .len();
 
-    // An unknown stream must be reported as unavailable rather than panicking or
-    // mutating an unrelated stream.
+    // Unknown streams leave unrelated streams unchanged.
     let failure = service
         .execute(AudioCommand::SetStreamMute {
             stream_id: u32::MAX,

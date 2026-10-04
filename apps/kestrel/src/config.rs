@@ -23,22 +23,22 @@ use kestrel_core::{
 };
 use serde::Deserialize;
 
-/// Configuration loaded from disk, including isolated feature-level diagnostics.
+/// Loaded configuration and isolated diagnostics.
 #[derive(Debug, Default)]
 pub struct LoadedConfiguration {
     pub configuration: ApplicationConfiguration,
     pub warnings: Vec<ConfigurationWarning>,
 }
 
-/// A malformed setting that disabled only its own preference.
+/// A malformed setting disabling only its preference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigurationWarning {
-    /// A dotted portable-document location, such as `features.audio.mixer`.
+    /// Dotted portable-document location.
     pub feature_id: String,
     pub reason: String,
 }
 
-/// An unrecoverable configuration I/O or document-level error.
+/// Unrecoverable configuration I/O or document error.
 #[derive(Debug)]
 pub enum ConfigurationLoadError {
     Io(std::io::Error),
@@ -73,7 +73,7 @@ impl std::fmt::Display for ConfigurationLoadError {
 
 impl std::error::Error for ConfigurationLoadError {}
 
-/// Returns the XDG path used for Kestrel's non-sensitive configuration.
+/// XDG path for non-sensitive configuration.
 pub fn configuration_path() -> Option<PathBuf> {
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -81,7 +81,7 @@ pub fn configuration_path() -> Option<PathBuf> {
     Some(config_home.join("kestrel").join("config.toml"))
 }
 
-/// Loads and migrates a configuration file, retaining valid settings.
+/// Loads and migrates configuration, retaining valid settings.
 pub fn load(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> {
     match fs::read_to_string(path) {
         Ok(contents) => import_string(&contents),
@@ -92,7 +92,7 @@ pub fn load(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> 
     }
 }
 
-/// Saves only the typed, versioned non-sensitive settings owned by this application.
+/// Saves typed, versioned non-sensitive settings.
 pub fn save(path: &Path, configuration: &ApplicationConfiguration) -> Result<(), std::io::Error> {
     let content = export_string(configuration).map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
@@ -103,12 +103,12 @@ pub fn save(path: &Path, configuration: &ApplicationConfiguration) -> Result<(),
     fs::write(path, content)
 }
 
-/// Imports a portable configuration string. Isolated setting errors become warnings.
+/// Imports portable configuration; isolated errors become warnings.
 pub fn import_string(contents: &str) -> Result<LoadedConfiguration, ConfigurationLoadError> {
     parse(contents)
 }
 
-/// Exports only the typed portable configuration, in deterministic TOML form.
+/// Exports typed portable configuration as deterministic TOML.
 pub fn export_string(
     configuration: &ApplicationConfiguration,
 ) -> Result<String, ConfigurationError> {
@@ -116,8 +116,7 @@ pub fn export_string(
     Ok(toml::to_string_pretty(configuration).expect("portable configuration is serializable"))
 }
 
-/// Imports a portable configuration file. Unlike startup loading, a missing
-/// explicitly selected import is reported to the caller.
+/// Imports a selected configuration file; missing files are errors.
 pub fn import_file(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> {
     let contents = fs::read_to_string(path).map_err(ConfigurationLoadError::Io)?;
     import_string(&contents)
@@ -696,9 +695,7 @@ fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>
         }
     }
 
-    // A per-item bound above the total byte bound is not a valid shape. The
-    // explicit total cap wins, because exceeding it is the one outcome a user
-    // cannot have intended, and the entry bounds are lowered to fit it.
+    // Total-byte bounds cap per-item limits when inconsistent.
     let total = loaded.configuration.clipboard.max_total_bytes;
     let mut repaired = false;
     if loaded.configuration.clipboard.max_item_bytes > total {
@@ -869,8 +866,7 @@ fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Valu
     if let Some(scripts) = section.get("scripts") {
         match Vec::<kestrel_core::CommandScriptConfiguration>::deserialize(scripts.clone()) {
             Ok(parsed) => {
-                // A malformed script is dropped on its own so one typo cannot
-                // invalidate the whole table.
+                // Malformed scripts are dropped while the table remains valid.
                 let mut accepted = Vec::new();
                 let mut names: Vec<String> = Vec::new();
                 for (index, script) in parsed.into_iter().enumerate() {
@@ -901,8 +897,7 @@ fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Valu
         }
     }
 
-    // The assembled table must be self-consistent: an inconsistent one keeps the
-    // user's provider switches but drops the roots that cannot be trusted.
+    // Invalid command-bar roots are dropped while switches remain.
     if let Err(error) = loaded.configuration.command_bar.validate() {
         let existing = loaded.configuration.command_bar.clone();
         loaded.configuration.command_bar = kestrel_core::CommandBarConfiguration {
@@ -1630,8 +1625,7 @@ expansion_timing = "vibes"
 
     #[test]
     fn export_carries_snippet_bounds_but_never_snippet_content() {
-        // Snippet text lives in its own private file, and the portable export
-        // must carry neither that text nor a resolved variable value.
+        // Snippet content stays private and out of portable exports.
         let mut configuration = ApplicationConfiguration::default();
         configuration.snippets.max_content_bytes = 4096;
 

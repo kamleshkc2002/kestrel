@@ -23,22 +23,21 @@ pub struct WindowView {
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
     microphone_container: std::cell::RefCell<Option<gtk::Box>>,
     speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
-    /// The retained clipboard panel, so a search keeps its text and focus.
+    /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
-    /// The retained snippet panel, for the same reason.
     snippet_panel: std::cell::RefCell<Option<SnippetPanel>>,
-    /// The retained command bar panel, for the same reason.
+    /// Retained so searches keep text and focus.
     command_panel: std::cell::RefCell<Option<CommandPanel>>,
 }
 
-/// The reusable parts of the command bar group.
+/// Reusable command-bar widgets.
 struct CommandPanel {
     container: gtk::Box,
     status: gtk::Label,
     results: gtk::Box,
 }
 
-/// The reusable parts of the snippet group.
+/// Reusable snippet widgets.
 struct SnippetPanel {
     container: gtk::Box,
     status: gtk::Label,
@@ -48,10 +47,7 @@ struct SnippetPanel {
     results: gtk::Box,
 }
 
-/// The reusable parts of the clipboard group.
-///
-/// The search field and status line survive result updates; only the result
-/// rows are rebuilt, so typing is never interrupted by a refresh.
+/// Reusable clipboard widgets; search state survives row refreshes.
 struct ClipboardPanel {
     container: gtk::Box,
     status: gtk::Label,
@@ -59,7 +55,7 @@ struct ClipboardPanel {
     selected: std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<u64>>>,
 }
 
-/// Keeps programmatic search-field updates from re-triggering a search.
+/// Blocks searches triggered by programmatic updates.
 type SearchGuard = std::rc::Rc<std::cell::Cell<bool>>;
 
 impl WindowView {
@@ -135,7 +131,7 @@ impl WindowView {
         *self.command_panel.borrow_mut() = page.command_panel;
     }
 
-    /// Updates the command bar in place, preserving the query field.
+    /// Updates the command bar in place.
     pub fn set_command_bar(&self, command_bar: &kestrel::CommandBarViewModel) {
         let panel = self.command_panel.borrow();
         let Some(panel) = panel.as_ref() else {
@@ -148,7 +144,7 @@ impl WindowView {
         fill_command_panel(panel, command_bar, &self.commands);
     }
 
-    /// Updates the clipboard group in place, preserving the search field.
+    /// Updates the clipboard group in place.
     pub fn set_clipboard(&self, clipboard: &kestrel::ClipboardViewModel) {
         let panel = self.clipboard_panel.borrow();
         let Some(panel) = panel.as_ref() else {
@@ -159,12 +155,11 @@ impl WindowView {
             child.unparent();
         }
         fill_clipboard_results(panel, clipboard, &self.commands);
-        // A background capture makes entries exist before any query was run, so
-        // the first listing is requested here as well as on a full rebuild.
+        // Background capture may create entries before the first search.
         request_initial_clipboard_listing(clipboard, &self.commands);
     }
 
-    /// Updates the snippet group in place, preserving the search field.
+    /// Updates the snippet group in place.
     pub fn set_snippets(&self, snippets: &kestrel::SnippetsViewModel) {
         let panel = self.snippet_panel.borrow();
         let Some(panel) = panel.as_ref() else {
@@ -191,7 +186,7 @@ impl WindowView {
         container.append(&build_monitor_group(monitor));
     }
 
-    /// Replaces the microphone group with the latest backend reading.
+    /// Replaces the microphone group.
     pub fn set_microphone(&self, microphone: &MicrophoneViewModel) {
         let Some(container) = self.microphone_container.borrow().as_ref().cloned() else {
             return;
@@ -202,7 +197,7 @@ impl WindowView {
         container.append(&build_microphone_group(microphone, &self.commands));
     }
 
-    /// Replaces the speed-test group, keeping its position in the page.
+    /// Replaces the speed-test group.
     pub fn set_speed_test(&self, speed_test: &SpeedTestViewModel) {
         let Some(container) = self.speed_test_container.borrow().as_ref().cloned() else {
             return;
@@ -831,8 +826,7 @@ fn build_settings_group(
         ]);
         row.set_tooltip_text(Some(&description));
         row.connect_value_notify(move |spin| {
-            // Byte bounds are edited in kibibytes and stored in bytes; the
-            // match arm carries the unit conversion for each bound.
+            // Bounds use kibibytes in the UI and bytes in storage.
             let value = spin.value().max(0.0);
             let command = match limit {
                 kestrel::ClipboardLimit::Items(_) => kestrel::ClipboardLimit::Items(value as u32),
@@ -1266,10 +1260,7 @@ fn connect_file_chooser(
     });
 }
 
-/// Builds the microphone group from the latest backend reading.
-///
-/// The switch shows a state only when every input agrees; a mixed reading
-/// leaves it off but usable, so one click mutes every input.
+/// Builds microphone controls; mixed mute state leaves the switch usable.
 fn build_microphone_group(
     microphone: &MicrophoneViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -1306,8 +1297,7 @@ fn build_microphone_group(
         let _ = sender.try_send(ApplicationCommand::Microphone(
             kestrel::MicrophoneCommand::SetMuted(muted),
         ));
-        // The switch follows the backend reading on the next refresh rather
-        // than claiming the requested state.
+        // The next backend refresh supplies the switch state.
         gtk::glib::Propagation::Stop
     });
     row.add_suffix(&mute);
@@ -1369,7 +1359,7 @@ fn build_microphone_group(
     group
 }
 
-/// Builds the speed-test group with its disclosure above the Start button.
+/// Builds the speed-test group.
 fn build_speed_test_group(
     speed_test: &SpeedTestViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -1491,11 +1481,7 @@ fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
     group
 }
 
-/// Requests the first listing once, when entries exist but none were requested.
-///
-/// Rows are only ever produced by an explicit search, so without this the panel
-/// would report retained entries while showing none. After a wipe the retained
-/// count is zero and no further request is made, which keeps this from looping.
+/// Requests an initial empty search when retained entries lack results.
 fn request_initial_clipboard_listing(
     clipboard: &kestrel::ClipboardViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -1509,7 +1495,7 @@ fn request_initial_clipboard_listing(
     }
 }
 
-/// Builds the retained clipboard group: search field, status line, and results.
+/// Builds the retained clipboard group.
 fn build_clipboard_panel(
     clipboard: &kestrel::ClipboardViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -1541,8 +1527,7 @@ fn build_clipboard_panel(
     search_row.add_suffix(&search);
     search_row.set_activatable_widget(Some(&search));
     let sender = commands.clone();
-    // The field is only filled programmatically after a full rebuild, and the
-    // guard stops that from re-running the search.
+    // Guard programmatic field updates from triggering searches.
     let guard: SearchGuard = std::rc::Rc::new(std::cell::Cell::new(false));
     let handler_guard = std::rc::Rc::clone(&guard);
     search.connect_search_changed(move |entry| {
@@ -1652,7 +1637,7 @@ fn build_clipboard_panel(
     panel
 }
 
-/// Rebuilds the result rows from the current bounded search matches.
+/// Rebuilds clipboard result rows.
 fn fill_clipboard_results(
     panel: &ClipboardPanel,
     clipboard: &kestrel::ClipboardViewModel,
@@ -1801,7 +1786,7 @@ fn fill_clipboard_results(
     }
 }
 
-/// The explicitly requested preview for one entry.
+/// Builds the explicitly requested preview row.
 fn build_clipboard_preview_row(
     preview: &kestrel::ClipboardPreviewViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -1859,7 +1844,7 @@ fn build_clipboard_preview_row(
     row
 }
 
-/// Builds the retained snippet group: status, editor, search, and results.
+/// Builds the retained snippet group.
 fn build_snippet_panel(
     snippets: &kestrel::SnippetsViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -1958,11 +1943,9 @@ fn build_snippet_panel(
         guard.set(false);
     }
     group.add(&search_row);
-
-    // Results are filled below; the panel keeps the widgets between updates.
+    // Keep widgets between updates; request the initial listing once.
     let results = gtk::Box::new(Orientation::Vertical, 6);
-    // Snippets load with the library, so the first listing is requested once
-    // when entries exist but nothing has been requested yet.
+
     if snippets.running
         && snippets.search_query.is_empty()
         && snippets.items.is_empty()
@@ -1985,7 +1968,7 @@ fn build_snippet_panel(
     panel
 }
 
-/// Fills the editor and the result rows for the current snippet state.
+/// Fills the snippet editor and results.
 fn fill_snippet_panel(
     panel: &SnippetPanel,
     snippets: &kestrel::SnippetsViewModel,
@@ -2007,7 +1990,7 @@ fn fill_snippet_panel(
         "Editing a stored snippet"
     });
 
-    // The editor is usable exactly while the snippet feature is running.
+    // Editing is available only while the feature runs.
     let editable = snippets.running;
     let name = entry_row(panel, commands, "Name", &draft.name, editable);
     let folder = entry_row(panel, commands, "Folder", &draft.folder, editable);
@@ -2130,7 +2113,7 @@ fn fill_snippet_panel(
     }
 }
 
-/// One single-line editor field.
+/// One single-line editor.
 fn entry_row(
     panel: &SnippetPanel,
     _commands: &Sender<ApplicationCommand>,
@@ -2151,7 +2134,7 @@ fn entry_row(
     entry
 }
 
-/// The multi-line snippet body editor.
+/// Multi-line snippet editor.
 fn text_view_row(
     panel: &SnippetPanel,
     _commands: &Sender<ApplicationCommand>,
@@ -2178,7 +2161,7 @@ fn text_view_row(
     view
 }
 
-/// Builds the retained command bar: query field, providers, and results.
+/// Builds the retained command-bar group.
 fn build_command_panel(
     command_bar: &kestrel::CommandBarViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -2259,8 +2242,7 @@ fn build_command_panel(
         group.add(&row);
     }
 
-    // The learned ranking is inspectable and resettable, and holds identifiers
-    // and counts only.
+    // Ranking stores identifiers and counts, and can be reset.
     let ranking_summary = if command_bar.ranking_entries.is_empty() {
         "Nothing learned yet".to_string()
     } else {
@@ -2309,7 +2291,7 @@ fn build_command_panel(
     panel
 }
 
-/// Fills the ranked result rows.
+/// Fills ranked result rows.
 fn fill_command_panel(
     panel: &CommandPanel,
     command_bar: &kestrel::CommandBarViewModel,
@@ -2387,7 +2369,7 @@ fn fill_command_panel(
     }
 }
 
-/// Which service entity a volume or mute control addresses.
+/// Target of a volume or mute control.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AudioLevelTarget {
     Output(u32),
@@ -2421,7 +2403,7 @@ impl AudioLevelTarget {
     }
 }
 
-/// Mute switch plus a numeric volume entry bounded by the configured boost ceiling.
+/// Builds mute and volume controls.
 fn build_audio_level_controls(
     target: AudioLevelTarget,
     label: &str,

@@ -1,8 +1,5 @@
-//! Disposable Phase 0 probe for Kestrel Issue #4.
-//!
-//! This package is intentionally outside the main workspace. It validates the
-//! PulseAudio-compatible protocol through pactl's structured JSON output; it
-//! is not a production audio adapter.
+//! Phase 0 audio probe for Kestrel issue #4; validates pactl JSON.
+//! It provides Phase 0 evidence for adapter design.
 
 use serde_json::{Map, Value, json};
 use std::{

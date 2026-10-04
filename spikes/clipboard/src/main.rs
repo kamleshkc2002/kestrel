@@ -1,8 +1,5 @@
-//! Disposable Phase 0 probe for Kestrel Issue #5.
-//!
-//! The default mode never retrieves clipboard contents. The explicit lifecycle
-//! mode only operates when the target selection is proven empty and reports
-//! booleans rather than clipboard data.
+//! Phase 0 clipboard probe for Kestrel issue #5; read-only mode reports metadata
+//! only.
 
 use serde_json::{Value, json};
 use std::{

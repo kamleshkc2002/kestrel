@@ -25,21 +25,20 @@ use pulse::{
 use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "audio.mixer";
-/// The stable feature identifier for global microphone controls.
+/// Feature identifier for global microphone controls.
 pub const MICROPHONE_FEATURE_ID: &str = "audio.microphone";
 
-/// One capture source the server exposes; sink monitors are never included.
+/// A capture source; sink monitors are excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputDevice {
     pub id: u32,
-    /// The server's source name, used only to make it the default.
+    /// Server source name, used to select the default.
     pub name: String,
-    /// The user-facing label. It is shown in the window and never placed in
-    /// capability evidence.
+    /// User-facing label, excluded from capability evidence.
     pub description: String,
     pub volume_percent: u8,
     pub muted: bool,
-    /// True when this source is the server's current default input.
+    /// Whether this is the server's default input.
     pub is_default: bool,
 }
 
@@ -49,15 +48,15 @@ pub struct InputDiscovery {
     pub inputs: Vec<InputDevice>,
 }
 
-/// Domain-shaped capture-source operations used by the microphone service.
+/// Capture-source operations for the microphone service.
 pub trait MicrophoneBackend {
     fn discover_inputs(&mut self) -> Result<InputDiscovery, AudioError>;
     fn set_input_mute(&mut self, input_id: u32, muted: bool) -> Result<(), AudioError>;
-    /// Makes the named source the server-wide default input.
+    /// Sets the named source as the server-wide default.
     fn set_default_input(&mut self, input_name: &str) -> Result<(), AudioError>;
 }
 
-/// Read-only probe for `audio.microphone`; it only lists sources.
+/// Read-only `audio.microphone` probe.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MicrophoneProbe;
 
@@ -85,13 +84,13 @@ pub struct OutputDevice {
     pub description: String,
     pub volume_percent: u8,
     pub muted: bool,
-    /// True when this device is the server's current default output.
+    /// Whether this is the server's default output.
     pub is_default: bool,
-    /// Owning card index, absent for virtual devices with no hardware card.
+    /// Hardware card index; absent for virtual devices.
     pub card_id: Option<u32>,
-    /// User-facing card label used to group devices that share hardware.
+    /// Card label used to group devices.
     pub card_name: Option<String>,
-    /// Active port name, when the device exposes ports.
+    /// Active port name, when available.
     pub port_name: Option<String>,
     pub port_description: Option<String>,
 }
@@ -107,7 +106,7 @@ pub struct PlaybackStream {
     pub volume_percent: Option<u8>,
     pub volume_writable: bool,
     pub muted: bool,
-    /// True for idle/corked streams that are not currently playing.
+    /// Whether the stream is idle/corked.
     pub corked: bool,
 }
 
@@ -149,16 +148,16 @@ impl fmt::Display for AudioError {
 
 impl Error for AudioError {}
 
-/// Domain-shaped PulseAudio operations used by the audio service.
+/// PulseAudio operations for the audio service.
 pub trait AudioBackend {
     fn discover(&mut self) -> Result<AudioDiscovery, AudioError>;
     fn set_stream_volume(&mut self, stream_id: u32, volume_percent: u8) -> Result<(), AudioError>;
     fn set_stream_mute(&mut self, stream_id: u32, muted: bool) -> Result<(), AudioError>;
     fn move_stream(&mut self, stream_id: u32, output_id: u32) -> Result<(), AudioError>;
-    /// Sets the volume of one output device; the same boost bound applies.
+    /// Sets output volume, subject to the shared boost bound.
     fn set_output_volume(&mut self, output_id: u32, volume_percent: u8) -> Result<(), AudioError>;
     fn set_output_mute(&mut self, output_id: u32, muted: bool) -> Result<(), AudioError>;
-    /// Makes the named output the server-wide default.
+    /// Sets the named output as the server-wide default.
     fn set_default_output(&mut self, output_name: &str) -> Result<(), AudioError>;
 }
 
@@ -183,7 +182,7 @@ impl PulseAudioBackend {
         })
     }
 
-    /// Rejects amplification above the shared hard cap instead of silently clamping it.
+    /// Rejects amplification above the shared hard cap.
     fn check_volume_bound(volume_percent: u8) -> Result<(), AudioError> {
         if volume_percent > MAX_AUDIO_BOOST_PERCENT {
             return Err(AudioError::new(
@@ -437,8 +436,7 @@ impl MicrophoneBackend for PulseAudioBackend {
         } else {
             Err(AudioError::new(
                 AudioErrorKind::Rejected,
-                // The source name identifies the device, so it stays out of
-                // a message that may be shown or logged.
+                // Keep the source name out of user-visible errors.
                 "PulseAudio rejected the default input change",
             ))
         }
@@ -637,7 +635,7 @@ impl PulseSession {
         Ok(server)
     }
 
-    /// Resolves card indices to user-facing labels for device grouping.
+    /// Resolves card indices to labels for device grouping.
     fn cards(&mut self) -> Result<Vec<(u32, String)>, AudioError> {
         let result = Rc::new(RefCell::new(Vec::new()));
         let failed = Rc::new(Cell::new(false));
@@ -852,18 +850,16 @@ impl Drop for PulseSession {
     }
 }
 
-/// Converts a server volume to a percentage without hiding amplification.
+/// Converts server volume to a percentage while preserving amplification.
 ///
-/// Values above the shared amplification cap stay readable so the UI never
-/// reports a silently clamped value; only the `u8` range bounds the result.
-/// Rounding to nearest keeps a set/read round trip exact at every percentage.
+/// Values above the cap remain readable; rounding preserves set/read values.
 fn volume_percent(volume: Volume) -> u8 {
     let percent = (u64::from(volume.0).saturating_mul(100) + u64::from(Volume::NORMAL.0) / 2)
         / u64::from(Volume::NORMAL.0);
     percent.min(u64::from(u8::MAX)) as u8
 }
 
-/// Builds server channel volumes for a percentage, including amplification.
+/// Builds channel volumes for a percentage, including amplification.
 fn channel_volumes(channels: u8, volume_percent: u8) -> ChannelVolumes {
     let raw = (u64::from(Volume::NORMAL.0).saturating_mul(u64::from(volume_percent)) + 50) / 100;
     let mut volumes = ChannelVolumes::default();
@@ -871,7 +867,7 @@ fn channel_volumes(channels: u8, volume_percent: u8) -> ChannelVolumes {
     volumes
 }
 
-/// Builds the capability report for a successful discovery without cloning it.
+/// Builds a capability report from borrowed discovery data.
 pub fn capability_for(discovery: &AudioDiscovery) -> CapabilityReport {
     let stream_count = discovery.streams.len();
     let output_count = discovery.outputs.len();

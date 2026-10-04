@@ -1,4 +1,4 @@
-//! Runtime-agnostic sampling policy for the Linux system monitor.
+//! Runtime-agnostic Linux system-monitor sampling policy.
 
 use std::{
     collections::{BTreeMap, VecDeque},

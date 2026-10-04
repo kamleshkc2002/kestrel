@@ -1,22 +1,16 @@
-//! Snippet library policy, deterministic variable rendering, and
-//! capability-gated insertion.
+//! Deterministic snippet rendering with capability-gated insertion.
 //!
-//! Rendering never reaches outside the process: variables are expanded from the
-//! supplied clock and a bounded clipboard value. Insertion is refused outright
-//! when no verified provider exists, so the feature cannot silently type text
-//! through a mechanism nobody validated.
+//! Expansion uses supplied context and bounded clipboard text; insertion requires
+//! a verified provider.
 
 use std::{error::Error, fmt, time::Duration};
 
 use kestrel_core::{Snippet, SnippetError, SnippetVariable};
 use kestrel_platform::snippets::{InsertionBackend, InsertionError, InsertionProvider, LocalTime};
 
-/// Shown in previews for a variable whose value is only known at insert time.
 pub const CLIPBOARD_PLACEHOLDER: &str = "«clipboard»";
-/// Shown when the live selection is empty at insert time.
 pub const CLIPBOARD_EMPTY: &str = "«clipboard empty»";
 
-/// Retention and insertion policy for the snippet library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnippetPolicy {
     pub max_content_bytes: u32,
@@ -40,20 +34,16 @@ impl SnippetPolicy {
     }
 }
 
-/// The values a render may substitute.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RenderContext<'a> {
     pub local_time: Option<LocalTime>,
     pub timezone: Option<&'a str>,
-    /// The live selection, already read by the caller; `None` with
-    /// `clipboard_available` means the selection is empty.
+    /// Caller-provided live selection; `None` with availability means empty.
     pub clipboard: Option<&'a str>,
     pub clipboard_available: bool,
 }
 
 impl RenderContext<'_> {
-    /// The deterministic preview context: no clipboard read and no clock, so
-    /// every variable previews as its placeholder.
     pub fn preview() -> Self {
         Self::default()
     }
@@ -67,10 +57,7 @@ pub struct RenderedSnippet {
     pub clipboard_empty: bool,
 }
 
-/// Expands a snippet's variables locally.
-///
-/// Clipboard text is clipped to the configured bound, and a missing value keeps
-/// its placeholder instead of guessing.
+/// Expands variables locally, clipping clipboard text to the configured bound.
 pub fn render(
     snippet: &Snippet,
     policy: SnippetPolicy,
@@ -158,7 +145,6 @@ pub fn clip_text(text: &str, max_bytes: usize) -> (String, bool) {
     (text[..end].to_string(), true)
 }
 
-/// One search result: metadata plus a deterministic preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetMatch {
     pub name: String,
@@ -169,7 +155,6 @@ pub struct SnippetMatch {
     pub variables: Vec<SnippetVariable>,
 }
 
-/// The snippet library: ordered definitions with validated names and triggers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SnippetLibrary {
     snippets: Vec<Snippet>,
@@ -203,7 +188,7 @@ impl SnippetLibrary {
             .collect()
     }
 
-    /// Folders in first-appearance order, then ungrouped snippets.
+    /// Folders in first-appearance order, followed by ungrouped snippets.
     pub fn folders(&self) -> Vec<String> {
         let mut folders: Vec<String> = Vec::new();
         for snippet in &self.snippets {
@@ -216,11 +201,7 @@ impl SnippetLibrary {
         folders
     }
 
-    /// Adds or replaces a snippet, enforcing name and trigger uniqueness.
-    ///
-    /// Trigger uniqueness is case-insensitive because a trigger is matched by
-    /// text, and a trigger must start with a non-alphanumeric delimiter so it
-    /// cannot collide with ordinary typing.
+    /// Adds or replaces a snippet, enforcing unique names and delimited triggers.
     pub fn upsert(&mut self, snippet: Snippet, policy: SnippetPolicy) -> Result<(), SnippetError> {
         snippet.validate(policy.max_content_bytes)?;
         if let Some(trigger) = snippet.trigger.as_deref().map(str::trim) {
@@ -276,7 +257,6 @@ impl SnippetLibrary {
         Ok(self.snippets.remove(index))
     }
 
-    /// Searches names, folders, triggers, and content, newest-stable order.
     pub fn search(&self, query: &str, limit: usize, policy: SnippetPolicy) -> Vec<SnippetMatch> {
         let needle = query.trim().to_lowercase();
         let limit = limit.clamp(1, 100);
@@ -313,7 +293,6 @@ impl SnippetLibrary {
 }
 
 impl SnippetLibrary {
-    /// Validates a whole library, reporting the first rejected definition.
     pub fn validate(&self, policy: SnippetPolicy) -> Result<(), SnippetError> {
         let mut checked = SnippetLibrary::default();
         for snippet in &self.snippets {
@@ -333,7 +312,7 @@ pub struct InsertionReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnippetServiceError {
-    /// No verified insertion provider exists, so expansion stays disabled.
+    /// Insertion stays disabled until a verified provider is available.
     ExpansionUnavailable {
         reason: String,
     },
@@ -353,15 +332,14 @@ impl fmt::Display for SnippetServiceError {
 
 impl Error for SnippetServiceError {}
 
-/// Owns the insert path and refuses to act without a verified provider.
+/// Owns insertion; action requires a verified provider.
 pub struct SnippetInsertionService<B: InsertionBackend> {
     backend: Option<B>,
     unavailable: Option<String>,
 }
 
 impl<B: InsertionBackend> SnippetInsertionService<B> {
-    /// Builds the service from a discovery result, preserving the reason when
-    /// no provider was verified.
+    /// Builds the service, preserving why provider discovery failed.
     pub fn new(backend: Result<B, InsertionError>) -> Self {
         match backend {
             Ok(backend) => Self {
@@ -387,10 +365,7 @@ impl<B: InsertionBackend> SnippetInsertionService<B> {
         self.unavailable.as_deref()
     }
 
-    /// Renders and inserts one snippet.
-    ///
-    /// This is the only path that types text, and it is unavailable whenever the
-    /// service was built without a provider.
+    /// Renders and inserts one snippet when a provider is available.
     pub fn insert(
         &mut self,
         snippet: &Snippet,
@@ -573,7 +548,6 @@ mod tests {
             )
             .expect("a snippet without a trigger is accepted");
 
-        // A trigger that duplicates another snippet, case-insensitively, is a conflict.
         assert_eq!(
             library.upsert(
                 Snippet::new("Other", None, Some(";ADDR".to_string()), "x"),
@@ -584,7 +558,6 @@ mod tests {
             })
         );
 
-        // A trigger must start with a delimiter so it cannot collide with typing.
         assert_eq!(
             library.upsert(
                 Snippet::new("Bad", None, Some("addr".to_string()), "x"),
@@ -595,7 +568,6 @@ mod tests {
             })
         );
 
-        // Names are unique case-insensitively as well.
         assert_eq!(
             library.upsert(Snippet::new("address", None, None, "x"), policy),
             Err(SnippetError::DuplicateName {
@@ -603,7 +575,6 @@ mod tests {
             })
         );
 
-        // Replacing a snippet keeps its position and accepts the same trigger.
         library
             .upsert(
                 Snippet::new("Address", None, Some(";addr".to_string()), "Street 2"),
