@@ -1,6 +1,5 @@
 //! Capability-gated text insertion and local time rendering.
-//! Providers are verified before use; uinput is never selected automatically
-//! because it requires deliberate input-device access.
+//! Providers are verified before use; uinput requires deliberate input-device access.
 
 use std::{
     env,
@@ -108,9 +107,9 @@ impl InsertionPath {
 pub enum InsertionErrorKind {
     /// No verified insertion provider is available.
     MissingDependency,
-    /// The provider could not be started.
+    /// Provider startup failed.
     SpawnFailed,
-    /// The provider's exit status could not be collected.
+    /// Provider exit status collection failed.
     WaitFailed,
     TimedOut,
     Rejected,
@@ -146,9 +145,9 @@ pub trait InsertionBackend: Send + 'static {
     fn insert_text(&mut self, text: &str) -> Result<(), InsertionError>;
 }
 
-/// Finds a provider executable without invoking a shell.
+/// Finds a provider executable through direct path lookup.
 ///
-/// `preferred` pins one provider; automatic search skips uinput.
+/// `preferred` pins one provider; automatic search uses providers suitable for unattended access.
 pub fn discover_insertion_provider_with(
     preferred: SnippetProviderPreference,
     path_env: Option<&OsStr>,
@@ -205,7 +204,7 @@ fn search_roots(path_env: Option<&OsStr>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolves an executable against search roots.
+/// Resolves an executable from the configured search roots.
 fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     for root in roots {
         let candidate = root.join(name);
@@ -221,7 +220,7 @@ fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 
 /// Runs a verified provider for one insertion.
 ///
-/// Text travels via stdin, not argv, so it is absent from `/proc/<pid>/cmdline`;
+/// Text travels via stdin, keeping it out of `/proc/<pid>/cmdline`;
 /// provider output is discarded to bound output and failure exposure.
 pub struct ExecutableInsertionBackend {
     provider: InsertionProvider,
@@ -281,7 +280,7 @@ impl ExecutableInsertionBackend {
         }
     }
 
-    /// Feeds text on a writer thread so timeout handling cannot block.
+    /// Feeds text on a writer thread so timeout handling stays responsive.
     fn send_text(&self, child: &mut std::process::Child, text: &str) -> Result<(), InsertionError> {
         let Some(mut stdin) = child.stdin.take() else {
             return Err(InsertionError::new(
@@ -406,7 +405,7 @@ pub trait Clock: Send + Sync {
     fn local_time(&self) -> LocalTime;
 }
 
-/// Reads local time through the C library without a date dependency.
+/// Reads local time through the C library.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
@@ -559,7 +558,7 @@ pub fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Maps I/O failure to insertion evidence without leaking a path.
+/// Maps I/O failure to insertion evidence while keeping paths private.
 pub fn insertion_io_kind(error: &io::Error) -> &'static str {
     io_kind(error)
 }

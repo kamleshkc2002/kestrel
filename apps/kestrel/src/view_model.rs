@@ -1554,7 +1554,7 @@ impl CommandBarViewModel {
                 provider: CommandProvider::Applications,
                 label: CommandProvider::Applications.label(),
                 enabled: presentation.providers.applications,
-                // Applications use the desktop launcher, not `xdg-open`.
+                // Applications launch through desktop-entry handling.
                 status: if !presentation.providers.applications {
                     "Disabled".to_string()
                 } else {

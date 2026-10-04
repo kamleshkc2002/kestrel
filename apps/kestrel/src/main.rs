@@ -264,7 +264,7 @@ impl ControllerState {
     }
 }
 
-/// Samples state and notifies without holding the controller lock.
+/// Samples state and notifies while the controller lock is released.
 fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,

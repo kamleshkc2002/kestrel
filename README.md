@@ -18,10 +18,10 @@ exists.
 
 ## Principles
 
-- Local-first: no telemetry, no required accounts.
-- Runs as the session user; no root daemon.
+- Local-first, with no telemetry or accounts.
+- Runs entirely as the unprivileged session user.
 - Every feature reports supported, limited, permission-gated, dependency-gated, or unsupported status with remediation.
-- Not a replacement shell, panel, dock, launcher, notification daemon, or compositor configuration; support claims name the tested desktop and session.
+- Works alongside your existing shell, panel, launcher, and compositor; support claims name the tested desktop and session.
 
 ## Workspace
 
@@ -50,49 +50,49 @@ and running state separately.
 
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** `[monitoring] refresh_interval_millis` (250–60,000; default 1,000), `history_samples` (1–600; default 120), `readouts`, and `[monitoring.alerts]` rules (`threshold` >0 and ≤100% or ≤150 °C, `sustain_samples` 1–600, `cooldown_seconds` ≤86,400).
-- Samples `/proc` and `/sys`; missing backends remain visible with their source reason. History is bounded in memory and never written to disk; no process IDs or command lines are collected.
+- Samples `/proc` and `/sys`; missing backends stay visible with their source reason. History is bounded and kept in memory; process IDs and command lines are excluded.
 
 ### Audio mixer — `audio.mixer`
 
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** `[audio] boost_percent` (100–150; default 130), `output_switch` (`default_output` or `all_streams`), `disconnect_policy` (`preserve_volume` or `reset_volume`), `disconnect_volume_percent` (0–100; default 100), and `include_inactive_streams` (default false).
-- Amplification is bounded by the configured ceiling and hard cap of 150%; the mixer exposes no process IDs or Pulse authentication cookie.
+- Amplification is bounded by the configured ceiling and a 150% hard cap; process IDs and the Pulse authentication cookie stay private.
 
 ### Microphone — `audio.microphone`
 
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** no feature-specific keys.
-- Lists capture inputs only (never sink monitors); mute state is re-read from the server and capability evidence carries counts, never device names.
+- Lists capture inputs (sink monitors excluded); mute state is re-read from the server, and capability evidence carries counts only.
 - Mute toggle: the window switch, `Ctrl+Shift+M`, the command bar, or the tray menu.
 
 ### Network speed test — `network.speed_test`
 
-- **Default:** disabled; run only after explicit user action.
+- **Default:** disabled; runs only when you start it.
 - **Configuration:** `[speed_test] download_megabytes` (1–90; default 25), `upload_megabytes` (0–25; default 10; 0 skips upload), `timeout_seconds` (5–120; default 30).
-- Shows the Cloudflare host (which sees the user's IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` without a shell, ignores `~/.curlrc`, and supports cancellation.
+- Shows the Cloudflare host (which sees your IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` launched directly, ignores `~/.curlrc`, and supports cancellation.
 
 ### Text snippets — `snippets.text`
 
 - **Default:** disabled.
 - **Configuration:** `[snippets] max_content_bytes` (1 B–1 MiB; default 64 KiB), `clipboard_variable_bytes` (64 B–64 KiB; default 4 KiB), `insert_timeout_millis` (250–10,000; default 2,000), `preferred_provider` (`auto`, `wtype`, `ydotool`, or `xdotool`; default `auto`), and `expansion_timing` (`manual` or `delimiter`; default `manual`).
-- Snippets are stored atomically in a mode-0600 file in a mode-0700 directory; files retain literal variables, never resolved or clipboard-derived text.
+- Snippets are stored atomically in a mode-0600 file in a mode-0700 directory; files keep the literal `{{...}}` variables.
 
 ### Command bar — `commands.bar`
 
 - **Default:** disabled.
 - **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default true), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds.
-- Search is local and bounded: it never indexes the filesystem globally, and learned ranking stores command IDs, counts, and pins—not query text.
+- Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins.
 
 ### Clipboard history — `clipboard.history`
 
 - **Default:** disabled and requires explicit opt-in.
 - **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), and `paste_plain_text` (default true).
-- History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics never carry clipboard content.
+- History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only.
 
 ### Desktop integration
 
 - The normal window is always available; the tray is optional.
-- StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers only with a compatible host; failure never blocks the window. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension.
+- The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension.
 - `global.shortcuts` is reported unsupported until a portable adapter is registered.
 
 ## AppImage preview

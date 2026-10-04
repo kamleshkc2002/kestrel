@@ -1,5 +1,5 @@
 //! Phase 0 audio probe for Kestrel issue #4; validates pactl JSON.
-//! It is not a production adapter.
+//! It provides Phase 0 evidence for adapter design.
 
 use serde_json::{Map, Value, json};
 use std::{

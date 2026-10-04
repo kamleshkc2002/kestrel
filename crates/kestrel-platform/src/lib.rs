@@ -1,6 +1,6 @@
 //! Dependency-light seams for Linux session and OS adapters.
-//! Translates runtime facts into `kestrel-core` values without product policy
-//! or a specific UI, display server, bus, portal, audio, or async runtime.
+//! Translates runtime facts into `kestrel-core` values while leaving product policy,
+//! UI, display server, bus, portal, audio, and async runtime to callers.
 
 use kestrel_core::CapabilityReport;
 pub mod applications;
@@ -54,7 +54,7 @@ pub struct StaticCapabilityProbe {
 }
 
 impl StaticCapabilityProbe {
-    /// Returns the supplied report without I/O.
+    /// Returns the supplied report with no I/O.
     pub fn new(report: CapabilityReport) -> Self {
         Self { report }
     }

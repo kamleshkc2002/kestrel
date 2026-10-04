@@ -155,7 +155,7 @@ pub struct CommandBarConfiguration {
     pub max_results: u32,
     #[serde(default = "default_true")]
     pub enable_applications: bool,
-    /// File search runs only inside the configured roots, never globally.
+    /// File search is limited to the configured roots.
     #[serde(default)]
     pub enable_files: bool,
     #[serde(default = "default_true")]
@@ -449,7 +449,7 @@ impl ApplicationConfiguration {
         Ok(())
     }
 
-    /// Captures every entry, keeping absent distinct from disabled.
+    /// Captures every entry with separate absent and disabled states.
     pub fn snapshot_features(&self) -> FeatureConfigurationSnapshot {
         FeatureConfigurationSnapshot {
             features: self.features.clone(),
@@ -681,7 +681,7 @@ impl Default for AlertRuleConfiguration {
     }
 }
 
-// f64 cannot derive Eq, but configuration validation rejects non-finite values.
+// Manual Eq implementation accompanies validation that rejects non-finite values.
 impl Eq for AlertRuleConfiguration {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1306,7 +1306,7 @@ impl SnippetExpansionTiming {
     }
 }
 
-/// `Auto` never selects uinput; input-group access must be explicitly requested.
+/// `Auto` selects input-device providers through an explicit preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetProviderPreference {
@@ -1437,11 +1437,11 @@ pub enum ConfigurationError {
     InvalidCommandScriptOutput { name: String, bytes: u32 },
 }
 
-// f64 cannot derive Eq; retaining Eq keeps error matching ergonomic while
-// validation rejects non-finite thresholds.
+// Manual Eq implementation keeps error matching ergonomic; validation rejects
+// non-finite thresholds.
 impl Eq for ConfigurationError {}
 
-/// Validates a stable namespaced identifier without depending on a UI or platform.
+/// Validates a stable namespaced identifier independently of UI and platform.
 pub fn validate_feature_id(feature_id: &str) -> Result<(), ConfigurationError> {
     let valid = !feature_id.is_empty()
         && feature_id.split('.').all(|segment| {

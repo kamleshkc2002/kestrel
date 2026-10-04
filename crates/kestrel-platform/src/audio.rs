@@ -850,7 +850,7 @@ impl Drop for PulseSession {
     }
 }
 
-/// Converts server volume to a percentage without hiding amplification.
+/// Converts server volume to a percentage while preserving amplification.
 ///
 /// Values above the cap remain readable; rounding preserves set/read values.
 fn volume_percent(volume: Volume) -> u8 {
@@ -867,7 +867,7 @@ fn channel_volumes(channels: u8, volume_percent: u8) -> ChannelVolumes {
     volumes
 }
 
-/// Builds a capability report without cloning discovery.
+/// Builds a capability report from borrowed discovery data.
 pub fn capability_for(discovery: &AudioDiscovery) -> CapabilityReport {
     let stream_count = discovery.streams.len();
     let output_count = discovery.outputs.len();

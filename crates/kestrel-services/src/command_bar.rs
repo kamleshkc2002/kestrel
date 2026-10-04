@@ -1,6 +1,6 @@
 //! Keyboard-first command ranking with bounded, portable providers.
 //!
-//! Learned ranking stores command identifiers and counts, never query text.
+//! Learned ranking stores command identifiers and counts; query text stays out.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -212,7 +212,7 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i64> {
     Some(score)
 }
 
-/// Learned ranking stores identifiers and use counts, never query text.
+/// Learned ranking stores identifiers and use counts; query text stays out.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandRanking {
     pins: BTreeSet<String>,
@@ -693,7 +693,7 @@ pub struct EnabledProviders {
     pub files: bool,
     pub scripts: bool,
     pub emoji: bool,
-    /// Snippet results require the snippet feature, not a bar setting.
+    /// Snippet results require the snippet feature.
     pub snippets: bool,
 }
 
@@ -936,7 +936,7 @@ impl CommandIndex {
     }
 }
 
-/// Formats a computed number without a trailing `.0` and with bounded precision.
+/// Formats a computed number with bounded precision and omits a trailing `.0`.
 pub fn format_number(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e15 {
         return format!("{}", value as i64);

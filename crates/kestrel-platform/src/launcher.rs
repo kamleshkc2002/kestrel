@@ -27,7 +27,7 @@ const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptErrorKind {
-    /// Configured executable could not be resolved.
+    /// Configured executable resolution failed.
     MissingExecutable,
     SpawnFailed,
     TimedOut,
@@ -202,7 +202,7 @@ fn read_bounded<R: Read>(mut pipe: R, limit: usize) -> (String, bool) {
                     let remaining = limit.saturating_sub(collected.len());
                     collected.extend_from_slice(&chunk[..remaining]);
                     truncated = true;
-                    // Drain remaining bytes so the child cannot block on a full pipe.
+                    // Drain remaining bytes so the child can finish despite a full pipe.
                     let mut discard = [0u8; 4096];
                     while pipe
                         .read(&mut discard)
@@ -281,7 +281,7 @@ pub fn search_roots(
             }
         }
         children.sort();
-        // Sorted children keep traversal deterministic without recursion.
+        // Sorted children keep traversal deterministic with iterative traversal.
         for child in children.into_iter().rev() {
             queue.push((child, depth + 1));
         }

@@ -28,7 +28,7 @@ pub enum AutostartError {
     InvalidAutostartPath { path: PathBuf },
     /// The executable path must be absolute.
     ExecutableNotAbsolute { path: PathBuf },
-    /// The executable path is not valid UTF-8.
+    /// The executable path must use valid UTF-8.
     ExecutableNotUtf8 { path: PathBuf },
     /// A control character would invalidate the desktop Exec value.
     ExecutableContainsControlCharacter { path: PathBuf },

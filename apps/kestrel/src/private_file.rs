@@ -70,7 +70,7 @@ fn create_temporary(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, Fi
             .open(&candidate)
         {
             Ok(file) => return Ok((candidate, file)),
-            // Never reuse a name held by another file or link.
+            // A name held by another file or link is skipped.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }

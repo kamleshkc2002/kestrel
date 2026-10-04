@@ -1,6 +1,6 @@
 //! Private storage for learned command ranking.
 //!
-//! Only identifiers, counts, and pins are stored—not search text.
+//! Stored data consists of identifiers, counts, and pins; search text stays out.
 
 use std::{
     fs,
@@ -200,7 +200,7 @@ mod tests {
     fn the_ranking_file_never_contains_query_text() {
         let mut ranking = CommandRanking::default();
         let typed = "quarterly revenue numbers";
-        // Search text is never recorded.
+        // Search text stays out of the ranking file.
         let _ = kestrel_services::command_bar::fuzzy_score(typed, "kestrel:refresh");
         ranking.record_use("kestrel:refresh");
 

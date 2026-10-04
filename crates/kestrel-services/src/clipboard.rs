@@ -555,7 +555,7 @@ impl ClipboardHistoryService {
         }
     }
 
-    /// Applies a policy without dropping retained entries.
+    /// Applies a policy while retaining existing entries.
     pub fn set_policy(
         &self,
         policy: ClipboardPolicy,
@@ -1149,7 +1149,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         let kind = match offered {
             Some(kind) if self.support.supports(kind) => Some(kind),
             Some(_) => None,
-            // Providers without type enumeration fall back to text.
+            // Type-enumeration fallback uses text.
             None if !self.support.image && !self.support.files => Some(ClipboardEntryKind::Text),
             None => None,
         };
@@ -1260,7 +1260,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// Oversize selections are counted as a bound rejection, not as a failure.
+    /// Oversize selections count as bound rejections.
     fn record_read_error(&mut self, error: ClipboardError) {
         if error.kind == kestrel_platform::clipboard::ClipboardErrorKind::Oversize {
             self.history.rejected_oversize_items =
@@ -1954,7 +1954,7 @@ mod tests {
         );
         assert_eq!(SENSITIVE_PATTERNS.len(), 5);
 
-        // A 40-character SHA is not treated as a secret; longer digests are.
+        // 40-character SHAs remain ordinary values; longer digests are secrets.
         assert_eq!(match_sensitive(&"a1b2c3d4e5".repeat(4)), None);
         assert_eq!(
             match_sensitive("A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6"),

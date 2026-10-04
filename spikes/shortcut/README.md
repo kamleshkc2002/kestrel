@@ -1,7 +1,7 @@
 # Phase 0 spike: global-shortcut activation paths
 
 Disposable read-only probe for Kestrel issue #7, outside the main workspace. It
-never calls `BindShortcuts` or triggers a consent dialog.
+provides Phase 0 evidence for activation paths.
 
 ```sh
 bash spikes/shortcut/probe.sh > /tmp/kestrel-shortcut-probe.txt 2>&1
@@ -18,18 +18,18 @@ spikes/shortcut/xgrabkey_probe
 
 ## Portal GlobalShortcuts (validated)
 
-`org.freedesktop.portal.GlobalShortcuts` is not exported. Version and
-`CreateSession` probes both returned `No such interface`; the frontend exports
-24 interfaces. Neither backend exports
-`org.freedesktop.impl.portal.GlobalShortcuts`, and both `.portal` files omit it:
+`org.freedesktop.portal.GlobalShortcuts` is unavailable from the portal
+frontend. Version and `CreateSession` probes returned `No such interface`; the
+frontend exports 24 interfaces. Backend interfaces are absent, and both
+`.portal` files omit it:
 
 - COSMIC: Access, FileChooser, RemoteDesktop, ScreenCast, Screenshot, Settings.
 - GTK: Access, Account, AppChooser, DynamicLauncher, Email, FileChooser, Inhibit,
   Lockdown, Notification, Print, Settings.
 
 The installed `xdg-desktop-portal` NEWS says the frontend introduced the portal
-in 1.16.0. Version 1.18.4 contains the implementation strings but does not export
-the interface without a backend. Published interface version 2 provides
+in 1.16.0. Version 1.18.4 contains the implementation strings; the interface
+requires a backend. Published interface version 2 provides
 `CreateSession`, `BindShortcuts`, `ListShortcuts`, `ConfigureShortcuts` and
 `Activated`, `Deactivated`, `ShortcutsChanged` signals.
 
@@ -39,8 +39,7 @@ the interface without a backend. Published interface version 2 provides
   `session_handle` object path (typed `s` for historical reasons).
 - One `BindShortcuts(session_handle, shortcuts, parent_window, options)` call per
   session may show a user dialog. Entries contain `description` and optional
-  `preferred_trigger`; the response returns only the bound subset and trigger
-  descriptions, not the actual trigger.
+  descriptions; the actual trigger is omitted.
 - `ListShortcuts` returns active or previously bound shortcuts for that app;
   `ConfigureShortcuts` (v2) reopens configuration.
 - Activation includes `session_handle`, shortcut ID, timestamp, and optional
@@ -50,14 +49,15 @@ the interface without a backend. Published interface version 2 provides
 
 No GlobalShortcuts permission-store rows exist: each of
 `shortcuts`, `global_shortcuts`, `global-shortcuts`, and `GlobalShortcuts` returned
-`as 0`. The exact table name remains deferred without a binding-capable backend.
+as 0. The exact table name remains deferred pending a binding-capable backend.
 
 ## COSMIC alternatives (validated)
 
 `com.system76.CosmicSettingsDaemon` and `com.system76.CosmicComp` expose only
-D-Bus Introspectable/Peer/Properties at their roots, not keybinding registration.
-No shortcut/keybind config files exist under `~/.config/cosmic`; COSMIC keybindings
-are configured in Settings, not through an application D-Bus API in this version.
+D-Bus Introspectable/Peer/Properties at their roots; keybinding registration is
+unavailable there.
+Settings owns COSMIC keybindings in this version; application D-Bus APIs have no
+configuration surface.
 
 Upstream/deferred evidence: KDE's portal backend implements GlobalShortcuts;
 GNOME's backend adds it in 48.rc; Hyprland has
@@ -78,15 +78,16 @@ cleanup, and validate that path separately (deferred).
 ## Normal-window policy and activation chain
 
 `docs/ARCHITECTURE.md` requires a normal application window and command surface
-that remain useful without a tray host. The current app is a capability-printer
-scaffold; the GTK4/libadwaita window is a Phase 1 deliverable. Normal-window
-activation is therefore **Supported by design** and the only guaranteed path.
+that remain useful independently of a tray host. The current app is a
+capability-printer scaffold; the GTK4/libadwaita window is a Phase 1 deliverable.
+Normal-window activation is therefore **Supported by design** and the only
+guaranteed path.
 
 1. **Always available:** normal window/command surface via app grid, autostart,
    or a second single-instance invocation over the session D-Bus name; no permission.
 2. **Preferred:** `org.freedesktop.portal.GlobalShortcuts` when frontend and
    backend exist. Call `BindShortcuts` only after an explicit Settings action,
-   never during startup probing.
+   outside startup probing.
 3. **Compositor fallback:** document a user-configured COSMIC keybinding invoking
    `kestrel --command <id>` or a single-instance D-Bus method.
 4. **X11 fallback:** use `XGrabKey` only on real X11; report conflicts and ungrab

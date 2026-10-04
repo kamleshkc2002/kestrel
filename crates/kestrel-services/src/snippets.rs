@@ -312,7 +312,7 @@ pub struct InsertionReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnippetServiceError {
-    /// Insertion remains disabled without a verified provider.
+    /// Insertion stays disabled until a verified provider is available.
     ExpansionUnavailable {
         reason: String,
     },
@@ -332,7 +332,7 @@ impl fmt::Display for SnippetServiceError {
 
 impl Error for SnippetServiceError {}
 
-/// Owns insertion and refuses to act without a verified provider.
+/// Owns insertion; action requires a verified provider.
 pub struct SnippetInsertionService<B: InsertionBackend> {
     backend: Option<B>,
     unavailable: Option<String>,
@@ -365,7 +365,7 @@ impl<B: InsertionBackend> SnippetInsertionService<B> {
         self.unavailable.as_deref()
     }
 
-    /// Renders and inserts one snippet; unavailable without a provider.
+    /// Renders and inserts one snippet when a provider is available.
     pub fn insert(
         &mut self,
         snippet: &Snippet,

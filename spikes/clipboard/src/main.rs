@@ -1,5 +1,5 @@
-//! Phase 0 clipboard probe for Kestrel issue #5; read-only mode never retrieves data.
-//! Lifecycle mode requires an empty selection and reports booleans.
+//! Phase 0 clipboard probe for Kestrel issue #5; read-only mode reports metadata
+//! only.
 
 use serde_json::{Value, json};
 use std::{

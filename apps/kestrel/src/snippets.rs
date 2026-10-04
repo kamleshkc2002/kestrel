@@ -1,6 +1,6 @@
 //! Private, atomic storage for snippets.
 //!
-//! Literal `{{...}}` tokens are stored; resolved values never leave the process.
+//! Literal `{{...}}` tokens are stored; resolved values stay within the process.
 
 use std::{
     fs,

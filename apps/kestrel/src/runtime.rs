@@ -123,7 +123,7 @@ pub const SNIPPETS_ID: &str = "snippets.text";
 /// The stable feature identifier for the command bar.
 pub const COMMAND_BAR_ID: &str = "commands.bar";
 
-/// Reports available providers without hiding portable commands.
+/// Reports available providers while preserving portable commands.
 pub struct CommandBarProbe {
     configuration: kestrel_core::CommandBarConfiguration,
 }
@@ -1024,7 +1024,7 @@ impl ApplicationRuntime {
             .any(|registration| registration.feature.id == COMMAND_BAR_ID && registration.running)
     }
 
-    /// Gates effects so stale requests cannot act while stopped.
+    /// Gates effects while stopped, keeping stale requests inactive.
     fn require_command_bar(&self) -> Result<(), String> {
         if self.command_bar_running() {
             Ok(())
@@ -1237,7 +1237,7 @@ impl ApplicationRuntime {
             .insert(&snippet, self.snippet_policy, &context)
     }
 
-    /// Returns retained-item metadata without exposing contents.
+    /// Returns retained-item metadata while keeping contents private.
     pub fn clipboard_snapshot(&self) -> ClipboardSnapshot {
         self.clipboard_history.latest()
     }
@@ -1870,7 +1870,7 @@ mod tests {
             .expect("feature ID is valid");
         let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
         runtime.start();
-        // Entries without desktop files cannot be launched through GIO.
+        // Entries need desktop files for GIO launching.
         runtime.command_applications = entries;
         let error = runtime
             .launch_command_application(0)

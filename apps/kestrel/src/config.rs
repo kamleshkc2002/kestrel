@@ -866,7 +866,7 @@ fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Valu
     if let Some(scripts) = section.get("scripts") {
         match Vec::<kestrel_core::CommandScriptConfiguration>::deserialize(scripts.clone()) {
             Ok(parsed) => {
-                // Drop malformed scripts without invalidating the table.
+                // Malformed scripts are dropped while the table remains valid.
                 let mut accepted = Vec::new();
                 let mut names: Vec<String> = Vec::new();
                 for (index, script) in parsed.into_iter().enumerate() {

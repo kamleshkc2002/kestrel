@@ -1,6 +1,6 @@
 //! Capability-gated clipboard ownership and privacy events.
 //! Text uses `arboard`; rich Wayland entries use bounded PNG and `text/uri-list`
-//! payloads without decoding or re-encoding.
+//! payloads in their encoded form.
 
 use std::{
     env,
@@ -215,7 +215,7 @@ fn unsupported_kind(kind: ClipboardEntryKind, provider: ClipboardProvider) -> Cl
     )
 }
 
-/// Validates PNG and returns IHDR dimensions without decoding.
+/// Validates PNG and reads IHDR dimensions from encoded bytes.
 pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     if bytes.len() < 24 || bytes[..8] != SIGNATURE || &bytes[12..16] != b"IHDR" {
@@ -523,7 +523,7 @@ impl ArboardClipboardBackend {
             return Ok(false);
         };
         if served.owned != *expected || !served.is_alive() {
-            // Another source replaced the selection, or Kestrel never owned it.
+            // Another source replaced the selection, or Kestrel's ownership ended.
             self.served = None;
             return Ok(false);
         }
@@ -602,7 +602,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
         if self.provider != ClipboardProvider::WaylandDataControl {
             return Err(unsupported_kind(ClipboardEntryKind::Image, self.provider));
         }
-        // Do not reread a selection Kestrel is serving; its payload is known.
+        // Reuse the payload Kestrel is serving; its contents are known.
         if let Some(served) = self.served.as_ref() {
             if served.is_alive() {
                 if let OwnedSelection::ImagePng(bytes) = &served.owned {

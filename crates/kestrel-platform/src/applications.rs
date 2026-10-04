@@ -1,5 +1,5 @@
-//! Desktop-entry discovery and launching without a shell.
-//! Uses XDG directories and GIO; commands never pass through a shell.
+//! Desktop-entry discovery and launching through GIO.
+//! XDG directories and GIO provide direct command launching.
 
 use std::{
     env,
@@ -25,7 +25,7 @@ pub struct ApplicationEntry {
     pub id: String,
     pub name: String,
     pub comment: Option<String>,
-    /// The parsed command line: program plus arguments, never a shell string.
+    /// The parsed command line contains the program and its arguments.
     pub command: Vec<String>,
     pub terminal: bool,
     /// Launching uses this file so GIO applies desktop-entry rules.
@@ -274,7 +274,7 @@ pub fn parse_exec(exec: &str) -> Option<Vec<String>> {
     Some(argv)
 }
 
-/// Resolves an executable on `PATH` without a shell.
+/// Resolves an executable on `PATH` for direct launching.
 pub fn resolve_executable(name: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
     if name.starts_with('/') {
         return is_executable(Path::new(name)).then(|| PathBuf::from(name));

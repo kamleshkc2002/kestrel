@@ -1,4 +1,5 @@
-//! Read-only production check for the PulseAudio-compatible adapter; skips without a server.
+//! Read-only production check for the PulseAudio-compatible adapter; runs when a
+//! server is available and skips otherwise.
 
 use kestrel_platform::audio::{AudioBackend, PulseAudioBackend};
 use kestrel_services::audio::{AudioCommand, AudioCommandError, AudioMixerService, AudioPolicy};
@@ -84,7 +85,7 @@ fn out_of_range_stream_requests_never_reach_the_server() {
         .outputs
         .len();
 
-    // Unknown streams must not mutate unrelated streams.
+    // Unknown streams leave unrelated streams unchanged.
     let failure = service
         .execute(AudioCommand::SetStreamMute {
             stream_id: u32::MAX,

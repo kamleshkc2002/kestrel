@@ -1,5 +1,5 @@
 //! User-initiated, bounded network diagnostics through `curl`.
-//! Curl stderr is never returned because it may contain addresses or identifiers.
+//! Curl stderr stays private because it may contain addresses or identifiers.
 
 use std::{
     env, fmt,
@@ -154,7 +154,7 @@ pub struct CurlSpeedTestBackend {
 }
 
 impl CurlSpeedTestBackend {
-    /// Resolves curl without starting a process or touching the network.
+    /// Resolves curl using local `PATH` inspection.
     pub fn discover() -> Self {
         Self {
             executable: resolve_executable("curl", env::var_os("PATH").as_deref()),
@@ -465,7 +465,7 @@ impl CurlSpeedTestBackend {
         let mut fields = output.split_whitespace();
         let speed = fields.next().and_then(|value| value.parse::<f64>().ok());
         let reported = fields.next().and_then(|value| value.parse::<u64>().ok());
-        // HTTP/1.1 chunk framing may inflate curl's byte count; it must not be short.
+        // HTTP/1.1 chunk framing may inflate curl's byte count; reported bytes must meet the sent-byte count.
         if sent != plan.upload_bytes || !reported.is_some_and(|size| size >= sent) {
             return Err(SpeedTestError::new(
                 SpeedTestErrorKind::Protocol,
@@ -545,7 +545,7 @@ fn wait_process(
 
 /// Maps curl exit codes to typed failures.
 ///
-/// Curl stderr is not read because it may contain resolved addresses or identifiers.
+/// Curl stderr stays private because it may contain resolved addresses or identifiers.
 fn error_for_exit(code: Option<i32>) -> SpeedTestError {
     let (kind, message) = match code {
         Some(6) => (
@@ -723,7 +723,7 @@ mod tests {
 
     /// Writes a curl stand-in that logs invocation arguments.
     ///
-    /// Latency is the only phase without upload or download arguments.
+    /// Latency is the sole phase with no upload or download arguments.
     fn stub(dir: &TempDir, body: &str) -> PathBuf {
         let path = dir.path().join("curl");
         let log = dir.path().join("invocations");

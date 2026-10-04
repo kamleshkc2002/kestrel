@@ -13,23 +13,23 @@ cargo run --quiet --manifest-path Cargo.toml -- --exercise-mutation > /tmp/kestr
 
 Read-only mode reports:
 
-- local PulseAudio/PipeWire server facts without the Pulse cookie;
+- local PulseAudio/PipeWire server facts with the Pulse cookie excluded;
 - output/input devices and per-application sink inputs (labels only);
 - `CapabilityReport`-shaped entries for connectivity, outputs, streams, and
   output-mutation eligibility;
 - missing-command, unavailable-server, malformed-output, and no-active-stream states.
 
-It excludes process IDs, command lines, network identifiers, and the Pulse
-authentication cookie.
+Process IDs, command lines, network identifiers, and the Pulse authentication
+cookie stay out of reports.
 
 ## Mutation safeguard
 
-`--exercise-mutation` is separate and runs only when the default output has no
+`--exercise-mutation` is separate and runs when the default output has no
 active sink inputs, and all channel volumes share one exactly restorable raw
 value. It snapshots mute/volume, toggles mute, changes volume by a small raw
 step, restores both in a `finally` path, and verifies the final state. Active
-playback, no default sink, or non-restorable volume yields `skipped` without
-changing an audio setting.
+- playback, a missing default sink, or a non-restorable volume yields `skipped`;
+  audio settings remain unchanged.
 
 ## Observed result
 
