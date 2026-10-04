@@ -1,4 +1,4 @@
-//! Application-level configuration and runtime composition without UI ownership.
+//! Application configuration and runtime composition.
 
 mod autostart;
 mod command_bar;
@@ -52,10 +52,10 @@ pub use view_model::{
     SpeedTestViewModel,
 };
 
-/// One command bar action requested from the window.
+/// Command-bar action from the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandBarCommand {
-    /// Runs the ranked result with this identifier.
+    /// Runs a ranked result.
     Run(String),
     Pin {
         id: String,
@@ -63,7 +63,7 @@ pub enum CommandBarCommand {
     },
 }
 
-/// One command bar provider switch.
+/// Command-bar provider switch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandProviderSwitch {
     Applications(bool),
@@ -72,12 +72,12 @@ pub enum CommandProviderSwitch {
     Emoji(bool),
 }
 
-/// One snippet library action requested from the window.
+/// Snippet-library action from the window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnippetCommand {
-    /// Renders and types one stored snippet.
+    /// Renders and types a stored snippet.
     Insert(String),
-    /// Validates and stores a definition, replacing one with the same name.
+    /// Validates and stores a snippet.
     Save {
         name: String,
         folder: String,
@@ -87,7 +87,7 @@ pub enum SnippetCommand {
     Delete(String),
 }
 
-/// One snippet bound edited from the settings controls.
+/// Snippet bound edited from settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnippetLimit {
     ContentBytes(u32),
@@ -95,7 +95,7 @@ pub enum SnippetLimit {
     InsertTimeoutMillis(u64),
 }
 
-/// One bounded clipboard retention value edited from the settings controls.
+/// Bounded clipboard retention value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardLimit {
     Items(u32),
@@ -106,18 +106,14 @@ pub enum ClipboardLimit {
     ClearSeconds(u64),
 }
 
-/// Direction for moving one of the ordered panel sections or monitoring readouts.
-///
-/// Monitoring readouts use the same ordering semantics as panel sections: `Up`
-/// moves a readout toward the beginning of the configured readout order and
-/// `Down` moves it toward the end.
+/// Direction for ordered panel sections or readouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelMoveDirection {
     Up,
     Down,
 }
 
-/// Commands accepted from application entry surfaces such as the normal window and tray menu.
+/// Command from an application entry surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationCommand {
     PresentWindow,
@@ -155,30 +151,30 @@ pub enum ApplicationCommand {
         kind: AlertKind,
         threshold: f64,
     },
-    /// A mixer mutation applied through the opt-in audio service.
+    /// Mixer mutation.
     Audio(AudioCommand),
-    /// A microphone mutation applied through the backend-reading service.
+    /// Microphone mutation.
     Microphone(MicrophoneCommand),
-    /// Starts a user-requested network speed test.
+    /// Starts a user-requested speed test.
     StartSpeedTest,
-    /// Cancels the active network speed test.
+    /// Cancels the speed test.
     CancelSpeedTest,
-    /// The amplification ceiling for the mixer, between 100% and the hard cap.
+    /// Mixer amplification ceiling.
     SetAudioBoostPercent(u8),
     SetAudioOutputSwitch(AudioOutputSwitch),
     SetAudioDisconnectPolicy(AudioDisconnectPolicy),
     SetAudioDisconnectVolumePercent(u8),
     SetAudioIncludeInactiveStreams(bool),
-    /// A clipboard history mutation (copy, pin, delete, edit, clear, wipe).
+    /// Clipboard history mutation.
     Clipboard(ClipboardCommand),
-    /// Runs an explicit, bounded search over retained entries.
+    /// Bounded clipboard search.
     ClipboardSearch(String),
-    /// Requests one bounded entry preview for display.
+    /// Bounded entry preview.
     ClipboardPreview(u64),
     SetClipboardLimit(ClipboardLimit),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
-    /// Runs one snippet library action.
+    /// Snippet-library action.
     Snippet(SnippetCommand),
     /// Runs the snippet search whose results the window shows.
     SnippetSearch(String),

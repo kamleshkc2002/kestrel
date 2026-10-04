@@ -1,12 +1,6 @@
-//! Private, atomic storage for the user's snippet library.
+//! Private, atomic storage for snippets.
 //!
-//! Snippets are user-authored text, so they live in the XDG data directory in a
-//! file only the user can read. Writing is atomic (an exclusively created
-//! temporary file plus rename, then a directory sync) and every save re-applies
-//! the private mode, so a partial, redirected, or world-readable file cannot
-//! appear. Resolved variable values are never stored: the file holds the
-//! literal `{{...}}` tokens, which is also why a snippet can never carry
-//! clipboard-derived content out of the process.
+//! Literal `{{...}}` tokens are stored; resolved values never leave the process.
 
 use std::{
     fs,
@@ -19,10 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ConfigurationWarning, private_file::write_private_atomic};
 
-/// The snippet file schema this build writes.
+/// Snippet file schema version.
 pub const CURRENT_SNIPPET_SCHEMA_VERSION: u32 = 1;
 
-/// The on-disk shape of the snippet file.
+/// On-disk snippet file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnippetFile {
     pub schema_version: u32,
@@ -39,21 +33,21 @@ impl Default for SnippetFile {
     }
 }
 
-/// A loaded library plus the isolated diagnostics for its rejected entries.
+/// Loaded library and rejected-entry diagnostics.
 #[derive(Debug, Clone, Default)]
 pub struct LoadedSnippets {
     pub library: SnippetLibrary,
     pub warnings: Vec<ConfigurationWarning>,
 }
 
-/// An unrecoverable snippet-file failure.
+/// Unrecoverable snippet-file failure.
 #[derive(Debug)]
 pub enum SnippetStoreError {
-    /// The file could not be parsed at all.
+    /// Document parsing failed.
     InvalidDocument(String),
-    /// The file could not be read or written.
+    /// File I/O failed.
     Io(String),
-    /// A snippet in the file is invalid and the write was refused.
+    /// Library validation rejected a write.
     InvalidLibrary(String),
 }
 
@@ -73,7 +67,7 @@ impl std::fmt::Display for SnippetStoreError {
 
 impl std::error::Error for SnippetStoreError {}
 
-/// `$XDG_DATA_HOME/kestrel/snippets.toml`, else `$HOME/.local/share/...`.
+/// XDG data path for snippets.
 pub fn snippet_path() -> Option<PathBuf> {
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .filter(|value| !value.is_empty())
@@ -86,9 +80,7 @@ pub fn snippet_path() -> Option<PathBuf> {
     Some(data_home.join("kestrel").join("snippets.toml"))
 }
 
-/// Loads the library, isolating every rejected entry as a warning.
-///
-/// A missing file is an empty library, not an error: snippets are optional.
+/// Loads snippets, isolating rejected entries; a missing file is empty.
 pub fn load_snippets(path: &Path, policy: SnippetPolicy) -> LoadedSnippets {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -150,10 +142,7 @@ pub fn parse(contents: &str, policy: SnippetPolicy) -> LoadedSnippets {
     LoadedSnippets { library, warnings }
 }
 
-/// Writes the library atomically with private permissions.
-///
-/// The library is validated first, so a file that would load back with warnings
-/// is never written.
+/// Validates and atomically writes the library with private permissions.
 pub fn save_snippets(
     path: &Path,
     library: &SnippetLibrary,
@@ -302,7 +291,7 @@ content = "b"
                 SnippetPolicy::default(),
             )
             .expect("first snippet is valid");
-        // Bypass the library's own guard to model a conflict reaching the store.
+        // Bypass validation to test a conflicting trigger.
         let conflicting = SnippetLibrary::from_snippets(vec![
             Snippet::new("One", None, Some(";dup".to_string()), "a"),
             Snippet::new("Two", None, Some(";dup".to_string()), "b"),

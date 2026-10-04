@@ -1,8 +1,4 @@
 //! Lifecycle and policy for user-initiated network speed tests.
-//!
-//! A service owns one named worker at a time. The worker is the only code that
-//! invokes the backend; all state visible to the UI is copied through a small
-//! mutex-protected snapshot.
 
 use std::{
     fmt,
@@ -76,7 +72,6 @@ pub enum SpeedTestServiceError {
     AlreadyRunning,
     Unavailable,
     NotRunning,
-    /// The operating system refused to start the worker thread.
     WorkerUnavailable,
 }
 
@@ -185,7 +180,6 @@ impl<B: SpeedTestBackend> SpeedTestService<B> {
                 Ok(())
             }
             Err(_) => {
-                // Nothing ran, so the run is reported as never having started.
                 set_status(&shared, SpeedTestStatus::Idle);
                 Err(SpeedTestServiceError::WorkerUnavailable)
             }
@@ -288,8 +282,6 @@ mod tests {
 
     use super::{SpeedTestPolicy, SpeedTestService, SpeedTestServiceError, SpeedTestStatus};
 
-    /// A backend whose run blocks until the test releases an outcome, while
-    /// honouring cancellation the way the real adapter does.
     struct GatedBackend {
         available: bool,
         outcomes: Mutex<Receiver<Result<SpeedTestMeasurement, SpeedTestError>>>,
@@ -329,7 +321,6 @@ mod tests {
                     Ok(outcome) => return outcome,
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => {
-                        // A dropped test sender behaves like a hung server.
                         std::thread::sleep(Duration::from_millis(5));
                     }
                 }

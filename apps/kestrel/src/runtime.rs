@@ -61,7 +61,6 @@ use kestrel_services::{
     speed_test::{SpeedTestPolicy, SpeedTestService, SpeedTestSnapshot},
     system_monitor::{HistorySummary, RefreshOutcome, SystemMonitorService, SystemSnapshot},
 };
-/// A built-in enablement policy for the configurable features.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeaturePreset {
     Essentials,
@@ -119,14 +118,12 @@ const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
 
 use std::time::Duration;
 
-/// UI-independent composition root for startup, enablement, and capability refresh.
-/// The stable feature identifier for the snippet library.
+/// Stable feature identifier for the snippet library.
 pub const SNIPPETS_ID: &str = "snippets.text";
 /// The stable feature identifier for the command bar.
 pub const COMMAND_BAR_ID: &str = "commands.bar";
 
-/// Capability probe for the command bar: it reports which providers are usable
-/// and never hides the portable ones when an integration is missing.
+/// Reports available providers without hiding portable commands.
 pub struct CommandBarProbe {
     configuration: kestrel_core::CommandBarConfiguration,
 }
@@ -147,8 +144,7 @@ impl CapabilityProbe for CommandBarProbe {
         let launcher = ExternalLauncher::discover();
         let roots = self.configuration.file_roots.len();
         let scripts = self.configuration.scripts.len();
-        // Entries that ask for a terminal are launched through GIO, which finds
-        // the terminal emulator; the count is reported so it is visible.
+        // GIO launches terminal entries; report their count.
         let terminal_entries = applications
             .iter()
             .filter(|application| application.terminal)
@@ -219,7 +215,6 @@ pub struct ApplicationRuntime {
     microphone: MicrophoneService<PulseAudioBackend>,
     speed_test: SpeedTestService<CurlSpeedTestBackend>,
     clipboard_history: ClipboardHistoryService,
-    /// Snippet library state, its capability-gated insert path, and its file.
     snippet_library: SnippetLibrary,
     snippet_service: SnippetInsertionService<ExecutableInsertionBackend>,
     snippet_policy: SnippetPolicy,
@@ -227,10 +222,8 @@ pub struct ApplicationRuntime {
     snippet_provider_preference: kestrel_core::SnippetProviderPreference,
     snippet_path: Option<std::path::PathBuf>,
     snippet_warnings: Vec<ConfigurationWarning>,
-    /// Reads the live selection for the `{{clipboard}}` variable, and places
-    /// command bar values on the clipboard.
+    /// Read-only clipboard access for snippet expansion and command copying.
     session_clipboard: Option<ArboardClipboardBackend>,
-    /// The command bar: catalog, learned ranking, scanned applications, launcher.
     command_index: CommandIndex,
     command_ranking: CommandRanking,
     command_ranking_path: Option<std::path::PathBuf>,
@@ -244,7 +237,7 @@ pub struct ApplicationRuntime {
     command_launcher: Option<ExternalLauncher>,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
     alerts: AlertEngine,
-    /// The user's Battery-alert preference; the quick toggle can only narrow it.
+    /// Battery alerts can only be narrowed by the quick toggle.
     battery_alert_configured: bool,
     quick_toggles: QuickToggleService,
 }
@@ -255,7 +248,6 @@ pub struct MonitorTick {
 }
 
 impl ApplicationRuntime {
-    /// Builds the runtime without requiring a tray host.
     pub fn new(configuration: &ApplicationConfiguration) -> Result<Self, RegistryError> {
         Self::new_with_status_notifier(
             configuration,
@@ -263,7 +255,7 @@ impl ApplicationRuntime {
         )
     }
 
-    /// Builds the runtime with the result of the optional StatusNotifierItem registration.
+    /// Builds the runtime with optional tray-registration results.
     pub fn new_with_status_notifier(
         configuration: &ApplicationConfiguration,
         status_notifier_capability: CapabilityReport,
@@ -507,7 +499,6 @@ impl ApplicationRuntime {
         Ok(runtime)
     }
 
-    /// Starts only the entries that are enabled and currently available.
     pub fn start(&mut self) {
         self.registry.start_enabled();
         self.reconcile_resources();
@@ -534,8 +525,7 @@ impl ApplicationRuntime {
         }
         self.registry.start_enabled();
         self.reconcile_resources();
-        // Device loss is repaired by re-reading the graph, so an explicit refresh
-        // must resample audio as well as re-probe capabilities.
+        // Re-probe and resample after device loss.
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
         }
@@ -546,7 +536,6 @@ impl ApplicationRuntime {
         Ok(())
     }
 
-    /// Applies the current configuration to configurable registrations only.
     pub fn apply_configuration(
         &mut self,
         configuration: &ApplicationConfiguration,
@@ -581,8 +570,7 @@ impl ApplicationRuntime {
                     &configuration.clipboard,
                 ));
         }
-        // Provider preference, timeout, and snippet bounds are all re-derived, so
-        // a configuration change re-runs discovery and re-tunes the policy.
+        // Re-derive snippet policy after configuration changes.
         self.snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
         self.snippet_expansion_timing = configuration.snippets.expansion_timing;
         self.snippet_provider_preference = configuration.snippets.preferred_provider;
@@ -660,12 +648,12 @@ impl ApplicationRuntime {
         configuration.restore_feature_snapshot(snapshot);
         self.apply_configuration(configuration)
     }
-    /// Returns UI-independent registration snapshots for the active session.
+    /// Returns registration snapshots for the active session.
     pub fn registrations(&self) -> impl Iterator<Item = &ServiceRegistration> {
         self.registry.registrations()
     }
 
-    /// Extracts owned presentation state without exposing live service resources.
+    /// Extracts owned presentation state.
     pub fn view_model(
         &self,
         warnings: &[ConfigurationWarning],
@@ -682,11 +670,7 @@ impl ApplicationRuntime {
         )
     }
 
-    /// Builds the view model with the application's current clipboard query.
-    ///
-    /// Search results and previews are produced by explicit, bounded requests,
-    /// so only the values the user asked to see are rendered.
-    /// Builds the view model with the window's clipboard and snippet state.
+    /// Builds presentation state with panel queries.
     pub fn view_model_with_panels(
         &self,
         warnings: &[ConfigurationWarning],
@@ -802,21 +786,19 @@ impl ApplicationRuntime {
         )
     }
 
-    /// Returns the latest immutable monitor snapshot, if sampling has started.
     pub fn system_monitor_snapshot(&self) -> Option<&SystemSnapshot> {
         self.system_monitor.latest()
     }
 
-    /// Returns the latest audio snapshot, including structured unavailable/empty states.
+    /// Returns audio state, including unavailable/empty states.
     pub fn audio_snapshot(&self) -> &AudioSnapshot {
         self.audio_mixer.latest()
     }
-    /// Whether the opt-in clipboard history registration is running.
     pub fn clipboard_is_running(&self) -> bool {
         self.clipboard_history_is_running()
     }
 
-    /// Builds clipboard presentation state alone, for targeted tick updates.
+    /// Builds clipboard presentation state for targeted updates.
     pub fn clipboard_view_model(
         &self,
         configuration: &ApplicationConfiguration,
@@ -836,19 +818,17 @@ impl ApplicationRuntime {
         )
     }
 
-    /// Whether the microphone control's registration is running.
     pub fn microphone_is_running(&self) -> bool {
         self.registry.registrations().any(|registration| {
             registration.feature.id == MICROPHONE_FEATURE_ID && registration.running
         })
     }
 
-    /// The latest backend reading; `Unknown` mute state when nothing was read.
+    /// Returns the latest reading; mute is `Unknown` before sampling.
     pub fn microphone_snapshot(&self) -> &MicrophoneSnapshot {
         self.microphone.latest()
     }
 
-    /// Applies a microphone command only while the control is running.
     pub fn execute_microphone_command(
         &mut self,
         command: MicrophoneCommand,
@@ -857,10 +837,7 @@ impl ApplicationRuntime {
             .then(|| self.microphone.execute(command))
     }
 
-    /// Re-reads the audio server, returning whether the visible state changed.
-    ///
-    /// Mute can change outside Kestrel, so the periodic tick calls this; a
-    /// stopped control is never polled.
+    /// Refreshes external mute state and reports whether it changed.
     pub fn refresh_microphone(&mut self) -> bool {
         if !self.microphone_is_running() {
             return false;
@@ -870,7 +847,6 @@ impl ApplicationRuntime {
         self.microphone.latest() != &before
     }
 
-    /// Presents the microphone control on its own, for in-place updates.
     pub fn microphone_view_model(&self) -> MicrophoneViewModel {
         MicrophoneViewModel::from_presentation(MicrophonePresentation {
             snapshot: self.microphone.latest(),
@@ -878,23 +854,18 @@ impl ApplicationRuntime {
         })
     }
 
-    /// Whether the speed-test registration is running.
-    ///
-    /// A running registration only makes a test *startable*; nothing is ever
-    /// transferred until `start_speed_test` is called.
+    /// A running registration only makes a test startable.
     pub fn speed_test_is_running(&self) -> bool {
         self.registry
             .registrations()
             .any(|registration| registration.feature.id == SPEED_TEST_ID && registration.running)
     }
 
-    /// Starts one user-requested speed test.
     pub fn start_speed_test(&mut self) -> Result<(), String> {
         self.require_speed_test()?;
         self.speed_test.start().map_err(|error| error.to_string())
     }
 
-    /// Cancels the speed test in progress.
     pub fn cancel_speed_test(&mut self) -> Result<(), String> {
         self.require_speed_test()?;
         self.speed_test.cancel().map_err(|error| error.to_string())
@@ -916,7 +887,6 @@ impl ApplicationRuntime {
         self.speed_test.snapshot()
     }
 
-    /// Presents the speed test on its own, for in-place progress updates.
     pub fn speed_test_view_model(&self) -> SpeedTestViewModel {
         SpeedTestViewModel::from_presentation(SpeedTestPresentation {
             snapshot: self.speed_test.snapshot(),
@@ -924,13 +894,11 @@ impl ApplicationRuntime {
         })
     }
 
-    /// Applies an audio command only while the opt-in mixer service is running.
     pub fn execute_audio_command(&mut self, command: AudioCommand) -> Option<AudioCommandResult> {
         self.audio_mixer_is_running()
             .then(|| self.audio_mixer.execute(command))
     }
 
-    /// Discovers an insertion provider and builds the capability-gated service.
     fn build_snippet_service(
         configuration: &ApplicationConfiguration,
     ) -> SnippetInsertionService<ExecutableInsertionBackend> {
@@ -941,17 +909,13 @@ impl ApplicationRuntime {
         SnippetInsertionService::new(discovery)
     }
 
-    /// Opens a second clipboard reader for the `{{clipboard}}` variable.
-    ///
-    /// Reading never takes ownership, so it cannot disturb the clipboard
-    /// history service's selection.
+    /// Separate read-only access avoids disturbing history ownership.
     fn build_snippet_clipboard() -> Option<ArboardClipboardBackend> {
         discover_provider()
             .ok()
             .and_then(|provider| ArboardClipboardBackend::new(provider).ok())
     }
 
-    /// Scans the XDG application directories when the provider is enabled.
     fn scan_command_applications(
         configuration: &ApplicationConfiguration,
     ) -> Vec<ApplicationEntry> {
@@ -965,7 +929,6 @@ impl ApplicationRuntime {
         ))
     }
 
-    /// Projects scanned applications into searchable command items.
     fn application_items(applications: &[ApplicationEntry]) -> Vec<CommandItem> {
         applications
             .iter()
@@ -985,7 +948,6 @@ impl ApplicationRuntime {
             .collect()
     }
 
-    /// Projects the snippet library into searchable command items.
     fn snippet_items(library: &SnippetLibrary) -> Vec<CommandItem> {
         library
             .snippets()
@@ -1009,7 +971,7 @@ impl ApplicationRuntime {
             .collect()
     }
 
-    /// The provider switches in effect, with file search requiring a root.
+    /// Enables file search only with a configured root.
     fn providers_from_configuration(configuration: &ApplicationConfiguration) -> EnabledProviders {
         EnabledProviders {
             applications: configuration.command_bar.enable_applications,
@@ -1017,13 +979,11 @@ impl ApplicationRuntime {
                 && !configuration.command_bar.file_roots.is_empty(),
             scripts: configuration.command_bar.enable_scripts,
             emoji: configuration.command_bar.enable_emoji,
-            // Snippet results follow the snippet feature's lifecycle at search
-            // time, not a command bar setting.
+            // Snippets follow their own feature lifecycle.
             snippets: true,
         }
     }
 
-    /// Rebuilds the catalog after the snippet library or scripts changed.
     fn rebuild_command_index(&mut self) {
         self.command_index = CommandIndex::new(
             Self::snippet_items(&self.snippet_library),
@@ -1058,17 +1018,13 @@ impl ApplicationRuntime {
         &self.command_scripts
     }
 
-    /// Whether the command bar registration is running.
     pub fn command_bar_running(&self) -> bool {
         self.registry
             .registrations()
             .any(|registration| registration.feature.id == COMMAND_BAR_ID && registration.running)
     }
 
-    /// Fails unless the command bar registration is running.
-    ///
-    /// Every command bar effect passes through this, so a disabled or
-    /// unavailable feature cannot be driven by a stale or forged request.
+    /// Gates effects so stale requests cannot act while stopped.
     fn require_command_bar(&self) -> Result<(), String> {
         if self.command_bar_running() {
             Ok(())
@@ -1077,10 +1033,7 @@ impl ApplicationRuntime {
         }
     }
 
-    /// Ranks the catalog for one query, gathering bounded file results first.
-    ///
-    /// A command bar that is not running returns nothing, and snippet results
-    /// appear only while the snippet feature is running too.
+    /// Returns no results when stopped; snippets follow their own lifecycle.
     pub fn command_search<'a>(
         &'a self,
         query: &str,
@@ -1118,27 +1071,18 @@ impl ApplicationRuntime {
         })
     }
 
-    /// Records one use of a command and persists the learned ranking.
-    ///
-    /// Like every other ranking write, it is refused while the feature is
-    /// stopped, so a stale or forged request cannot reach the store.
     pub fn record_command_use(&mut self, id: &str) -> Result<(), String> {
         self.require_command_bar()?;
         self.command_ranking.record_use(id);
         self.persist_command_ranking()
     }
 
-    /// Pins or unpins a command and persists the learned ranking.
     pub fn set_command_pinned(&mut self, id: &str, pinned: bool) -> Result<(), String> {
         self.require_command_bar()?;
         self.command_ranking.set_pinned(id, pinned);
         self.persist_command_ranking()
     }
 
-    /// Drops every pin and count and persists the empty ranking.
-    ///
-    /// The store is only touched while the feature is running, matching
-    /// `set_command_pinned`.
     pub fn reset_command_ranking(&mut self) -> Result<(), String> {
         self.require_command_bar()?;
         self.command_ranking.reset();
@@ -1154,10 +1098,7 @@ impl ApplicationRuntime {
         crate::command_bar::save_ranking(path, &self.command_ranking)
     }
 
-    /// Places a value on the live clipboard.
-    ///
-    /// Reading and writing share one connection, so a copy from the command bar
-    /// never disturbs the clipboard history service's ownership.
+    /// Shared access prevents copying from disturbing history ownership.
     pub fn copy_to_clipboard(&mut self, text: &str) -> Result<(), String> {
         self.require_command_bar()?;
         let backend = self
@@ -1167,7 +1108,6 @@ impl ApplicationRuntime {
         backend.write_text(text).map_err(|error| error.to_string())
     }
 
-    /// Runs one configured script action.
     pub fn run_command_script(&self, index: usize) -> Result<ScriptOutcome, String> {
         self.require_command_bar()?;
         let script = self
@@ -1178,10 +1118,7 @@ impl ApplicationRuntime {
         run_script(script, path_env.as_deref()).map_err(|error| error.to_string())
     }
 
-    /// Launches one scanned application through the desktop's own launcher.
-    ///
-    /// GIO applies the entry's `Terminal=true`, `TryExec` and `Exec` field-code
-    /// rules, so this does not depend on `xdg-open` being installed.
+    /// GIO applies desktop-entry terminal, `TryExec`, and `Exec` rules.
     pub fn launch_command_application(&self, index: usize) -> Result<(), String> {
         self.require_command_bar()?;
         let application = self
@@ -1191,7 +1128,6 @@ impl ApplicationRuntime {
         launch_desktop_entry(application).map_err(|error| error.to_string())
     }
 
-    /// Opens a link, file, or directory with the desktop handler.
     pub fn open_command_target(&self, target: &str) -> Result<(), String> {
         self.require_command_bar()?;
         let launcher = self
@@ -1201,7 +1137,6 @@ impl ApplicationRuntime {
         launcher.open(target).map_err(|error| error.to_string())
     }
 
-    /// The snippet library as the window sees it.
     pub fn snippet_library(&self) -> &SnippetLibrary {
         &self.snippet_library
     }
@@ -1214,24 +1149,20 @@ impl ApplicationRuntime {
         &self.snippet_warnings
     }
 
-    /// Whether the snippet registration is running.
     pub fn snippets_running(&self) -> bool {
         self.registry
             .registrations()
             .any(|registration| registration.feature.id == SNIPPETS_ID && registration.running)
     }
 
-    /// The verified insertion provider, when one exists.
     pub fn snippet_provider(&self) -> Option<InsertionProvider> {
         self.snippet_service.provider()
     }
 
-    /// Why insertion stays disabled, when no provider was verified.
     pub fn snippet_unavailable_reason(&self) -> Option<&str> {
         self.snippet_service.unavailable_reason()
     }
 
-    /// The directory holding the snippet file, for the window's status line.
     pub fn snippet_directory(&self) -> Option<String> {
         self.snippet_path
             .as_deref()
@@ -1239,18 +1170,12 @@ impl ApplicationRuntime {
             .map(|parent| parent.display().to_string())
     }
 
-    /// Searches the library; previews render variables as placeholders.
     pub fn snippet_matches(&self, query: &str, limit: usize) -> Vec<SnippetMatch> {
         self.snippet_library
             .search(query, limit, self.snippet_policy)
     }
 
-    /// Saves or replaces a snippet and persists the library.
-    ///
-    /// The change is applied to a copy and written first; the live library and
-    /// the command catalog change only once the write succeeded, so a failed
-    /// save cannot leave a rejected edit active or be persisted later by an
-    /// unrelated save.
+    /// Writes a candidate before replacing live state, so failed saves stay inert.
     pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), String> {
         let mut candidate = self.snippet_library.clone();
         candidate
@@ -1262,9 +1187,7 @@ impl ApplicationRuntime {
         Ok(())
     }
 
-    /// Removes a snippet and persists the library.
-    ///
-    /// Like a save, the removal only takes effect once the write succeeded.
+    /// Removal takes effect only after persistence succeeds.
     pub fn delete_snippet(&mut self, name: &str) -> Result<(), String> {
         let mut candidate = self.snippet_library.clone();
         candidate.remove(name).map_err(|error| error.to_string())?;
@@ -1283,13 +1206,8 @@ impl ApplicationRuntime {
         save_snippets(path, library, self.snippet_policy).map_err(|error| error.to_string())
     }
 
-    /// Renders one snippet and types it, if a provider is verified.
-    ///
-    /// The clipboard variable is read here, once, through a read-only
-    /// connection, and the render clips it to the configured bound.
-    ///
-    /// Insertion types into another application, so it is refused unless the
-    /// snippet feature is running, whichever surface requested it.
+    /// Reads the clipboard once, clips it to the configured bound, and requires
+    /// the snippet feature to be running before typing into another application.
     pub fn insert_snippet(&mut self, name: &str) -> Result<InsertionReport, SnippetServiceError> {
         if !self.snippets_running() {
             return Err(SnippetServiceError::ExpansionUnavailable {
@@ -1319,15 +1237,12 @@ impl ApplicationRuntime {
             .insert(&snippet, self.snippet_policy, &context)
     }
 
-    /// Returns metadata about retained clipboard items without exposing their contents.
+    /// Returns retained-item metadata without exposing contents.
     pub fn clipboard_snapshot(&self) -> ClipboardSnapshot {
         self.clipboard_history.latest()
     }
 
-    /// Searches retained entries through the running worker.
-    ///
-    /// The returned previews are bounded and explicitly requested; they never
-    /// enter the service snapshot or its diagnostics.
+    /// Returns bounded, explicitly requested previews outside snapshots and diagnostics.
     pub fn clipboard_search(
         &self,
         query: &str,
@@ -1355,7 +1270,6 @@ impl ApplicationRuntime {
         self.clipboard_history_is_running()
             .then(|| self.clipboard_history.execute(command))
     }
-    /// Returns owned state for every independently capability-gated quick toggle.
     pub fn quick_toggle_snapshots(&self) -> impl Iterator<Item = &QuickToggleSnapshot> {
         self.quick_toggles.snapshots()
     }
@@ -1384,9 +1298,7 @@ impl ApplicationRuntime {
     }
 
     fn reconcile_resources(&mut self) {
-        // Neither feature may leave a claim or a transfer behind once stopped:
-        // the microphone forgets its last reading, and a running speed test is
-        // cancelled and its worker joined.
+        // Stop services to release claims and join workers.
         if !self.microphone_is_running() {
             self.microphone.reset();
         }
@@ -1409,8 +1321,7 @@ impl ApplicationRuntime {
             self.quick_toggles.stop(QuickToggleId::KeepAwake);
         }
     }
-    /// The `power.battery-alerts` quick toggle can only narrow the user's configured
-    /// Battery-alert preference; it never re-enables a rule the user turned off.
+    /// Battery alerts can only narrow the user's configured preference.
     fn sync_battery_alert_rule(&mut self) {
         let toggle_enabled = self
             .quick_toggles
@@ -1461,7 +1372,6 @@ impl ApplicationRuntime {
         })
     }
 
-    /// Whether the monitor feature currently owns sampling resources.
     pub fn monitor_is_running(&self) -> bool {
         self.system_monitor_is_running()
     }
@@ -1834,8 +1744,6 @@ mod tests {
         let now = SystemClock.local_time();
 
         assert!(!runtime.command_bar_running());
-        // Seed a pin so a refused write can be seen to leave the store alone
-        // rather than mutating before it is rejected.
         runtime.command_ranking.set_pinned("kestrel:refresh", true);
         assert!(
             runtime.command_search("refresh", &now).is_empty(),
@@ -1962,8 +1870,7 @@ mod tests {
             .expect("feature ID is valid");
         let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
         runtime.start();
-        // An entry that was never read from a desktop file has nothing for GIO to
-        // launch; the failure is reported rather than started some other way.
+        // Entries without desktop files cannot be launched through GIO.
         runtime.command_applications = entries;
         let error = runtime
             .launch_command_application(0)
@@ -1992,7 +1899,7 @@ mod tests {
                 runtime.snippet_policy,
             )
             .expect("snippet is valid");
-        // The parent of this path is a regular file, so every write fails.
+        // A regular-file parent makes writes fail.
         runtime.snippet_path = Some(blocker.join("snippets.toml"));
 
         runtime
@@ -2009,7 +1916,6 @@ mod tests {
             "a snippet that was not deleted must stay"
         );
 
-        // Once the store is writable the same operations take effect and persist.
         let path = dir.path().join("data/snippets.toml");
         runtime.snippet_path = Some(path.clone());
         runtime

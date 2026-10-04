@@ -1,9 +1,6 @@
 //! User-session XDG autostart integration.
 //!
-//! The portable configuration owns the user's boolean autostart intent; this
-//! module owns only the machine-specific desktop-entry side effect.  In
-//! particular, the resolved executable and autostart path never enter portable
-//! configuration.
+//! Portable config stores intent; this module writes the machine-specific entry.
 
 use std::{
     env,
@@ -14,44 +11,44 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// The desktop-file name owned by Kestrel in the current user's autostart directory.
+/// Desktop-file name in the user's autostart directory.
 pub const DESKTOP_FILE_NAME: &str = "io.github.kamleshkc2002.Kestrel.desktop";
 
 const APPLICATION_NAME: &str = "Kestrel";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// A failure while resolving or changing Kestrel's user autostart entry.
+/// Failure resolving or changing the autostart entry.
 #[derive(Debug)]
 pub enum AutostartError {
-    /// Neither a non-empty `XDG_CONFIG_HOME` nor a non-empty `HOME` was available.
+    /// No non-empty XDG_CONFIG_HOME or HOME was available.
     MissingConfigHome,
-    /// An XDG configuration directory must be absolute.
+    /// XDG configuration directories must be absolute.
     ConfigHomeNotAbsolute { path: PathBuf },
-    /// The resolved autostart path could not have a parent directory.
+    /// The autostart path has no parent directory.
     InvalidAutostartPath { path: PathBuf },
-    /// The selected executable path must be absolute before it can be persisted.
+    /// The executable path must be absolute.
     ExecutableNotAbsolute { path: PathBuf },
-    /// Desktop entry values are UTF-8; this executable path cannot be represented safely.
+    /// The executable path is not valid UTF-8.
     ExecutableNotUtf8 { path: PathBuf },
-    /// A control character would make the desktop Exec value invalid or ambiguous.
+    /// A control character would invalidate the desktop Exec value.
     ExecutableContainsControlCharacter { path: PathBuf },
     /// Resolving the running executable failed.
     CurrentExecutable { source: io::Error },
-    /// Creating the user autostart directory failed.
+    /// Creating the autostart directory failed.
     CreateDirectory { path: PathBuf, source: io::Error },
     /// Creating the temporary desktop file failed.
     CreateTemporaryFile { path: PathBuf, source: io::Error },
-    /// Writing or syncing the temporary desktop file failed.
+    /// Writing or syncing the temporary file failed.
     WriteTemporaryFile { path: PathBuf, source: io::Error },
-    /// The temporary desktop file could not be atomically renamed into place.
+    /// Atomic installation failed.
     Install {
         from: PathBuf,
         to: PathBuf,
         source: io::Error,
     },
-    /// Removing Kestrel's desktop file failed.
+    /// Removing the desktop file failed.
     Remove { path: PathBuf, source: io::Error },
-    /// Too many stale temporary names prevented a new atomic write.
+    /// Temporary names were exhausted.
     TemporaryFileNameExhausted { directory: PathBuf },
 }
 
@@ -151,17 +148,13 @@ pub fn enable() -> Result<(), AutostartError> {
     enable_at(&config_home, &executable)
 }
 
-/// Disable Kestrel's user autostart entry using the current environment.
-///
-/// Removing a missing entry is successful, so this operation is idempotent.
+/// Disabling a missing entry succeeds.
 pub fn disable() -> Result<(), AutostartError> {
     let config_home = config_home()?;
     disable_at(&config_home)
 }
 
-/// Resolve Kestrel's user autostart desktop-file path from XDG environment variables.
-///
-/// `XDG_CONFIG_HOME` wins when it is non-empty; otherwise `HOME/.config` is used.
+/// Resolves the path, preferring non-empty `XDG_CONFIG_HOME`.
 pub fn autostart_path() -> Result<PathBuf, AutostartError> {
     autostart_path_in(&config_home()?)
 }
@@ -176,10 +169,7 @@ fn config_home() -> Result<PathBuf, AutostartError> {
     Ok(config_home)
 }
 
-/// Resolve the desktop-file path below an explicit XDG configuration directory.
-///
-/// This is useful to callers that already own environment/path resolution and to
-/// deterministic tests; it still enforces the absolute-path XDG contract.
+/// Resolves a path below an explicit absolute config directory.
 pub fn autostart_path_in(config_home: &Path) -> Result<PathBuf, AutostartError> {
     if config_home.as_os_str().is_empty() || !config_home.is_absolute() {
         return Err(AutostartError::ConfigHomeNotAbsolute {
@@ -189,10 +179,7 @@ pub fn autostart_path_in(config_home: &Path) -> Result<PathBuf, AutostartError> 
     Ok(config_home.join("autostart").join(DESKTOP_FILE_NAME))
 }
 
-/// Resolve the executable that should be written to the desktop entry.
-///
-/// An absolute `APPIMAGE` takes precedence.  Otherwise the process's current
-/// executable is used and must itself be absolute.
+/// Resolves the executable, preferring an absolute `APPIMAGE`.
 pub fn executable_path() -> Result<PathBuf, AutostartError> {
     if let Some(appimage) = non_empty_var("APPIMAGE") {
         if appimage.is_absolute() {
@@ -207,10 +194,7 @@ pub fn executable_path() -> Result<PathBuf, AutostartError> {
     Ok(executable)
 }
 
-/// Enable autostart below `config_home` with an explicit executable path.
-///
-/// The returned path is the installed desktop entry.  The file is written to a
-/// sibling temporary file and renamed into place, making replacement atomic.
+/// Atomically installs the desktop entry via sibling rename.
 pub fn enable_at(config_home: &Path, executable: &Path) -> Result<(), AutostartError> {
     enable_for_config_home(config_home, executable)
 }
@@ -223,10 +207,7 @@ fn enable_for_config_home(config_home: &Path, executable: &Path) -> Result<(), A
     Ok(())
 }
 
-/// Disable autostart below `config_home` with an explicit path.
-///
-/// Only [`DESKTOP_FILE_NAME`] is ever removed.  A missing file is treated as
-/// already disabled.
+/// Removes only Kestrel's entry; a missing file is already disabled.
 pub fn disable_at(config_home: &Path) -> Result<(), AutostartError> {
     let path = autostart_path_in(config_home)?;
     match fs::remove_file(&path) {

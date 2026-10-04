@@ -1,8 +1,4 @@
 //! Feature registry and lifecycle primitives.
-//!
-//! Services combine feature policy with `kestrel-platform` probes and publish
-//! UI-agnostic core reports. Concrete feature services can later attach their
-//! own resource lifecycle to this capability-aware runtime state.
 
 use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::CapabilityProbe;
@@ -37,7 +33,6 @@ pub struct ServiceRegistration {
 }
 
 impl ServiceRegistration {
-    /// Builds a registration from feature metadata and a matching probe result.
     pub fn new(
         feature: FeatureSpec,
         capability: CapabilityReport,
@@ -59,7 +54,6 @@ impl ServiceRegistration {
         })
     }
 
-    /// Returns the feature's current lifecycle stage without hiding enablement.
     pub fn lifecycle(&self) -> ServiceLifecycle {
         if self.running {
             ServiceLifecycle::Running
@@ -88,7 +82,6 @@ fn is_available(status: &CapabilityStatus) -> bool {
     )
 }
 
-/// A registration or lifecycle operation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
     FeatureIdMismatch {
@@ -103,7 +96,6 @@ pub enum RegistryError {
     },
 }
 
-/// Registry state used by the application composition root.
 #[derive(Default)]
 pub struct FeatureRegistry {
     features: Vec<RegisteredFeature>,
@@ -115,7 +107,6 @@ struct RegisteredFeature {
 }
 
 impl FeatureRegistry {
-    /// Registers a feature, caches its initial probe result, and does not start it.
     pub fn register_probe<P: CapabilityProbe + 'static>(
         &mut self,
         feature: FeatureSpec,
@@ -140,14 +131,12 @@ impl FeatureRegistry {
         Ok(())
     }
 
-    /// Returns all registered features in registration order.
     pub fn registrations(&self) -> impl Iterator<Item = &ServiceRegistration> {
         self.features
             .iter()
             .map(|registered| &registered.registration)
     }
 
-    /// Refreshes a cached report through the feature's original read-only probe.
     pub fn refresh_capability(
         &mut self,
         feature_id: &str,
@@ -164,7 +153,6 @@ impl FeatureRegistry {
         Ok(&registered.registration)
     }
 
-    /// Applies a user's enablement preference without assuming availability.
     pub fn set_enabled(
         &mut self,
         feature_id: &str,
@@ -178,7 +166,6 @@ impl FeatureRegistry {
         Ok(registration)
     }
 
-    /// Starts every enabled feature that currently has an available capability.
     pub fn start_enabled(&mut self) {
         for registered in &mut self.features {
             let registration = &mut registered.registration;

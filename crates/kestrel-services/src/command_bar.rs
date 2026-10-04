@@ -1,9 +1,6 @@
-//! Keyboard-first command ranking and the portable providers behind it.
+//! Keyboard-first command ranking with bounded, portable providers.
 //!
-//! The bar is deliberately bounded: it ranks a small in-memory catalog plus the
-//! results the application already gathered (applications, configured file
-//! roots, snippets), it never builds a filesystem-wide index, and its learned
-//! ranking stores command identifiers and counts — never the text a user typed.
+//! Learned ranking stores command identifiers and counts, never query text.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,12 +11,9 @@ use kestrel_core::{CommandScriptConfiguration, MAX_COMMAND_USAGE_ENTRIES};
 use kestrel_platform::snippets::LocalTime;
 
 pub const FEATURE_ID: &str = "commands.bar";
-/// Awarded when every needle character matched contiguously.
 const SUBSTRING_BONUS: i64 = 20;
-/// Awarded when the match starts at the beginning of the label.
 const PREFIX_BONUS: i64 = 6;
 
-/// The origin of one result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommandSource {
     Kestrel,
@@ -63,10 +57,7 @@ impl CommandSource {
         }
     }
 
-    /// Portable providers answer without any desktop integration.
-    ///
-    /// Unavailable integration providers are reported as unavailable, but they
-    /// never remove these from the results.
+    /// True when the provider needs no desktop integration.
     pub const fn portable(self) -> bool {
         matches!(
             self,
@@ -81,33 +72,23 @@ impl CommandSource {
     }
 }
 
-/// What running a result does. The application performs the effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
-    /// A Kestrel-owned action with a stable identifier.
     Kestrel(String),
-    /// Types text into the focused window (snippets, emoji, computed values).
     InsertText(String),
-    /// Runs one configured script by index into the configuration.
-    RunScript {
-        index: usize,
-    },
-    /// Launches one scanned application entry.
-    OpenApplication {
-        index: usize,
-    },
+    RunScript { index: usize },
+    OpenApplication { index: usize },
     OpenFile(PathBuf),
     OpenUrl(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandItem {
-    /// A stable identifier, used for pins and usage counts.
+    /// Stable identifier used for pins and usage counts.
     pub id: String,
     pub source: CommandSource,
     pub title: String,
     pub subtitle: String,
-    /// Searchable aliases for this command.
     pub keywords: Vec<String>,
     pub action: CommandAction,
 }
@@ -135,7 +116,6 @@ impl CommandItem {
         self
     }
 
-    /// The best fuzzy score across the title and its aliases.
     fn score(&self, needle: &str) -> Option<(i64, &'static str)> {
         let mut best: Option<(i64, &'static str)> =
             fuzzy_score(needle, &self.title).map(|score| (score, "title"));
@@ -166,10 +146,6 @@ pub struct CommandResult {
     pub matched_on: &'static str,
 }
 
-/// Scores a case-insensitive subsequence match, or `None` when it does not match.
-///
-/// Consecutive characters and word-start characters score higher, and a long
-/// haystack is slightly penalized so the shortest sensible label wins.
 pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i64> {
     let needle = needle.trim();
     if needle.is_empty() {
@@ -225,9 +201,8 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i64> {
     if needle_index != needle_chars.len() {
         return None;
     }
-    // A contiguous match is a substring match, which outranks a scattered one
-    // even when the scattered letters each follow a separator.
     if contiguous {
+        // Contiguous matches outrank scattered matches.
         score += SUBSTRING_BONUS;
     }
     if previous_haystack == Some(0) {
@@ -237,10 +212,7 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i64> {
     Some(score)
 }
 
-/// Learned ranking: command identifiers and use counts only.
-///
-/// Nothing here can hold query text, which is why the state can be inspected
-/// and exported without a redaction step.
+/// Learned ranking stores identifiers and use counts, never query text.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandRanking {
     pins: BTreeSet<String>,
@@ -248,7 +220,6 @@ pub struct CommandRanking {
 }
 
 impl CommandRanking {
-    /// An empty ranking usable as a shared default.
     pub const EMPTY: Self = Self {
         pins: BTreeSet::new(),
         usage: BTreeMap::new(),
@@ -260,8 +231,7 @@ impl CommandRanking {
             return *count;
         }
         if self.usage.len() >= MAX_COMMAND_USAGE_ENTRIES {
-            // Evict the least used entry (ties resolved by identifier) so the
-            // learned state stays bounded.
+            // Keep learned state bounded by evicting the least-used entry.
             if let Some(evicted) = self
                 .usage
                 .iter()
@@ -302,7 +272,6 @@ impl CommandRanking {
         self.pins.iter().cloned().collect()
     }
 
-    /// Drops every pin and count.
     pub fn reset(&mut self) {
         self.pins.clear();
         self.usage.clear();
@@ -323,7 +292,6 @@ impl CommandRanking {
     }
 }
 
-/// A successful unit conversion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnitConversion {
     pub value: f64,
@@ -332,10 +300,7 @@ pub struct UnitConversion {
     pub to_unit: String,
 }
 
-/// Evaluates a small arithmetic expression without any parser dependency.
-///
-/// Supports `+ - * / % ^`, parentheses, decimals, and unary signs. Anything else
-/// (identifiers, commas) makes the expression invalid rather than guessed at.
+/// Evaluates bounded arithmetic expressions with `+ - * / % ^`, parentheses, and signs.
 pub fn evaluate_math(expression: &str) -> Option<f64> {
     let expression = expression.trim();
     if expression.is_empty() || !expression.chars().any(|c| c.is_ascii_digit()) {
@@ -493,9 +458,7 @@ impl MathParser {
     }
 }
 
-/// The unit families the bar converts.
 const UNIT_TABLE: [(&str, &str, f64); 29] = [
-    // Length, in meters.
     ("mm", "length", 0.001),
     ("cm", "length", 0.01),
     ("m", "length", 1.0),
@@ -504,17 +467,15 @@ const UNIT_TABLE: [(&str, &str, f64); 29] = [
     ("ft", "length", 0.3048),
     ("yd", "length", 0.9144),
     ("mi", "length", 1609.344),
-    // Mass, in grams.
     ("mg", "mass", 0.001),
     ("g", "mass", 1.0),
     ("kg", "mass", 1000.0),
     ("oz", "mass", 28.349523125),
     ("lb", "mass", 453.59237),
-    // Volume, in liters.
     ("ml", "volume", 0.001),
     ("l", "volume", 1.0),
     ("gal", "volume", 3.785411784),
-    // Data, in bytes (decimal and binary are distinct units).
+    // Decimal and binary byte units are distinct.
     ("b", "data", 1.0),
     ("kb", "data", 1000.0),
     ("mb", "data", 1_000_000.0),
@@ -522,12 +483,10 @@ const UNIT_TABLE: [(&str, &str, f64); 29] = [
     ("kib", "data", 1024.0),
     ("mib", "data", 1_048_576.0),
     ("gib", "data", 1_073_741_824.0),
-    // Time, in seconds.
     ("s", "time", 1.0),
     ("min", "time", 60.0),
     ("h", "time", 3600.0),
     ("day", "time", 86_400.0),
-    // Speed, in meters per second.
     ("kmh", "speed", 0.2777777777777778),
     ("mph", "speed", 0.44704),
 ];
@@ -556,7 +515,7 @@ pub fn convert_units(query: &str) -> Option<UnitConversion> {
 }
 
 fn convert_value(value: f64, from: &str, to: &str) -> Option<f64> {
-    // Temperature is affine, so it is handled separately.
+    // Temperature conversion is affine.
     if let Some(result) = convert_temperature(value, from, to) {
         return Some(result);
     }
@@ -590,13 +549,9 @@ fn convert_temperature(value: f64, from: &str, to: &str) -> Option<f64> {
     }
 }
 
-/// The documented date and time queries the bar answers locally.
 pub const DATE_QUERIES: [&str; 6] = ["date", "time", "now", "today", "tomorrow", "yesterday"];
 
-/// Renders a local date/time query, or `None` when the query is not one.
-///
-/// Everything is derived from the supplied reading, so results are deterministic
-/// for a given clock and never consult the network.
+/// Renders a local date/time query deterministically from the supplied clock.
 pub fn render_date_query(query: &str, now: &LocalTime) -> Option<String> {
     let lowered = query.trim().to_lowercase();
     match lowered.as_str() {
@@ -632,7 +587,6 @@ fn epoch_to_iso(epoch: i64, utc_offset_seconds: i32) -> Option<String> {
     ))
 }
 
-/// Days since 1970-01-01 for a proleptic Gregorian date.
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let year = i64::from(year) - i64::from(month <= 2);
     let era = year.div_euclid(400);
@@ -666,7 +620,6 @@ fn civil_to_iso((year, month, day): (i32, u32, u32)) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// A small built-in emoji set, searchable by name.
 pub const EMOJI_TABLE: [(&str, &str); 64] = [
     ("grinning", "😀"),
     ("smile", "😄"),
@@ -734,15 +687,13 @@ pub const EMOJI_TABLE: [(&str, &str); 64] = [
     ("coffee", "☕"),
 ];
 
-/// The providers a search may consult.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnabledProviders {
     pub applications: bool,
     pub files: bool,
     pub scripts: bool,
     pub emoji: bool,
-    /// Snippet results, which depend on the snippet feature being live rather
-    /// than on a command bar setting.
+    /// Snippet results require the snippet feature, not a bar setting.
     pub snippets: bool,
 }
 
@@ -758,21 +709,19 @@ impl Default for EnabledProviders {
     }
 }
 
-/// Everything one search needs, supplied by the application.
 pub struct SearchInput<'a> {
     pub query: &'a str,
     pub max_results: usize,
     pub providers: EnabledProviders,
     /// Scanned desktop entries, in stable order.
     pub applications: &'a [CommandItem],
-    /// Bounded results from the configured file roots only.
+    /// Bounded results from configured file roots.
     pub files: &'a [PathBuf],
     pub now: Option<&'a LocalTime>,
     pub ranking: &'a CommandRanking,
     pub configured_scripts: &'a [CommandScriptConfiguration],
 }
 
-/// The command catalog plus the providers that are pure functions.
 #[derive(Debug, Clone, Default)]
 pub struct CommandIndex {
     builtins: Vec<CommandItem>,
@@ -782,7 +731,6 @@ pub struct CommandIndex {
 }
 
 impl CommandIndex {
-    /// Builds the catalog: Kestrel actions, snippets, scripts, and emoji.
     pub fn new(
         snippets: impl IntoIterator<Item = CommandItem>,
         scripts: &[CommandScriptConfiguration],
@@ -826,7 +774,6 @@ impl CommandIndex {
         self.builtins.len()
     }
 
-    /// Ranks the catalog and the supplied provider results for one query.
     pub fn search(&self, input: SearchInput<'_>) -> Vec<CommandResult> {
         let query = input.query.trim();
         if query.chars().count() < kestrel_core::MIN_COMMAND_QUERY_CHARS {
@@ -849,8 +796,6 @@ impl CommandIndex {
             }
         };
 
-        // Portable providers always participate, even when an integration is
-        // unavailable: their absence is reported separately, not by hiding these.
         for item in &self.builtins {
             consider(item, 20);
         }
@@ -891,7 +836,6 @@ impl CommandIndex {
             }
         }
 
-        // Computed providers answer a query that is not a name match at all.
         if let Some(value) = evaluate_math(query) {
             let display = format_number(value);
             results.push(CommandResult {
@@ -946,7 +890,6 @@ impl CommandIndex {
                     matched_on: "computed",
                 });
             }
-            // A bare epoch value is also offered as a conversion.
             if let Some(rendered) = render_date_query(&format!("epoch {query}"), now) {
                 results.push(CommandResult {
                     item: CommandItem::new(
@@ -979,7 +922,6 @@ impl CommandIndex {
             });
         }
 
-        // Pins and learned use decide ties; scoring decides the order.
         results.sort_by(|left, right| {
             right
                 .pinned
@@ -1038,7 +980,6 @@ pub fn normalize_url(query: &str) -> Option<String> {
     None
 }
 
-/// The Kestrel-owned commands the bar always offers.
 fn kestrel_commands() -> Vec<CommandItem> {
     let mut commands = vec![
         CommandItem::new(
@@ -1131,7 +1072,6 @@ fn kestrel_commands() -> Vec<CommandItem> {
         .with_keywords(["speed", "bandwidth", "internet"]),
     ];
 
-    // Quick toggles ride along as first-class commands.
     for toggle in kestrel_platform::quick_toggles::ALL_QUICK_TOGGLES {
         commands.push(
             CommandItem::new(
@@ -1234,8 +1174,6 @@ mod tests {
             vec!["kestrel:refresh".to_string()]
         );
 
-        // Searching never records anything, so the learned state cannot hold the
-        // text a user typed; it only maps identifiers to counts.
         let typed = "quarterly revenue numbers";
         assert!(fuzzy_score(typed, "kestrel:refresh").is_none() || true);
         let debug = format!("{ranking:?}");
@@ -1340,7 +1278,6 @@ mod tests {
             render_date_query("time", &NOW).as_deref(),
             Some("2026-10-02 09:05:07 (+02:00)")
         );
-        // 1700000000 is 2023-11-14T22:13:20Z, which is the next day at +02:00.
         assert_eq!(
             render_date_query("epoch 1700000000", &NOW).as_deref(),
             Some("2023-11-15 00:13:20"),
@@ -1373,7 +1310,6 @@ mod tests {
             render_date_query("yesterday", &january).as_deref(),
             Some("2026-12-31")
         );
-        // A leap day exists and does not panic.
         let february = LocalTime {
             year: 2028,
             month: 2,

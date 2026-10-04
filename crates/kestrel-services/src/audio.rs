@@ -15,17 +15,15 @@ pub const MIN_VOLUME_PERCENT: u8 = 0;
 /// The hard amplification cap; a policy ceiling can only be lower.
 pub const MAX_VOLUME_PERCENT: u8 = MAX_AUDIO_BOOST_PERCENT;
 
-/// The direction of a master output cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCycleDirection {
     Next,
     Previous,
 }
 
-/// User-configured mixer behavior shared by validation and presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioPolicy {
-    /// The largest volume the UI and commands may request, above 100 for boost.
+    /// Maximum requested volume, including boost.
     pub boost_percent: u8,
     pub output_switch: AudioOutputSwitch,
     pub disconnect_policy: AudioDisconnectPolicy,
@@ -69,7 +67,6 @@ impl Default for AudioPolicy {
 }
 
 impl AudioPolicy {
-    /// Projects the portable configuration contract into mixer policy.
     pub fn from_configuration(configuration: &AudioConfiguration) -> Self {
         Self {
             boost_percent: configuration.boost_percent,
@@ -99,7 +96,6 @@ impl AudioPolicy {
         Ok(*self)
     }
 
-    /// The default policy with a different boost ceiling; used by configuration plumbing.
     pub fn with_boost_percent(mut self, boost_percent: u8) -> Self {
         self.boost_percent = boost_percent;
         self
@@ -114,7 +110,6 @@ pub enum AudioAvailability {
     Ready,
 }
 
-/// What the last master switch did, so the UI can report stream movement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSwitchOutcome {
     pub output_id: u32,
@@ -123,7 +118,6 @@ pub struct AudioSwitchOutcome {
     pub failed_moves: usize,
 }
 
-/// What Kestrel did when one or more outputs disappeared between refreshes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioReconcileOutcome {
     pub lost_output_ids: Vec<u32>,
@@ -137,10 +131,8 @@ pub struct AudioSnapshot {
     pub availability: AudioAvailability,
     pub server: Option<AudioServer>,
     pub outputs: Vec<OutputDevice>,
-    /// Streams after the inactive filter; `inactive_streams` counts hidden ones.
     pub streams: Vec<PlaybackStream>,
     pub inactive_streams: usize,
-    /// The amplification ceiling currently in effect.
     pub boost_ceiling_percent: u8,
     pub last_switch: Option<AudioSwitchOutcome>,
     pub last_reconcile: Option<AudioReconcileOutcome>,
@@ -160,7 +152,6 @@ impl AudioSnapshot {
         }
     }
 
-    /// The output the server currently treats as default, falling back to the first.
     pub fn default_output(&self) -> Option<&OutputDevice> {
         self.outputs
             .iter()
@@ -168,7 +159,6 @@ impl AudioSnapshot {
             .or_else(|| self.outputs.first())
     }
 
-    /// Outputs grouped by owning card, preserving discovery order.
     pub fn outputs_by_card(&self) -> Vec<(Option<String>, Vec<&OutputDevice>)> {
         let mut groups: Vec<(Option<String>, Vec<&OutputDevice>)> = Vec::new();
         for output in &self.outputs {
@@ -195,20 +185,10 @@ pub enum AudioCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioCommandError {
-    /// The request exceeded the configured ceiling; it is never silently clamped.
-    VolumeOutOfRange {
-        requested: u8,
-        maximum: u8,
-    },
-    UnknownStream {
-        stream_id: u32,
-    },
-    ReadOnlyStream {
-        stream_id: u32,
-    },
-    UnknownOutput {
-        output_id: u32,
-    },
+    VolumeOutOfRange { requested: u8, maximum: u8 },
+    UnknownStream { stream_id: u32 },
+    ReadOnlyStream { stream_id: u32 },
+    UnknownOutput { output_id: u32 },
     NoAlternateOutput,
     Backend(AudioError),
     Refresh(AudioError),
@@ -255,7 +235,7 @@ pub type AudioCommandResult = Result<AudioSnapshot, Box<AudioCommandFailure>>;
 pub struct AudioMixerService<B> {
     backend: B,
     policy: AudioPolicy,
-    /// The unfiltered discovery; validation and reconciliation use it, presentation filters it.
+    /// Unfiltered discovery used for validation and reconciliation.
     discovered: Option<AudioDiscovery>,
     last_switch: Option<AudioSwitchOutcome>,
     last_reconcile: Option<AudioReconcileOutcome>,
@@ -269,7 +249,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
             .expect("the built-in audio policy is valid")
     }
 
-    /// Builds a mixer with an explicit policy, rejecting an invalid ceiling.
     pub fn with_policy(backend: B, policy: AudioPolicy) -> Result<Self, AudioPolicyError> {
         let policy = policy.validate()?;
         Ok(Self {
@@ -301,7 +280,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
         self.policy
     }
 
-    /// Applies a validated policy and re-presents the retained discovery.
     pub fn set_policy(&mut self, policy: AudioPolicy) -> Result<(), AudioPolicyError> {
         self.policy = policy.validate()?;
         match self.discovered.as_ref() {
@@ -314,7 +292,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
         Ok(())
     }
 
-    /// Re-discovers the graph and repairs routing after output loss.
     pub fn refresh(&mut self) -> Result<&AudioSnapshot, AudioError> {
         let mut discovery = match self.backend.discover() {
             Ok(discovery) => discovery,
@@ -331,8 +308,7 @@ impl<B: AudioBackend> AudioMixerService<B> {
         if !lost.is_empty() {
             let outcome = self.reconcile_lost_outputs(&lost, &discovery);
             self.last_reconcile = Some(outcome);
-            // Re-read the graph so the snapshot never reports stale routing; a
-            // failed re-read is a diagnostic, not a feature failure.
+            // Refresh after reconciliation to avoid stale routing in the snapshot.
             if let Ok(rediscovered) = self.backend.discover() {
                 discovery = rediscovered;
             } else {
@@ -402,7 +378,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
         }
     }
 
-    /// Switches the server default output and optionally re-homes playing streams.
     fn switch_default_output(&mut self, output_id: u32) {
         let Some(output_name) = self.discovered.as_ref().and_then(|discovery| {
             discovery
@@ -487,7 +462,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
         lost
     }
 
-    /// Re-homes streams whose output vanished, applying the disconnect policy.
     fn reconcile_lost_outputs(
         &mut self,
         lost: &[u32],
@@ -574,7 +548,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
         Ok(())
     }
 
-    /// Rejects values above the configured ceiling instead of clamping them.
     fn check_volume(&self, volume_percent: u8) -> Result<(), AudioCommandError> {
         if volume_percent > self.policy.boost_percent {
             return Err(AudioCommandError::VolumeOutOfRange {
@@ -609,7 +582,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
             .ok_or(AudioCommandError::UnknownOutput { output_id })
     }
 
-    /// Projects a discovery into owned presentation state under the current policy.
     fn present(&self, discovery: &AudioDiscovery) -> AudioSnapshot {
         let active_count = discovery
             .streams
@@ -685,7 +657,6 @@ mod tests {
         log: Rc<RefCell<FakeLog>>,
     }
 
-    /// Builds a backend plus a log that stays observable after the service owns it.
     fn fake(
         discoveries: impl IntoIterator<Item = Result<AudioDiscovery, AudioError>>,
     ) -> (FakeBackend, Rc<RefCell<FakeLog>>) {

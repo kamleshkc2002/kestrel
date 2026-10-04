@@ -7,15 +7,10 @@ use serde::{Deserialize, Serialize};
 /// The runtime status of a feature on the current Linux session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityStatus {
-    /// The feature can run without additional setup.
     Supported,
-    /// The feature runs with documented limitations.
     Limited { reason: String },
-    /// The feature requires a portal grant, udev rule, or other permission.
     NeedsPermission { permission: Permission },
-    /// The feature requires an optional executable, service, or library.
     MissingDependency { name: String },
-    /// The desktop, compositor, hardware, or package mode cannot support the feature.
     Unsupported { reason: String },
 }
 
@@ -42,7 +37,6 @@ pub struct CapabilityEvidence {
 }
 
 impl CapabilityEvidence {
-    /// Builds evidence from a stable key and a sanitized value.
     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             key: key.into(),
@@ -66,17 +60,13 @@ pub const MAX_ALERT_COOLDOWN_SECONDS: u64 = 86_400;
 pub const MAX_ALERT_THRESHOLD_PERCENT: f64 = 100.0;
 pub const MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS: f64 = 150.0;
 
-/// Unamplified playback volume. Values above this are software amplification.
+/// Values above this are software amplification.
 pub const UNAMPLIFIED_AUDIO_VOLUME_PERCENT: u8 = 100;
 /// The hard cap for amplified playback volume; no command may exceed it.
 pub const MAX_AUDIO_BOOST_PERCENT: u8 = 150;
-/// Conservative default amplification ceiling for a fresh configuration.
 pub const DEFAULT_AUDIO_BOOST_PERCENT: u8 = 130;
-/// The volume reapplied after output loss when the disconnect policy resets it.
 pub const DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT: u8 = 100;
 
-// Clipboard retention bounds. History stays memory-only and bounded; these
-// values only narrow or widen the in-memory window.
 pub const DEFAULT_CLIPBOARD_MAX_ITEMS: u32 = 100;
 pub const MAX_CLIPBOARD_MAX_ITEMS: u32 = 1000;
 pub const MIN_CLIPBOARD_ITEM_BYTES: u32 = 1024;
@@ -92,9 +82,6 @@ pub const DEFAULT_CLIPBOARD_AGE_HOURS: u32 = 24;
 pub const MAX_CLIPBOARD_AGE_HOURS: u32 = 24 * 30;
 pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 86_400;
 
-// Text-snippet bounds. Snippet content is user-authored text that lives in a
-// private file, so these bounds protect the file, the insert path, and the
-// clipboard variable that a snippet may reference.
 pub const MIN_SNIPPET_CONTENT_BYTES: u32 = 1;
 pub const DEFAULT_SNIPPET_CONTENT_BYTES: u32 = 64 * 1024;
 pub const MAX_SNIPPET_CONTENT_BYTES: u32 = 1024 * 1024;
@@ -110,9 +97,7 @@ pub const MIN_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 250;
 pub const DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 2_000;
 pub const MAX_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 10_000;
 
-// Command-bar bounds. The bar is keyboard-first and bounded by construction: it
-// never builds a filesystem-wide index, and its learned ranking stores command
-// identifiers and counts only.
+// Bounded, keyboard-first command-bar data.
 pub const MIN_COMMAND_RESULTS: u32 = 5;
 pub const DEFAULT_COMMAND_RESULTS: u32 = 12;
 pub const MAX_COMMAND_RESULTS: u32 = 50;
@@ -129,11 +114,7 @@ pub const DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 64 * 1024;
 pub const MAX_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 1024 * 1024;
 pub const MAX_COMMAND_USAGE_ENTRIES: usize = 200;
 pub const MAX_COMMAND_ALIAS_CHARS: usize = 32;
-/// User-initiated network speed-test bounds.
-///
-/// The download ceiling stays below 100 MB because the speed-test provider
-/// refuses requests of that size; the upload ceiling is kept conservative for
-/// metered and asymmetric links.
+/// Speed-test transfer bounds; the provider rejects downloads at 100 MB.
 pub const MIN_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 1;
 pub const DEFAULT_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 25;
 pub const MAX_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 90;
@@ -168,7 +149,6 @@ fn default_command_script_output() -> u32 {
     DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES
 }
 
-/// User intent for the command bar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandBarConfiguration {
     #[serde(default = "default_command_results")]
@@ -207,7 +187,6 @@ impl Default for CommandBarConfiguration {
 }
 
 impl CommandBarConfiguration {
-    /// Validates result bounds, file roots, and script definitions.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if !(MIN_COMMAND_RESULTS..=MAX_COMMAND_RESULTS).contains(&self.max_results) {
             return Err(ConfigurationError::InvalidCommandResults {
@@ -256,10 +235,7 @@ impl CommandBarConfiguration {
 }
 
 impl CommandScriptConfiguration {
-    /// Validates one script definition on its own.
-    ///
-    /// This lets a loader drop a single malformed entry instead of rejecting the
-    /// whole table.
+    /// Validates one script, so a loader can drop just the malformed entry.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         let name = self.name.trim();
         if name.is_empty() || name.chars().count() > MAX_COMMAND_ALIAS_CHARS {
@@ -299,7 +275,6 @@ impl CommandScriptConfiguration {
     }
 }
 
-/// The user's preferred appearance mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AppearancePreference {
@@ -309,7 +284,6 @@ pub enum AppearancePreference {
     Dark,
 }
 
-/// A section that can be shown in the application panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelSection {
@@ -334,14 +308,12 @@ impl PanelSection {
     }
 }
 
-/// Visibility and ordering for one panel section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanelSectionConfiguration {
     pub section: PanelSection,
     pub visible: bool,
 }
 
-/// Presentation preferences owned by the application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiConfiguration {
     #[serde(default)]
@@ -369,14 +341,12 @@ impl Default for UiConfiguration {
     }
 }
 
-/// Startup preferences owned by the application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StartupConfiguration {
     #[serde(default)]
     pub autostart: bool,
 }
 
-/// A resource-use level for a feature lifecycle operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CostLevel {
@@ -386,7 +356,6 @@ pub enum CostLevel {
     Moderate,
 }
 
-/// Static resource-use metadata for a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ResourceCost {
     #[serde(default)]
@@ -398,7 +367,6 @@ pub struct ResourceCost {
 }
 
 impl ResourceCost {
-    /// Builds resource metadata for idle, interaction, and polling work.
     pub const fn new(idle: CostLevel, interaction: CostLevel, polling: CostLevel) -> Self {
         Self {
             idle,
@@ -407,10 +375,8 @@ impl ResourceCost {
         }
     }
 }
-/// Non-sensitive, per-feature preferences persisted by the application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct FeatureConfiguration {
-    /// Whether the user has opted into starting this feature.
     #[serde(default)]
     pub enabled: bool,
 }
@@ -465,14 +431,12 @@ impl Default for ApplicationConfiguration {
 }
 
 impl ApplicationConfiguration {
-    /// Returns whether a known feature should be started by default.
     pub fn feature_enabled(&self, feature_id: &str) -> bool {
         self.features
             .get(feature_id)
             .is_some_and(|configuration| configuration.enabled)
     }
 
-    /// Records a user's enablement preference for a stable feature ID.
     pub fn set_feature_enabled(
         &mut self,
         feature_id: impl Into<String>,
@@ -485,30 +449,25 @@ impl ApplicationConfiguration {
         Ok(())
     }
 
-    /// Captures every feature entry, including the distinction between absent
-    /// and disabled entries.
+    /// Captures every entry, keeping absent distinct from disabled.
     pub fn snapshot_features(&self) -> FeatureConfigurationSnapshot {
         FeatureConfigurationSnapshot {
             features: self.features.clone(),
         }
     }
 
-    /// Restores a previously captured feature map exactly.
     pub fn restore_feature_snapshot(&mut self, snapshot: FeatureConfigurationSnapshot) {
         self.features = snapshot.features;
     }
 
-    /// Alias for callers that use the noun form of the snapshot operation.
     pub fn feature_configuration_snapshot(&self) -> FeatureConfigurationSnapshot {
         self.snapshot_features()
     }
 
-    /// Restores a snapshot by reference, retaining the reusable snapshot.
     pub fn restore_features(&mut self, snapshot: &FeatureConfigurationSnapshot) {
         self.features = snapshot.features.clone();
     }
 
-    /// Validates schema, stable feature identifiers, panel section shape, and monitoring.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if self.schema_version != CURRENT_CONFIGURATION_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchemaVersion {
@@ -588,7 +547,6 @@ impl ApplicationConfiguration {
 }
 
 impl UiConfiguration {
-    /// Validates that panel sections are complete and unambiguous.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         let mut seen = [false; PanelSection::ALL.len()];
         for entry in &self.panel_sections {
@@ -688,7 +646,6 @@ impl AlertKind {
         }
     }
 
-    /// True for kinds that alert when the value rises above the threshold.
     pub const fn alerts_above(self) -> bool {
         !matches!(self, Self::Battery)
     }
@@ -795,10 +752,8 @@ impl Default for MonitorConfiguration {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioOutputSwitch {
-    /// Switch only the default output; playing streams keep their current device.
     #[default]
     DefaultOutput,
-    /// Switch the default output and move every active stream to it.
     AllStreams,
 }
 
@@ -820,10 +775,8 @@ impl AudioOutputSwitch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioDisconnectPolicy {
-    /// Keep whatever volume the stream had when its output was lost.
     #[default]
     PreserveVolume,
-    /// Reapply the configured disconnect volume when its output is lost.
     ResetVolume,
 }
 
@@ -844,17 +797,14 @@ impl AudioDisconnectPolicy {
 /// User intent for the PulseAudio-compatible mixer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioConfiguration {
-    /// The largest amplified volume the UI and service may request.
     #[serde(default = "default_audio_boost_percent")]
     pub boost_percent: u8,
     #[serde(default)]
     pub output_switch: AudioOutputSwitch,
     #[serde(default)]
     pub disconnect_policy: AudioDisconnectPolicy,
-    /// The volume reapplied to a stream after output loss under `reset_volume`.
     #[serde(default = "default_audio_disconnect_volume_percent")]
     pub disconnect_volume_percent: u8,
-    /// Whether idle/corked streams are listed alongside active ones.
     #[serde(default)]
     pub include_inactive_streams: bool,
 }
@@ -880,7 +830,6 @@ impl Default for AudioConfiguration {
 }
 
 impl AudioConfiguration {
-    /// Validates the amplification ceiling and the disconnect volume bounds.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if !(UNAMPLIFIED_AUDIO_VOLUME_PERCENT..=MAX_AUDIO_BOOST_PERCENT)
             .contains(&self.boost_percent)
@@ -932,7 +881,6 @@ impl Default for SpeedTestConfiguration {
 }
 
 impl SpeedTestConfiguration {
-    /// Validates transfer bounds and the per-phase timeout.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if !(MIN_SPEED_TEST_DOWNLOAD_MEGABYTES..=MAX_SPEED_TEST_DOWNLOAD_MEGABYTES)
             .contains(&self.download_megabytes)
@@ -972,15 +920,11 @@ pub struct ClipboardConfiguration {
     pub max_total_bytes: u32,
     #[serde(default = "default_clipboard_age_hours")]
     pub max_age_hours: u32,
-    /// Seconds after which the live selection is cleared; `0` disables it.
-    ///
-    /// This never deletes saved entries.
+    /// Seconds until the live selection is cleared; `0` disables. Saved entries are kept.
     #[serde(default)]
     pub clear_seconds: u64,
-    /// Skips capturing content that matches a documented sensitive pattern.
     #[serde(default)]
     pub filter_sensitive: bool,
-    /// Whether the quick-paste action copies the plain-text form of an entry.
     #[serde(default = "default_true")]
     pub paste_plain_text: bool,
 }
@@ -1098,7 +1042,6 @@ impl SnippetVariable {
         SnippetVariable::Clipboard,
     ];
 
-    /// The literal token a snippet author writes.
     pub const fn token(self) -> &'static str {
         match self {
             Self::Date => "{{date}}",
@@ -1121,7 +1064,6 @@ impl SnippetVariable {
         }
     }
 
-    /// Whether rendering this variable reads the live clipboard.
     pub const fn reads_clipboard(self) -> bool {
         matches!(self, Self::Clipboard)
     }
@@ -1159,7 +1101,6 @@ impl Snippet {
         }
     }
 
-    /// Variables this snippet references, in first-appearance order.
     pub fn variables(&self) -> Vec<SnippetVariable> {
         let mut found = Vec::new();
         for token in variable_tokens(&self.content) {
@@ -1172,7 +1113,6 @@ impl Snippet {
         found
     }
 
-    /// Validates one snippet without comparing it to the rest of the library.
     pub fn validate(&self, max_content_bytes: u32) -> Result<(), SnippetError> {
         let name = self.name.trim();
         if name.chars().count() < MIN_SNIPPET_NAME_CHARS {
@@ -1256,43 +1196,19 @@ pub fn variable_tokens(content: &str) -> Vec<&str> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnippetError {
     EmptyName,
-    NameTooLong {
-        name: String,
-    },
-    DuplicateName {
-        name: String,
-    },
+    NameTooLong { name: String },
+    DuplicateName { name: String },
     EmptyFolder,
-    FolderTooLong {
-        folder: String,
-    },
+    FolderTooLong { folder: String },
     EmptyTrigger,
-    TriggerTooLong {
-        trigger: String,
-    },
-    TriggerContainsWhitespace {
-        trigger: String,
-    },
-    DuplicateTrigger {
-        trigger: String,
-    },
-    /// A trigger must start with a non-alphanumeric delimiter.
-    TriggerNotDelimited {
-        trigger: String,
-    },
-    ContentTooLong {
-        bytes: usize,
-        maximum: u32,
-    },
-    TooManyVariables {
-        maximum: usize,
-    },
-    UnknownVariable {
-        token: String,
-    },
-    UnknownSnippet {
-        name: String,
-    },
+    TriggerTooLong { trigger: String },
+    TriggerContainsWhitespace { trigger: String },
+    DuplicateTrigger { trigger: String },
+    TriggerNotDelimited { trigger: String },
+    ContentTooLong { bytes: usize, maximum: u32 },
+    TooManyVariables { maximum: usize },
+    UnknownVariable { token: String },
+    UnknownSnippet { name: String },
 }
 
 impl std::fmt::Display for SnippetError {
@@ -1365,11 +1281,7 @@ pub struct SnippetConfiguration {
     pub expansion_timing: SnippetExpansionTiming,
 }
 
-/// How a snippet's trigger is expected to expand.
-///
-/// Expansion needs a key-capture provider; until one is verified, only manual
-/// insertion inserts text, and the stored preference is reported as unavailable
-/// rather than silently ignored.
+/// Trigger expansion needs a key-capture provider; manual insertion remains available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetExpansionTiming {
@@ -1394,10 +1306,7 @@ impl SnippetExpansionTiming {
     }
 }
 
-/// Which insertion provider Kestrel may use.
-///
-/// `Auto` deliberately never selects the uinput-based provider: joining the
-/// input group is an explicit setup decision, so it must be requested here.
+/// `Auto` never selects uinput; input-group access must be explicitly requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SnippetProviderPreference {
@@ -1425,7 +1334,6 @@ impl SnippetProviderPreference {
         }
     }
 
-    /// The provider name as it appears on `PATH`, when one is pinned.
     pub const fn executable(self) -> Option<&'static str> {
         match self {
             Self::Auto => None,
@@ -1461,7 +1369,6 @@ impl Default for SnippetConfiguration {
 }
 
 impl SnippetConfiguration {
-    /// Validates the snippet bounds and the insertion timeout.
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         if !(MIN_SNIPPET_CONTENT_BYTES..=MAX_SNIPPET_CONTENT_BYTES)
             .contains(&self.max_content_bytes)
@@ -1566,7 +1473,6 @@ pub struct CapabilityReport {
 }
 
 impl CapabilityReport {
-    /// Builds a report from the feature's current status and user-facing summary.
     pub fn new(
         feature_id: &'static str,
         status: CapabilityStatus,
@@ -1583,25 +1489,21 @@ impl CapabilityReport {
         }
     }
 
-    /// Adds the adapter actually selected for this report.
     pub fn with_selected_backend(mut self, backend: impl Into<String>) -> Self {
         self.selected_backend = Some(backend.into());
         self
     }
 
-    /// Adds a user-facing action that can address a limited capability.
     pub fn with_remediation(mut self, remediation: impl Into<String>) -> Self {
         self.remediation = Some(remediation.into());
         self
     }
 
-    /// Records an alternative that was considered but not selected.
     pub fn with_alternative(mut self, alternative: impl Into<String>) -> Self {
         self.alternatives_considered.push(alternative.into());
         self
     }
 
-    /// Records sanitized evidence without performing any I/O.
     pub fn with_evidence(mut self, evidence: CapabilityEvidence) -> Self {
         self.evidence.push(evidence);
         self
@@ -1619,7 +1521,6 @@ pub struct FeatureSpec {
 }
 
 impl FeatureSpec {
-    /// Builds a feature descriptor with configurable, resource-free defaults.
     pub fn new(id: &'static str, label: &'static str, capability: CapabilityStatus) -> Self {
         Self {
             id,
@@ -1630,13 +1531,11 @@ impl FeatureSpec {
         }
     }
 
-    /// Marks whether the feature exposes user configuration.
     pub fn with_configurable(mut self, configurable: bool) -> Self {
         self.configurable = configurable;
         self
     }
 
-    /// Supplies static resource-use metadata.
     pub fn with_cost(mut self, cost: ResourceCost) -> Self {
         self.cost = cost;
         self
@@ -1985,7 +1884,6 @@ mod tests {
             );
         }
 
-        // A per-item bound above the total byte bound is not a valid shape.
         let mut configuration = ApplicationConfiguration::default();
         configuration.clipboard.max_total_bytes = MIN_CLIPBOARD_ITEM_BYTES;
         configuration.clipboard.max_item_bytes = MIN_CLIPBOARD_ITEM_BYTES * 2;
@@ -2121,7 +2019,6 @@ mod tests {
             "every variable has a unique token and a label"
         );
 
-        // An unterminated token is left alone rather than treated as a variable.
         assert!(variable_tokens("half {{date").is_empty());
         assert_eq!(
             variable_tokens("{{date}} and {{time}}"),

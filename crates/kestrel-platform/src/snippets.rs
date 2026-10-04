@@ -1,10 +1,6 @@
 //! Capability-gated text insertion and local time rendering.
-//!
-//! Injection is never assumed. Kestrel probes for a documented provider, and
-//! when none is verified the feature reports the dependency and refuses to
-//! insert instead of guessing at a mechanism. The uinput-based provider is
-//! never selected automatically, because it needs input-device access that a
-//! user must grant deliberately.
+//! Providers are verified before use; uinput is never selected automatically
+//! because it requires deliberate input-device access.
 
 use std::{
     env,
@@ -36,10 +32,7 @@ pub enum InsertionProvider {
 }
 
 impl InsertionProvider {
-    /// Providers in automatic preference order.
-    ///
-    /// The least-privileged verified mechanism wins: a compositor protocol, then
-    /// the X11 compatibility path. `ydotool` is intentionally absent.
+    /// Providers in automatic preference order; `ydotool` is omitted.
     pub const AUTO_ORDER: [InsertionProvider; 2] =
         [InsertionProvider::Wtype, InsertionProvider::Xdotool];
 
@@ -59,7 +52,7 @@ impl InsertionProvider {
         }
     }
 
-    /// The transport this provider uses, for capability evidence.
+    /// Transport used for capability evidence.
     pub const fn transport(self) -> &'static str {
         match self {
             Self::Wtype => "Wayland virtual-keyboard protocol",
@@ -93,7 +86,7 @@ impl InsertionProvider {
     }
 }
 
-/// A verified provider and the executable that implements it.
+/// A verified provider and its executable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertionPath {
     provider: InsertionProvider,
@@ -105,8 +98,7 @@ impl InsertionPath {
         self.provider
     }
 
-    /// The resolved executable path. Kept out of capability evidence and
-    /// configuration export because resolved paths are machine-specific.
+    /// Resolved executable, excluded from evidence because paths are machine-specific.
     pub fn executable(&self) -> &Path {
         &self.executable
     }
@@ -116,9 +108,9 @@ impl InsertionPath {
 pub enum InsertionErrorKind {
     /// No verified insertion provider is available.
     MissingDependency,
-    /// The provider executable could not be started.
+    /// The provider could not be started.
     SpawnFailed,
-    /// The provider started but its exit status could not be collected.
+    /// The provider's exit status could not be collected.
     WaitFailed,
     TimedOut,
     Rejected,
@@ -156,9 +148,7 @@ pub trait InsertionBackend: Send + 'static {
 
 /// Finds a provider executable without invoking a shell.
 ///
-/// `preferred` pins one provider; otherwise the automatic order is used and the
-/// uinput provider is skipped. `path_env` and the returned path are explicit so
-/// the search is deterministic and testable.
+/// `preferred` pins one provider; automatic search skips uinput.
 pub fn discover_insertion_provider_with(
     preferred: SnippetProviderPreference,
     path_env: Option<&OsStr>,
@@ -177,8 +167,7 @@ pub fn discover_insertion_provider_with(
         }
     }
 
-    // Report what was actually checked, including the opt-in provider when the
-    // user pinned it.
+    // Report every checked provider, including an explicitly pinned one.
     let checked = candidates
         .iter()
         .map(|provider| provider.executable())
@@ -199,14 +188,14 @@ pub fn discover_insertion_provider_with(
     ))
 }
 
-/// Probes for a provider using the environment's `PATH`.
+/// Probes for a provider using `PATH`.
 pub fn discover_insertion_provider(
     preferred: SnippetProviderPreference,
 ) -> Result<InsertionPath, InsertionError> {
     discover_insertion_provider_with(preferred, env::var_os("PATH").as_deref())
 }
 
-/// Splits `PATH` into search roots, dropping empty and relative entries.
+/// Splits `PATH` into nonempty absolute roots.
 fn search_roots(path_env: Option<&OsStr>) -> Vec<PathBuf> {
     let Some(path_env) = path_env else {
         return Vec::new();
@@ -216,7 +205,7 @@ fn search_roots(path_env: Option<&OsStr>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolves one executable name against the search roots.
+/// Resolves an executable against search roots.
 fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     for root in roots {
         let candidate = root.join(name);
@@ -232,11 +221,8 @@ fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
 
 /// Runs a verified provider for one insertion.
 ///
-/// The payload travels over the provider's standard input, never through a
-/// shell and never as a command-line argument, so rendered text (including a
-/// `{{clipboard}}` value) is not readable from `/proc/<pid>/cmdline`. Provider
-/// output is discarded: only the exit status is reported, which bounds both the
-/// output size and the failure surface.
+/// Text travels via stdin, not argv, so it is absent from `/proc/<pid>/cmdline`;
+/// provider output is discarded to bound output and failure exposure.
 pub struct ExecutableInsertionBackend {
     provider: InsertionProvider,
     executable: PathBuf,
@@ -258,12 +244,9 @@ impl ExecutableInsertionBackend {
         })
     }
 
-    /// Starts the provider, retrying briefly when the executable is busy.
+    /// Starts the provider, retrying briefly on `ETXTBSY`.
     ///
-    /// `exec` fails with `ETXTBSY` while the binary is open for writing, which
-    /// happens when a package manager replaces or upgrades the provider. A short
-    /// bounded retry turns that transient window into a successful insert
-    /// instead of a confusing failure.
+    /// Package-manager replacement can briefly make the executable busy.
     fn spawn_provider(&self) -> Result<std::process::Child, InsertionError> {
         let mut command = Command::new(&self.executable);
         command
@@ -279,10 +262,10 @@ impl ExecutableInsertionBackend {
         })
     }
 
-    /// The fixed provider arguments; the text itself arrives on stdin.
+    /// Fixed provider arguments; text arrives on stdin.
     fn argument_list(&self) -> Vec<OsString> {
         match self.provider {
-            // A lone `-` makes wtype read the text to type from stdin.
+            // `-` makes wtype read text from stdin.
             InsertionProvider::Wtype => vec![OsString::from("-")],
             InsertionProvider::Ydotool => vec![
                 OsString::from("type"),
@@ -298,11 +281,7 @@ impl ExecutableInsertionBackend {
         }
     }
 
-    /// Feeds the payload to the provider without blocking the timeout loop.
-    ///
-    /// The write happens on its own thread, so a provider that stops reading
-    /// cannot hold the caller past its deadline; killing the provider closes the
-    /// pipe and ends the writer.
+    /// Feeds text on a writer thread so timeout handling cannot block.
     fn send_text(&self, child: &mut std::process::Child, text: &str) -> Result<(), InsertionError> {
         let Some(mut stdin) = child.stdin.take() else {
             return Err(InsertionError::new(
@@ -314,8 +293,7 @@ impl ExecutableInsertionBackend {
         thread::Builder::new()
             .name("kestrel-insert-input".to_string())
             .spawn(move || {
-                // A provider that exits early closes the pipe; that surfaces
-                // through its exit status, so the write result is not needed.
+                // Early pipe closure is reported by the provider's exit status.
                 let _ = stdin.write_all(&payload);
             })
             .map(|_| ())
@@ -409,7 +387,7 @@ impl LocalTime {
         format!("{} {}", self.iso_date(), self.iso_time())
     }
 
-    /// The local UTC offset as `+HH:MM`.
+    /// Local UTC offset formatted as `+HH:MM`.
     pub fn utc_offset(&self) -> String {
         let sign = if self.utc_offset_seconds < 0 {
             '-'
@@ -421,21 +399,20 @@ impl LocalTime {
     }
 }
 
-/// Supplies the local time used to render snippet variables.
+/// Supplies local time for snippet rendering.
 pub trait Clock: Send + Sync {
-    /// The local time zone name, or a neutral fallback when unavailable.
+    /// Local time-zone name, or a neutral fallback.
     fn timezone_name(&self) -> String;
     fn local_time(&self) -> LocalTime;
 }
 
-/// The session's local time through the C library, without a date dependency.
+/// Reads local time through the C library without a date dependency.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn timezone_name(&self) -> String {
-        // SAFETY: `localtime_r` fills a caller-owned `tm`; the zone pointer it
-        // exposes is read immediately and copied.
+        // SAFETY: `localtime_r` fills caller-owned storage; copy the zone immediately.
         unsafe {
             let now = libc::time(std::ptr::null_mut());
             let mut local: libc::tm = std::mem::zeroed();
@@ -453,7 +430,7 @@ impl Clock for SystemClock {
     }
 
     fn local_time(&self) -> LocalTime {
-        // SAFETY: as above; every field is copied out before the buffer dies.
+        // SAFETY: `localtime_r` fills caller-owned storage; copy fields before it dies.
         unsafe {
             let now = libc::time(std::ptr::null_mut());
             let mut local: libc::tm = std::mem::zeroed();
@@ -499,7 +476,7 @@ impl CapabilityProbe for SnippetInsertionProbe {
     }
 }
 
-/// The capability report for one discovery attempt.
+/// Builds capability evidence for one discovery attempt.
 pub fn insertion_capability_report(
     discovered: Result<InsertionPath, InsertionError>,
 ) -> CapabilityReport {
@@ -562,7 +539,7 @@ fn io_kind(error: &io::Error) -> &'static str {
 }
 
 impl InsertionError {
-    /// A stable machine-readable kind for capability evidence.
+    /// Stable machine-readable kind for capability evidence.
     fn kind(&self) -> &'static str {
         match self.kind {
             InsertionErrorKind::MissingDependency => "missing_dependency",
@@ -575,15 +552,14 @@ impl InsertionError {
     }
 }
 
-/// Reads a path's executable bit, used by callers that validate a configured
-/// provider before using it.
+/// Checks a path's executable bit.
 pub fn is_executable(path: &Path) -> bool {
     path.metadata()
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
 
-/// Maps an I/O failure onto insertion evidence without leaking a path.
+/// Maps I/O failure to insertion evidence without leaking a path.
 pub fn insertion_io_kind(error: &io::Error) -> &'static str {
     io_kind(error)
 }
@@ -607,7 +583,7 @@ mod tests {
     };
     use crate::CapabilityProbe;
 
-    /// Writes a stub provider that records its arguments and exit behaviour.
+    /// Writes a stub provider for argument and exit-status tests.
     fn stub(dir: &TempDir, name: &str, body: &str) -> std::path::PathBuf {
         let path = dir.path().join(name);
         fs::write(&path, body).expect("stub is written");
@@ -994,8 +970,6 @@ mod tests {
 
     #[test]
     fn discovery_uses_the_process_path_when_no_preference_is_pinned() {
-        // The real environment decides the outcome; the call must not panic and
-        // must agree with its own report.
         let discovered = discover_insertion_provider(SnippetProviderPreference::Auto);
         let report = insertion_capability_report(discovered);
         assert!(matches!(

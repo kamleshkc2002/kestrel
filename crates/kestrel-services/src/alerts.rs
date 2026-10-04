@@ -1,11 +1,11 @@
-//! Policy-driven, sustained system alerts with bounded in-memory state.
+//! Sustained, policy-driven system alerts with bounded in-memory state.
 
 use std::time::Duration;
 
 use crate::system_monitor::SystemSnapshot;
 use kestrel_core::{AlertKind, AlertRuleConfiguration, MonitorAlertConfiguration};
 
-/// Recovery distance from an alert threshold, in percentage points or degrees Celsius.
+/// Recovery distance from an alert threshold.
 pub const HYSTERESIS: f64 = 5.0;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,7 +88,7 @@ impl AlertEvent {
     }
 }
 
-/// Produce privacy-preserving one-line notification text for an alert transition.
+/// Produces privacy-preserving notification text for an alert transition.
 pub fn notification_text(event: &AlertEvent) -> (String, String) {
     let kind = event.kind();
     let label = kind.label();

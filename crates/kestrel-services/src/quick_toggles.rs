@@ -1,4 +1,4 @@
-//! Independent quick-toggle state, confirmation, and ownership policy.
+//! Quick-toggle state, confirmation, and ownership policy.
 
 use std::collections::BTreeMap;
 
@@ -141,10 +141,7 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
             .error = error;
     }
 
-    /// Releases resources owned by one Kestrel-managed toggle.
-    ///
-    /// Provider-observed toggles are intentionally not touched here: disabling
-    /// one of those features must not undo a state changed outside Kestrel.
+    /// Provider-observed toggles remain untouched on stop.
     pub fn stop(&mut self, id: QuickToggleId) {
         if matches!(id, QuickToggleId::KeepAwake | QuickToggleId::BatteryAlerts) {
             let _ = self
@@ -154,7 +151,6 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
         }
     }
 
-    /// Releases every resource owned by this service.
     pub fn stop_all(&mut self) {
         self.stop(QuickToggleId::KeepAwake);
         self.stop(QuickToggleId::BatteryAlerts);
