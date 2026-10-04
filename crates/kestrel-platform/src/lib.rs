@@ -13,6 +13,7 @@ pub mod launcher;
 pub mod notifications;
 pub mod quick_toggles;
 pub mod snippets;
+pub mod speed_test;
 pub mod system_monitor;
 
 /// How many times a spawn is retried when the executable is momentarily busy.

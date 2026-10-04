@@ -11,14 +11,16 @@ use std::{
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
-use kestrel::view_model::{ClipboardQuery, CommandBarQuery, SnippetQuery};
+use kestrel::view_model::{
+    ClipboardQuery, CommandBarQuery, MicrophoneViewModel, SnippetQuery, SpeedTestViewModel,
+};
 use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
     ClipboardLifecycle, ClipboardViewModel, ConfigurationWarning, FeaturePreset,
-    LoadedConfiguration, MonitorReadout, MonitorViewModel, PanelMoveDirection, PanelSection,
-    SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch, SnippetProviderPreference,
-    StatusNotifierIntegration, configuration_path, disable as disable_autostart,
-    enable as enable_autostart, export_file, import_file, load, save,
+    LoadedConfiguration, MicrophoneCommand, MonitorReadout, MonitorViewModel, PanelMoveDirection,
+    PanelSection, SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch,
+    SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
+    disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
 };
 use kestrel::{CommandBarCommand, CommandProviderSwitch};
 use kestrel_core::{
@@ -30,10 +32,17 @@ use kestrel_services::alerts::notification_text;
 use window::WindowView;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
+/// How often a running microphone control re-reads the audio server.
+const MICROPHONE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 /// A periodic tick: each field is `None` when that feature produced no new state.
-type TickUpdate = (Option<MonitorViewModel>, Option<ClipboardViewModel>);
+struct TickUpdate {
+    monitor: Option<MonitorViewModel>,
+    clipboard: Option<ClipboardViewModel>,
+    microphone: Option<MicrophoneViewModel>,
+    speed_test: Option<SpeedTestViewModel>,
+}
 
 type SharedState = Arc<Mutex<ControllerState>>;
 
@@ -58,6 +67,8 @@ struct ControllerState {
     clipboard_preview: Option<kestrel_services::clipboard::ClipboardPreview>,
     /// The last clipboard state delivered to the window.
     clipboard_fingerprint: Option<ClipboardFingerprint>,
+    /// The last speed-test generation delivered to the window.
+    speed_test_generation: u64,
     /// The application's snippet query, its results, and the open editor.
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
@@ -232,6 +243,8 @@ impl ControllerState {
                 kestrel_services::clipboard::ClipboardCommand::ClearSelection,
             ),
             "reset_ranking" => ApplicationCommand::ResetCommandRanking,
+            "microphone_toggle" => ApplicationCommand::Microphone(MicrophoneCommand::ToggleMute),
+            "speed_test" => ApplicationCommand::StartSpeedTest,
             _ => return None,
         };
 
@@ -273,20 +286,37 @@ fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
     observed_at: Duration,
+    microphone_due: bool,
 ) -> TickUpdate {
-    let (updated, alerts) = {
+    let (updated, alerts, microphone, speed_test) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tick = guard.runtime.sample_monitor(observed_at);
+        let microphone = (microphone_due && guard.runtime.refresh_microphone())
+            .then(|| guard.runtime.microphone_view_model());
+        // Progress is published only when the service reports a new generation,
+        // so an idle speed test costs one comparison per tick.
+        let generation = guard.runtime.speed_test_snapshot().generation;
+        let speed_test = (generation != guard.speed_test_generation).then(|| {
+            guard.speed_test_generation = generation;
+            guard.runtime.speed_test_view_model()
+        });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
+            microphone,
+            speed_test,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
     let clipboard = clipboard_tick_update(state);
-    (monitor, clipboard)
+    TickUpdate {
+        monitor,
+        clipboard,
+        microphone,
+        speed_test,
+    }
 }
 
 /// Delivers alert notifications outside the controller lock, then reports the
@@ -364,6 +394,10 @@ enum TargetedPanel {
     Clipboard,
     Snippets,
     Commands,
+    /// The microphone group, so a mute click keeps the scroll position.
+    Microphone,
+    /// The speed-test group, which the tick then keeps current.
+    SpeedTest,
 }
 
 /// Cheap change detector for the clipboard snapshot.
@@ -435,6 +469,9 @@ enum ControllerOperation {
         threshold: f64,
     },
     Audio(kestrel::AudioCommand),
+    Microphone(MicrophoneCommand),
+    StartSpeedTest,
+    CancelSpeedTest,
     SetAudioBoostPercent(u8),
     SetAudioOutputSwitch(kestrel::AudioOutputSwitch),
     SetAudioDisconnectPolicy(kestrel::AudioDisconnectPolicy),
@@ -483,7 +520,13 @@ struct ApplicationController {
     monitor_running: Cell<bool>,
     /// Mirrors the clipboard registration so background captures reach the window.
     clipboard_running: Cell<bool>,
+    /// Mirrors the microphone registration; only a live control is re-read.
+    microphone_running: Cell<bool>,
+    /// Mirrors the speed-test registration so progress reaches the window.
+    speed_test_running: Cell<bool>,
     monitor_started_at: Instant,
+    /// When the microphone was last re-read, bounding backend polling to 2 s.
+    microphone_last_refresh: Cell<Instant>,
     /// The newest command bar query that arrived while another operation was
     /// running. Typing outpaces the single-operation gate, so only the latest
     /// text is kept and run when the gate opens.
@@ -509,6 +552,8 @@ impl ApplicationController {
         } = context;
         let monitor_running = runtime.monitor_is_running();
         let clipboard_running = runtime.clipboard_is_running();
+        let microphone_running = runtime.microphone_is_running();
+        let speed_test_running = runtime.speed_test_is_running();
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -521,6 +566,7 @@ impl ApplicationController {
                 clipboard_matches: Vec::new(),
                 clipboard_preview: None,
                 clipboard_fingerprint: None,
+                speed_test_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -534,7 +580,10 @@ impl ApplicationController {
             monitoring: Cell::new(false),
             monitor_running: Cell::new(monitor_running),
             clipboard_running: Cell::new(clipboard_running),
+            microphone_running: Cell::new(microphone_running),
+            speed_test_running: Cell::new(speed_test_running),
             monitor_started_at: Instant::now(),
+            microphone_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
             refresh_results,
@@ -686,6 +735,8 @@ impl ApplicationController {
                 apply_color_scheme(view_model.appearance);
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
+                self.microphone_running.set(view_model.microphone.running);
+                self.speed_test_running.set(view_model.speed_test.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -695,18 +746,34 @@ impl ApplicationController {
                 let view_model = self.current_view_model();
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
+                self.microphone_running.set(view_model.microphone.running);
+                self.speed_test_running.set(view_model.speed_test.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
         }
     }
+
     fn request_tick(&self) {
         if self.refreshing.get() || self.monitoring.replace(true) {
             return;
         }
-        // The tick serves the monitor and the clipboard panel, so it runs while
-        // either feature is live.
-        if !self.monitor_running.get() && !self.clipboard_running.get() {
+        // Microphone state can change outside Kestrel (hardware keys, other
+        // mixers), so a live control is re-read on a bounded cadence.
+        let microphone_due = self.microphone_running.get() && {
+            let now = Instant::now();
+            let due = now.duration_since(self.microphone_last_refresh.get())
+                >= MICROPHONE_REFRESH_INTERVAL;
+            if due {
+                self.microphone_last_refresh.set(now);
+            }
+            due
+        };
+        if !self.monitor_running.get()
+            && !self.clipboard_running.get()
+            && !self.speed_test_running.get()
+            && !microphone_due
+        {
             self.monitoring.set(false);
             return;
         }
@@ -717,7 +784,7 @@ impl ApplicationController {
         let worker = thread::Builder::new()
             .name("kestrel-tick".to_owned())
             .spawn(move || {
-                let update = run_tick(&state, notifier.as_ref(), observed_at);
+                let update = run_tick(&state, notifier.as_ref(), observed_at, microphone_due);
                 let _ = results.send_blocking(update);
             });
         if worker.is_err() {
@@ -727,7 +794,12 @@ impl ApplicationController {
 
     fn finish_tick(&self, update: TickUpdate) {
         self.monitoring.set(false);
-        let (monitor, clipboard) = update;
+        let TickUpdate {
+            monitor,
+            clipboard,
+            microphone,
+            speed_test,
+        } = update;
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -739,6 +811,12 @@ impl ApplicationController {
         if let Some(clipboard) = clipboard {
             self.clipboard_running.set(clipboard.running);
             view.set_clipboard(&clipboard);
+        }
+        if let Some(microphone) = microphone {
+            view.set_microphone(&microphone);
+        }
+        if let Some(speed_test) = speed_test {
+            view.set_speed_test(&speed_test);
         }
     }
 
@@ -950,6 +1028,24 @@ impl ControllerState {
                     None => "The audio mixer is not running; enable audio.mixer first".to_owned(),
                 }
             }
+            ControllerOperation::Microphone(command) => {
+                match self.runtime.execute_microphone_command(command) {
+                    Some(Ok(_)) => "Microphone state updated".to_owned(),
+                    Some(Err(failure)) => format!("Microphone update failed: {}", failure.error),
+                    None => "The microphone control is not running; enable audio.microphone first"
+                        .to_owned(),
+                }
+            }
+            ControllerOperation::StartSpeedTest => self
+                .runtime
+                .start_speed_test()
+                .map(|()| "Network speed test started".to_owned())
+                .unwrap_or_else(|error| error),
+            ControllerOperation::CancelSpeedTest => self
+                .runtime
+                .cancel_speed_test()
+                .map(|()| "Network speed test cancellation requested".to_owned())
+                .unwrap_or_else(|error| error),
             ControllerOperation::SetAudioBoostPercent(percent) => {
                 let mut candidate = self.configuration.clone();
                 candidate.audio.boost_percent = percent;
@@ -1476,6 +1572,8 @@ fn apply_targeted_panel(
         TargetedPanel::Clipboard => view.set_clipboard(&view_model.clipboard),
         TargetedPanel::Snippets => view.set_snippets(&view_model.snippets),
         TargetedPanel::Commands => view.set_command_bar(&view_model.command_bar),
+        TargetedPanel::Microphone => view.set_microphone(&view_model.microphone),
+        TargetedPanel::SpeedTest => view.set_speed_test(&view_model.speed_test),
     }
 }
 
@@ -1631,6 +1729,13 @@ fn install_command_actions(application: &adw::Application, commands: Sender<Appl
         ApplicationCommand::RefreshCapabilities,
         &commands,
     );
+    add_command_action(
+        application,
+        "toggle-microphone-mute",
+        ApplicationCommand::Microphone(MicrophoneCommand::ToggleMute),
+        &commands,
+    );
+    application.set_accels_for_action("app.toggle-microphone-mute", &["<Primary><Shift>m"]);
     add_command_action(application, "quit", ApplicationCommand::Quit, &commands);
     application.set_accels_for_action("app.refresh-capabilities", &["<Primary>r"]);
     application.set_accels_for_action("app.quit", &["<Primary>q"]);
@@ -1747,6 +1852,21 @@ fn dispatch_commands(
                         ControllerOperation::SetAudioIncludeInactiveStreams(include),
                         "kestrel-audio-inactive",
                     ),
+                ApplicationCommand::Microphone(command) => controller.request_targeted_operation(
+                    ControllerOperation::Microphone(command),
+                    "kestrel-microphone",
+                    TargetedPanel::Microphone,
+                ),
+                ApplicationCommand::StartSpeedTest => controller.request_targeted_operation(
+                    ControllerOperation::StartSpeedTest,
+                    "kestrel-speed-test-start",
+                    TargetedPanel::SpeedTest,
+                ),
+                ApplicationCommand::CancelSpeedTest => controller.request_targeted_operation(
+                    ControllerOperation::CancelSpeedTest,
+                    "kestrel-speed-test-cancel",
+                    TargetedPanel::SpeedTest,
+                ),
                 ApplicationCommand::Clipboard(command) => controller.request_clipboard_operation(
                     ControllerOperation::Clipboard(command),
                     "kestrel-clipboard",

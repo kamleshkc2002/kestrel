@@ -10,9 +10,11 @@ pub mod alerts;
 pub mod audio;
 pub mod clipboard;
 pub mod command_bar;
+pub mod microphone;
 
 pub mod quick_toggles;
 pub mod snippets;
+pub mod speed_test;
 pub mod system_monitor;
 
 /// The current lifecycle stage of a registered feature.

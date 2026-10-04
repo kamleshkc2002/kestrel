@@ -1113,6 +1113,22 @@ fn kestrel_commands() -> Vec<CommandItem> {
             CommandAction::Kestrel("reset_ranking".to_string()),
         )
         .with_keywords(["forget", "learning", "usage", "privacy"]),
+        CommandItem::new(
+            "kestrel:microphone_toggle",
+            CommandSource::Kestrel,
+            "Toggle microphone mute",
+            "Mute or unmute every input from the backend state",
+            CommandAction::Kestrel("microphone_toggle".to_string()),
+        )
+        .with_keywords(["mic", "mute", "microphone"]),
+        CommandItem::new(
+            "kestrel:speed_test",
+            CommandSource::Kestrel,
+            "Run network speed test",
+            "Contacts speed.cloudflare.com and transfers a bounded amount of data",
+            CommandAction::Kestrel("speed_test".to_string()),
+        )
+        .with_keywords(["speed", "bandwidth", "internet"]),
     ];
 
     // Quick toggles ride along as first-class commands.

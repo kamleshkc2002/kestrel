@@ -7,13 +7,16 @@ use kestrel_platform::quick_toggles::{
     MutationConfirmation, QuickToggleControl, QuickToggleId, ToggleAction,
 };
 use kestrel_platform::snippets::InsertionProvider;
+use kestrel_platform::speed_test::SpeedTestPhase;
 use kestrel_services::{
     ServiceLifecycle, ServiceRegistration,
     alerts::{ActiveAlert, AlertPolicy, AlertSnapshot},
     audio::{AudioAvailability, AudioPolicy, AudioSnapshot},
     clipboard::{ClipboardMatch, ClipboardPreview, ClipboardSnapshot},
+    microphone::{MicrophoneAvailability, MicrophoneMuteState, MicrophoneSnapshot},
     quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
     snippets::{SnippetLibrary, SnippetMatch, SnippetPolicy},
+    speed_test::{SpeedTestSnapshot, SpeedTestStatus},
     system_monitor::{HistorySummary, SystemSnapshot},
 };
 
@@ -625,6 +628,205 @@ impl AudioViewModel {
             policy: policy_view,
         }
     }
+}
+
+pub(crate) struct MicrophonePresentation<'a> {
+    pub snapshot: &'a MicrophoneSnapshot,
+    pub running: bool,
+}
+
+/// One capture input as the window lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneInputViewModel {
+    pub id: u32,
+    pub label: String,
+    pub muted: bool,
+    pub is_default: bool,
+}
+
+/// The microphone control, derived only from the latest backend reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicrophoneViewModel {
+    pub running: bool,
+    pub status: String,
+    pub mute_label: String,
+    /// `Some` only when every input agrees; never guessed from earlier UI state.
+    pub muted: Option<bool>,
+    /// Some inputs are muted and others live; a global mute still applies.
+    pub mixed: bool,
+    pub inputs: Vec<MicrophoneInputViewModel>,
+    pub default_input_id: Option<u32>,
+    /// A device-loss notice from the last refresh.
+    pub message: Option<String>,
+}
+
+impl MicrophoneViewModel {
+    pub(crate) fn from_presentation(presentation: MicrophonePresentation<'_>) -> Self {
+        if !presentation.running {
+            return Self {
+                running: false,
+                status: "The microphone control is not running. Enable audio.microphone in the \
+                         Feature Hub."
+                    .to_owned(),
+                mute_label: "Microphone state is unknown".to_owned(),
+                muted: None,
+                mixed: false,
+                inputs: Vec::new(),
+                default_input_id: None,
+                message: None,
+            };
+        }
+        let snapshot = presentation.snapshot;
+        let (mute_label, muted, mixed) = match snapshot.mute {
+            MicrophoneMuteState::Unknown => ("Microphone state is unknown".to_owned(), None, false),
+            MicrophoneMuteState::NoInputs => {
+                ("No microphone inputs are available".to_owned(), None, false)
+            }
+            MicrophoneMuteState::Live => ("Microphone is live".to_owned(), Some(false), false),
+            MicrophoneMuteState::Muted => ("Microphone is muted".to_owned(), Some(true), false),
+            MicrophoneMuteState::Mixed { muted, total } => {
+                (format!("{muted} of {total} inputs muted"), None, true)
+            }
+        };
+        let status = match snapshot.availability {
+            MicrophoneAvailability::Unavailable => {
+                "The PulseAudio-compatible server is unreachable, so the microphone state is \
+                 unknown."
+                    .to_owned()
+            }
+            MicrophoneAvailability::NoInputs => {
+                "No microphone or other input device is connected.".to_owned()
+            }
+            MicrophoneAvailability::Ready => match snapshot.inputs.len() {
+                1 => "1 input available".to_owned(),
+                count => format!("{count} inputs available"),
+            },
+        };
+        let message = if snapshot.default_input_lost {
+            Some("The default input disconnected. Choose another input below.".to_owned())
+        } else if snapshot.lost_inputs > 0 {
+            Some(match snapshot.lost_inputs {
+                1 => "An input disconnected.".to_owned(),
+                count => format!("{count} inputs disconnected."),
+            })
+        } else {
+            None
+        };
+        Self {
+            running: true,
+            status,
+            mute_label,
+            muted,
+            mixed,
+            inputs: snapshot
+                .inputs
+                .iter()
+                .map(|input| MicrophoneInputViewModel {
+                    id: input.id,
+                    label: input.description.clone(),
+                    muted: input.muted,
+                    is_default: input.is_default,
+                })
+                .collect(),
+            default_input_id: snapshot.default_input_id,
+            message,
+        }
+    }
+}
+
+pub(crate) struct SpeedTestPresentation {
+    pub snapshot: SpeedTestSnapshot,
+    pub running: bool,
+}
+
+/// The speed-test group: disclosure first, then controls and results.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpeedTestViewModel {
+    pub running: bool,
+    pub available: bool,
+    pub status: String,
+    pub disclosure: String,
+    pub can_start: bool,
+    pub can_cancel: bool,
+    pub progress: Option<f64>,
+    pub phase_label: Option<String>,
+    pub result_lines: Vec<String>,
+}
+
+impl SpeedTestViewModel {
+    pub(crate) fn from_presentation(presentation: SpeedTestPresentation) -> Self {
+        let snapshot = presentation.snapshot;
+        let disclosure = snapshot.disclosure();
+        let mut progress = None;
+        let mut phase_label = None;
+        let mut result_lines = Vec::new();
+        let status = match &snapshot.status {
+            _ if !presentation.running => "The network speed test is not running. Enable \
+                                           network.speed_test in the Feature Hub."
+                .to_owned(),
+            _ if !snapshot.available => {
+                "Speed tests need curl. Install curl to run one.".to_owned()
+            }
+            SpeedTestStatus::Idle => {
+                "No test has run. Nothing is sent until you start one.".to_owned()
+            }
+            SpeedTestStatus::Running(value) => {
+                let label = match value.phase {
+                    SpeedTestPhase::Latency => "Measuring latency",
+                    SpeedTestPhase::Download => "Downloading",
+                    SpeedTestPhase::Upload => "Uploading",
+                };
+                phase_label = Some(label.to_owned());
+                progress = (value.phase_bytes > 0).then(|| {
+                    (value.transferred_bytes as f64 / value.phase_bytes as f64).clamp(0.0, 1.0)
+                });
+                format!("{label}…")
+            }
+            SpeedTestStatus::Completed => {
+                if let Some(measurement) = snapshot.last_measurement {
+                    if let Some(latency) = measurement.latency_millis {
+                        result_lines.push(format!("Latency: {latency} ms"));
+                    }
+                    if let Some(speed) = measurement.download_bits_per_second {
+                        result_lines.push(format!("Download: {} Mbit/s", megabits(speed)));
+                    }
+                    if let Some(speed) = measurement.upload_bits_per_second {
+                        result_lines.push(format!("Upload: {} Mbit/s", megabits(speed)));
+                    }
+                    result_lines.push(format!(
+                        "Transferred: {:.1} MB",
+                        measurement
+                            .downloaded_bytes
+                            .saturating_add(measurement.uploaded_bytes)
+                            as f64
+                            / 1_000_000.0
+                    ));
+                }
+                "Speed test completed.".to_owned()
+            }
+            SpeedTestStatus::Cancelled => "Speed test cancelled.".to_owned(),
+            SpeedTestStatus::Failed(error) => format!("Speed test failed: {}", error.message),
+        };
+        Self {
+            running: presentation.running,
+            available: snapshot.available,
+            status,
+            disclosure,
+            can_start: presentation.running
+                && snapshot.available
+                && !matches!(snapshot.status, SpeedTestStatus::Running(_)),
+            can_cancel: presentation.running
+                && matches!(snapshot.status, SpeedTestStatus::Running(_)),
+            progress,
+            phase_label,
+            result_lines,
+        }
+    }
+}
+
+/// Formats a bit rate in Mbit/s with one decimal.
+fn megabits(bits_per_second: u64) -> String {
+    format!("{:.1}", bits_per_second as f64 / 1_000_000.0)
 }
 
 fn audio_status(snapshot: &AudioSnapshot) -> String {
@@ -1485,6 +1687,8 @@ pub struct ApplicationViewModel {
     pub features: Vec<FeatureViewModel>,
     pub quick_toggles: Vec<QuickToggleViewModel>,
     pub audio: AudioViewModel,
+    pub microphone: MicrophoneViewModel,
+    pub speed_test: SpeedTestViewModel,
     pub clipboard: ClipboardViewModel,
     pub snippets: SnippetsViewModel,
     pub command_bar: CommandBarViewModel,
@@ -1504,6 +1708,8 @@ impl ApplicationViewModel {
         registrations: impl Iterator<Item = &'a ServiceRegistration>,
         quick_toggles: impl Iterator<Item = &'a QuickToggleSnapshot>,
         audio: AudioPresentation<'a>,
+        microphone: MicrophonePresentation<'a>,
+        speed_test: SpeedTestPresentation,
         clipboard: ClipboardPresentation<'a>,
         snippets: SnippetsPresentation<'a>,
         command_bar: CommandBarPresentation<'a>,
@@ -1530,6 +1736,8 @@ impl ApplicationViewModel {
                 })
                 .collect(),
             audio: AudioViewModel::from_presentation(&configuration.audio, audio),
+            microphone: MicrophoneViewModel::from_presentation(microphone),
+            speed_test: SpeedTestViewModel::from_presentation(speed_test),
             clipboard: ClipboardViewModel::from_presentation(&configuration.clipboard, clipboard),
             snippets: SnippetsViewModel::from_presentation(snippets),
             command_bar: CommandBarViewModel::from_presentation(command_bar),
@@ -1918,22 +2126,29 @@ mod tests {
         ApplicationViewModel, AudioPresentation, CapabilityKindViewModel,
         CapabilityStatusViewModel, ClipboardPresentation, ClipboardViewModel,
         CommandBarPresentation, CommandBarViewModel, CommandProvider, FeatureLifecycleViewModel,
-        FeatureViewModel, MonitorPresentation, MonitorViewModel, SnippetsPresentation,
-        SnippetsViewModel,
+        FeatureViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
+        MonitorViewModel, SnippetsPresentation, SnippetsViewModel, SpeedTestPresentation,
+        SpeedTestViewModel,
     };
     use kestrel_core::{
         AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec,
         MonitorConfiguration, MonitorReadout, Permission,
     };
-    use kestrel_platform::audio::{AudioServer, OutputDevice, PlaybackStream};
+    use kestrel_platform::audio::{AudioServer, InputDevice, OutputDevice, PlaybackStream};
     use kestrel_platform::clipboard::{ClipboardEntryKind, ClipboardKindSupport};
     use kestrel_platform::quick_toggles::QuickToggleId;
+    use kestrel_platform::speed_test::{
+        CLOUDFLARE_PROVIDER, SpeedTestError, SpeedTestErrorKind, SpeedTestMeasurement,
+        SpeedTestPhase, SpeedTestPlan, SpeedTestProgress,
+    };
     use kestrel_services::{
         ServiceRegistration,
         audio::{AudioAvailability, AudioPolicy, AudioReconcileOutcome, AudioSnapshot},
         clipboard::{ClipboardItemMetadata, ClipboardMatch, ClipboardPreview, ClipboardSnapshot},
+        microphone::{MicrophoneAvailability, MicrophoneMuteState, MicrophoneSnapshot},
         quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
         snippets::{SnippetLibrary, SnippetPolicy},
+        speed_test::{SpeedTestSnapshot, SpeedTestStatus},
     };
 
     use crate::ConfigurationWarning;
@@ -2070,6 +2285,11 @@ mod tests {
                 running: false,
                 policy: AudioPolicy::default(),
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2119,6 +2339,11 @@ mod tests {
                 running: false,
                 policy: AudioPolicy::default(),
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2177,6 +2402,11 @@ mod tests {
                 running: false,
                 policy: AudioPolicy::default(),
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2439,6 +2669,23 @@ mod tests {
         );
     }
 
+    fn test_speed_presentation() -> SpeedTestPresentation {
+        SpeedTestPresentation {
+            snapshot: SpeedTestSnapshot {
+                status: SpeedTestStatus::Idle,
+                last_measurement: None,
+                provider: kestrel_platform::speed_test::CLOUDFLARE_PROVIDER,
+                plan: kestrel_platform::speed_test::SpeedTestPlan {
+                    download_bytes: 1,
+                    upload_bytes: 0,
+                    phase_timeout: Duration::from_secs(5),
+                },
+                available: false,
+                generation: 0,
+            },
+            running: false,
+        }
+    }
     fn audio_output(id: u32, is_default: bool, volume_percent: u8, muted: bool) -> OutputDevice {
         OutputDevice {
             id,
@@ -2506,6 +2753,11 @@ mod tests {
                 running: false,
                 policy: AudioPolicy::default(),
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2568,6 +2820,11 @@ mod tests {
                 running: true,
                 policy,
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2655,6 +2912,11 @@ mod tests {
                 running: true,
                 policy,
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2711,6 +2973,11 @@ mod tests {
                 running: true,
                 policy: AudioPolicy::default(),
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -2992,6 +3259,11 @@ mod tests {
                 running: false,
                 policy: AudioPolicy::default(),
             },
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: false,
+            },
+            test_speed_presentation(),
             ClipboardPresentation::default(),
             SnippetsPresentation {
                 library: &SnippetLibrary::default(),
@@ -3151,5 +3423,238 @@ mod tests {
             policy.bounds.max_clear_seconds,
             kestrel_core::MAX_CLIPBOARD_CLEAR_SECONDS
         );
+    }
+
+    fn microphone_input(id: u32, muted: bool, is_default: bool) -> InputDevice {
+        InputDevice {
+            id,
+            name: format!("source-{id}"),
+            description: format!("Input {id}"),
+            volume_percent: 100,
+            muted,
+            is_default,
+        }
+    }
+
+    fn microphone_snapshot(
+        inputs: Vec<InputDevice>,
+        mute: MicrophoneMuteState,
+    ) -> MicrophoneSnapshot {
+        MicrophoneSnapshot {
+            availability: if inputs.is_empty() {
+                MicrophoneAvailability::NoInputs
+            } else {
+                MicrophoneAvailability::Ready
+            },
+            default_input_id: inputs
+                .iter()
+                .find(|input| input.is_default)
+                .map(|input| input.id),
+            inputs,
+            mute,
+            lost_inputs: 0,
+            default_input_lost: false,
+        }
+    }
+
+    #[test]
+    fn microphone_mute_is_claimed_only_from_an_agreeing_backend_reading() {
+        let unknown = MicrophoneViewModel::from_presentation(MicrophonePresentation {
+            snapshot: &MicrophoneSnapshot::unavailable(),
+            running: true,
+        });
+        assert_eq!(unknown.muted, None, "no reading, no claim");
+        assert!(!unknown.mixed);
+        assert!(unknown.mute_label.contains("unknown"));
+
+        let muted = microphone_snapshot(
+            vec![
+                microphone_input(1, true, true),
+                microphone_input(2, true, false),
+            ],
+            MicrophoneMuteState::Muted,
+        );
+        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
+            snapshot: &muted,
+            running: true,
+        });
+        assert_eq!(view.muted, Some(true));
+        assert_eq!(view.default_input_id, Some(1));
+        assert_eq!(view.inputs.len(), 2);
+
+        let mixed = microphone_snapshot(
+            vec![
+                microphone_input(1, true, true),
+                microphone_input(2, false, false),
+            ],
+            MicrophoneMuteState::Mixed { muted: 1, total: 2 },
+        );
+        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
+            snapshot: &mixed,
+            running: true,
+        });
+        assert_eq!(
+            view.muted, None,
+            "a mixed reading is not reported as muted or live"
+        );
+        assert!(view.mixed);
+        assert_eq!(view.mute_label, "1 of 2 inputs muted");
+    }
+
+    #[test]
+    fn a_stopped_microphone_control_shows_no_inputs_or_state() {
+        let snapshot = microphone_snapshot(
+            vec![microphone_input(1, true, true)],
+            MicrophoneMuteState::Muted,
+        );
+
+        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
+            snapshot: &snapshot,
+            running: false,
+        });
+
+        assert!(!view.running);
+        assert_eq!(view.muted, None, "a stale reading is never presented");
+        assert!(view.inputs.is_empty());
+        assert!(view.status.contains("audio.microphone"));
+    }
+
+    #[test]
+    fn a_lost_default_input_is_announced_without_a_default_claim() {
+        let snapshot = MicrophoneSnapshot {
+            lost_inputs: 1,
+            default_input_lost: true,
+            ..microphone_snapshot(
+                vec![microphone_input(2, false, false)],
+                MicrophoneMuteState::Live,
+            )
+        };
+
+        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
+            snapshot: &snapshot,
+            running: true,
+        });
+
+        assert_eq!(view.default_input_id, None);
+        assert!(
+            view.message
+                .as_deref()
+                .is_some_and(|message| message.contains("default input disconnected"))
+        );
+    }
+
+    fn speed_test_presentation(
+        status: SpeedTestStatus,
+        last_measurement: Option<SpeedTestMeasurement>,
+        running: bool,
+        available: bool,
+    ) -> SpeedTestPresentation {
+        SpeedTestPresentation {
+            snapshot: SpeedTestSnapshot {
+                status,
+                last_measurement,
+                provider: CLOUDFLARE_PROVIDER,
+                plan: SpeedTestPlan {
+                    download_bytes: 25_000_000,
+                    upload_bytes: 10_000_000,
+                    phase_timeout: Duration::from_secs(30),
+                },
+                available,
+                generation: 1,
+            },
+            running,
+        }
+    }
+
+    #[test]
+    fn an_idle_speed_test_discloses_its_destination_before_it_can_start() {
+        let view = SpeedTestViewModel::from_presentation(speed_test_presentation(
+            SpeedTestStatus::Idle,
+            None,
+            true,
+            true,
+        ));
+
+        assert!(view.can_start);
+        assert!(!view.can_cancel);
+        assert!(view.disclosure.contains("speed.cloudflare.com"));
+        assert!(view.disclosure.contains("25 MB"));
+        assert!(view.progress.is_none());
+    }
+
+    #[test]
+    fn a_running_speed_test_reports_progress_and_offers_only_cancel() {
+        let view = SpeedTestViewModel::from_presentation(speed_test_presentation(
+            SpeedTestStatus::Running(SpeedTestProgress {
+                phase: SpeedTestPhase::Download,
+                transferred_bytes: 5_000_000,
+                phase_bytes: 25_000_000,
+            }),
+            None,
+            true,
+            true,
+        ));
+
+        assert!(!view.can_start, "one run at a time");
+        assert!(view.can_cancel);
+        assert_eq!(view.progress, Some(0.2));
+        assert_eq!(view.phase_label.as_deref(), Some("Downloading"));
+    }
+
+    #[test]
+    fn a_speed_test_cannot_start_while_stopped_or_without_curl() {
+        for (running, available, reason) in
+            [(false, true, "network.speed_test"), (true, false, "curl")]
+        {
+            let view = SpeedTestViewModel::from_presentation(speed_test_presentation(
+                SpeedTestStatus::Idle,
+                None,
+                running,
+                available,
+            ));
+
+            assert!(!view.can_start);
+            assert!(view.status.contains(reason), "{}", view.status);
+        }
+    }
+
+    #[test]
+    fn completed_and_failed_speed_tests_report_results_and_reasons() {
+        let measurement = SpeedTestMeasurement {
+            latency_millis: Some(14),
+            download_bits_per_second: Some(94_300_000),
+            downloaded_bytes: 25_000_000,
+            upload_bits_per_second: Some(18_260_000),
+            uploaded_bytes: 10_000_000,
+            duration: Duration::from_secs(9),
+        };
+        let completed = SpeedTestViewModel::from_presentation(speed_test_presentation(
+            SpeedTestStatus::Completed,
+            Some(measurement),
+            true,
+            true,
+        ));
+        assert_eq!(
+            completed.result_lines,
+            vec![
+                "Latency: 14 ms".to_owned(),
+                "Download: 94.3 Mbit/s".to_owned(),
+                "Upload: 18.3 Mbit/s".to_owned(),
+                "Transferred: 35.0 MB".to_owned(),
+            ]
+        );
+        assert!(completed.can_start, "a finished test can be repeated");
+
+        let failed = SpeedTestViewModel::from_presentation(speed_test_presentation(
+            SpeedTestStatus::Failed(SpeedTestError {
+                kind: SpeedTestErrorKind::Connection,
+                message: "The speed-test server could not be reached.".to_owned(),
+            }),
+            Some(measurement),
+            true,
+            true,
+        ));
+        assert!(failed.status.contains("could not be reached"));
+        assert!(failed.result_lines.is_empty());
     }
 }
