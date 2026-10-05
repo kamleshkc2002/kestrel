@@ -6,6 +6,7 @@ pub mod alerts;
 pub mod audio;
 pub mod clipboard;
 pub mod command_bar;
+pub mod global_shortcuts;
 pub mod microphone;
 
 pub mod quick_toggles;

@@ -13,7 +13,8 @@ use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
 use kestrel::command_line::{Invocation, command_list, parse_arguments, usage};
 use kestrel::view_model::{
-    ClipboardQuery, CommandBarQuery, MicrophoneViewModel, SnippetQuery, SpeedTestViewModel,
+    ClipboardQuery, CommandBarQuery, MicrophoneViewModel, ShortcutsViewModel, SnippetQuery,
+    SpeedTestViewModel,
 };
 use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
@@ -43,6 +44,7 @@ struct TickUpdate {
     clipboard: Option<ClipboardViewModel>,
     microphone: Option<MicrophoneViewModel>,
     speed_test: Option<SpeedTestViewModel>,
+    shortcuts: Option<ShortcutsViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -66,6 +68,7 @@ struct ControllerState {
     clipboard_preview: Option<kestrel_services::clipboard::ClipboardPreview>,
     clipboard_fingerprint: Option<ClipboardFingerprint>,
     speed_test_generation: u64,
+    shortcut_generation: u64,
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
@@ -275,7 +278,7 @@ fn run_tick(
     observed_at: Duration,
     microphone_due: bool,
 ) -> TickUpdate {
-    let (updated, alerts, microphone, speed_test) = {
+    let (updated, alerts, microphone, speed_test, shortcuts) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -288,11 +291,18 @@ fn run_tick(
             guard.speed_test_generation = generation;
             guard.runtime.speed_test_view_model()
         });
+        // Portal registration finishes asynchronously, possibly after a dialog.
+        let generation = guard.runtime.shortcut_status().generation;
+        let shortcuts = (generation != guard.shortcut_generation).then(|| {
+            guard.shortcut_generation = generation;
+            guard.runtime.shortcuts_view_model()
+        });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
             microphone,
             speed_test,
+            shortcuts,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -302,6 +312,7 @@ fn run_tick(
         clipboard,
         microphone,
         speed_test,
+        shortcuts,
     }
 }
 
@@ -497,6 +508,7 @@ struct ApplicationController {
     clipboard_running: Cell<bool>,
     microphone_running: Cell<bool>,
     speed_test_running: Cell<bool>,
+    shortcuts_running: Cell<bool>,
     monitor_started_at: Instant,
     /// Bounds backend polling to the two-second interval.
     microphone_last_refresh: Cell<Instant>,
@@ -525,6 +537,7 @@ impl ApplicationController {
         let clipboard_running = runtime.clipboard_is_running();
         let microphone_running = runtime.microphone_is_running();
         let speed_test_running = runtime.speed_test_is_running();
+        let shortcuts_running = runtime.global_shortcuts_is_running();
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -538,6 +551,7 @@ impl ApplicationController {
                 clipboard_preview: None,
                 clipboard_fingerprint: None,
                 speed_test_generation: 0,
+                shortcut_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -553,6 +567,7 @@ impl ApplicationController {
             clipboard_running: Cell::new(clipboard_running),
             microphone_running: Cell::new(microphone_running),
             speed_test_running: Cell::new(speed_test_running),
+            shortcuts_running: Cell::new(shortcuts_running),
             monitor_started_at: Instant::now(),
             microphone_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
@@ -697,6 +712,7 @@ impl ApplicationController {
                 self.clipboard_running.set(view_model.clipboard.running);
                 self.microphone_running.set(view_model.microphone.running);
                 self.speed_test_running.set(view_model.speed_test.running);
+                self.shortcuts_running.set(view_model.shortcuts.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -708,6 +724,7 @@ impl ApplicationController {
                 self.clipboard_running.set(view_model.clipboard.running);
                 self.microphone_running.set(view_model.microphone.running);
                 self.speed_test_running.set(view_model.speed_test.running);
+                self.shortcuts_running.set(view_model.shortcuts.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
@@ -731,6 +748,7 @@ impl ApplicationController {
         if !self.monitor_running.get()
             && !self.clipboard_running.get()
             && !self.speed_test_running.get()
+            && !self.shortcuts_running.get()
             && !microphone_due
         {
             self.monitoring.set(false);
@@ -758,6 +776,7 @@ impl ApplicationController {
             clipboard,
             microphone,
             speed_test,
+            shortcuts,
         } = update;
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -776,6 +795,9 @@ impl ApplicationController {
         }
         if let Some(speed_test) = speed_test {
             view.set_speed_test(&speed_test);
+        }
+        if let Some(shortcuts) = shortcuts {
+            view.set_shortcuts(&shortcuts);
         }
     }
 
@@ -1653,6 +1675,7 @@ fn main() -> glib::ExitCode {
         status_notifier.capability(),
     )
     .expect("built-in features have valid IDs");
+    runtime.set_command_sender(commands.clone());
     runtime.start();
     runtime
         .refresh_capabilities()
