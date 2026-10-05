@@ -2,6 +2,7 @@
 
 mod autostart;
 mod command_bar;
+pub mod command_line;
 mod config;
 mod private_file;
 mod runtime;
@@ -119,6 +120,8 @@ pub enum ApplicationCommand {
     PresentWindow,
     RefreshCapabilities,
     QuickToggle(QuickToggleCommand),
+    /// Flips a quick toggle from its current observed state.
+    FlipQuickToggle(QuickToggleId),
     SetFeatureEnabled {
         feature_id: String,
         enabled: bool,

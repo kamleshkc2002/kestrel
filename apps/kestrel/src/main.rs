@@ -11,6 +11,7 @@ use std::{
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
+use kestrel::command_line::{Invocation, command_list, parse_arguments, usage};
 use kestrel::view_model::{
     ClipboardQuery, CommandBarQuery, MicrophoneViewModel, SnippetQuery, SpeedTestViewModel,
 };
@@ -172,6 +173,32 @@ impl ControllerState {
         outcome
     }
 
+    /// Flips a quick toggle from its observed state; an unobserved toggle turns on.
+    fn flip_quick_toggle(&mut self, id: kestrel::QuickToggleId) -> String {
+        use kestrel_platform::quick_toggles::QuickToggleControl;
+        let currently_enabled = self
+            .runtime
+            .quick_toggle_snapshots()
+            .find(|snapshot| snapshot.id == id)
+            .and_then(|snapshot| snapshot.observation.as_ref())
+            .is_some_and(|observation| match &observation.control {
+                QuickToggleControl::Switch { enabled, .. } => *enabled,
+                QuickToggleControl::Level { percentage } => *percentage > 0,
+                QuickToggleControl::Actions(_) => false,
+            });
+        let command = kestrel::QuickToggleCommand {
+            id,
+            mutation: kestrel::QuickToggleMutation::SetEnabled(!currently_enabled),
+            confirmation_token: None,
+        };
+        let label = id.label();
+        match self.runtime.execute_quick_toggle_command(command) {
+            Some(Ok(_)) => format!("{label} toggled"),
+            Some(Err(error)) => format!("{label} failed: {error}"),
+            None => format!("{label} is not available"),
+        }
+    }
+
     fn run_kestrel_command(&mut self, action: &str) -> Option<String> {
         if let Some(name) = action.strip_prefix("insert_snippet:") {
             return Some(match self.runtime.insert_snippet(name) {
@@ -185,33 +212,10 @@ impl ControllerState {
         }
 
         if let Some(feature_id) = action.strip_prefix("toggle:") {
-            let snapshot = self
-                .runtime
-                .quick_toggle_snapshots()
-                .find(|snapshot| snapshot.id.feature_id() == feature_id)
-                .cloned()?;
-            let currently_enabled = match &snapshot.observation {
-                Some(observation) => match &observation.control {
-                    kestrel_platform::quick_toggles::QuickToggleControl::Switch {
-                        enabled, ..
-                    } => *enabled,
-                    kestrel_platform::quick_toggles::QuickToggleControl::Level { percentage } => {
-                        *percentage > 0
-                    }
-                    kestrel_platform::quick_toggles::QuickToggleControl::Actions(_) => false,
-                },
-                None => false,
-            };
-            let command = kestrel::QuickToggleCommand {
-                id: snapshot.id,
-                mutation: kestrel::QuickToggleMutation::SetEnabled(!currently_enabled),
-                confirmation_token: None,
-            };
-            return Some(match self.runtime.execute_quick_toggle_command(command) {
-                Some(Ok(_)) => format!("{feature_id} toggled"),
-                Some(Err(error)) => format!("{feature_id} failed: {error}"),
-                None => format!("{feature_id} is not available"),
-            });
+            let id = kestrel_platform::quick_toggles::ALL_QUICK_TOGGLES
+                .into_iter()
+                .find(|id| id.feature_id() == feature_id)?;
+            return Some(self.flip_quick_toggle(id));
         }
 
         let command = match action {
@@ -409,6 +413,7 @@ impl ClipboardFingerprint {
 enum ControllerOperation {
     Refresh,
     QuickToggle(kestrel::QuickToggleCommand),
+    FlipQuickToggle(kestrel::QuickToggleId),
     SetFeatureEnabled {
         feature_id: String,
         enabled: bool,
@@ -799,6 +804,7 @@ impl ControllerState {
                     None => format!("{label} is not available"),
                 }
             }
+            ControllerOperation::FlipQuickToggle(id) => self.flip_quick_toggle(id),
             ControllerOperation::SetFeatureEnabled {
                 feature_id,
                 enabled,
@@ -1574,8 +1580,49 @@ fn load_startup_configuration(
     }
 }
 
-fn main() {
+fn main() -> glib::ExitCode {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    // Answer help, version, listing, and invalid IDs locally, before touching
+    // D-Bus or building the runtime.
+    match parse_arguments(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        Ok(Invocation::Help) => {
+            print!("{}", usage());
+            return glib::ExitCode::SUCCESS;
+        }
+        Ok(Invocation::Version) => {
+            println!("kestrel {}", env!("CARGO_PKG_VERSION"));
+            return glib::ExitCode::SUCCESS;
+        }
+        Ok(Invocation::ListCommands) => {
+            print!("{}", command_list());
+            return glib::ExitCode::SUCCESS;
+        }
+        Err(error) => {
+            eprintln!("kestrel: {error}");
+            eprint!("{}", usage());
+            return glib::ExitCode::from(2);
+        }
+        Ok(Invocation::Present | Invocation::Run(_)) => {}
+    }
+
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
+    let initial_appearance = loaded.configuration.ui.appearance;
+    let application = adw::Application::builder()
+        .application_id("io.github.kamleshkc2002.Kestrel")
+        .flags(adw::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        .build();
+    application.connect_startup(move |_| {
+        apply_color_scheme(initial_appearance);
+    });
+    if let Err(error) = application.register(None::<&adw::gio::Cancellable>) {
+        eprintln!("kestrel: could not register with the session bus: {error}");
+        return glib::ExitCode::FAILURE;
+    }
+    if application.is_remote() {
+        // Another instance owns the session: forward this command line to it
+        // without building a second runtime or tray icon.
+        return application.run_with_args(&arguments);
+    }
 
     if loaded.configuration.startup.autostart {
         let result = thread::Builder::new()
@@ -1598,10 +1645,6 @@ fn main() {
         }
     }
 
-    let application = adw::Application::builder()
-        .application_id("io.github.kamleshkc2002.Kestrel")
-        .build();
-    let initial_appearance = loaded.configuration.ui.appearance;
     let (commands, command_receiver) = async_channel::unbounded();
     let status_notifier = StatusNotifierIntegration::start(commands.clone());
 
@@ -1630,6 +1673,7 @@ fn main() {
             notifier,
         },
     );
+    let command_line_commands = commands.clone();
     install_command_actions(&application, commands);
     dispatch_commands(&application, &controller, command_receiver);
     dispatch_refresh_results(&controller, refresh_receiver);
@@ -1643,17 +1687,39 @@ fn main() {
     });
 
     let weak_controller = Rc::downgrade(&controller);
-    application.connect_startup(move |_| {
-        apply_color_scheme(initial_appearance);
-    });
     application.connect_activate(move |application| {
         if let Some(controller) = weak_controller.upgrade() {
             controller.present(application);
         }
     });
+    let weak_controller = Rc::downgrade(&controller);
+    application.connect_command_line(move |application, command_line| {
+        let arguments = command_line.arguments();
+        let Ok(invocation) = parse_arguments(arguments.get(1..).unwrap_or_default()) else {
+            return 2;
+        };
+        let Some(controller) = weak_controller.upgrade() else {
+            return 1;
+        };
+        match invocation {
+            Invocation::Present => controller.present(application),
+            Invocation::Run(action) => {
+                // A command that started Kestrel opens the window so the
+                // instance stays alive and the result is visible.
+                if !command_line.is_remote() {
+                    controller.present(application);
+                }
+                let _ = command_line_commands.try_send(action.to_command());
+            }
+            // Answered locally before registration.
+            Invocation::Help | Invocation::Version | Invocation::ListCommands => {}
+        }
+        0
+    });
 
-    application.run();
+    let exit = application.run_with_args(&arguments);
     drop(status_notifier);
+    exit
 }
 
 fn setup_startup_autostart() -> Result<(), std::io::Error> {
@@ -1717,6 +1783,10 @@ fn dispatch_commands(
                 ApplicationCommand::QuickToggle(command) => {
                     controller.request_quick_toggle(command)
                 }
+                ApplicationCommand::FlipQuickToggle(id) => controller.request_operation(
+                    ControllerOperation::FlipQuickToggle(id),
+                    "kestrel-quick-toggle",
+                ),
                 ApplicationCommand::SetFeatureEnabled {
                     feature_id,
                     enabled,
