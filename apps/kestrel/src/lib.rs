@@ -48,9 +48,9 @@ pub use view_model::{
     FeatureViewModel, MicrophoneInputViewModel, MicrophoneViewModel,
     MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
-    QuickToggleViewModel, RemediationViewModel, SnippetBoundsViewModel, SnippetDraft,
-    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
-    SpeedTestViewModel,
+    QuickToggleViewModel, RemediationViewModel, ShortcutRowViewModel, ShortcutsViewModel,
+    SnippetBoundsViewModel, SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel,
+    SnippetPolicyViewModel, SnippetsViewModel, SpeedTestViewModel,
 };
 
 /// Command-bar action from the window.

@@ -434,6 +434,36 @@ messages. The service publishes progress through a generation counter so the
 periodic tick only rebuilds the panel when something changed, and `stop()` —
 called when the feature is disabled and on drop — cancels and joins the worker.
 
+### 5.11 Global shortcuts
+
+`global.shortcuts` is opt-in. `kestrel-core` owns the `[[shortcuts.bindings]]`
+contract (command ID, canonical `ShortcutTrigger`, at most 32 bindings); the
+app resolves each command through the `kestrel --command` vocabulary, so a
+shortcut and a forwarded command run the same `ApplicationCommand`. Unknown
+commands are skipped and listed in the panel.
+
+The probe reads `XDG_SESSION_TYPE`, `WAYLAND_DISPLAY`, `DISPLAY`, and the
+portal's `GlobalShortcuts` `version` property (two-second timeout) and opens
+no session. Provider order is the portal, then `XGrabKey` on real X11 sessions;
+Xwayland grabs do not see keys pressed in Wayland clients, so Wayland sessions
+without the portal report unsupported with the `kestrel --command` remediation.
+
+Both backends run on one named worker thread and publish a shared
+`ShortcutStatus` (phase, per-binding state, generation counter):
+
+- Portal: host `Registry.Register`, then `CreateSession` and `BindShortcuts`
+  with predicted request paths subscribed before each call. The desktop may
+  change or refuse triggers; the returned `trigger_description` is shown. A
+  cancelled or denied dialog fails registration once, and the runtime does not
+  retry until the feature is disabled and enabled again.
+- X11: each trigger is grabbed with Lock/NumLock variants; a `BadAccess` reply
+  marks that binding `Conflict` and releases its partial grabs while the others
+  stay bound.
+
+Activations become `ApplicationCommand`s on the GTK command channel.
+`stop()` — on disable, on binding changes, and on drop — closes the portal
+session or ungrabs every key, then joins the worker.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

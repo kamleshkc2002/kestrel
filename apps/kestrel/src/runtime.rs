@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
 use crate::{
-    ApplicationViewModel, ConfigurationWarning,
+    ApplicationCommand, ApplicationViewModel, ConfigurationWarning,
+    command_line::CommandLineAction,
     snippets::{save_snippets, snippet_path},
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
         AudioPresentation, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
         CommandBarPresentation, CommandBarQuery, MicrophonePresentation, MicrophoneViewModel,
-        MonitorPresentation, MonitorViewModel, SnippetQuery, SnippetsPresentation,
-        SpeedTestPresentation, SpeedTestViewModel,
+        MonitorPresentation, MonitorViewModel, ShortcutsPresentation, ShortcutsViewModel,
+        SnippetQuery, SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -25,6 +28,10 @@ use kestrel_platform::{
     clipboard::{
         ArboardClipboardBackend, ClipboardBackend, ClipboardCapabilityProbe,
         FEATURE_ID as CLIPBOARD_HISTORY_ID, LogindPrivacyMonitor, discover_provider,
+    },
+    global_shortcuts::{
+        ActivationSink, FEATURE_ID as GLOBAL_SHORTCUTS_ID, GlobalShortcutsProbe, ShortcutDetection,
+        ShortcutRequest, ShortcutStatus, backend_for,
     },
     launcher::{ScriptOutcome, run_script, search_roots},
     quick_toggles::{
@@ -50,6 +57,7 @@ use kestrel_services::{
         CommandIndex, CommandItem, CommandRanking, CommandResult, CommandSource, EnabledProviders,
         SearchInput,
     },
+    global_shortcuts::GlobalShortcutService,
     microphone::{
         MicrophoneCommand, MicrophoneCommandResult, MicrophoneService, MicrophoneSnapshot,
     },
@@ -91,7 +99,6 @@ impl FeaturePreset {
 }
 
 const COMMAND_SURFACE_ID: &str = "app.command-surface";
-const GLOBAL_SHORTCUTS_ID: &str = "global.shortcuts";
 
 const fn cost(idle: CostLevel, interaction: CostLevel, polling: CostLevel) -> ResourceCost {
     ResourceCost::new(idle, interaction, polling)
@@ -214,6 +221,17 @@ pub struct ApplicationRuntime {
     audio_mixer: AudioMixerService<PulseAudioBackend>,
     microphone: MicrophoneService<PulseAudioBackend>,
     speed_test: SpeedTestService<CurlSpeedTestBackend>,
+    global_shortcuts: GlobalShortcutService,
+    /// Configured bindings with a known command; registered while the feature runs.
+    shortcut_requests: Vec<ShortcutRequest>,
+    shortcut_bindings: Vec<kestrel_core::ShortcutBinding>,
+    /// Configured commands this build does not know.
+    shortcut_skipped: Vec<String>,
+    /// One registration attempt per running period, so a declined portal
+    /// dialog does not reappear on every refresh.
+    shortcut_attempted: bool,
+    /// Activations become application commands on this channel.
+    command_sender: Option<async_channel::Sender<ApplicationCommand>>,
     clipboard_history: ClipboardHistoryService,
     snippet_library: SnippetLibrary,
     snippet_service: SnippetInsertionService<ExecutableInsertionBackend>,
@@ -375,26 +393,13 @@ impl ApplicationRuntime {
         let global_shortcuts = FeatureSpec::new(
             GLOBAL_SHORTCUTS_ID,
             "Global shortcuts",
-            CapabilityStatus::Unsupported {
-                reason: "No portable global-shortcut adapter is registered yet.".to_string(),
-            },
+            CapabilityStatus::Supported,
         )
-        .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::None));
         registry.register_probe(
-            global_shortcuts.clone(),
-            configuration.feature_enabled(global_shortcuts.id),
-            StaticCapabilityProbe::new(
-                CapabilityReport::new(
-                    global_shortcuts.id,
-                    CapabilityStatus::Unsupported {
-                        reason: "No portable global-shortcut adapter is registered yet.".to_string(),
-                    },
-                    "Global shortcuts are unavailable, but Kestrel remains usable from its normal window.",
-                )
-                .with_remediation(
-                    "Use the normal window or configure a desktop shortcut that launches Kestrel.",
-                ),
-            ),
+            global_shortcuts,
+            configuration.feature_enabled(GLOBAL_SHORTCUTS_ID),
+            GlobalShortcutsProbe,
         )?;
         let quick_toggle_backend = LinuxQuickToggleBackend::new();
         for id in ALL_QUICK_TOGGLES {
@@ -447,6 +452,8 @@ impl ApplicationRuntime {
         let command_max_results = configuration.command_bar.max_results as usize;
         let command_launcher = ExternalLauncher::discover().ok();
         let command_ranking_warnings = loaded_ranking.warnings;
+        let (shortcut_requests, shortcut_skipped) =
+            Self::shortcut_requests(&configuration.shortcuts);
 
         let mut runtime = Self {
             registry,
@@ -460,6 +467,12 @@ impl ApplicationRuntime {
                 CurlSpeedTestBackend::discover(),
                 SpeedTestPolicy::from_configuration(&configuration.speed_test),
             ),
+            global_shortcuts: GlobalShortcutService::new(),
+            shortcut_requests,
+            shortcut_bindings: configuration.shortcuts.bindings.clone(),
+            shortcut_skipped,
+            shortcut_attempted: false,
+            command_sender: None,
             clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::from_configuration(
                 &configuration.clipboard,
             ))
@@ -560,6 +573,15 @@ impl ApplicationRuntime {
             .set_policy(SpeedTestPolicy::from_configuration(
                 &configuration.speed_test,
             ));
+        let (requests, skipped) = Self::shortcut_requests(&configuration.shortcuts);
+        if requests != self.shortcut_requests {
+            // New bindings take effect through a fresh registration.
+            self.global_shortcuts.stop();
+            self.shortcut_attempted = false;
+        }
+        self.shortcut_requests = requests;
+        self.shortcut_skipped = skipped;
+        self.shortcut_bindings = configuration.shortcuts.bindings.clone();
         if self.microphone_is_running() {
             let _ = self.microphone.refresh();
         }
@@ -695,6 +717,12 @@ impl ApplicationRuntime {
             SpeedTestPresentation {
                 snapshot: self.speed_test.snapshot(),
                 running: self.speed_test_is_running(),
+            },
+            ShortcutsPresentation {
+                status: self.global_shortcuts.snapshot(),
+                running: self.global_shortcuts_is_running(),
+                configured: &self.shortcut_bindings,
+                skipped: &self.shortcut_skipped,
             },
             ClipboardPresentation {
                 snapshot: Some(self.clipboard_history.latest()),
@@ -892,6 +920,72 @@ impl ApplicationRuntime {
             snapshot: self.speed_test.snapshot(),
             running: self.speed_test_is_running(),
         })
+    }
+
+    /// Routes shortcut activations to the application command channel.
+    pub fn set_command_sender(&mut self, sender: async_channel::Sender<ApplicationCommand>) {
+        self.command_sender = Some(sender);
+    }
+
+    pub fn global_shortcuts_is_running(&self) -> bool {
+        self.registry.registrations().any(|registration| {
+            registration.feature.id == GLOBAL_SHORTCUTS_ID && registration.running
+        })
+    }
+
+    pub fn shortcut_status(&self) -> ShortcutStatus {
+        self.global_shortcuts.snapshot()
+    }
+
+    pub fn shortcuts_view_model(&self) -> ShortcutsViewModel {
+        ShortcutsViewModel::from_presentation(ShortcutsPresentation {
+            status: self.global_shortcuts.snapshot(),
+            running: self.global_shortcuts_is_running(),
+            configured: &self.shortcut_bindings,
+            skipped: &self.shortcut_skipped,
+        })
+    }
+
+    /// Resolves configured bindings against the command list.
+    fn shortcut_requests(
+        configuration: &kestrel_core::ShortcutConfiguration,
+    ) -> (Vec<ShortcutRequest>, Vec<String>) {
+        let mut requests = Vec::new();
+        let mut skipped = Vec::new();
+        for binding in &configuration.bindings {
+            match (
+                CommandLineAction::parse(&binding.command),
+                binding.validate(),
+            ) {
+                (Ok(action), Ok(trigger)) => requests.push(ShortcutRequest {
+                    id: binding.command.clone(),
+                    description: action.description(),
+                    trigger,
+                }),
+                _ => skipped.push(binding.command.clone()),
+            }
+        }
+        (requests, skipped)
+    }
+
+    fn start_global_shortcuts(&mut self) {
+        let Some(sender) = self.command_sender.clone() else {
+            return;
+        };
+        self.shortcut_attempted = true;
+        let Some(provider) = ShortcutDetection::detect().provider() else {
+            return;
+        };
+        let sink: ActivationSink = Arc::new(move |id: &str| {
+            if let Ok(action) = CommandLineAction::parse(id) {
+                let _ = sender.try_send(action.to_command());
+            }
+        });
+        let _ = self.global_shortcuts.start(
+            backend_for(provider),
+            self.shortcut_requests.clone(),
+            sink,
+        );
     }
 
     pub fn execute_audio_command(&mut self, command: AudioCommand) -> Option<AudioCommandResult> {
@@ -1305,6 +1399,14 @@ impl ApplicationRuntime {
         if !self.speed_test_is_running() {
             self.speed_test.stop();
         }
+        if self.global_shortcuts_is_running() {
+            if !self.shortcut_attempted {
+                self.start_global_shortcuts();
+            }
+        } else {
+            self.global_shortcuts.stop();
+            self.shortcut_attempted = false;
+        }
         if self.clipboard_history_is_running() {
             if !self.clipboard_worker_is_running() {
                 let _ = self.start_clipboard_history();
@@ -1413,6 +1515,7 @@ mod tests {
     use kestrel_platform::{
         audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
         clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
+        global_shortcuts::FEATURE_ID as GLOBAL_SHORTCUTS_ID,
         quick_toggles::{ALL_QUICK_TOGGLES, KEEP_AWAKE_ID, SCREEN_LOCK_ID},
         speed_test::FEATURE_ID as SPEED_TEST_ID,
         system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
@@ -1647,6 +1750,52 @@ mod tests {
             FeaturePreset::Essentials,
             MICROPHONE_FEATURE_ID
         ));
+    }
+
+    #[test]
+    fn bindings_resolve_known_commands_and_skip_the_rest() {
+        let configuration = kestrel_core::ShortcutConfiguration {
+            bindings: vec![
+                kestrel_core::ShortcutBinding {
+                    command: "microphone.toggle-mute".to_owned(),
+                    trigger: "LOGO+ALT+m".to_owned(),
+                },
+                kestrel_core::ShortcutBinding {
+                    command: "window.explode".to_owned(),
+                    trigger: "LOGO+ALT+x".to_owned(),
+                },
+            ],
+        };
+
+        let (requests, skipped) = ApplicationRuntime::shortcut_requests(&configuration);
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].id, "microphone.toggle-mute");
+        assert_eq!(
+            requests[0].description,
+            "Mute or unmute every microphone input"
+        );
+        assert_eq!(skipped, vec!["window.explode".to_owned()]);
+    }
+
+    #[test]
+    fn disabled_global_shortcuts_never_register() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        let (sender, _receiver) = async_channel::unbounded();
+        runtime.set_command_sender(sender);
+        runtime.start();
+
+        assert!(!runtime.global_shortcuts_is_running());
+        assert!(!runtime.global_shortcuts.is_started());
+        assert_eq!(
+            runtime.shortcut_status().phase,
+            kestrel_platform::global_shortcuts::ShortcutPhase::Idle
+        );
+        assert!(
+            !ApplicationRuntime::preset_enabled(FeaturePreset::Balanced, GLOBAL_SHORTCUTS_ID),
+            "registration stays an explicit opt-in"
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use kestrel_core::CapabilityReport;
 pub mod applications;
 pub mod audio;
 pub mod clipboard;
+pub mod global_shortcuts;
 pub mod launcher;
 
 pub mod notifications;

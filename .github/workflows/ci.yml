@@ -28,7 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libadwaita-1-dev libgtk-4-dev libpulse-dev
+            libadwaita-1-dev libgtk-4-dev libpulse-dev xvfb dbus
 
       - name: Check formatting
         run: cargo fmt --all -- --check

@@ -1,6 +1,9 @@
 //! UI-agnostic primitives shared by Kestrel services and front ends.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +127,10 @@ pub const MIN_SPEED_TEST_TIMEOUT_SECONDS: u32 = 5;
 pub const DEFAULT_SPEED_TEST_TIMEOUT_SECONDS: u32 = 30;
 pub const MAX_SPEED_TEST_TIMEOUT_SECONDS: u32 = 120;
 pub const SPEED_TEST_BYTES_PER_MEGABYTE: u64 = 1_000_000;
+
+// Global-shortcut bounds.
+pub const MAX_SHORTCUT_BINDINGS: usize = 32;
+pub const MAX_SHORTCUT_COMMAND_CHARS: usize = 64;
 
 pub const MIN_COMMAND_QUERY_CHARS: usize = 1;
 
@@ -406,6 +413,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub speed_test: SpeedTestConfiguration,
     #[serde(default)]
+    pub shortcuts: ShortcutConfiguration,
+    #[serde(default)]
     pub clipboard: ClipboardConfiguration,
     #[serde(default)]
     pub snippets: SnippetConfiguration,
@@ -423,6 +432,7 @@ impl Default for ApplicationConfiguration {
             monitoring: MonitorConfiguration::default(),
             audio: AudioConfiguration::default(),
             speed_test: SpeedTestConfiguration::default(),
+            shortcuts: ShortcutConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
             command_bar: CommandBarConfiguration::default(),
@@ -481,6 +491,7 @@ impl ApplicationConfiguration {
         self.ui.validate()?;
         self.audio.validate()?;
         self.speed_test.validate()?;
+        self.shortcuts.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
         self.command_bar.validate()?;
@@ -900,6 +911,164 @@ impl SpeedTestConfiguration {
             return Err(ConfigurationError::InvalidSpeedTestTimeoutSeconds {
                 seconds: self.timeout_seconds,
             });
+        }
+        Ok(())
+    }
+}
+
+/// Modifier keys of a global shortcut trigger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ShortcutModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub logo: bool,
+}
+
+/// A key combination in the freedesktop shortcuts format, e.g. `LOGO+ALT+m`.
+///
+/// At least one modifier is required, so a global grab never swallows a plain key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutTrigger {
+    pub modifiers: ShortcutModifiers,
+    /// An XKB keysym name such as `m`, `F12`, or `space`.
+    pub key: String,
+}
+
+impl ShortcutTrigger {
+    pub fn parse(text: &str) -> Result<Self, ConfigurationError> {
+        let invalid = || ConfigurationError::InvalidShortcutTrigger {
+            trigger: text.to_owned(),
+        };
+        let mut parts = text.split('+').map(str::trim).collect::<Vec<_>>();
+        let key = parts
+            .pop()
+            .filter(|key| !key.is_empty())
+            .ok_or_else(invalid)?;
+        if !key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(invalid());
+        }
+        let mut modifiers = ShortcutModifiers::default();
+        for part in parts {
+            let flag = match part.to_ascii_uppercase().as_str() {
+                "CTRL" | "CONTROL" => &mut modifiers.ctrl,
+                "ALT" => &mut modifiers.alt,
+                "SHIFT" => &mut modifiers.shift,
+                "LOGO" | "SUPER" => &mut modifiers.logo,
+                _ => return Err(invalid()),
+            };
+            if *flag {
+                return Err(invalid());
+            }
+            *flag = true;
+        }
+        if modifiers == ShortcutModifiers::default() {
+            return Err(invalid());
+        }
+        Ok(Self {
+            modifiers,
+            key: key.to_owned(),
+        })
+    }
+}
+
+impl fmt::Display for ShortcutTrigger {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (enabled, name) in [
+            (self.modifiers.ctrl, "CTRL"),
+            (self.modifiers.alt, "ALT"),
+            (self.modifiers.shift, "SHIFT"),
+            (self.modifiers.logo, "LOGO"),
+        ] {
+            if enabled {
+                write!(formatter, "{name}+")?;
+            }
+        }
+        formatter.write_str(&self.key)
+    }
+}
+
+/// One global shortcut: a stable command ID and its preferred trigger.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShortcutBinding {
+    pub command: String,
+    pub trigger: String,
+}
+
+impl ShortcutBinding {
+    fn new(command: &str, trigger: &str) -> Self {
+        Self {
+            command: command.to_owned(),
+            trigger: trigger.to_owned(),
+        }
+    }
+
+    /// Validates the command ID shape and the trigger; the command's meaning is
+    /// checked by the application, which owns the command list.
+    pub fn validate(&self) -> Result<ShortcutTrigger, ConfigurationError> {
+        let shaped = !self.command.is_empty()
+            && self.command.len() <= MAX_SHORTCUT_COMMAND_CHARS
+            && self.command.chars().all(|character| {
+                character.is_ascii_lowercase()
+                    || character.is_ascii_digit()
+                    || matches!(character, '.' | '-' | '_')
+            });
+        if !shaped {
+            return Err(ConfigurationError::InvalidShortcutCommand {
+                command: self.command.clone(),
+            });
+        }
+        ShortcutTrigger::parse(&self.trigger)
+    }
+}
+
+/// Global-shortcut bindings registered while `global.shortcuts` runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShortcutConfiguration {
+    #[serde(default = "default_shortcut_bindings")]
+    pub bindings: Vec<ShortcutBinding>,
+}
+
+fn default_shortcut_bindings() -> Vec<ShortcutBinding> {
+    vec![
+        ShortcutBinding::new("window.show", "LOGO+ALT+k"),
+        ShortcutBinding::new("microphone.toggle-mute", "LOGO+ALT+m"),
+        ShortcutBinding::new("audio.output-next", "LOGO+ALT+o"),
+    ]
+}
+
+impl Default for ShortcutConfiguration {
+    fn default() -> Self {
+        Self {
+            bindings: default_shortcut_bindings(),
+        }
+    }
+}
+
+impl ShortcutConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if self.bindings.len() > MAX_SHORTCUT_BINDINGS {
+            return Err(ConfigurationError::TooManyShortcutBindings {
+                bindings: self.bindings.len(),
+            });
+        }
+        let mut commands = BTreeSet::new();
+        let mut triggers = BTreeSet::new();
+        for binding in &self.bindings {
+            let trigger = binding.validate()?;
+            if !commands.insert(binding.command.as_str()) {
+                return Err(ConfigurationError::DuplicateShortcutCommand {
+                    command: binding.command.clone(),
+                });
+            }
+            if !triggers.insert(trigger.to_string().to_ascii_lowercase()) {
+                return Err(ConfigurationError::DuplicateShortcutTrigger {
+                    trigger: binding.trigger.clone(),
+                });
+            }
         }
         Ok(())
     }
@@ -1413,6 +1582,11 @@ pub enum ConfigurationError {
     InvalidSpeedTestDownloadMegabytes { megabytes: u32 },
     InvalidSpeedTestUploadMegabytes { megabytes: u32 },
     InvalidSpeedTestTimeoutSeconds { seconds: u32 },
+    TooManyShortcutBindings { bindings: usize },
+    InvalidShortcutCommand { command: String },
+    InvalidShortcutTrigger { trigger: String },
+    DuplicateShortcutCommand { command: String },
+    DuplicateShortcutTrigger { trigger: String },
     InvalidClipboardMaxItems { items: u32 },
     InvalidClipboardItemBytes { bytes: u32 },
     InvalidClipboardImageBytes { bytes: u32 },
@@ -2240,5 +2414,77 @@ mod tests {
     fn alert_rule_defaults_preserve_shape() {
         let default = AlertRuleConfiguration::default();
         assert_eq!(default, AlertRuleConfiguration::new(true, 90.0, 5, 900));
+    }
+
+    #[test]
+    fn shortcut_triggers_parse_canonically_and_require_a_modifier() {
+        let trigger = super::ShortcutTrigger::parse("logo + Ctrl+F12").expect("valid trigger");
+        assert!(trigger.modifiers.logo && trigger.modifiers.ctrl);
+        assert!(!trigger.modifiers.alt && !trigger.modifiers.shift);
+        assert_eq!(
+            trigger.to_string(),
+            "CTRL+LOGO+F12",
+            "modifiers print in one order"
+        );
+        assert_eq!(
+            super::ShortcutTrigger::parse(&trigger.to_string()),
+            Ok(trigger)
+        );
+
+        for invalid in [
+            "m",
+            "CTRL+",
+            "CTRL+CTRL+m",
+            "HYPER+m",
+            "CTRL+m+n",
+            "CTRL+m!",
+            "",
+        ] {
+            assert_eq!(
+                super::ShortcutTrigger::parse(invalid),
+                Err(ConfigurationError::InvalidShortcutTrigger {
+                    trigger: invalid.to_owned()
+                }),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shortcut_configuration_rejects_bad_ids_duplicates_and_excess() {
+        let binding = |command: &str, trigger: &str| super::ShortcutBinding {
+            command: command.to_owned(),
+            trigger: trigger.to_owned(),
+        };
+        assert_eq!(super::ShortcutConfiguration::default().validate(), Ok(()));
+
+        let config = |bindings| super::ShortcutConfiguration { bindings };
+        assert!(matches!(
+            config(vec![binding("Window.Show", "CTRL+k")]).validate(),
+            Err(ConfigurationError::InvalidShortcutCommand { .. })
+        ));
+        assert!(matches!(
+            config(vec![
+                binding("window.show", "CTRL+k"),
+                binding("window.show", "CTRL+j")
+            ])
+            .validate(),
+            Err(ConfigurationError::DuplicateShortcutCommand { .. })
+        ));
+        assert!(matches!(
+            config(vec![
+                binding("window.show", "CTRL+ALT+k"),
+                binding("app.quit", "alt+ctrl+K")
+            ])
+            .validate(),
+            Err(ConfigurationError::DuplicateShortcutTrigger { .. }),
+        ));
+        let many = (0..=super::MAX_SHORTCUT_BINDINGS)
+            .map(|index| binding(&format!("command.{index}"), &format!("CTRL+F{}", index + 1)))
+            .collect();
+        assert!(matches!(
+            config(many).validate(),
+            Err(ConfigurationError::TooManyShortcutBindings { .. })
+        ));
     }
 }

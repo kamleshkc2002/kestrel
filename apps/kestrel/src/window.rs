@@ -5,7 +5,8 @@ use kestrel::{
     AlertKind, ApplicationCommand, ApplicationViewModel, AudioCycleDirection, AudioOutputViewModel,
     AudioStreamViewModel, AudioViewModel, ConfirmationViewModel, FeatureViewModel,
     MicrophoneViewModel, MonitorViewModel, PanelMoveDirection, PanelSection, QuickToggleCommand,
-    QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel, SpeedTestViewModel,
+    QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel, ShortcutsViewModel,
+    SpeedTestViewModel,
 };
 use kestrel_core::AppearancePreference;
 
@@ -23,6 +24,7 @@ pub struct WindowView {
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
     microphone_container: std::cell::RefCell<Option<gtk::Box>>,
     speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
+    shortcuts_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
     snippet_panel: std::cell::RefCell<Option<SnippetPanel>>,
@@ -114,6 +116,7 @@ impl WindowView {
             monitor_container: std::cell::RefCell::new(page.monitor_container),
             microphone_container: std::cell::RefCell::new(page.microphone_container),
             speed_test_container: std::cell::RefCell::new(page.speed_test_container),
+            shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
             command_panel: std::cell::RefCell::new(page.command_panel),
@@ -126,6 +129,7 @@ impl WindowView {
         *self.monitor_container.borrow_mut() = page.monitor_container;
         *self.microphone_container.borrow_mut() = page.microphone_container;
         *self.speed_test_container.borrow_mut() = page.speed_test_container;
+        *self.shortcuts_container.borrow_mut() = Some(page.shortcuts_container);
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
         *self.command_panel.borrow_mut() = page.command_panel;
@@ -208,6 +212,17 @@ impl WindowView {
         container.append(&build_speed_test_group(speed_test, &self.commands));
     }
 
+    /// Replaces the global-shortcuts group.
+    pub fn set_shortcuts(&self, shortcuts: &ShortcutsViewModel) {
+        let Some(container) = self.shortcuts_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_shortcuts_group(shortcuts));
+    }
+
     pub fn set_refreshing(&self, refreshing: bool) {
         self.refresh_button.set_sensitive(!refreshing);
         self.refresh_button.set_tooltip_text(Some(if refreshing {
@@ -227,6 +242,7 @@ struct PageBuild {
     monitor_container: Option<gtk::Box>,
     microphone_container: Option<gtk::Box>,
     speed_test_container: Option<gtk::Box>,
+    shortcuts_container: gtk::Box,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
     command_panel: Option<CommandPanel>,
@@ -262,6 +278,9 @@ fn build_page(
         .hexpand(true)
         .build();
     page.append(&build_settings_group(view_model, window, commands, &search));
+    let shortcuts_container = gtk::Box::new(Orientation::Vertical, 0);
+    shortcuts_container.append(&build_shortcuts_group(&view_model.shortcuts));
+    page.append(&shortcuts_container);
     if !view_model.warnings.is_empty() {
         page.append(&build_warning_group(view_model));
     }
@@ -329,6 +348,7 @@ fn build_page(
         monitor_container,
         microphone_container,
         speed_test_container,
+        shortcuts_container,
         clipboard_panel,
         snippet_panel,
         command_panel,
@@ -1355,6 +1375,35 @@ fn build_microphone_group(
             .subtitle_lines(0)
             .build();
         group.add(&notice);
+    }
+    group
+}
+
+/// Builds the global-shortcuts group: one row per configured binding.
+fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Global shortcuts")
+        .description(&shortcuts.status)
+        .build();
+    for row in &shortcuts.rows {
+        let item = adw::ActionRow::builder()
+            .title(&row.description)
+            .subtitle(format!("{} · {}", row.command, row.state))
+            .subtitle_lines(0)
+            .build();
+        let trigger = gtk::Label::new(Some(&row.trigger));
+        trigger.add_css_class(if row.active { "accent" } else { "dim-label" });
+        item.add_suffix(&trigger);
+        group.add(&item);
+    }
+    if let Some(notice) = &shortcuts.notice {
+        group.add(
+            &adw::ActionRow::builder()
+                .title("Some bindings were skipped")
+                .subtitle(notice)
+                .subtitle_lines(0)
+                .build(),
+        );
     }
     group
 }

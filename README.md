@@ -93,7 +93,7 @@ and running state separately.
 
 - The normal window is always available; the tray is optional.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension.
-- `global.shortcuts` is reported unsupported until a portable adapter is registered.
+- See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 
 ### Keyboard shortcuts
 
@@ -106,6 +106,28 @@ kestrel --list-commands   # every ID with a description
 ```
 
 IDs cover the window, capability refresh, audio output cycling, microphone mute, speed test, clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). Unknown IDs exit with status 2.
+
+#### Global shortcuts — `global.shortcuts`
+
+- **Default:** disabled; enabling it in the Feature Hub registers the configured bindings.
+- **Providers:** the `GlobalShortcuts` portal where the desktop exports it (KDE Plasma, GNOME 48+, Hyprland), which may ask you to confirm or change each key; `XGrabKey` on real X11 sessions, which reports a combination another client already holds. Other sessions show the feature as unsupported and point to `kestrel --command`.
+- **Configuration:** up to 32 bindings; each `trigger` needs at least one modifier (`CTRL`, `ALT`, `SHIFT`, `LOGO`) plus an XKB key name. Defaults:
+
+```toml
+[[shortcuts.bindings]]
+command = "window.show"
+trigger = "LOGO+ALT+k"
+
+[[shortcuts.bindings]]
+command = "microphone.toggle-mute"
+trigger = "LOGO+ALT+m"
+
+[[shortcuts.bindings]]
+command = "audio.output-next"
+trigger = "LOGO+ALT+o"
+```
+
+- The window lists each binding with its state (active, waiting, in use, not registered). Disabling the feature releases the portal session or every grab.
 
 ## AppImage preview
 
