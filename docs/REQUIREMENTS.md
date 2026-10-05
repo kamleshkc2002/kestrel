@@ -511,8 +511,9 @@ specific remediation rather than simply hiding a feature without explanation.
 ### 11.1 Reference-feature coverage contract
 
 The product roadmap is audited against the Vorssaint feature catalog at commit
-`29bd174` (v3.3.5 plus its current unreleased changes). This is a product-scope
-ledger, not a promise of identical implementation or uniform Linux support.
+`0cf7529` (upstream `main` on 2026-10-04, 77 identifiers; the previous audit at
+`29bd174` covered 57). This is a product-scope ledger, not a promise of
+identical implementation or uniform Linux support.
 Every reference feature must be either scheduled, translated to an appropriate
 Linux workflow, or explicitly excluded with a reason.
 Repeat this identifier audit when the reference catalog changes, recording the
@@ -555,9 +556,12 @@ new reference commit so roadmap drift remains reviewable.
   screenshots, screen recording, OCR/QR and color sampling; recent captures;
   camera preview; scratchpad; cleaning mode; process termination; media
   conversion/editing; cleaner; application/package update aggregation;
-  package-manager actions; reviewed application cleanup/uninstall workflows; and
+  package-manager actions; reviewed application cleanup/uninstall workflows;
   metadata-verified organization/retention of downloads from supported messaging
-  clients.
+  clients; and a status overlay that translates the camera-notch Dynamic Island
+  into an optional top-center surface on desktops that allow one, with media,
+  notification, calendar, timer, download, accessory, AI-agent usage, window-area
+  watch, and companion modules.
 - **Product shell:** install/uninstall semantics for feature modules, first-run
   presets, honest idle/input/polling energy-cost labels, permission/capability
   transparency, configurable panel sections and layout, settings search,
@@ -576,16 +580,23 @@ The stable reference identifiers map to the phases below:
   `monitorNetwork`, `monitorDisk`, and `monitorPower`.
 - **Phase 2:** `textSnippets`, `pastePlain`, `micMute`, `quickLauncher`,
   `colorPicker`, `screenOCR`, `screenshot`, `screenRecorder`, `cameraPreview`,
-  `scratchpad`, `commandBar`, and `killProcess`.
+  `scratchpad`, `commandBar`, `killProcess`, and `portManager`.
 - **Phase 3:** `windowMaximizer`, `windowLayout`, `finderCutPaste`,
   `finderRename`, `shelf`, `urlCleaner`, `diskImageInstaller`,
   `bluetoothSleep`, `radialMenu`, `cleaningMode`, `mediaTools`, `cleaner`,
-  `uninstaller`, `homebrew`, `appUpdates`, and `fanControl`.
+  `uninstaller`, `homebrew`, `appUpdates`, `fanControl`, `audioPriority`,
+  `connectedDevices`, and `wallpaper`.
 - **Phase 4:** `switcher`, `dockPreview`, `dockClick`, `autoQuit`,
-  `scrollInverter`, `focusFollowsMouse`, `smoothScroll`, `mouseAcceleration`,
-  `mouseNavigation`, `mouseButtonShortcuts`, `middleClick`,
-  `mouseClickDebounce`, `keyboardDebounce`, `superKey`,
-  `quitWindowProtection`, `musicBlock`, and `extraBrightness`.
+  `scrollInverter`, `scrollHorizontal`, `focusFollowsMouse`, `smoothScroll`,
+  `linearScroll`, `mouseAcceleration`, `mouseNavigation`,
+  `mouseButtonShortcuts`, `middleClick`, `mouseClickDebounce`,
+  `keyboardDebounce`, `superKey`, `quitWindowProtection`, `musicBlock`,
+  `extraBrightness`, `notch`, `notchCalendar`, `notchNotifications`,
+  `notchGestures`, `notchTimer`, `notchAccessories`, `notchLyrics`,
+  `notchQueue`, `notchLiveEqualizer`, `notchDownloads`, `notchAgents`,
+  `notchWatch`, and `notchMascot`.
+- **Excluded:** `spacesOrder`. Linux desktops keep workspaces in the order the
+  user set, so the macOS reordering it corrects has no counterpart.
 
 Identifiers retain their reference spelling only for auditability. Kestrel uses
 its own namespaced IDs and Linux-native product language; `dockPreview`,

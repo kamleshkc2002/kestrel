@@ -95,6 +95,18 @@ and running state separately.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension.
 - `global.shortcuts` is reported unsupported until a portable adapter is registered.
 
+### Keyboard shortcuts
+
+`kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, or your compositor config):
+
+```bash
+kestrel --command microphone.toggle-mute
+kestrel --command toggle.power.keep-awake
+kestrel --list-commands   # every ID with a description
+```
+
+IDs cover the window, capability refresh, audio output cycling, microphone mute, speed test, clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). Unknown IDs exit with status 2.
+
 ## AppImage preview
 
 Tagged versions are published as x86_64 AppImage previews on GitHub Releases;
