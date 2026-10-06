@@ -434,7 +434,17 @@ messages. The service publishes progress through a generation counter so the
 periodic tick only rebuilds the panel when something changed, and `stop()` —
 called when the feature is disabled and on drop — cancels and joins the worker.
 
-### 5.11 Global shortcuts
+### 5.11 Command entry points and global shortcuts
+
+`kestrel --command <id>` parses the ID locally (at most 64 characters of
+`[a-z0-9._-]`; unknown and malformed IDs exit 2 before touching D-Bus) and
+forwards it through `GApplication` command-line forwarding. The running
+instance checks the action's feature registration and returns a typed
+`CommandGate` as the exit status: 3 disabled, 4 unavailable, 5 stopped; the
+window shows the full reason and the client prints it. Gated actions are never
+queued. When no instance runs, the invocation becomes the instance and opens the
+window. `command-bar.open` and `clipboard.quick-paste` present the window and
+focus their search entry.
 
 `global.shortcuts` is opt-in. `kestrel-core` owns the `[[shortcuts.bindings]]`
 contract (command ID, canonical `ShortcutTrigger`, at most 32 bindings); the

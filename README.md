@@ -100,12 +100,23 @@ and running state separately.
 `kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, or your compositor config):
 
 ```bash
+kestrel --command command-bar.open        # window with the command bar focused
+kestrel --command clipboard.quick-paste   # window with clipboard history search focused
 kestrel --command microphone.toggle-mute
+kestrel --command audio.output-next
 kestrel --command toggle.power.keep-awake
-kestrel --list-commands   # every ID with a description
+kestrel --list-commands                   # every ID with a description
 ```
 
-IDs cover the window, capability refresh, audio output cycling, microphone mute, speed test, clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). Unknown IDs exit with status 2.
+IDs cover the window, command bar, clipboard quick paste, capability refresh, audio output cycling, microphone mute, speed test, clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
+
+| Status | Meaning |
+|---|---|
+| 0 | Sent to the running instance |
+| 2 | Unknown or malformed ID, or bad arguments |
+| 3 | The action's feature is disabled; enable it in the Feature Hub |
+| 4 | The action's feature is unavailable on this system; the window shows why |
+| 5 | The action's feature is enabled but not running |
 
 #### Global shortcuts — `global.shortcuts`
 

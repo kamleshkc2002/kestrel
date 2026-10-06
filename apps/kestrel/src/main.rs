@@ -11,7 +11,10 @@ use std::{
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
-use kestrel::command_line::{Invocation, command_list, parse_arguments, usage};
+use kestrel::command_line::{
+    CommandGate, CommandLineAction, CommandLineError, Invocation, command_list, parse_arguments,
+    usage,
+};
 use kestrel::view_model::{
     ClipboardQuery, CommandBarQuery, MicrophoneViewModel, ShortcutsViewModel, SnippetQuery,
     SpeedTestViewModel,
@@ -24,7 +27,7 @@ use kestrel::{
     SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
     disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
 };
-use kestrel::{CommandBarCommand, CommandProviderSwitch};
+use kestrel::{CommandBarCommand, CommandProviderSwitch, FocusTarget};
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
 };
@@ -600,6 +603,31 @@ impl ApplicationController {
         });
         view.window.present();
         self.window.replace(Some(view));
+    }
+
+    fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
+        self.present(application);
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        if !view.focus(target) {
+            view.show_message("Show Quick Controls in Panel sections to reach this control");
+        }
+    }
+
+    fn show_message(&self, message: &str) {
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.show_message(message);
+        }
+    }
+
+    fn command_gate(&self, action: CommandLineAction) -> Option<CommandGate> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .command_gate(action)
     }
 
     fn request_refresh(&self) {
@@ -1606,7 +1634,7 @@ fn main() -> glib::ExitCode {
     let arguments = std::env::args().collect::<Vec<_>>();
     // Answer help, version, listing, and invalid IDs locally, before touching
     // D-Bus or building the runtime.
-    match parse_arguments(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    let requested = match parse_arguments(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
         Ok(Invocation::Help) => {
             print!("{}", usage());
             return glib::ExitCode::SUCCESS;
@@ -1622,10 +1650,10 @@ fn main() -> glib::ExitCode {
         Err(error) => {
             eprintln!("kestrel: {error}");
             eprint!("{}", usage());
-            return glib::ExitCode::from(2);
+            return glib::ExitCode::from(i32::from(CommandLineError::EXIT_STATUS));
         }
-        Ok(Invocation::Present | Invocation::Run(_)) => {}
-    }
+        Ok(invocation @ (Invocation::Present | Invocation::Run(_))) => invocation,
+    };
 
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
     let initial_appearance = loaded.configuration.ui.appearance;
@@ -1643,7 +1671,16 @@ fn main() -> glib::ExitCode {
     if application.is_remote() {
         // Another instance owns the session: forward this command line to it
         // without building a second runtime or tray icon.
-        return application.run_with_args(&arguments);
+        let exit = application.run_with_args(&arguments);
+        if let Invocation::Run(action) = requested {
+            if let Some(gate) = action
+                .required_feature()
+                .and_then(|feature| CommandGate::from_exit_status(exit.value(), feature))
+            {
+                eprintln!("kestrel: {}: {gate}", action.id());
+            }
+        }
+        return exit;
     }
 
     if loaded.configuration.startup.autostart {
@@ -1719,7 +1756,7 @@ fn main() -> glib::ExitCode {
     application.connect_command_line(move |application, command_line| {
         let arguments = command_line.arguments();
         let Ok(invocation) = parse_arguments(arguments.get(1..).unwrap_or_default()) else {
-            return 2;
+            return i32::from(CommandLineError::EXIT_STATUS);
         };
         let Some(controller) = weak_controller.upgrade() else {
             return 1;
@@ -1731,6 +1768,15 @@ fn main() -> glib::ExitCode {
                 // instance stays alive and the result is visible.
                 if !command_line.is_remote() {
                     controller.present(application);
+                }
+                if let Some(gate) = controller.command_gate(action) {
+                    // The remote client reports the gate from the exit status.
+                    let message = format!("{}: {gate}", action.id());
+                    if !command_line.is_remote() {
+                        eprintln!("kestrel: {message}");
+                    }
+                    controller.show_message(&message);
+                    return i32::from(gate.exit_status());
                 }
                 let _ = command_line_commands.try_send(action.to_command());
             }
@@ -1802,6 +1848,7 @@ fn dispatch_commands(
             };
             match command {
                 ApplicationCommand::PresentWindow => controller.present(&application),
+                ApplicationCommand::Focus(target) => controller.focus(&application, target),
                 ApplicationCommand::RefreshCapabilities => controller.request_refresh(),
                 ApplicationCommand::QuickToggle(command) => {
                     controller.request_quick_toggle(command)

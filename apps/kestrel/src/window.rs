@@ -3,7 +3,7 @@ use async_channel::Sender;
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
     AlertKind, ApplicationCommand, ApplicationViewModel, AudioCycleDirection, AudioOutputViewModel,
-    AudioStreamViewModel, AudioViewModel, ConfirmationViewModel, FeatureViewModel,
+    AudioStreamViewModel, AudioViewModel, ConfirmationViewModel, FeatureViewModel, FocusTarget,
     MicrophoneViewModel, MonitorViewModel, PanelMoveDirection, PanelSection, QuickToggleCommand,
     QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel, ShortcutsViewModel,
     SpeedTestViewModel,
@@ -35,6 +35,7 @@ pub struct WindowView {
 /// Reusable command-bar widgets.
 struct CommandPanel {
     container: gtk::Box,
+    query: gtk::SearchEntry,
     status: gtk::Label,
     results: gtk::Box,
 }
@@ -52,6 +53,7 @@ struct SnippetPanel {
 /// Reusable clipboard widgets; search state survives row refreshes.
 struct ClipboardPanel {
     container: gtk::Box,
+    search: gtk::SearchEntry,
     status: gtk::Label,
     results: gtk::Box,
     selected: std::rc::Rc<std::cell::RefCell<std::collections::BTreeSet<u64>>>,
@@ -133,6 +135,23 @@ impl WindowView {
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
         *self.command_panel.borrow_mut() = page.command_panel;
+    }
+
+    /// Focuses a control; false when its panel is hidden.
+    pub fn focus(&self, target: FocusTarget) -> bool {
+        let entry = match target {
+            FocusTarget::CommandBar => self
+                .command_panel
+                .borrow()
+                .as_ref()
+                .map(|panel| panel.query.clone()),
+            FocusTarget::Clipboard => self
+                .clipboard_panel
+                .borrow()
+                .as_ref()
+                .map(|panel| panel.search.clone()),
+        };
+        entry.is_some_and(|entry| entry.grab_focus())
     }
 
     /// Updates the command bar in place.
@@ -1380,16 +1399,18 @@ fn build_microphone_group(
 }
 
 /// Builds the global-shortcuts group: one row per configured binding.
+/// Text is plain: commands, triggers, and remediation contain `<` and `&`.
 fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Global shortcuts")
-        .description(&shortcuts.status)
+        .description(gtk::glib::markup_escape_text(&shortcuts.status).as_str())
         .build();
     for row in &shortcuts.rows {
         let item = adw::ActionRow::builder()
             .title(&row.description)
             .subtitle(format!("{} · {}", row.command, row.state))
             .subtitle_lines(0)
+            .use_markup(false)
             .build();
         let trigger = gtk::Label::new(Some(&row.trigger));
         trigger.add_css_class(if row.active { "accent" } else { "dim-label" });
@@ -1402,6 +1423,7 @@ fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGrou
                 .title("Some bindings were skipped")
                 .subtitle(notice)
                 .subtitle_lines(0)
+                .use_markup(false)
                 .build(),
         );
     }
@@ -1639,6 +1661,7 @@ fn build_clipboard_panel(
     let selected = std::rc::Rc::new(std::cell::RefCell::new(std::collections::BTreeSet::new()));
     let panel = ClipboardPanel {
         container: container.clone(),
+        search: search.clone(),
         status,
         results: results.clone(),
         selected: std::rc::Rc::clone(&selected),
@@ -2331,6 +2354,7 @@ fn build_command_panel(
     let results = gtk::Box::new(Orientation::Vertical, 6);
     let panel = CommandPanel {
         container: container.clone(),
+        query: query.clone(),
         status,
         results: results.clone(),
     };

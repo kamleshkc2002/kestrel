@@ -3,7 +3,9 @@ use kestrel_core::{
     MonitorConfiguration, MonitorReadout, PanelSection, Permission, ResourceCost,
     SnippetExpansionTiming, SnippetProviderPreference,
 };
-use kestrel_platform::global_shortcuts::{BindingState, ShortcutPhase, ShortcutStatus};
+use kestrel_platform::global_shortcuts::{
+    BindingState, ShortcutErrorKind, ShortcutPhase, ShortcutStatus,
+};
 use kestrel_platform::quick_toggles::{
     MutationConfirmation, QuickToggleControl, QuickToggleId, ToggleAction,
 };
@@ -863,7 +865,20 @@ impl ShortcutsViewModel {
                 ShortcutPhase::Idle => "Waiting to register shortcuts.".to_owned(),
                 ShortcutPhase::Starting => format!("Registering through {provider}…"),
                 ShortcutPhase::Active => format!("Registered through {provider}."),
-                ShortcutPhase::Failed(error) => format!("Registration failed: {error}"),
+                ShortcutPhase::Failed(error) => {
+                    let remedy = match error.kind {
+                        ShortcutErrorKind::Denied | ShortcutErrorKind::Cancelled => {
+                            "Turn global.shortcuts off and on to ask again."
+                        }
+                        ShortcutErrorKind::Unavailable => {
+                            "Bind `kestrel --command <id>` in your desktop's shortcut settings."
+                        }
+                        ShortcutErrorKind::Protocol | ShortcutErrorKind::WorkerUnavailable => {
+                            "Turn global.shortcuts off and on to retry."
+                        }
+                    };
+                    format!("Registration failed: {error}. {remedy}")
+                }
                 ShortcutPhase::Stopped => "Shortcuts are released.".to_owned(),
             }
         };
@@ -890,9 +905,14 @@ impl ShortcutsViewModel {
                     Some(BindingState::Pending) => {
                         ("Waiting".to_owned(), false, binding.trigger.clone())
                     }
-                    Some(BindingState::Conflict { reason }) => {
-                        (format!("In use: {reason}"), false, binding.trigger.clone())
-                    }
+                    Some(BindingState::Conflict { reason }) => (
+                        format!(
+                            "In use: {reason}. Choose another trigger for it in \
+                             [[shortcuts.bindings]]."
+                        ),
+                        false,
+                        binding.trigger.clone(),
+                    ),
                     Some(BindingState::Rejected { reason }) => (
                         format!("Not registered: {reason}"),
                         false,

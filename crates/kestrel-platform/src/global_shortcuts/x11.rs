@@ -363,7 +363,7 @@ fn run_worker(
             }
             let state = if access {
                 BindingState::Conflict {
-                    reason: format!("X11 already owns {trigger_text}"),
+                    reason: format!("another X11 client holds {trigger_text}"),
                 }
             } else {
                 BindingState::Rejected {
