@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     ApplicationCommand, ApplicationViewModel, ConfigurationWarning,
-    command_line::CommandLineAction,
+    command_line::{CommandGate, CommandLineAction},
     snippets::{save_snippets, snippet_path},
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
@@ -922,6 +922,29 @@ impl ApplicationRuntime {
         })
     }
 
+    /// Why `action` cannot run now, judged from its feature's registration.
+    pub fn command_gate(&self, action: CommandLineAction) -> Option<CommandGate> {
+        let feature_id = action.required_feature()?;
+        let registration = self
+            .registry
+            .registrations()
+            .find(|registration| registration.feature.id == feature_id)?;
+        let feature = format!("{} ({feature_id})", registration.feature.label);
+        if !registration.enabled {
+            Some(CommandGate::Disabled { feature })
+        } else if !registration.available {
+            Some(CommandGate::Unavailable {
+                feature,
+                summary: registration.capability.summary.clone(),
+                remediation: registration.capability.remediation.clone(),
+            })
+        } else if !registration.running {
+            Some(CommandGate::Stopped { feature })
+        } else {
+            None
+        }
+    }
+
     /// Routes shortcut activations to the application command channel.
     pub fn set_command_sender(&mut self, sender: async_channel::Sender<ApplicationCommand>) {
         self.command_sender = Some(sender);
@@ -1776,6 +1799,29 @@ mod tests {
             "Mute or unmute every microphone input"
         );
         assert_eq!(skipped, vec!["window.explode".to_owned()]);
+    }
+
+    #[test]
+    fn command_gates_follow_feature_state() {
+        use crate::command_line::{CommandGate, CommandLineAction};
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(COMMAND_BAR_ID, true)
+            .expect("valid feature ID");
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+
+        assert_eq!(runtime.command_gate(CommandLineAction::ShowWindow), None);
+        assert_eq!(
+            runtime.command_gate(CommandLineAction::OpenCommandBar),
+            None
+        );
+        let Some(CommandGate::Disabled { feature }) =
+            runtime.command_gate(CommandLineAction::QuickPaste)
+        else {
+            panic!("disabled clipboard history gates quick paste");
+        };
+        assert!(feature.contains(CLIPBOARD_HISTORY_ID));
     }
 
     #[test]

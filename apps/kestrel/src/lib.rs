@@ -114,10 +114,19 @@ pub enum PanelMoveDirection {
     Down,
 }
 
+/// A window control a command can focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusTarget {
+    CommandBar,
+    Clipboard,
+}
+
 /// Command from an application entry surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationCommand {
     PresentWindow,
+    /// Presents the window and focuses one control.
+    Focus(FocusTarget),
     RefreshCapabilities,
     QuickToggle(QuickToggleCommand),
     /// Flips a quick toggle from its current observed state.

@@ -4,14 +4,21 @@
 
 use std::{ffi::OsString, fmt};
 
-use kestrel_platform::quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId};
+use kestrel_core::MAX_SHORTCUT_COMMAND_CHARS;
+use kestrel_platform::{
+    applications::FEATURE_ID as COMMAND_BAR_ID,
+    audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
+    clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
+    quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId},
+    speed_test::FEATURE_ID as SPEED_TEST_ID,
+};
 use kestrel_services::{
     audio::{AudioCommand, AudioCycleDirection},
     clipboard::ClipboardCommand,
     microphone::MicrophoneCommand,
 };
 
-use crate::{ApplicationCommand, FeaturePreset};
+use crate::{ApplicationCommand, FeaturePreset, FocusTarget};
 
 const TOGGLE_PREFIX: &str = "toggle.";
 
@@ -19,6 +26,10 @@ const TOGGLE_PREFIX: &str = "toggle.";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandLineAction {
     ShowWindow,
+    /// Opens the window with the command bar query focused.
+    OpenCommandBar,
+    /// Opens the window with the clipboard history search focused.
+    QuickPaste,
     RefreshCapabilities,
     Quit,
     NextOutput,
@@ -36,8 +47,10 @@ pub enum CommandLineAction {
     QuickToggle(QuickToggleId),
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 16] = [
+const FIXED_ACTIONS: [CommandLineAction; 18] = [
     CommandLineAction::ShowWindow,
+    CommandLineAction::OpenCommandBar,
+    CommandLineAction::QuickPaste,
     CommandLineAction::RefreshCapabilities,
     CommandLineAction::Quit,
     CommandLineAction::NextOutput,
@@ -68,6 +81,8 @@ impl CommandLineAction {
     pub fn id(self) -> String {
         let fixed = match self {
             Self::ShowWindow => "window.show",
+            Self::OpenCommandBar => "command-bar.open",
+            Self::QuickPaste => "clipboard.quick-paste",
             Self::RefreshCapabilities => "capabilities.refresh",
             Self::Quit => "app.quit",
             Self::NextOutput => "audio.output-next",
@@ -91,6 +106,8 @@ impl CommandLineAction {
     pub fn description(self) -> String {
         match self {
             Self::ShowWindow => "Open the Kestrel window".to_owned(),
+            Self::OpenCommandBar => "Open the command bar".to_owned(),
+            Self::QuickPaste => "Search clipboard history to copy an entry".to_owned(),
             Self::RefreshCapabilities => "Re-run capability probes".to_owned(),
             Self::Quit => "Quit Kestrel".to_owned(),
             Self::NextOutput => "Switch to the next audio output".to_owned(),
@@ -110,6 +127,14 @@ impl CommandLineAction {
 
     /// Resolves a stable ID.
     pub fn parse(id: &str) -> Result<Self, CommandLineError> {
+        let well_formed = !id.is_empty()
+            && id.len() <= MAX_SHORTCUT_COMMAND_CHARS
+            && id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-_".contains(&byte)
+            });
+        if !well_formed {
+            return Err(CommandLineError::MalformedCommandId(bounded(id)));
+        }
         if let Some(feature_id) = id.strip_prefix(TOGGLE_PREFIX) {
             return ALL_QUICK_TOGGLES
                 .into_iter()
@@ -123,10 +148,33 @@ impl CommandLineAction {
             .ok_or_else(|| CommandLineError::UnknownCommand(id.to_owned()))
     }
 
+    /// The feature that must be running for this action to do anything.
+    pub fn required_feature(self) -> Option<&'static str> {
+        match self {
+            Self::ShowWindow
+            | Self::RefreshCapabilities
+            | Self::Quit
+            | Self::ApplyPreset(_)
+            | Self::UndoPreset => None,
+            Self::OpenCommandBar => Some(COMMAND_BAR_ID),
+            Self::QuickPaste | Self::WipeClipboard | Self::ClearClipboardSelection => {
+                Some(CLIPBOARD_HISTORY_ID)
+            }
+            Self::NextOutput | Self::PreviousOutput => Some(AUDIO_MIXER_ID),
+            Self::ToggleMicrophoneMute | Self::MuteMicrophone | Self::UnmuteMicrophone => {
+                Some(MICROPHONE_FEATURE_ID)
+            }
+            Self::StartSpeedTest | Self::CancelSpeedTest => Some(SPEED_TEST_ID),
+            Self::QuickToggle(toggle) => Some(toggle.feature_id()),
+        }
+    }
+
     /// The application command the running instance executes.
     pub fn to_command(self) -> ApplicationCommand {
         match self {
             Self::ShowWindow => ApplicationCommand::PresentWindow,
+            Self::OpenCommandBar => ApplicationCommand::Focus(FocusTarget::CommandBar),
+            Self::QuickPaste => ApplicationCommand::Focus(FocusTarget::Clipboard),
             Self::RefreshCapabilities => ApplicationCommand::RefreshCapabilities,
             Self::Quit => ApplicationCommand::Quit,
             Self::NextOutput => ApplicationCommand::Audio(AudioCommand::CycleOutput {
@@ -171,8 +219,14 @@ pub enum Invocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandLineError {
     UnknownCommand(String),
+    /// Empty, overlong, or outside `[a-z0-9._-]`; shown truncated and escaped.
+    MalformedCommandId(String),
     MissingCommandId,
     UnexpectedArgument(String),
+}
+
+impl CommandLineError {
+    pub const EXIT_STATUS: u8 = 2;
 }
 
 impl fmt::Display for CommandLineError {
@@ -182,15 +236,98 @@ impl fmt::Display for CommandLineError {
                 formatter,
                 "unknown command \"{id}\"; run `kestrel --list-commands` for the supported IDs"
             ),
+            Self::MalformedCommandId(id) => write!(
+                formatter,
+                "malformed command ID \"{id}\"; IDs use lowercase letters, digits, '.', '-', \
+                 and '_' and are at most {MAX_SHORTCUT_COMMAND_CHARS} characters"
+            ),
             Self::MissingCommandId => formatter.write_str("--command needs a command ID"),
             Self::UnexpectedArgument(argument) => {
-                write!(formatter, "unexpected argument \"{argument}\"")
+                write!(formatter, "unexpected argument \"{}\"", bounded(argument))
             }
         }
     }
 }
 
 impl std::error::Error for CommandLineError {}
+
+/// Why a recognized action cannot run in this instance right now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandGate {
+    /// The feature is turned off.
+    Disabled { feature: String },
+    /// The system lacks what the feature needs.
+    Unavailable {
+        feature: String,
+        summary: String,
+        remediation: Option<String>,
+    },
+    /// Enabled and supported, yet not running.
+    Stopped { feature: String },
+}
+
+impl CommandGate {
+    pub const fn exit_status(&self) -> u8 {
+        match self {
+            Self::Disabled { .. } => 3,
+            Self::Unavailable { .. } => 4,
+            Self::Stopped { .. } => 5,
+        }
+    }
+
+    /// Rebuilds the gate a forwarded command ended with; the running
+    /// instance's window shows the full reason.
+    pub fn from_exit_status(status: i32, feature_id: &str) -> Option<Self> {
+        let feature = feature_id.to_owned();
+        match status {
+            3 => Some(Self::Disabled { feature }),
+            4 => Some(Self::Unavailable {
+                feature,
+                summary: "the Kestrel window shows the reason.".to_owned(),
+                remediation: None,
+            }),
+            5 => Some(Self::Stopped { feature }),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for CommandGate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Disabled { feature } => write!(
+                formatter,
+                "{feature} is disabled; enable it in the Feature Hub or apply a preset that \
+                 includes it"
+            ),
+            Self::Unavailable {
+                feature,
+                summary,
+                remediation,
+            } => {
+                write!(formatter, "{feature} is unavailable: {summary}")?;
+                match remediation {
+                    Some(remediation) => write!(formatter, " {remediation}"),
+                    None => Ok(()),
+                }
+            }
+            Self::Stopped { feature } => write!(
+                formatter,
+                "{feature} is enabled but not running; run `kestrel --command \
+                 capabilities.refresh` or check the Feature Hub"
+            ),
+        }
+    }
+}
+
+/// Truncates and escapes echoed input so diagnostics stay bounded and printable.
+fn bounded(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_SHORTCUT_COMMAND_CHARS)
+        .flat_map(char::escape_default)
+        .collect()
+}
 
 /// Parses the arguments after the program name.
 pub fn parse_arguments(arguments: &[OsString]) -> Result<Invocation, CommandLineError> {
@@ -243,7 +380,8 @@ mod tests {
 
     use kestrel_platform::quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId};
 
-    use super::{CommandLineAction, CommandLineError, Invocation, parse_arguments};
+    use super::{CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments};
+    use crate::FocusTarget;
     use crate::{ApplicationCommand, FeaturePreset};
 
     fn arguments(values: &[&str]) -> Vec<OsString> {
@@ -262,7 +400,7 @@ mod tests {
         );
         assert_eq!(
             actions.len(),
-            16 + ALL_QUICK_TOGGLES.len(),
+            18 + ALL_QUICK_TOGGLES.len(),
             "every quick toggle has exactly one ID"
         );
         for action in actions {
@@ -339,5 +477,73 @@ mod tests {
             parse_arguments(&arguments(&["--version"])),
             Ok(Invocation::Version)
         );
+    }
+
+    #[test]
+    fn entry_point_ids_focus_their_controls() {
+        assert_eq!(
+            CommandLineAction::parse("command-bar.open").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::Focus(FocusTarget::CommandBar))
+        );
+        assert_eq!(
+            CommandLineAction::parse("clipboard.quick-paste").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::Focus(FocusTarget::Clipboard))
+        );
+    }
+
+    #[test]
+    fn malformed_ids_are_distinct_from_unknown_ones_and_echo_bounded() {
+        let long = "a".repeat(200);
+        let Err(CommandLineError::MalformedCommandId(echoed)) = CommandLineAction::parse(&long)
+        else {
+            panic!("an overlong ID is malformed");
+        };
+        assert_eq!(echoed.len(), kestrel_core::MAX_SHORTCUT_COMMAND_CHARS);
+        assert!(matches!(
+            CommandLineAction::parse("Window.Show"),
+            Err(CommandLineError::MalformedCommandId(_))
+        ));
+        assert_eq!(
+            CommandLineAction::parse("window\x1b[2J"),
+            Err(CommandLineError::MalformedCommandId(
+                "window\\u{1b}[2J".to_owned()
+            )),
+            "control characters are escaped before they reach a terminal"
+        );
+        assert!(matches!(
+            CommandLineAction::parse("window.hide"),
+            Err(CommandLineError::UnknownCommand(_))
+        ));
+    }
+
+    #[test]
+    fn gates_have_distinct_exit_statuses_that_round_trip() {
+        let gates = [
+            CommandGate::Disabled {
+                feature: "clipboard.history".to_owned(),
+            },
+            CommandGate::Unavailable {
+                feature: "clipboard.history".to_owned(),
+                summary: "no selection owner".to_owned(),
+                remediation: None,
+            },
+            CommandGate::Stopped {
+                feature: "clipboard.history".to_owned(),
+            },
+        ];
+        let statuses = gates
+            .iter()
+            .map(CommandGate::exit_status)
+            .collect::<HashSet<_>>();
+        assert_eq!(statuses.len(), gates.len());
+        assert!(!statuses.contains(&0) && !statuses.contains(&CommandLineError::EXIT_STATUS));
+        for gate in &gates {
+            let rebuilt =
+                CommandGate::from_exit_status(i32::from(gate.exit_status()), "clipboard.history")
+                    .expect("every gate status is recognized");
+            assert_eq!(rebuilt.exit_status(), gate.exit_status());
+        }
+        assert_eq!(CommandGate::from_exit_status(0, "clipboard.history"), None);
+        assert_eq!(CommandGate::from_exit_status(1, "clipboard.history"), None);
     }
 }
