@@ -24,9 +24,14 @@ pub use kestrel_core::{
     PanelSection,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
+pub use kestrel_platform::capture::CaptureMode;
 pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
+pub use kestrel_services::capture::{
+    CaptureId,
+    image::{Color, EditOperation, EditPlan, Rect, RgbaImage, decode_png},
+};
 pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
 pub use kestrel_services::microphone::MicrophoneCommand;
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
@@ -40,10 +45,10 @@ pub use status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegr
 pub use view_model::{
     ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
     AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
-    CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel,
-    ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
-    ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
-    CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
+    CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel, CaptureEntryViewModel,
+    CaptureModeViewModel, CaptureViewModel, ClipboardBoundsViewModel, ClipboardItemViewModel,
+    ClipboardPolicyViewModel, ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel,
+    CommandProvider, CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
     ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
     FeatureViewModel, MicrophoneInputViewModel, MicrophoneViewModel,
     MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
@@ -94,6 +99,14 @@ pub enum SnippetLimit {
     ContentBytes(u32),
     ClipboardBytes(u32),
     InsertTimeoutMillis(u64),
+}
+
+/// Recent-capture bound from the settings group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureLimit {
+    MaxEntries(u32),
+    MaxTotalMegabytes(u32),
+    MaxAgeHours(u32),
 }
 
 /// Bounded clipboard retention value.
@@ -184,6 +197,7 @@ pub enum ApplicationCommand {
     /// Bounded entry preview.
     ClipboardPreview(u64),
     SetClipboardLimit(ClipboardLimit),
+    SetCaptureLimit(CaptureLimit),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
     /// Snippet-library action.
@@ -205,5 +219,29 @@ pub enum ApplicationCommand {
     SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
+    Capture(CaptureRequest),
     Quit,
+}
+
+/// Screenshot action from the window or the command line.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureRequest {
+    /// `None` uses the provider's preferred mode.
+    Begin(Option<CaptureMode>),
+    Cancel,
+    /// Puts the image on the clipboard.
+    Copy(CaptureId),
+    Save {
+        id: CaptureId,
+        destination: std::path::PathBuf,
+    },
+    /// Opens the editor on a capture.
+    Edit(CaptureId),
+    /// Stores the edited image as a new capture.
+    SaveEdit {
+        id: CaptureId,
+        plan: EditPlan,
+    },
+    Delete(CaptureId),
+    Clear,
 }

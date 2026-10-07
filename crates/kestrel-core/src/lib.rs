@@ -128,6 +128,15 @@ pub const DEFAULT_SPEED_TEST_TIMEOUT_SECONDS: u32 = 30;
 pub const MAX_SPEED_TEST_TIMEOUT_SECONDS: u32 = 120;
 pub const SPEED_TEST_BYTES_PER_MEGABYTE: u64 = 1_000_000;
 
+// Recent-capture bounds.
+pub const DEFAULT_CAPTURE_MAX_ENTRIES: u32 = 30;
+pub const MAX_CAPTURE_MAX_ENTRIES: u32 = 200;
+pub const DEFAULT_CAPTURE_MAX_TOTAL_MEGABYTES: u32 = 256;
+pub const MAX_CAPTURE_MAX_TOTAL_MEGABYTES: u32 = 2048;
+pub const DEFAULT_CAPTURE_MAX_AGE_HOURS: u32 = 168;
+pub const MAX_CAPTURE_MAX_AGE_HOURS: u32 = 720;
+pub const CAPTURE_BYTES_PER_MEGABYTE: u64 = 1_048_576;
+
 // Global-shortcut bounds.
 pub const MAX_SHORTCUT_BINDINGS: usize = 32;
 pub const MAX_SHORTCUT_COMMAND_CHARS: usize = 64;
@@ -413,6 +422,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub speed_test: SpeedTestConfiguration,
     #[serde(default)]
+    pub capture: CaptureConfiguration,
+    #[serde(default)]
     pub shortcuts: ShortcutConfiguration,
     #[serde(default)]
     pub clipboard: ClipboardConfiguration,
@@ -432,6 +443,7 @@ impl Default for ApplicationConfiguration {
             monitoring: MonitorConfiguration::default(),
             audio: AudioConfiguration::default(),
             speed_test: SpeedTestConfiguration::default(),
+            capture: CaptureConfiguration::default(),
             shortcuts: ShortcutConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
@@ -491,6 +503,7 @@ impl ApplicationConfiguration {
         self.ui.validate()?;
         self.audio.validate()?;
         self.speed_test.validate()?;
+        self.capture.validate()?;
         self.shortcuts.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
@@ -913,6 +926,64 @@ impl SpeedTestConfiguration {
             });
         }
         Ok(())
+    }
+}
+
+/// Bounds for the recent-capture history; every limit is at least one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureConfiguration {
+    #[serde(default = "default_capture_max_entries")]
+    pub max_entries: u32,
+    #[serde(default = "default_capture_max_total_megabytes")]
+    pub max_total_megabytes: u32,
+    #[serde(default = "default_capture_max_age_hours")]
+    pub max_age_hours: u32,
+}
+
+fn default_capture_max_entries() -> u32 {
+    DEFAULT_CAPTURE_MAX_ENTRIES
+}
+
+fn default_capture_max_total_megabytes() -> u32 {
+    DEFAULT_CAPTURE_MAX_TOTAL_MEGABYTES
+}
+
+fn default_capture_max_age_hours() -> u32 {
+    DEFAULT_CAPTURE_MAX_AGE_HOURS
+}
+
+impl Default for CaptureConfiguration {
+    fn default() -> Self {
+        Self {
+            max_entries: DEFAULT_CAPTURE_MAX_ENTRIES,
+            max_total_megabytes: DEFAULT_CAPTURE_MAX_TOTAL_MEGABYTES,
+            max_age_hours: DEFAULT_CAPTURE_MAX_AGE_HOURS,
+        }
+    }
+}
+
+impl CaptureConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(1..=MAX_CAPTURE_MAX_ENTRIES).contains(&self.max_entries) {
+            return Err(ConfigurationError::InvalidCaptureMaxEntries {
+                entries: self.max_entries,
+            });
+        }
+        if !(1..=MAX_CAPTURE_MAX_TOTAL_MEGABYTES).contains(&self.max_total_megabytes) {
+            return Err(ConfigurationError::InvalidCaptureTotalMegabytes {
+                megabytes: self.max_total_megabytes,
+            });
+        }
+        if !(1..=MAX_CAPTURE_MAX_AGE_HOURS).contains(&self.max_age_hours) {
+            return Err(ConfigurationError::InvalidCaptureAgeHours {
+                hours: self.max_age_hours,
+            });
+        }
+        Ok(())
+    }
+
+    pub const fn max_total_bytes(&self) -> u64 {
+        self.max_total_megabytes as u64 * CAPTURE_BYTES_PER_MEGABYTE
     }
 }
 
@@ -1582,6 +1653,9 @@ pub enum ConfigurationError {
     InvalidSpeedTestDownloadMegabytes { megabytes: u32 },
     InvalidSpeedTestUploadMegabytes { megabytes: u32 },
     InvalidSpeedTestTimeoutSeconds { seconds: u32 },
+    InvalidCaptureMaxEntries { entries: u32 },
+    InvalidCaptureTotalMegabytes { megabytes: u32 },
+    InvalidCaptureAgeHours { hours: u32 },
     TooManyShortcutBindings { bindings: usize },
     InvalidShortcutCommand { command: String },
     InvalidShortcutTrigger { trigger: String },

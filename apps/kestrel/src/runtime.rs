@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
 
 use crate::{
     ApplicationCommand, ApplicationViewModel, ConfigurationWarning,
@@ -6,10 +10,11 @@ use crate::{
     snippets::{save_snippets, snippet_path},
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
-        AudioPresentation, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
-        CommandBarPresentation, CommandBarQuery, MicrophonePresentation, MicrophoneViewModel,
-        MonitorPresentation, MonitorViewModel, ShortcutsPresentation, ShortcutsViewModel,
-        SnippetQuery, SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel,
+        AudioPresentation, CapturePresentation, CaptureViewModel, ClipboardPresentation,
+        ClipboardQuery, ClipboardViewModel, CommandBarPresentation, CommandBarQuery,
+        MicrophonePresentation, MicrophoneViewModel, MonitorPresentation, MonitorViewModel,
+        ShortcutsPresentation, ShortcutsViewModel, SnippetQuery, SnippetsPresentation,
+        SpeedTestPresentation, SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -25,13 +30,17 @@ use kestrel_platform::{
     audio::{
         FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID, MicrophoneProbe, PulseAudioBackend,
     },
+    capture::{
+        CaptureDetection, CaptureMode, CaptureProvider, FEATURE_ID as CAPTURE_ID,
+        backend_for as capture_backend_for,
+    },
     clipboard::{
         ArboardClipboardBackend, ClipboardBackend, ClipboardCapabilityProbe,
         FEATURE_ID as CLIPBOARD_HISTORY_ID, LogindPrivacyMonitor, discover_provider,
     },
     global_shortcuts::{
         ActivationSink, FEATURE_ID as GLOBAL_SHORTCUTS_ID, GlobalShortcutsProbe, ShortcutDetection,
-        ShortcutRequest, ShortcutStatus, backend_for,
+        ShortcutRequest, ShortcutStatus, backend_for as shortcut_backend_for,
     },
     launcher::{ScriptOutcome, run_script, search_roots},
     quick_toggles::{
@@ -49,6 +58,7 @@ use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
     alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
     audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot},
+    capture::{CaptureId, CapturePolicy, CaptureService, CaptureSnapshot, image::EditPlan},
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardMatch, ClipboardPolicy,
         ClipboardPreview, ClipboardServiceError, ClipboardSnapshot,
@@ -124,6 +134,26 @@ const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
 }
 
 use std::time::Duration;
+
+/// Runs one provider detection per probe and keeps it for capture requests.
+struct SharedCaptureProbe(Arc<Mutex<Option<CaptureDetection>>>);
+
+impl CapabilityProbe for SharedCaptureProbe {
+    fn probe(&self) -> CapabilityReport {
+        let detection = CaptureDetection::detect();
+        let report = detection.capability();
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(detection);
+        report
+    }
+}
+
+/// Private capture storage under the Kestrel data directory.
+fn capture_directory() -> Option<PathBuf> {
+    crate::snippets::kestrel_data_directory().map(|directory| directory.join("captures"))
+}
 
 /// Stable feature identifier for the snippet library.
 pub const SNIPPETS_ID: &str = "snippets.text";
@@ -221,6 +251,12 @@ pub struct ApplicationRuntime {
     audio_mixer: AudioMixerService<PulseAudioBackend>,
     microphone: MicrophoneService<PulseAudioBackend>,
     speed_test: SpeedTestService<CurlSpeedTestBackend>,
+    capture: CaptureService,
+    /// Latest provider detection, shared with the capability probe.
+    capture_detection: Arc<Mutex<Option<CaptureDetection>>>,
+    capture_limits: kestrel_core::CaptureConfiguration,
+    /// False when neither XDG_DATA_HOME nor HOME names a data directory.
+    capture_storage: bool,
     global_shortcuts: GlobalShortcutService,
     /// Configured bindings with a known command; registered while the feature runs.
     shortcut_requests: Vec<ShortcutRequest>,
@@ -360,6 +396,14 @@ impl ApplicationRuntime {
             configuration.feature_enabled(SPEED_TEST_ID),
             SpeedTestProbe,
         )?;
+        let capture_detection = Arc::new(Mutex::new(None));
+        let capture = FeatureSpec::new(CAPTURE_ID, "Screenshots", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        registry.register_probe(
+            capture,
+            configuration.feature_enabled(CAPTURE_ID),
+            SharedCaptureProbe(Arc::clone(&capture_detection)),
+        )?;
         let clipboard_history = FeatureSpec::new(
             CLIPBOARD_HISTORY_ID,
             "Clipboard history",
@@ -452,6 +496,7 @@ impl ApplicationRuntime {
         let command_max_results = configuration.command_bar.max_results as usize;
         let command_launcher = ExternalLauncher::discover().ok();
         let command_ranking_warnings = loaded_ranking.warnings;
+        let capture_directory = capture_directory();
         let (shortcut_requests, shortcut_skipped) =
             Self::shortcut_requests(&configuration.shortcuts);
 
@@ -467,6 +512,13 @@ impl ApplicationRuntime {
                 CurlSpeedTestBackend::discover(),
                 SpeedTestPolicy::from_configuration(&configuration.speed_test),
             ),
+            capture: CaptureService::new(
+                CapturePolicy::from_configuration(&configuration.capture),
+                capture_directory.clone().unwrap_or_default(),
+            ),
+            capture_detection,
+            capture_limits: configuration.capture,
+            capture_storage: capture_directory.is_some(),
             global_shortcuts: GlobalShortcutService::new(),
             shortcut_requests,
             shortcut_bindings: configuration.shortcuts.bindings.clone(),
@@ -573,6 +625,9 @@ impl ApplicationRuntime {
             .set_policy(SpeedTestPolicy::from_configuration(
                 &configuration.speed_test,
             ));
+        self.capture
+            .set_policy(CapturePolicy::from_configuration(&configuration.capture));
+        self.capture_limits = configuration.capture;
         let (requests, skipped) = Self::shortcut_requests(&configuration.shortcuts);
         if requests != self.shortcut_requests {
             // New bindings take effect through a fresh registration.
@@ -724,6 +779,7 @@ impl ApplicationRuntime {
                 configured: &self.shortcut_bindings,
                 skipped: &self.shortcut_skipped,
             },
+            self.capture_presentation(),
             ClipboardPresentation {
                 snapshot: Some(self.clipboard_history.latest()),
                 running: self.clipboard_history_is_running(),
@@ -922,6 +978,134 @@ impl ApplicationRuntime {
         })
     }
 
+    pub fn capture_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == CAPTURE_ID && registration.running)
+    }
+
+    fn require_capture(&self) -> Result<(), String> {
+        if !self.capture_is_running() {
+            return Err(
+                "Screenshots are not running; enable capture.screenshot in the Feature Hub."
+                    .to_owned(),
+            );
+        }
+        if !self.capture_storage {
+            return Err(
+                "No data directory is available for captures; set XDG_DATA_HOME or HOME."
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Provider and modes from the latest probe.
+    fn capture_provider(&self) -> (Option<CaptureProvider>, Vec<CaptureMode>) {
+        self.capture_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|detection| (detection.provider(), detection.modes()))
+            .unwrap_or_default()
+    }
+
+    /// Starts a capture; `None` picks the provider's preferred mode.
+    pub fn begin_capture(&mut self, mode: Option<CaptureMode>) -> Result<(), String> {
+        self.require_capture()?;
+        let detection = self
+            .capture_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| {
+                "Screenshot providers have not been probed yet; refresh capabilities.".to_owned()
+            })?;
+        let provider = detection.provider().ok_or_else(|| {
+            "No screenshot provider is available; the Feature Hub lists setup steps.".to_owned()
+        })?;
+        let mode = match mode {
+            Some(mode) => mode,
+            None => *detection
+                .modes()
+                .first()
+                .ok_or_else(|| "The screenshot provider offers no capture mode.".to_owned())?,
+        };
+        self.capture
+            .begin(capture_backend_for(provider, &detection), mode)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn cancel_capture(&self) {
+        self.capture.cancel();
+    }
+
+    pub fn delete_capture(&mut self, id: CaptureId) -> Result<(), String> {
+        self.require_capture()?;
+        self.capture.delete(id);
+        Ok(())
+    }
+
+    pub fn clear_captures(&mut self) -> Result<(), String> {
+        self.require_capture()?;
+        self.capture.clear().map_err(|error| error.to_string())
+    }
+
+    pub fn capture_png(&self, id: CaptureId) -> Result<Vec<u8>, String> {
+        self.require_capture()?;
+        self.capture.read_png(id).map_err(|error| error.to_string())
+    }
+
+    pub fn export_capture(&self, id: CaptureId, destination: &Path) -> Result<(), String> {
+        self.require_capture()?;
+        self.capture
+            .export(id, destination)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Stores the edited image as a new capture; the source stays.
+    pub fn save_capture_edit(&mut self, id: CaptureId, plan: &EditPlan) -> Result<(), String> {
+        self.require_capture()?;
+        self.capture
+            .save_edit(id, plan)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Applies the age bound; cheap when nothing expired.
+    pub fn prune_captures(&mut self) {
+        if self.capture_is_running() {
+            self.capture.prune();
+        }
+    }
+
+    pub fn capture_snapshot(&self) -> CaptureSnapshot {
+        self.capture.snapshot()
+    }
+
+    pub fn capture_view_model(&self) -> CaptureViewModel {
+        CaptureViewModel::from_presentation(self.capture_presentation())
+    }
+
+    fn capture_presentation(&self) -> CapturePresentation {
+        let snapshot = self.capture.snapshot();
+        let thumbnails = snapshot
+            .entries
+            .iter()
+            .map(|entry| self.capture.thumbnail_path(entry.id))
+            .collect();
+        let (provider, modes) = self.capture_provider();
+        CapturePresentation {
+            snapshot,
+            running: self.capture_is_running(),
+            provider,
+            modes,
+            thumbnails,
+            limits: self.capture_limits,
+            now: SystemTime::now(),
+        }
+    }
+
     /// Why `action` cannot run now, judged from its feature's registration.
     pub fn command_gate(&self, action: CommandLineAction) -> Option<CommandGate> {
         let feature_id = action.required_feature()?;
@@ -1005,7 +1189,7 @@ impl ApplicationRuntime {
             }
         });
         let _ = self.global_shortcuts.start(
-            backend_for(provider),
+            shortcut_backend_for(provider),
             self.shortcut_requests.clone(),
             sink,
         );
@@ -1422,6 +1606,14 @@ impl ApplicationRuntime {
         if !self.speed_test_is_running() {
             self.speed_test.stop();
         }
+        if self.capture_is_running() {
+            if !self.capture.is_started() && self.capture_storage {
+                // A storage failure is reported through the snapshot.
+                let _ = self.capture.start();
+            }
+        } else {
+            self.capture.stop();
+        }
         if self.global_shortcuts_is_running() {
             if !self.shortcut_attempted {
                 self.start_global_shortcuts();
@@ -1537,6 +1729,7 @@ mod tests {
     use kestrel_core::{AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
         audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
+        capture::FEATURE_ID as CAPTURE_ID,
         clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
         global_shortcuts::FEATURE_ID as GLOBAL_SHORTCUTS_ID,
         quick_toggles::{ALL_QUICK_TOGGLES, KEEP_AWAKE_ID, SCREEN_LOCK_ID},
@@ -1822,6 +2015,25 @@ mod tests {
             panic!("disabled clipboard history gates quick paste");
         };
         assert!(feature.contains(CLIPBOARD_HISTORY_ID));
+    }
+
+    #[test]
+    fn disabled_screenshots_refuse_every_capture_action() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+
+        assert!(!runtime.capture_is_running());
+        let error = runtime
+            .begin_capture(None)
+            .expect_err("a disabled feature never captures");
+        assert!(error.contains(CAPTURE_ID), "{error}");
+        assert!(runtime.clear_captures().is_err());
+        assert!(runtime.capture_snapshot().entries.is_empty());
+        assert!(ApplicationRuntime::preset_enabled(
+            FeaturePreset::Balanced,
+            CAPTURE_ID
+        ));
     }
 
     #[test]

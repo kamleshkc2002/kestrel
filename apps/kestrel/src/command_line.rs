@@ -8,6 +8,7 @@ use kestrel_core::MAX_SHORTCUT_COMMAND_CHARS;
 use kestrel_platform::{
     applications::FEATURE_ID as COMMAND_BAR_ID,
     audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
+    capture::{CaptureMode, FEATURE_ID as CAPTURE_ID},
     clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
     quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId},
     speed_test::FEATURE_ID as SPEED_TEST_ID,
@@ -18,7 +19,7 @@ use kestrel_services::{
     microphone::MicrophoneCommand,
 };
 
-use crate::{ApplicationCommand, FeaturePreset, FocusTarget};
+use crate::{ApplicationCommand, CaptureRequest, FeaturePreset, FocusTarget};
 
 const TOGGLE_PREFIX: &str = "toggle.";
 
@@ -39,6 +40,9 @@ pub enum CommandLineAction {
     UnmuteMicrophone,
     StartSpeedTest,
     CancelSpeedTest,
+    /// Captures in the provider's preferred mode.
+    CaptureScreenshot,
+    CaptureScreen,
     WipeClipboard,
     ClearClipboardSelection,
     ApplyPreset(FeaturePreset),
@@ -47,7 +51,7 @@ pub enum CommandLineAction {
     QuickToggle(QuickToggleId),
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 18] = [
+const FIXED_ACTIONS: [CommandLineAction; 20] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::QuickPaste,
@@ -60,6 +64,8 @@ const FIXED_ACTIONS: [CommandLineAction; 18] = [
     CommandLineAction::UnmuteMicrophone,
     CommandLineAction::StartSpeedTest,
     CommandLineAction::CancelSpeedTest,
+    CommandLineAction::CaptureScreenshot,
+    CommandLineAction::CaptureScreen,
     CommandLineAction::WipeClipboard,
     CommandLineAction::ClearClipboardSelection,
     CommandLineAction::ApplyPreset(FeaturePreset::Essentials),
@@ -92,6 +98,8 @@ impl CommandLineAction {
             Self::UnmuteMicrophone => "microphone.unmute",
             Self::StartSpeedTest => "speed-test.start",
             Self::CancelSpeedTest => "speed-test.cancel",
+            Self::CaptureScreenshot => "capture.screenshot",
+            Self::CaptureScreen => "capture.screen",
             Self::WipeClipboard => "clipboard.wipe",
             Self::ClearClipboardSelection => "clipboard.clear-selection",
             Self::ApplyPreset(FeaturePreset::Essentials) => "preset.essentials",
@@ -117,6 +125,10 @@ impl CommandLineAction {
             Self::UnmuteMicrophone => "Unmute every microphone input".to_owned(),
             Self::StartSpeedTest => "Start a network speed test".to_owned(),
             Self::CancelSpeedTest => "Cancel the running speed test".to_owned(),
+            Self::CaptureScreenshot => {
+                "Take a screenshot (area, window, or the desktop's dialog)".to_owned()
+            }
+            Self::CaptureScreen => "Capture the whole screen".to_owned(),
             Self::WipeClipboard => "Wipe clipboard history".to_owned(),
             Self::ClearClipboardSelection => "Clear the live clipboard selection".to_owned(),
             Self::ApplyPreset(preset) => format!("Apply the {} preset", preset.label()),
@@ -165,6 +177,7 @@ impl CommandLineAction {
                 Some(MICROPHONE_FEATURE_ID)
             }
             Self::StartSpeedTest | Self::CancelSpeedTest => Some(SPEED_TEST_ID),
+            Self::CaptureScreenshot | Self::CaptureScreen => Some(CAPTURE_ID),
             Self::QuickToggle(toggle) => Some(toggle.feature_id()),
         }
     }
@@ -194,6 +207,10 @@ impl CommandLineAction {
             }
             Self::StartSpeedTest => ApplicationCommand::StartSpeedTest,
             Self::CancelSpeedTest => ApplicationCommand::CancelSpeedTest,
+            Self::CaptureScreenshot => ApplicationCommand::Capture(CaptureRequest::Begin(None)),
+            Self::CaptureScreen => {
+                ApplicationCommand::Capture(CaptureRequest::Begin(Some(CaptureMode::Screen)))
+            }
             Self::WipeClipboard => ApplicationCommand::Clipboard(ClipboardCommand::Wipe),
             Self::ClearClipboardSelection => {
                 ApplicationCommand::Clipboard(ClipboardCommand::ClearSelection)
@@ -400,7 +417,7 @@ mod tests {
         );
         assert_eq!(
             actions.len(),
-            18 + ALL_QUICK_TOGGLES.len(),
+            20 + ALL_QUICK_TOGGLES.len(),
             "every quick toggle has exactly one ID"
         );
         for action in actions {

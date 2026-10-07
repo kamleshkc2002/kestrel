@@ -4,6 +4,7 @@ use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
 use kestrel_platform::CapabilityProbe;
 pub mod alerts;
 pub mod audio;
+pub mod capture;
 pub mod clipboard;
 pub mod command_bar;
 pub mod global_shortcuts;

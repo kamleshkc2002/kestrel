@@ -1,3 +1,4 @@
+mod capture_editor;
 mod window;
 
 use std::{
@@ -27,7 +28,7 @@ use kestrel::{
     SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
     disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
 };
-use kestrel::{CommandBarCommand, CommandProviderSwitch, FocusTarget};
+use kestrel::{CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch, FocusTarget};
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
 };
@@ -48,6 +49,7 @@ struct TickUpdate {
     microphone: Option<MicrophoneViewModel>,
     speed_test: Option<SpeedTestViewModel>,
     shortcuts: Option<ShortcutsViewModel>,
+    capture: Option<kestrel::CaptureViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -72,6 +74,7 @@ struct ControllerState {
     clipboard_fingerprint: Option<ClipboardFingerprint>,
     speed_test_generation: u64,
     shortcut_generation: u64,
+    capture_generation: u64,
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
@@ -281,7 +284,7 @@ fn run_tick(
     observed_at: Duration,
     microphone_due: bool,
 ) -> TickUpdate {
-    let (updated, alerts, microphone, speed_test, shortcuts) = {
+    let (updated, alerts, microphone, speed_test, shortcuts, capture) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -300,12 +303,19 @@ fn run_tick(
             guard.shortcut_generation = generation;
             guard.runtime.shortcuts_view_model()
         });
+        guard.runtime.prune_captures();
+        let generation = guard.runtime.capture_snapshot().generation;
+        let capture = (generation != guard.capture_generation).then(|| {
+            guard.capture_generation = generation;
+            guard.runtime.capture_view_model()
+        });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
             microphone,
             speed_test,
             shortcuts,
+            capture,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -316,6 +326,7 @@ fn run_tick(
         microphone,
         speed_test,
         shortcuts,
+        capture,
     }
 }
 
@@ -392,6 +403,7 @@ enum TargetedPanel {
     /// Keeps mute updates from resetting scroll.
     Microphone,
     SpeedTest,
+    Capture,
 }
 
 /// Fingerprinting avoids rebuilding presentation on every worker poll.
@@ -422,6 +434,22 @@ impl ClipboardFingerprint {
             has_error: snapshot.last_error.is_some(),
         }
     }
+}
+
+/// Capture work that runs on a controller worker.
+enum CaptureOperation {
+    Begin(Option<kestrel::CaptureMode>),
+    Cancel,
+    Save {
+        id: CaptureId,
+        destination: PathBuf,
+    },
+    SaveEdit {
+        id: CaptureId,
+        plan: kestrel::EditPlan,
+    },
+    Delete(CaptureId),
+    Clear,
 }
 
 enum ControllerOperation {
@@ -464,6 +492,7 @@ enum ControllerOperation {
     Microphone(MicrophoneCommand),
     StartSpeedTest,
     CancelSpeedTest,
+    Capture(CaptureOperation),
     SetAudioBoostPercent(u8),
     SetAudioOutputSwitch(kestrel::AudioOutputSwitch),
     SetAudioDisconnectPolicy(kestrel::AudioDisconnectPolicy),
@@ -473,6 +502,7 @@ enum ControllerOperation {
     ClipboardSearch(String),
     ClipboardPreview(u64),
     SetClipboardLimit(kestrel::ClipboardLimit),
+    SetCaptureLimit(kestrel::CaptureLimit),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
     Snippet(SnippetCommand),
@@ -512,6 +542,7 @@ struct ApplicationController {
     microphone_running: Cell<bool>,
     speed_test_running: Cell<bool>,
     shortcuts_running: Cell<bool>,
+    capture_running: Cell<bool>,
     monitor_started_at: Instant,
     /// Bounds backend polling to the two-second interval.
     microphone_last_refresh: Cell<Instant>,
@@ -541,6 +572,7 @@ impl ApplicationController {
         let microphone_running = runtime.microphone_is_running();
         let speed_test_running = runtime.speed_test_is_running();
         let shortcuts_running = runtime.global_shortcuts_is_running();
+        let capture_running = runtime.capture_is_running();
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -555,6 +587,7 @@ impl ApplicationController {
                 clipboard_fingerprint: None,
                 speed_test_generation: 0,
                 shortcut_generation: 0,
+                capture_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -571,6 +604,7 @@ impl ApplicationController {
             microphone_running: Cell::new(microphone_running),
             speed_test_running: Cell::new(speed_test_running),
             shortcuts_running: Cell::new(shortcuts_running),
+            capture_running: Cell::new(capture_running),
             monitor_started_at: Instant::now(),
             microphone_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
@@ -628,6 +662,48 @@ impl ApplicationController {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .runtime
             .command_gate(action)
+    }
+
+    fn capture_png(&self, id: CaptureId) -> Result<Vec<u8>, String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .capture_png(id)
+    }
+
+    /// Puts a capture on the clipboard as an image.
+    fn copy_capture(&self, id: CaptureId) {
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        let message = self
+            .capture_png(id)
+            .and_then(|png| {
+                adw::gdk::Texture::from_bytes(&glib::Bytes::from_owned(png))
+                    .map_err(|_| "The capture could not be decoded".to_owned())
+            })
+            .map(|texture| {
+                view.window.clipboard().set_texture(&texture);
+                "Capture copied to the clipboard".to_owned()
+            })
+            .unwrap_or_else(|error| error);
+        view.show_message(&message);
+    }
+
+    fn edit_capture(&self, id: CaptureId) {
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        match self
+            .capture_png(id)
+            .and_then(|png| kestrel::decode_png(&png).map_err(|error| error.to_string()))
+        {
+            Ok(image) => capture_editor::open(&view.window, id, image, self.commands.clone()),
+            Err(error) => view.show_message(&error),
+        }
     }
 
     fn request_refresh(&self) {
@@ -741,6 +817,7 @@ impl ApplicationController {
                 self.microphone_running.set(view_model.microphone.running);
                 self.speed_test_running.set(view_model.speed_test.running);
                 self.shortcuts_running.set(view_model.shortcuts.running);
+                self.capture_running.set(view_model.capture.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -753,6 +830,7 @@ impl ApplicationController {
                 self.microphone_running.set(view_model.microphone.running);
                 self.speed_test_running.set(view_model.speed_test.running);
                 self.shortcuts_running.set(view_model.shortcuts.running);
+                self.capture_running.set(view_model.capture.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
@@ -777,6 +855,7 @@ impl ApplicationController {
             && !self.clipboard_running.get()
             && !self.speed_test_running.get()
             && !self.shortcuts_running.get()
+            && !self.capture_running.get()
             && !microphone_due
         {
             self.monitoring.set(false);
@@ -805,6 +884,7 @@ impl ApplicationController {
             microphone,
             speed_test,
             shortcuts,
+            capture,
         } = update;
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -826,6 +906,10 @@ impl ApplicationController {
         }
         if let Some(shortcuts) = shortcuts {
             view.set_shortcuts(&shortcuts);
+        }
+        if let Some(capture) = capture {
+            self.capture_running.set(capture.running);
+            view.set_capture(&capture);
         }
     }
 
@@ -1056,6 +1140,45 @@ impl ControllerState {
                 .cancel_speed_test()
                 .map(|()| "Network speed test cancellation requested".to_owned())
                 .unwrap_or_else(|error| error),
+            ControllerOperation::Capture(operation) => match operation {
+                CaptureOperation::Begin(mode) => self
+                    .runtime
+                    .begin_capture(mode)
+                    .map(|()| "Screenshot started".to_owned())
+                    .unwrap_or_else(|error| error),
+                CaptureOperation::Cancel => {
+                    self.runtime.cancel_capture();
+                    "Screenshot cancellation requested".to_owned()
+                }
+                CaptureOperation::Save { id, destination } => self
+                    .runtime
+                    .export_capture(id, &destination)
+                    .map(|()| {
+                        format!(
+                            "Saved {}",
+                            destination
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_else(|error| error),
+                CaptureOperation::SaveEdit { id, plan } => self
+                    .runtime
+                    .save_capture_edit(id, &plan)
+                    .map(|()| "Edited copy added to recent captures".to_owned())
+                    .unwrap_or_else(|error| error),
+                CaptureOperation::Delete(id) => self
+                    .runtime
+                    .delete_capture(id)
+                    .map(|()| "Capture deleted".to_owned())
+                    .unwrap_or_else(|error| error),
+                CaptureOperation::Clear => self
+                    .runtime
+                    .clear_captures()
+                    .map(|()| "Recent captures cleared".to_owned())
+                    .unwrap_or_else(|error| error),
+            },
             ControllerOperation::SetAudioBoostPercent(percent) => {
                 let mut candidate = self.configuration.clone();
                 candidate.audio.boost_percent = percent;
@@ -1192,6 +1315,24 @@ impl ControllerState {
                         } else {
                             format!("The live selection is cleared after {seconds} seconds")
                         }
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetCaptureLimit(limit) => {
+                let mut candidate = self.configuration.clone();
+                let message = match limit {
+                    kestrel::CaptureLimit::MaxEntries(entries) => {
+                        candidate.capture.max_entries = entries;
+                        format!("Recent captures keep at most {entries} images")
+                    }
+                    kestrel::CaptureLimit::MaxTotalMegabytes(megabytes) => {
+                        candidate.capture.max_total_megabytes = megabytes;
+                        format!("Recent captures use at most {megabytes} MiB")
+                    }
+                    kestrel::CaptureLimit::MaxAgeHours(hours) => {
+                        candidate.capture.max_age_hours = hours;
+                        format!("Captures are removed after {hours} hours")
                     }
                 };
                 self.commit_configuration(candidate, config_path, message)?
@@ -1575,6 +1716,7 @@ fn apply_targeted_panel(
         TargetedPanel::Commands => view.set_command_bar(&view_model.command_bar),
         TargetedPanel::Microphone => view.set_microphone(&view_model.microphone),
         TargetedPanel::SpeedTest => view.set_speed_test(&view_model.speed_test),
+        TargetedPanel::Capture => view.set_capture(&view_model.capture),
     }
 }
 
@@ -1951,6 +2093,33 @@ fn dispatch_commands(
                     "kestrel-speed-test-cancel",
                     TargetedPanel::SpeedTest,
                 ),
+                ApplicationCommand::Capture(request) => {
+                    let operation = match request {
+                        CaptureRequest::Copy(id) => {
+                            controller.copy_capture(id);
+                            continue;
+                        }
+                        CaptureRequest::Edit(id) => {
+                            controller.edit_capture(id);
+                            continue;
+                        }
+                        CaptureRequest::Begin(mode) => CaptureOperation::Begin(mode),
+                        CaptureRequest::Cancel => CaptureOperation::Cancel,
+                        CaptureRequest::Save { id, destination } => {
+                            CaptureOperation::Save { id, destination }
+                        }
+                        CaptureRequest::SaveEdit { id, plan } => {
+                            CaptureOperation::SaveEdit { id, plan }
+                        }
+                        CaptureRequest::Delete(id) => CaptureOperation::Delete(id),
+                        CaptureRequest::Clear => CaptureOperation::Clear,
+                    };
+                    controller.request_targeted_operation(
+                        ControllerOperation::Capture(operation),
+                        "kestrel-capture",
+                        TargetedPanel::Capture,
+                    );
+                }
                 ApplicationCommand::Clipboard(command) => controller.request_clipboard_operation(
                     ControllerOperation::Clipboard(command),
                     "kestrel-clipboard",
@@ -1968,6 +2137,10 @@ fn dispatch_commands(
                 ApplicationCommand::SetClipboardLimit(limit) => controller.request_operation(
                     ControllerOperation::SetClipboardLimit(limit),
                     "kestrel-clipboard-limit",
+                ),
+                ApplicationCommand::SetCaptureLimit(limit) => controller.request_operation(
+                    ControllerOperation::SetCaptureLimit(limit),
+                    "kestrel-capture-limit",
                 ),
                 ApplicationCommand::SetClipboardFilterSensitive(filter) => controller
                     .request_operation(

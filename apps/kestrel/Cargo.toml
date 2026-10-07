@@ -16,7 +16,7 @@ required-features = ["gui"]
 [dependencies]
 adw = { package = "libadwaita", version = "0.7", features = ["v1_4"], optional = true }
 async-channel = "2"
-gtk = { package = "gtk4", version = "0.9", optional = true }
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"], optional = true }
 kestrel-core = { path = "../../crates/kestrel-core" }
 kestrel-platform = { path = "../../crates/kestrel-platform" }
 kestrel-services = { path = "../../crates/kestrel-services" }

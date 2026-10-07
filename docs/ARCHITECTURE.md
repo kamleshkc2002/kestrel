@@ -474,6 +474,35 @@ Activations become `ApplicationCommand`s on the GTK command channel.
 `stop()` — on disable, on binding changes, and on drop — closes the portal
 session or ungrabs every key, then joins the worker.
 
+### 5.12 Screenshots and recent captures
+
+`capture.screenshot` captures only on an explicit request. The probe reads the
+Screenshot portal `version`, the permission-store `screenshot` entry,
+`grim`/`slurp` on `PATH`, whether the Wayland display advertises a screencopy
+global, and the session type; it opens no dialog and captures nothing. Provider
+order is the Screenshot portal (modes: the desktop's dialog, whole screen), then
+`grim` on Wayland compositors with screencopy (area through `slurp`, whole
+screen), then core X11 on real X11 sessions (focused window, whole screen).
+Recording stays with the `ScreenCast` portal in a later phase.
+
+Each backend runs one blocking capture on the `kestrel-capture` worker and
+returns a validated PNG (≤ 64 MiB, ≤ 16384 px per side). A `CaptureCancel`
+handle aborts it by closing the portal connection or killing the `slurp`/`grim`
+process group. A portal file under the temp or runtime directory is unlinked
+after import whatever the outcome; files the user saved elsewhere through the
+desktop's dialog stay in place.
+
+`CaptureHistory` stores PNGs as `<millis>-<id>-<mode>[-edited].png` in
+`$XDG_DATA_HOME/kestrel/captures` (0700 directory, 0600 files, written through a
+temporary file and rename). Count, byte, and age bounds apply on open, on every
+insert (never evicting the new entry), and on policy changes; the periodic tick
+prunes by age. Clear removes every capture and leftover temporary file at once.
+
+Editing is an `EditPlan` (crop plus redact, box, highlight, and arrow
+operations) applied by `kestrel-services` to decoded RGBA pixels; redaction
+writes opaque black into every channel before encoding, and the result is a new
+capture so the source stays until deleted. The GTK editor only previews the plan.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:
