@@ -1,0 +1,49 @@
+# Weekly version updates. Security updates are enabled in the repository
+# settings and arrive as soon as an advisory is published.
+#
+# Not covered: the Rust toolchain pinned in rust-toolchain.toml, and the
+# disposable spike workspaces under spikes/.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    groups:
+      # gtk-rs crates release together and must move as one.
+      gtk-rs:
+        patterns:
+          - "gtk4*"
+          - "gdk4*"
+          - "gsk4*"
+          - "libadwaita*"
+          - "glib*"
+          - "gio*"
+          - "cairo-rs*"
+          - "pango*"
+          - "gdk-pixbuf*"
+          - "graphene-rs*"
+      zbus:
+        patterns:
+          - "zbus*"
+          - "zvariant*"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"
