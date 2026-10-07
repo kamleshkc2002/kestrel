@@ -1,8 +1,7 @@
 # Weekly version updates. Security updates are enabled in the repository
 # settings and arrive as soon as an advisory is published.
 #
-# Not covered: the Rust toolchain pinned in rust-toolchain.toml, and the
-# disposable spike workspaces under spikes/.
+# Not covered: the Rust toolchain pinned in rust-toolchain.toml.
 version: 2
 updates:
   - package-ecosystem: cargo
