@@ -3,10 +3,10 @@ use async_channel::Sender;
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
     AlertKind, ApplicationCommand, ApplicationViewModel, AudioCycleDirection, AudioOutputViewModel,
-    AudioStreamViewModel, AudioViewModel, ConfirmationViewModel, FeatureViewModel, FocusTarget,
-    MicrophoneViewModel, MonitorViewModel, PanelMoveDirection, PanelSection, QuickToggleCommand,
-    QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel, ShortcutsViewModel,
-    SpeedTestViewModel,
+    AudioStreamViewModel, AudioViewModel, CaptureEntryViewModel, CaptureRequest, CaptureViewModel,
+    ConfirmationViewModel, FeatureViewModel, FocusTarget, MicrophoneViewModel, MonitorViewModel,
+    PanelMoveDirection, PanelSection, QuickToggleCommand, QuickToggleControlViewModel,
+    QuickToggleMutation, QuickToggleViewModel, ShortcutsViewModel, SpeedTestViewModel,
 };
 use kestrel_core::AppearancePreference;
 
@@ -24,6 +24,7 @@ pub struct WindowView {
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
     microphone_container: std::cell::RefCell<Option<gtk::Box>>,
     speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
+    capture_container: std::cell::RefCell<Option<gtk::Box>>,
     shortcuts_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
@@ -118,6 +119,7 @@ impl WindowView {
             monitor_container: std::cell::RefCell::new(page.monitor_container),
             microphone_container: std::cell::RefCell::new(page.microphone_container),
             speed_test_container: std::cell::RefCell::new(page.speed_test_container),
+            capture_container: std::cell::RefCell::new(page.capture_container),
             shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
@@ -131,6 +133,7 @@ impl WindowView {
         *self.monitor_container.borrow_mut() = page.monitor_container;
         *self.microphone_container.borrow_mut() = page.microphone_container;
         *self.speed_test_container.borrow_mut() = page.speed_test_container;
+        *self.capture_container.borrow_mut() = page.capture_container;
         *self.shortcuts_container.borrow_mut() = Some(page.shortcuts_container);
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
@@ -231,6 +234,17 @@ impl WindowView {
         container.append(&build_speed_test_group(speed_test, &self.commands));
     }
 
+    /// Replaces the capture group.
+    pub fn set_capture(&self, capture: &CaptureViewModel) {
+        let Some(container) = self.capture_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_capture_group(capture, &self.window, &self.commands));
+    }
+
     /// Replaces the global-shortcuts group.
     pub fn set_shortcuts(&self, shortcuts: &ShortcutsViewModel) {
         let Some(container) = self.shortcuts_container.borrow().as_ref().cloned() else {
@@ -261,6 +275,7 @@ struct PageBuild {
     monitor_container: Option<gtk::Box>,
     microphone_container: Option<gtk::Box>,
     speed_test_container: Option<gtk::Box>,
+    capture_container: Option<gtk::Box>,
     shortcuts_container: gtk::Box,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
@@ -306,6 +321,7 @@ fn build_page(
     let mut monitor_container = None;
     let mut microphone_container = None;
     let mut speed_test_container = None;
+    let mut capture_container = None;
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
     let mut command_panel = None;
@@ -330,6 +346,10 @@ fn build_page(
                 microphone.append(&build_microphone_group(&view_model.microphone, commands));
                 page.append(&microphone);
                 microphone_container = Some(microphone);
+                let capture = gtk::Box::new(Orientation::Vertical, 0);
+                capture.append(&build_capture_group(&view_model.capture, window, commands));
+                page.append(&capture);
+                capture_container = Some(capture);
                 let panel = build_clipboard_panel(&view_model.clipboard, commands);
                 page.append(&panel.container);
                 clipboard_panel = Some(panel);
@@ -367,6 +387,7 @@ fn build_page(
         monitor_container,
         microphone_container,
         speed_test_container,
+        capture_container,
         shortcuts_container,
         clipboard_panel,
         snippet_panel,
@@ -846,6 +867,56 @@ fn build_settings_group(
 
     group.add(&audio_group);
 
+    let capture_limits = view_model.capture.limits;
+    let capture_group = adw::PreferencesGroup::builder()
+        .title("Screenshots")
+        .description(
+            "Recent captures are private files in Kestrel's data directory. The oldest are \
+             removed first when a limit is reached.",
+        )
+        .build();
+    for (title, subtitle, max, value, limit) in [
+        (
+            "Recent captures",
+            "How many captures are kept.",
+            kestrel_core::MAX_CAPTURE_MAX_ENTRIES,
+            capture_limits.max_entries,
+            kestrel::CaptureLimit::MaxEntries as fn(u32) -> kestrel::CaptureLimit,
+        ),
+        (
+            "Storage limit",
+            "Total size of kept captures, in MiB.",
+            kestrel_core::MAX_CAPTURE_MAX_TOTAL_MEGABYTES,
+            capture_limits.max_total_megabytes,
+            kestrel::CaptureLimit::MaxTotalMegabytes,
+        ),
+        (
+            "Capture age",
+            "Hours a capture is kept.",
+            kestrel_core::MAX_CAPTURE_MAX_AGE_HOURS,
+            capture_limits.max_age_hours,
+            kestrel::CaptureLimit::MaxAgeHours,
+        ),
+    ] {
+        let row = adw::SpinRow::with_range(1.0, f64::from(max), 1.0);
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_value(f64::from(value));
+        row.set_numeric(true);
+        row.update_property(&[Property::Label(&format!("Screenshots: {title}"))]);
+        let sender = commands.clone();
+        row.connect_value_notify(move |spin| {
+            let value = spin.value().max(1.0) as u32;
+            let _ = sender.try_send(ApplicationCommand::SetCaptureLimit(limit(value)));
+        });
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("screenshots capture {title} {subtitle}").to_lowercase(),
+        ));
+        capture_group.add(&row);
+    }
+    group.add(&capture_group);
+
     let clipboard = &view_model.clipboard;
     let clipboard_group = adw::PreferencesGroup::builder()
         .title("Clipboard")
@@ -962,7 +1033,8 @@ fn build_settings_group(
     let clear = adw::SpinRow::with_range(0.0, bounds.max_clear_seconds as f64, 5.0);
     clear.set_title("Automatic selection clear");
     clear.set_subtitle(
-        "Seconds after Kestrel takes the selection before the live clipboard is cleared.          Saved entries are kept; 0 disables it.",
+        "Seconds after Kestrel takes the selection before the live clipboard is cleared. \
+         Saved entries are kept; 0 disables it.",
     );
     clear.set_value(clipboard.policy.clear_seconds as f64);
     clear.set_numeric(true);
@@ -1265,38 +1337,51 @@ fn connect_file_chooser(
     let window = window.clone();
     let sender = commands.clone();
     button.connect_clicked(move |_| {
-        let action = if save {
-            gtk::FileChooserAction::Save
-        } else {
-            gtk::FileChooserAction::Open
-        };
-        let chooser = gtk::FileChooserNative::builder()
-            .title(if save {
-                "Export configuration"
-            } else {
-                "Import configuration"
-            })
-            .accept_label(if save { "Export" } else { "Import" })
-            .cancel_label("Cancel")
-            .transient_for(&window)
-            .action(action)
-            .build();
         let sender = sender.clone();
-        chooser.connect_response(move |chooser, response| {
-            if response == gtk::ResponseType::Accept {
-                if let Some(path) = chooser.file().and_then(|file| file.path()) {
-                    let command = if save {
-                        ApplicationCommand::ExportConfiguration(path)
-                    } else {
-                        ApplicationCommand::ImportConfiguration(path)
-                    };
-                    let _ = sender.try_send(command);
-                }
-            }
-            chooser.destroy();
+        let (title, accept) = if save {
+            ("Export configuration", "Export")
+        } else {
+            ("Import configuration", "Import")
+        };
+        choose_path(&window, title, accept, None, save, move |path| {
+            let command = if save {
+                ApplicationCommand::ExportConfiguration(path)
+            } else {
+                ApplicationCommand::ImportConfiguration(path)
+            };
+            let _ = sender.try_send(command);
         });
-        chooser.show();
     });
+}
+
+/// Asks for a path with the desktop's file dialog; `save` picks a destination.
+/// The dialog keeps itself alive until the user answers.
+fn choose_path(
+    window: &adw::ApplicationWindow,
+    title: &str,
+    accept: &str,
+    initial_name: Option<&str>,
+    save: bool,
+    on_path: impl FnOnce(std::path::PathBuf) + 'static,
+) {
+    let dialog = gtk::FileDialog::builder()
+        .title(title)
+        .accept_label(accept)
+        .modal(true)
+        .build();
+    if let Some(name) = initial_name {
+        dialog.set_initial_name(Some(name));
+    }
+    let callback = move |result: Result<gtk::gio::File, gtk::glib::Error>| {
+        if let Some(path) = result.ok().and_then(|file| file.path()) {
+            on_path(path);
+        }
+    };
+    if save {
+        dialog.save(Some(window), gtk::gio::Cancellable::NONE, callback);
+    } else {
+        dialog.open(Some(window), gtk::gio::Cancellable::NONE, callback);
+    }
 }
 
 /// Builds microphone controls; mixed mute state leaves the switch usable.
@@ -1428,6 +1513,166 @@ fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGrou
         );
     }
     group
+}
+
+/// Builds screenshot controls and the recent-capture list.
+fn build_capture_group(
+    capture: &CaptureViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Screenshots")
+        .description(gtk::glib::markup_escape_text(&capture.status).as_str())
+        .build();
+    if capture.running {
+        let row = adw::ActionRow::builder().title("Capture").build();
+        for mode in &capture.modes {
+            let button = gtk::Button::with_label(mode.label);
+            button.set_valign(Align::Center);
+            button.set_sensitive(!capture.capturing);
+            button.update_property(&[Property::Label(&format!("Capture: {}", mode.label))]);
+            let sender = commands.clone();
+            let mode = mode.mode;
+            button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::Begin(Some(
+                    mode,
+                ))));
+            });
+            row.add_suffix(&button);
+        }
+        if capture.capturing {
+            let cancel = gtk::Button::with_label("Cancel");
+            cancel.set_valign(Align::Center);
+            cancel.update_property(&[Property::Label("Cancel the screenshot")]);
+            let sender = commands.clone();
+            cancel.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::Cancel));
+            });
+            row.add_suffix(&cancel);
+        }
+        group.add(&row);
+    }
+    if let Some(error) = &capture.storage_error {
+        group.add(
+            &adw::ActionRow::builder()
+                .title("Capture storage is unavailable")
+                .subtitle(error)
+                .subtitle_lines(0)
+                .use_markup(false)
+                .build(),
+        );
+    }
+    if !capture.running {
+        return group;
+    }
+    let recent = adw::ExpanderRow::builder()
+        .title("Recent captures")
+        .subtitle(&capture.usage)
+        .expanded(!capture.entries.is_empty())
+        .build();
+    if capture.entries.is_empty() {
+        recent.add_row(&adw::ActionRow::builder().title("No captures yet").build());
+    }
+    for entry in &capture.entries {
+        recent.add_row(&build_capture_row(entry, window, commands));
+    }
+    if !capture.entries.is_empty() {
+        let clear = gtk::Button::with_label("Clear all");
+        clear.add_css_class("destructive-action");
+        clear.set_valign(Align::Center);
+        clear.update_property(&[Property::Label("Delete every recent capture")]);
+        let sender = commands.clone();
+        clear.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::Clear));
+        });
+        recent.add_suffix(&clear);
+    }
+    group.add(&recent);
+    group
+}
+
+const CAPTURE_THUMBNAIL_SIZE: i32 = 72;
+
+fn build_capture_row(
+    entry: &CaptureEntryViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(&entry.title)
+        .subtitle(&entry.subtitle)
+        .use_markup(false)
+        .build();
+    let texture = entry.thumbnail.as_ref().and_then(|path| {
+        gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
+            path,
+            CAPTURE_THUMBNAIL_SIZE,
+            CAPTURE_THUMBNAIL_SIZE,
+            true,
+        )
+        .ok()
+    });
+    if let Some(pixbuf) = texture {
+        let picture = gtk::Picture::for_pixbuf(&pixbuf);
+        picture.set_size_request(CAPTURE_THUMBNAIL_SIZE, CAPTURE_THUMBNAIL_SIZE);
+        picture.set_can_shrink(true);
+        row.add_prefix(&picture);
+    }
+    let id = entry.id;
+    let action = |icon: &str, label: &str, request: CaptureRequest| {
+        let button = gtk::Button::from_icon_name(icon);
+        button.set_valign(Align::Center);
+        button.add_css_class("flat");
+        button.set_tooltip_text(Some(label));
+        button.update_property(&[Property::Label(label)]);
+        let sender = commands.clone();
+        button.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::Capture(request.clone()));
+        });
+        button
+    };
+    row.add_suffix(&action(
+        "edit-copy-symbolic",
+        "Copy",
+        CaptureRequest::Copy(id),
+    ));
+    let save = gtk::Button::from_icon_name("document-save-as-symbolic");
+    save.set_valign(Align::Center);
+    save.add_css_class("flat");
+    save.set_tooltip_text(Some("Save as…"));
+    save.update_property(&[Property::Label("Save as")]);
+    let parent = window.clone();
+    let sender = commands.clone();
+    save.connect_clicked(move |_| {
+        let sender = sender.clone();
+        let name = format!("Screenshot-{}.png", id.get());
+        choose_path(
+            &parent,
+            "Save screenshot",
+            "Save",
+            Some(&name),
+            true,
+            move |destination| {
+                let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::Save {
+                    id,
+                    destination,
+                }));
+            },
+        );
+    });
+    row.add_suffix(&save);
+    row.add_suffix(&action(
+        "document-edit-symbolic",
+        "Edit",
+        CaptureRequest::Edit(id),
+    ));
+    row.add_suffix(&action(
+        "user-trash-symbolic",
+        "Delete",
+        CaptureRequest::Delete(id),
+    ));
+    row
 }
 
 /// Builds the speed-test group.

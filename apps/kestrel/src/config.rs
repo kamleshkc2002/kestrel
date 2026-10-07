@@ -7,7 +7,8 @@ use kestrel_core::{
     AlertKind, AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy,
     AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError,
     FeatureConfiguration, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
-    MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
+    MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CAPTURE_MAX_AGE_HOURS,
+    MAX_CAPTURE_MAX_ENTRIES, MAX_CAPTURE_MAX_TOTAL_MEGABYTES, MAX_CLIPBOARD_AGE_HOURS,
     MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
     MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_COMMAND_FILE_ROOTS,
     MAX_COMMAND_RESULTS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
@@ -196,6 +197,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_monitoring(&mut loaded, document.get("monitoring"));
     parse_audio(&mut loaded, document.get("audio"));
     parse_speed_test(&mut loaded, document.get("speed_test"));
+    parse_capture(&mut loaded, document.get("capture"));
     parse_shortcuts(&mut loaded, document.get("shortcuts"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
     parse_snippets(&mut loaded, document.get("snippets"));
@@ -669,6 +671,50 @@ fn parse_speed_test(loaded: &mut LoadedConfiguration, value: Option<&toml::Value
             )),
         }
     }
+}
+
+fn parse_capture(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(capture) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "capture",
+            "The capture value must be a TOML table.",
+        ));
+        return;
+    };
+    // Each limit is validated alone; a bad one keeps its default.
+    let mut bounded = |key: &str, max: u32, unit: &str, slot: &mut u32| {
+        let Some(value) = capture.get(key) else {
+            return;
+        };
+        match u32::deserialize(value.clone()) {
+            Ok(number) if (1..=max).contains(&number) => *slot = number,
+            _ => loaded.warnings.push(warning(
+                &format!("capture.{key}"),
+                format!("Must be between 1 and {max} {unit}; the default was retained."),
+            )),
+        }
+    };
+    let mut limits = loaded.configuration.capture;
+    bounded(
+        "max_entries",
+        MAX_CAPTURE_MAX_ENTRIES,
+        "captures",
+        &mut limits.max_entries,
+    );
+    bounded(
+        "max_total_megabytes",
+        MAX_CAPTURE_MAX_TOTAL_MEGABYTES,
+        "MiB",
+        &mut limits.max_total_megabytes,
+    );
+    bounded(
+        "max_age_hours",
+        MAX_CAPTURE_MAX_AGE_HOURS,
+        "hours",
+        &mut limits.max_age_hours,
+    );
+    loaded.configuration.capture = limits;
 }
 
 fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -1508,6 +1554,40 @@ timeout_seconds = "slow"
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.speed_test, configuration.speed_test);
         assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn capture_limits_parse_alone_and_survive_export() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[capture]
+max_entries = 0
+max_total_megabytes = 512
+max_age_hours = 721
+"#,
+        )
+        .expect("document itself is valid TOML");
+        let defaults = kestrel_core::CaptureConfiguration::default();
+        assert_eq!(
+            loaded.configuration.capture.max_entries,
+            defaults.max_entries
+        );
+        assert_eq!(loaded.configuration.capture.max_total_megabytes, 512);
+        assert_eq!(
+            loaded.configuration.capture.max_age_hours,
+            defaults.max_age_hours
+        );
+        let rejected = loaded
+            .warnings
+            .iter()
+            .map(|warning| warning.feature_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(rejected, ["capture.max_entries", "capture.max_age_hours"]);
+
+        let exported = export_string(&loaded.configuration).expect("configuration exports");
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(reloaded.configuration.capture, loaded.configuration.capture);
     }
 
     #[test]

@@ -67,8 +67,8 @@ impl std::fmt::Display for SnippetStoreError {
 
 impl std::error::Error for SnippetStoreError {}
 
-/// XDG data path for snippets.
-pub fn snippet_path() -> Option<PathBuf> {
+/// `$XDG_DATA_HOME/kestrel`, falling back to `~/.local/share/kestrel`.
+pub fn kestrel_data_directory() -> Option<PathBuf> {
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -77,7 +77,12 @@ pub fn snippet_path() -> Option<PathBuf> {
                 .filter(|value| !value.is_empty())
                 .map(|home| PathBuf::from(home).join(".local/share"))
         })?;
-    Some(data_home.join("kestrel").join("snippets.toml"))
+    Some(data_home.join("kestrel"))
+}
+
+/// XDG data path for snippets.
+pub fn snippet_path() -> Option<PathBuf> {
+    kestrel_data_directory().map(|directory| directory.join("snippets.toml"))
 }
 
 /// Loads snippets, isolating rejected entries; a missing file is empty.

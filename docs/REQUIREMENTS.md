@@ -145,7 +145,7 @@ the architecture.
 | Window enumeration / moving / focusing | Fully scriptable via EWMH (`_NET_CLIENT_LIST`), `xdotool`, `wmctrl` | **Deliberately restricted** — an app cannot move/steal other apps' windows without compositor cooperation |
 | Input injection (snippets) | `XTEST` (`xdotool`) | `ydotool` (uinput) or compositor-specific protocols; needs a virtual device |
 | Clipboard | X selections (`PRIMARY`/`CLIPBOARD`), well understood | `wl-clipboard`; clipboard owned by focused app, loses content on app exit without a manager |
-| Screenshots / capture | X11 grab or `ffmpeg x11grab` | PipeWire + XDG `ScreenCast` portal |
+| Screenshots / capture | X11 grab or `ffmpeg x11grab` | XDG `Screenshot` portal for stills; PipeWire + XDG `ScreenCast` portal for recording; `grim` on wlroots compositors |
 | Global shortcuts | X11 grab | Portal `GlobalShortcuts` (newer) or compositor config |
 
 **Implication:** a fully feature-equivalent app is simpler to build for X11, but Wayland
@@ -224,7 +224,8 @@ report and a safe read-only fallback.
 
 Linux has no macOS "Accessibility/Screen Recording" grant dialogs. Instead:
 
-- **Screen capture** on Wayland → user consent via the XDG `ScreenCast` portal.
+- **Screen capture** on Wayland → user consent via the XDG `Screenshot` portal for stills
+  and the XDG `ScreenCast` portal for recording.
 - **Input injection** (snippets) → `ydotool`/uinput or compositor-specific APIs. Avoid
   treating membership in the broad `input` group as the default; prefer narrowly scoped
   udev permissions or a small Polkit-mediated helper.
@@ -258,7 +259,7 @@ hardware limitations. Every privileged operation must be narrowly scoped and aud
 | 1 | **Wayland window management** (no unified API to move/switch/focus other windows) | Blocks window snapping and a macOS-style switcher | X11 first; on Wayland support per-compositor (wlroots `wlr-foreign-toplevel`, KDE/GNOME extensions); degrade gracefully |
 | 2 | **GNOME tray gap** | App invisible in default GNOME | SNI + document the extension; optionally offer a GNOME extension or a normal window fallback |
 | 3 | **Fan control portability** | Broken/absent on many machines | Opt-in, hardware-probed (`/sys/class/hwmon`), never crash on missing sensors |
-| 4 | **Screen capture consent UX** | Wayland requires portal dialogs | Use `ScreenCast` portal; treat capture features as "portal-gated" |
+| 4 | **Screen capture consent UX** | Wayland requires portal dialogs | Use the `Screenshot` portal for stills and `ScreenCast` for recording; treat capture features as "portal-gated" |
 | 5 | **Clipboard lifetime on Wayland** | Clipboard dies with its owning app | Run as a persistent clipboard manager (re-own selection), like `cliphist`/`CopyQ` |
 | 6 | **Multi-DE test matrix** | Regressions across GNOME/KDE/XFCE/sway | CI matrix + manual smoke checklist; abstract DE-specific bits behind a backend trait |
 | 7 | **Input injection permissions** (snippets) | `ydotool`/uinput group friction | Detect capability at runtime; fall back to `xdotool` on X11; document setup |
@@ -456,8 +457,8 @@ specific remediation rather than simply hiding a feature without explanation.
   and resettable. Script and launcher actions use resolved executables, no shell, timeouts,
   and bounded output, and a provider that is unavailable must not remove portable commands.
 - **Least privilege:** run as a normal user; no root, no setuid binary, no root daemon.
-- **Portals:** screen capture and recording go through the XDG `ScreenCast` portal (user
-  consent, per-session, revocable).
+- **Portals:** screenshots go through the XDG `Screenshot` portal and recording through the
+  XDG `ScreenCast` portal (user consent, per-session, revocable).
 - **polkit (only if needed):** e.g., suspend/lid behavior may need a polkit rule; prefer
   `systemd-inhibit` which is user-session.
 - **Input injection:** snippets use `ydotool`/uinput or `xdotool` on X11; capability is

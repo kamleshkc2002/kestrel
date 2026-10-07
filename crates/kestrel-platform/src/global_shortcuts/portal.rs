@@ -55,8 +55,9 @@ fn map_response_code(code: u32) -> ResponseResult {
     }
 }
 
+/// The portal spec: drop the leading ':' of the unique name, then '.' → '_'.
 fn request_path(sender: &str, token: &str) -> String {
-    let sender = sender.replace([':', '.'], "_");
+    let sender = sender.trim_start_matches(':').replace('.', "_");
     format!("{PORTAL_PATH}/request/{sender}/{token}")
 }
 
@@ -159,9 +160,11 @@ fn is_path(message: &zbus::Message, path: &str) -> bool {
         .is_some_and(|value| value.as_str() == path)
 }
 
+/// Waits for `Request.Response` on the predicted path or the handle the call
+/// returned; older portals return a handle that differs from the prediction.
 fn wait_for_response(
     iterator: &mut MessageIterator,
-    request: &str,
+    requests: [&str; 2],
     session: Option<&str>,
     sink: &ActivationSink,
     status: &SharedShortcutStatus,
@@ -176,7 +179,9 @@ fn wait_for_response(
         };
         let message =
             message.map_err(|error| format!("receiving portal signal failed: {error}"))?;
-        if is_signal(&message, REQUEST_INTERFACE, RESPONSE_MEMBER) && is_path(&message, request) {
+        if is_signal(&message, REQUEST_INTERFACE, RESPONSE_MEMBER)
+            && requests.iter().any(|request| is_path(&message, request))
+        {
             return parse_response(&message).map(Some);
         }
         if let Some(session) = session {
@@ -323,7 +328,7 @@ fn run_worker(
             return;
         }
     };
-    let _request_handle: OwnedObjectPath = match portal.call("CreateSession", &create_options) {
+    let create_handle: OwnedObjectPath = match portal.call("CreateSession", &create_options) {
         Ok(handle) => handle,
         Err(error) => {
             fail(
@@ -335,19 +340,25 @@ fn run_worker(
             return;
         }
     };
-    let create_result =
-        match wait_for_response(&mut signals, &create_path, None, &sink, &status, &stop) {
-            Ok(Some(response)) => response,
-            Ok(None) => {
-                let _ = connection.close();
-                return;
-            }
-            Err(error) => {
-                fail(&status, ShortcutErrorKind::Protocol, error);
-                let _ = connection.close();
-                return;
-            }
-        };
+    let create_result = match wait_for_response(
+        &mut signals,
+        [&create_path, create_handle.as_str()],
+        None,
+        &sink,
+        &status,
+        &stop,
+    ) {
+        Ok(Some(response)) => response,
+        Ok(None) => {
+            let _ = connection.close();
+            return;
+        }
+        Err(error) => {
+            fail(&status, ShortcutErrorKind::Protocol, error);
+            let _ = connection.close();
+            return;
+        }
+    };
     let (code, create_values) = create_result;
     match map_response_code(code) {
         ResponseResult::Accepted => {}
@@ -405,22 +416,24 @@ fn run_worker(
             return;
         }
     };
-    let bind_handle: Result<OwnedObjectPath, _> = portal.call(
+    let bind_handle: OwnedObjectPath = match portal.call(
         "BindShortcuts",
         &(&session_object_path, payload, "", bind_options),
-    );
-    if let Err(error) = bind_handle {
-        fail(
-            &status,
-            ShortcutErrorKind::Protocol,
-            format!("binding portal shortcuts failed: {error}"),
-        );
-        let _ = connection.close();
-        return;
-    }
+    ) {
+        Ok(handle) => handle,
+        Err(error) => {
+            fail(
+                &status,
+                ShortcutErrorKind::Protocol,
+                format!("binding portal shortcuts failed: {error}"),
+            );
+            let _ = connection.close();
+            return;
+        }
+    };
     let bind_result = match wait_for_response(
         &mut signals,
-        &bind_path,
+        [&bind_path, bind_handle.as_str()],
         Some(&session_path),
         &sink,
         &status,
@@ -848,7 +861,7 @@ mod tests {
     fn predicts_portal_request_path_from_unique_sender() {
         assert_eq!(
             request_path(":1.42", "token"),
-            "/org/freedesktop/portal/desktop/request/_1_42/token"
+            "/org/freedesktop/portal/desktop/request/1_42/token"
         );
     }
 
