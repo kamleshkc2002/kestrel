@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@master
@@ -70,7 +70,7 @@ jobs:
           ! grep -q 'No IM module matching' appimage-smoke.log
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Kestrel-x86_64-AppImage
           path: |
