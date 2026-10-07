@@ -266,7 +266,9 @@ impl WindowView {
     }
 
     pub fn show_message(&self, message: &str) {
-        self.toasts.add_toast(adw::Toast::new(message));
+        let toast = adw::Toast::new(message);
+        toast.set_use_markup(false);
+        self.toasts.add_toast(toast);
     }
 }
 
@@ -438,7 +440,7 @@ fn build_settings_group(
     ));
     group.add(&appearance);
 
-    let autostart = adw::ActionRow::builder()
+    let autostart = plain_row()
         .title("Start automatically")
         .subtitle("Launch Kestrel when your desktop session starts.")
         .build();
@@ -459,7 +461,7 @@ fn build_settings_group(
     ));
     group.add(&autostart);
 
-    let preset_row = adw::ActionRow::builder()
+    let preset_row = plain_row()
         .title("Feature presets")
         .subtitle("Change enablement as one reversible operation.")
         .subtitle_lines(0)
@@ -499,7 +501,7 @@ fn build_settings_group(
         )
         .build();
     for (index, panel) in view_model.panel_sections.iter().enumerate() {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(panel_title(panel.section))
             .subtitle("Visible in the main panel")
             .build();
@@ -566,7 +568,7 @@ fn build_settings_group(
         .description("Choose visible readouts and their order in the Monitoring panel.")
         .build();
     for setting in &view_model.monitor.readout_settings {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(setting.label)
             .subtitle(if setting.visible {
                 "Show this readout and move it in the configured order."
@@ -641,7 +643,7 @@ fn build_settings_group(
         .description("Enable sustained threshold alerts and choose each threshold.")
         .build();
     for rule in &view_model.monitor.alert_rules {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(format!("{} alerts", rule.label))
             .subtitle(&rule.summary)
             .build();
@@ -743,7 +745,7 @@ fn build_settings_group(
         "audio mixer boost ceiling amplification volume".to_owned(),
     ));
 
-    let move_streams = adw::ActionRow::builder()
+    let move_streams = plain_row()
         .title("Move streams with the output")
         .subtitle(format!(
             "When switching the default output, also move playing streams. Current mode: {}.",
@@ -778,7 +780,7 @@ fn build_settings_group(
         "audio output switch move streams routing".to_owned(),
     ));
 
-    let disconnect = adw::ActionRow::builder()
+    let disconnect = plain_row()
         .title("Reset volume after output loss")
         .subtitle(format!(
             "Reapply a fixed volume when a stream loses its output device. Current policy: {}.",
@@ -838,7 +840,7 @@ fn build_settings_group(
         "audio disconnect volume output loss".to_owned(),
     ));
 
-    let inactive = adw::ActionRow::builder()
+    let inactive = plain_row()
         .title("Show inactive streams")
         .subtitle("List idle or corked streams next to playing ones.")
         .build();
@@ -1045,7 +1047,7 @@ fn build_settings_group(
     );
     clipboard_group.add(&clear);
 
-    let filter = adw::ActionRow::builder()
+    let filter = plain_row()
         .title("Filter sensitive patterns")
         .subtitle(
             "Skip capturing content that looks like a secret. Heuristics produce false \
@@ -1072,7 +1074,7 @@ fn build_settings_group(
     filter.set_activatable_widget(Some(&filter_switch));
     clipboard_group.add(&filter);
 
-    let patterns = adw::ActionRow::builder()
+    let patterns = plain_row()
         .title("Documented sensitive patterns")
         .subtitle(
             kestrel_services::clipboard::SENSITIVE_PATTERNS
@@ -1087,7 +1089,7 @@ fn build_settings_group(
     patterns.update_property(&[Property::Label("Documented sensitive patterns")]);
     clipboard_group.add(&patterns);
 
-    let paste = adw::ActionRow::builder()
+    let paste = plain_row()
         .title("Quick paste as plain text")
         .subtitle(
             "Copying an entry strips ANSI escapes and trailing whitespace; file entries copy \
@@ -1292,7 +1294,7 @@ fn build_settings_group(
     ));
     group.add(&command_group);
 
-    let io_row = adw::ActionRow::builder()
+    let io_row = plain_row()
         .title("Configuration files")
         .subtitle("Import or export configuration. Kestrel only emits the selected path command.")
         .subtitle_lines(0)
@@ -1391,10 +1393,10 @@ fn build_microphone_group(
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Microphone")
-        .description(&microphone.status)
+        .description(gtk::glib::markup_escape_text(&microphone.status).as_str())
         .build();
     if !microphone.running {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("Microphone control is not running")
             .subtitle(&microphone.status)
             .subtitle_lines(0)
@@ -1405,7 +1407,7 @@ fn build_microphone_group(
     }
 
     let controllable = microphone.muted.is_some() || microphone.mixed;
-    let row = adw::ActionRow::builder()
+    let row = plain_row()
         .title("Mute all inputs")
         .subtitle(&microphone.mute_label)
         .build();
@@ -1473,7 +1475,7 @@ fn build_microphone_group(
         group.add(&combo);
     }
     if let Some(message) = &microphone.message {
-        let notice = adw::ActionRow::builder()
+        let notice = plain_row()
             .title("Input disconnected")
             .subtitle(message)
             .subtitle_lines(0)
@@ -1491,11 +1493,10 @@ fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGrou
         .description(gtk::glib::markup_escape_text(&shortcuts.status).as_str())
         .build();
     for row in &shortcuts.rows {
-        let item = adw::ActionRow::builder()
+        let item = plain_row()
             .title(&row.description)
             .subtitle(format!("{} · {}", row.command, row.state))
             .subtitle_lines(0)
-            .use_markup(false)
             .build();
         let trigger = gtk::Label::new(Some(&row.trigger));
         trigger.add_css_class(if row.active { "accent" } else { "dim-label" });
@@ -1504,11 +1505,10 @@ fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGrou
     }
     if let Some(notice) = &shortcuts.notice {
         group.add(
-            &adw::ActionRow::builder()
+            &plain_row()
                 .title("Some bindings were skipped")
                 .subtitle(notice)
                 .subtitle_lines(0)
-                .use_markup(false)
                 .build(),
         );
     }
@@ -1526,7 +1526,7 @@ fn build_capture_group(
         .description(gtk::glib::markup_escape_text(&capture.status).as_str())
         .build();
     if capture.running {
-        let row = adw::ActionRow::builder().title("Capture").build();
+        let row = plain_row().title("Capture").build();
         for mode in &capture.modes {
             let button = gtk::Button::with_label(mode.label);
             button.set_valign(Align::Center);
@@ -1555,11 +1555,10 @@ fn build_capture_group(
     }
     if let Some(error) = &capture.storage_error {
         group.add(
-            &adw::ActionRow::builder()
+            &plain_row()
                 .title("Capture storage is unavailable")
                 .subtitle(error)
                 .subtitle_lines(0)
-                .use_markup(false)
                 .build(),
         );
     }
@@ -1572,7 +1571,7 @@ fn build_capture_group(
         .expanded(!capture.entries.is_empty())
         .build();
     if capture.entries.is_empty() {
-        recent.add_row(&adw::ActionRow::builder().title("No captures yet").build());
+        recent.add_row(&plain_row().title("No captures yet").build());
     }
     for entry in &capture.entries {
         recent.add_row(&build_capture_row(entry, window, commands));
@@ -1592,6 +1591,60 @@ fn build_capture_group(
     group
 }
 
+/// Builds an action row whose title and subtitle are plain text.
+///
+/// Rows show runtime text (device names, clipboard previews, remediation with
+/// `<id>` or `&`). `use-markup` is cleared before any text is set; a GTK builder
+/// would apply the text first and parse it as markup once.
+#[derive(Default)]
+struct PlainRow {
+    title: String,
+    subtitle: Option<String>,
+    subtitle_lines: Option<i32>,
+    sensitive: Option<bool>,
+}
+
+fn plain_row() -> PlainRow {
+    PlainRow::default()
+}
+
+impl PlainRow {
+    fn title(mut self, title: impl AsRef<str>) -> Self {
+        title.as_ref().clone_into(&mut self.title);
+        self
+    }
+
+    fn subtitle(mut self, subtitle: impl AsRef<str>) -> Self {
+        self.subtitle = Some(subtitle.as_ref().to_owned());
+        self
+    }
+
+    fn subtitle_lines(mut self, lines: i32) -> Self {
+        self.subtitle_lines = Some(lines);
+        self
+    }
+
+    fn sensitive(mut self, sensitive: bool) -> Self {
+        self.sensitive = Some(sensitive);
+        self
+    }
+
+    fn build(self) -> adw::ActionRow {
+        let row = adw::ActionRow::builder().use_markup(false).build();
+        row.set_title(&self.title);
+        if let Some(subtitle) = &self.subtitle {
+            row.set_subtitle(subtitle);
+        }
+        if let Some(lines) = self.subtitle_lines {
+            row.set_subtitle_lines(lines);
+        }
+        if let Some(sensitive) = self.sensitive {
+            row.set_sensitive(sensitive);
+        }
+        row
+    }
+}
+
 const CAPTURE_THUMBNAIL_SIZE: i32 = 72;
 
 fn build_capture_row(
@@ -1599,10 +1652,9 @@ fn build_capture_row(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::builder()
+    let row = plain_row()
         .title(&entry.title)
         .subtitle(&entry.subtitle)
-        .use_markup(false)
         .build();
     let texture = entry.thumbnail.as_ref().and_then(|path| {
         gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
@@ -1682,9 +1734,9 @@ fn build_speed_test_group(
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Network speed test")
-        .description(&speed_test.disclosure)
+        .description(gtk::glib::markup_escape_text(&speed_test.disclosure).as_str())
         .build();
-    let row = adw::ActionRow::builder()
+    let row = plain_row()
         .title("Speed test")
         .subtitle(&speed_test.status)
         .subtitle_lines(0)
@@ -1718,7 +1770,7 @@ fn build_speed_test_group(
         group.add(&bar);
     }
     for line in &speed_test.result_lines {
-        group.add(&adw::ActionRow::builder().title(line).build());
+        group.add(&plain_row().title(line).build());
     }
     group
 }
@@ -1726,10 +1778,10 @@ fn build_speed_test_group(
 fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Monitoring")
-        .description(&monitor.status)
+        .description(gtk::glib::markup_escape_text(&monitor.status).as_str())
         .build();
     if monitor.readouts.is_empty() {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("No monitoring readouts configured")
             .subtitle("Enable at least one readout in Settings → Monitoring readouts.")
             .sensitive(false)
@@ -1738,7 +1790,7 @@ fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
         group.add(&row);
     } else {
         for readout in &monitor.readouts {
-            let row = adw::ActionRow::builder()
+            let row = plain_row()
                 .title(readout.label)
                 .subtitle(&readout.detail)
                 .subtitle_lines(0)
@@ -1759,7 +1811,7 @@ fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
         }
     }
     if !monitor.alerts.is_empty() || !monitor.delivery_failures.is_empty() {
-        let heading = adw::ActionRow::builder()
+        let heading = plain_row()
             .title("Active alerts")
             .subtitle("Sustained threshold alerts currently active or with delivery failures.")
             .subtitle_lines(0)
@@ -1767,7 +1819,7 @@ fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
         heading.update_property(&[Property::Label("Active alerts")]);
         group.add(&heading);
         for alert in &monitor.alerts {
-            let row = adw::ActionRow::builder()
+            let row = plain_row()
                 .title(alert.label)
                 .subtitle(&alert.message)
                 .subtitle_lines(0)
@@ -1779,7 +1831,7 @@ fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
             group.add(&row);
         }
         for (kind, message) in &monitor.delivery_failures {
-            let row = adw::ActionRow::builder()
+            let row = plain_row()
                 .title(format!("{} alert delivery failed", kind.label()))
                 .subtitle(message)
                 .subtitle_lines(0)
@@ -1870,7 +1922,7 @@ fn build_clipboard_panel(
     status_row.add_suffix(&status);
     group.add(&status_row);
 
-    let actions = adw::ActionRow::builder()
+    let actions = plain_row()
         .title("History actions")
         .subtitle(
             "Clear the live selection without touching entries, or wipe every retained entry.",
@@ -1916,7 +1968,7 @@ fn build_clipboard_panel(
     container.append(&group);
 
     if !clipboard.running {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("Clipboard history is not running")
             .subtitle(&clipboard.status)
             .subtitle_lines(0)
@@ -1930,7 +1982,7 @@ fn build_clipboard_panel(
     let delete = gtk::Button::with_label("Delete selected");
     let selected_for_delete = std::rc::Rc::clone(&selected);
     let sender = commands.clone();
-    let delete_row = adw::ActionRow::builder()
+    let delete_row = plain_row()
         .title("Multiple selection")
         .subtitle("Tick entries in the list and delete them together.")
         .build();
@@ -1961,7 +2013,7 @@ fn fill_clipboard_results(
     commands: &Sender<ApplicationCommand>,
 ) {
     if clipboard.items.is_empty() {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(if clipboard.search_query.trim().is_empty() {
                 "No retained entries"
             } else {
@@ -1980,7 +2032,7 @@ fn fill_clipboard_results(
     }
 
     for item in &clipboard.items {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(format!("{} · {}", item.kind, item.detail))
             .subtitle(if item.preview.is_empty() {
                 "No inline preview for this entry kind".to_owned()
@@ -2121,7 +2173,7 @@ fn build_clipboard_preview_row(
     if preview.text.is_empty() {
         description.push("no inline text for this kind".to_owned());
     }
-    let row = adw::ActionRow::builder()
+    let row = plain_row()
         .title(format!("Preview {}", preview.id))
         .subtitle(description.join(" · "))
         .subtitle_lines(0)
@@ -2188,7 +2240,7 @@ fn build_snippet_panel(
     insertion.set_wrap(true);
     insertion.set_xalign(0.0);
     insertion.add_css_class("dim-label");
-    let insertion_row = adw::ActionRow::builder()
+    let insertion_row = plain_row()
         .title("Insertion")
         .subtitle(snippets.expansion_label)
         .subtitle_lines(0)
@@ -2197,7 +2249,7 @@ fn build_snippet_panel(
     group.add(&insertion_row);
 
     if let Some(directory) = &snippets.directory {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("Storage")
             .subtitle(format!("Private file directory: {directory}"))
             .subtitle_lines(0)
@@ -2207,7 +2259,7 @@ fn build_snippet_panel(
         group.add(&row);
     }
     for warning in &snippets.warnings {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(&warning.feature_id)
             .subtitle(&warning.message)
             .subtitle_lines(0)
@@ -2224,7 +2276,7 @@ fn build_snippet_panel(
     draft_label.set_wrap(true);
     draft_label.set_xalign(0.0);
     draft_label.add_css_class("dim-label");
-    let draft_row = adw::ActionRow::builder()
+    let draft_row = plain_row()
         .title("Editor")
         .subtitle("Name, optional folder, optional trigger, and the snippet text.")
         .subtitle_lines(0)
@@ -2354,7 +2406,7 @@ fn fill_snippet_panel(
     panel.editor.append(&action_row);
 
     if snippets.items.is_empty() {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(if snippets.search_query.trim().is_empty() {
                 "No snippets yet"
             } else {
@@ -2373,7 +2425,7 @@ fn fill_snippet_panel(
     }
 
     for item in &snippets.items {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(if let Some(folder) = &item.folder {
                 format!("{} · {}", item.name, folder)
             } else {
@@ -2527,7 +2579,7 @@ fn build_command_panel(
     group.add(&status_row);
 
     for provider in &command_bar.providers {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(provider.label)
             .subtitle(&provider.status)
             .subtitle_lines(0)
@@ -2578,7 +2630,7 @@ fn build_command_panel(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let ranking_row = adw::ActionRow::builder()
+    let ranking_row = plain_row()
         .title("Learned ranking")
         .subtitle(format!(
             "{ranking_summary} · identifiers and counts only, never your queries"
@@ -2616,7 +2668,7 @@ fn fill_command_panel(
     commands: &Sender<ApplicationCommand>,
 ) {
     if command_bar.results.is_empty() {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(if command_bar.query.trim().is_empty() {
                 "Type to search"
             } else {
@@ -2640,7 +2692,7 @@ fn fill_command_panel(
         } else {
             result.detail.clone()
         };
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(format!("{} · {}", result.source, result.title))
             .subtitle(detail)
             .subtitle_lines(0)
@@ -2828,11 +2880,11 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
     let container = gtk::Box::new(Orientation::Vertical, 12);
     let group = adw::PreferencesGroup::builder()
         .title("Audio")
-        .description(&audio.status)
+        .description(gtk::glib::markup_escape_text(&audio.status).as_str())
         .build();
 
     if !audio.running {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("Audio mixer is not running")
             .subtitle(&audio.status)
             .subtitle_lines(0)
@@ -2847,7 +2899,7 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
     let master = audio
         .default_output_id
         .and_then(|id| audio.outputs.iter().find(|output| output.id == id));
-    let master_row = adw::ActionRow::builder()
+    let master_row = plain_row()
         .title("Master output")
         .subtitle(match master {
             Some(output) => format!("{} · {}", output.title, output.detail),
@@ -2870,7 +2922,7 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
     }
     group.add(&master_row);
 
-    let cycle_row = adw::ActionRow::builder()
+    let cycle_row = plain_row()
         .title("Switch output")
         .subtitle(match audio.policy.move_all_streams {
             true => "Cycle the default output; playing streams move with it.",
@@ -2925,7 +2977,7 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
     group.add(&cycle_row);
 
     if let Some(message) = &audio.message {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("Last audio change")
             .subtitle(message)
             .subtitle_lines(0)
@@ -2944,7 +2996,7 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
             .title(&device_group.label)
             .build();
         for output in &device_group.outputs {
-            let row = adw::ActionRow::builder()
+            let row = plain_row()
                 .title(&output.title)
                 .subtitle(&output.name)
                 .subtitle_lines(0)
@@ -3001,7 +3053,7 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
         })
         .build();
     if audio.streams.is_empty() {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title("No playing streams")
             .subtitle("Start playback in an application to control its volume.")
             .subtitle_lines(0)
@@ -3012,7 +3064,7 @@ fn build_audio_controls(audio: &AudioViewModel, commands: &Sender<ApplicationCom
     }
     let routable = audio.outputs.len() > 1;
     for stream in &audio.streams {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(&stream.title)
             .subtitle(&stream.detail)
             .subtitle_lines(0)
@@ -3051,7 +3103,7 @@ fn build_feature_hub_group(
         .build();
     let mut rows = Vec::<(adw::ActionRow, String)>::new();
     for feature in features {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(&feature.label)
             .subtitle(feature_hub_subtitle(feature))
             .subtitle_lines(0)
@@ -3168,7 +3220,7 @@ fn build_quick_toggle_group(
                 toggle.detail, toggle.requirement, toggle.source
             ),
         };
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(toggle.label)
             .subtitle(subtitle)
             .subtitle_lines(0)
@@ -3319,7 +3371,7 @@ fn build_warning_group(view_model: &ApplicationViewModel) -> adw::PreferencesGro
         .build();
 
     for warning in &view_model.warnings {
-        let row = adw::ActionRow::builder()
+        let row = plain_row()
             .title(format!("Warning for {}", warning.feature_id))
             .subtitle(&warning.message)
             .subtitle_lines(0)
