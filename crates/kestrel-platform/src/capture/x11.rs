@@ -310,8 +310,14 @@ mod tests {
             };
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
-                if fs::metadata(&socket).is_ok() && RustConnection::connect(Some(&display)).is_ok()
-                {
+                // Another server on this number answers with a different size.
+                let ours = fs::metadata(&socket).is_ok()
+                    && RustConnection::connect(Some(&display)).is_ok_and(|(connection, screen)| {
+                        connection.setup().roots.get(screen).is_some_and(|root| {
+                            (root.width_in_pixels, root.height_in_pixels) == (320, 240)
+                        })
+                    });
+                if ours && matches!(child.try_wait(), Ok(None)) {
                     return Some((TestServer(child), display));
                 }
                 thread::sleep(Duration::from_millis(10));
