@@ -610,7 +610,11 @@ mod tests {
 
     impl Drop for TestServer {
         fn drop(&mut self) {
-            let _ = self.0.kill();
+            // SIGTERM lets Xvfb remove its socket and lock file.
+            if let Ok(pid) = libc::pid_t::try_from(self.0.id()) {
+                // SAFETY: signals only the child this guard spawned.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
             let _ = self.0.wait();
         }
     }
@@ -618,6 +622,7 @@ mod tests {
     /// Starts a private Xvfb; rootless Xwayland drops XTEST input, so it is not used.
     fn start_private_server() -> Option<(TestServer, String)> {
         Command::new("Xvfb").arg("-help").output().ok()?;
+        // Disjoint from the capture live test, which runs in parallel.
         for number in 90..200 {
             let socket = format!("/tmp/.X11-unix/X{number}");
             // Leaves displays owned by other servers alone.
