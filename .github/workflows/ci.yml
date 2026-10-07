@@ -42,8 +42,8 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets
 
-  phase-0-spikes:
-    name: Phase 0 spikes
+  clipboard-clean-session:
+    name: Clipboard clean session
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -55,23 +55,10 @@ jobs:
           toolchain: 1.98.0
           components: rustfmt, clippy
 
-      - name: Compile system-monitor probe
-        run: rustc --edition 2021 -D warnings spikes/system-monitor/probe.rs -o /tmp/kestrel-system-monitor-probe
-
-      - name: Validate audio spike
-        run: |
-          cargo fmt --manifest-path spikes/audio/Cargo.toml --check
-          cargo clippy --manifest-path spikes/audio/Cargo.toml -- -D warnings
-          cargo test --manifest-path spikes/audio/Cargo.toml
-
-      - name: Validate clipboard spike
-        run: |
-          cargo fmt --manifest-path spikes/clipboard/Cargo.toml --check
-          cargo clippy --manifest-path spikes/clipboard/Cargo.toml -- -D warnings
-          cargo test --manifest-path spikes/clipboard/Cargo.toml
-
-      - name: Validate clipboard lifecycle in clean sessions
+      - name: Install clean-session packages
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libpulse-dev sway xvfb
-          KESTREL_REQUIRE_CLEAN_SESSION=1 bash spikes/clipboard/run-clean-session-lifecycle.sh
+
+      - name: Validate clipboard lifecycle in clean sessions
+        run: KESTREL_REQUIRE_CLEAN_SESSION=1 bash scripts/clipboard-clean-session.sh

@@ -92,8 +92,9 @@ state, command, and error payloads. It is not introduced preemptively.
 
 ## 4. Workspace boundaries
 
-The current workspace remains intentionally small. New crates are introduced
-only after the Phase 0 spikes prove the APIs and dependency costs they need.
+The current workspace remains intentionally small. Production adapters were
+adopted after Phase 0 validated their APIs and dependency costs; the evidence is
+recorded in closed issues #2–#8. New crates require the same evidence.
 
 ```text
 apps/

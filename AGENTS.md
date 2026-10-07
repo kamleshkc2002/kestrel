@@ -8,7 +8,7 @@ Kestrel is a local-first, capability-aware Linux desktop utility host written in
 - The normal application window is always available. Tray/SNI and global shortcuts are optional enhancements, never the only entry point.
 - Support is per capability, not a blanket Linux claim. Keep unavailable features visible with status, evidence, and remediation.
 - Run as an unprivileged graphical-session user. Do not add root daemons, setuid helpers, silent privilege escalation, or broad input-device access.
-- `docs/REQUIREMENTS.md` defines product/security boundaries; `docs/ARCHITECTURE.md` defines implementation boundaries. Spike findings are evidence, not production dependencies.
+- `docs/REQUIREMENTS.md` defines product/security boundaries; `docs/ARCHITECTURE.md` defines implementation boundaries. Phase 0 feasibility evidence is recorded in closed issues #2–#8.
 
 ## Architecture & Data Flow
 
@@ -47,8 +47,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 - `crates/kestrel-platform/src/`: concrete Linux probes/adapters, one module per feature.
 - `crates/kestrel-services/src/`: feature policy, state, commands, snapshots, and lifecycle, one module per feature.
 - `crates/kestrel-services/tests/`: production-backend integration tests; currently clipboard lifecycle only.
-- `spikes/`: disposable feasibility work outside the root Cargo workspace. Do not import spike implementations into production without an explicit adapter decision.
-- `scripts/`: packaging automation; currently the AppImage builder.
+- `scripts/`: packaging automation (the AppImage builder) and the clipboard clean-session QA runner.
 - `data/`: desktop metadata and icons used by packaging.
 - `docs/`: product requirements and architecture contracts.
 
@@ -69,8 +68,6 @@ Focused examples:
 ```bash
 cargo test -p kestrel-services
 cargo test -p kestrel-services clipboard::tests::stop_releases_owned_selection_and_joins_worker -- --exact
-cargo test --manifest-path spikes/audio/Cargo.toml
-cargo test --manifest-path spikes/clipboard/Cargo.toml
 ```
 
 AppImage preview:
@@ -109,7 +106,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `crates/kestrel-platform/src/lib.rs`: platform boundary and `CapabilityProbe` seam.
 - `Cargo.toml`: root workspace membership.
 - `rust-toolchain.toml`, `rustfmt.toml`: pinned compiler/components and formatting policy.
-- `.github/workflows/ci.yml`: canonical quality, build, test, spike, and clean-session checks.
+- `.github/workflows/ci.yml`: canonical quality, build, test, and clean-session checks.
 - `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
 - `scripts/build-appimage.sh`: release artifact construction.
 
@@ -132,9 +129,8 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - Run isolated clipboard QA with:
 
 ```bash
-KESTREL_REQUIRE_CLEAN_SESSION=1 bash spikes/clipboard/run-clean-session-lifecycle.sh
+KESTREL_REQUIRE_CLEAN_SESSION=1 bash scripts/clipboard-clean-session.sh
 ```
 
-This requires Xvfb, Sway, and `jq`, uses fixed display `:99`, and must not run concurrently. It creates fresh X11 and headless Wayland sessions and never touches the user's live clipboard.
-- Phase 0 spike crates are separate workspaces and require explicit `--manifest-path` formatting, clippy, and test commands.
+This requires Xvfb and Sway. It creates fresh X11 (Xvfb on a free display) and headless Wayland sessions and never touches the user's live clipboard.
 - GUI/package changes require the actual AppImage Xvfb startup scenario from `.github/workflows/appimage.yml`, not only unit tests.
