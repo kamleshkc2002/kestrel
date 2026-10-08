@@ -109,7 +109,7 @@ impl AlertNotifier for DesktopNotifier {
             .call(
                 "Notify",
                 &(
-                    "Kestrel",
+                    kestrel_core::APPLICATION_NAME,
                     0u32,
                     "battery-caution-symbolic",
                     notification.summary.as_str(),

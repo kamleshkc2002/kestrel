@@ -49,15 +49,8 @@ pub struct LoadedRanking {
 
 /// XDG data path for command ranking.
 pub fn ranking_path() -> Option<PathBuf> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/share"))
-        })?;
-    Some(data_home.join("kestrel").join("command_ranking.toml"))
+    crate::snippets::kestrel_data_directory()
+        .map(|directory| directory.join("command_ranking.toml"))
 }
 
 /// Loads ranking, ignoring missing or unreadable files.

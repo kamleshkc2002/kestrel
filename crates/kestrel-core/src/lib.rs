@@ -7,6 +7,31 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+/// Debug builds run as a separate application: their own bus name, settings,
+/// and data, so development never touches an installed release.
+pub const DEVELOPMENT_BUILD: bool = cfg!(debug_assertions);
+
+/// GApplication ID, portal app ID, and icon name.
+pub const APPLICATION_ID: &str = if DEVELOPMENT_BUILD {
+    "io.github.kamleshkc2002.Kestrel.Devel"
+} else {
+    "io.github.kamleshkc2002.Kestrel"
+};
+
+/// User-visible application name.
+pub const APPLICATION_NAME: &str = if DEVELOPMENT_BUILD {
+    "Kestrel (Development)"
+} else {
+    "Kestrel"
+};
+
+/// Directory name under the XDG config and data homes.
+pub const DATA_DIRECTORY_NAME: &str = if DEVELOPMENT_BUILD {
+    "kestrel-devel"
+} else {
+    "kestrel"
+};
+
 /// The runtime status of a feature on the current Linux session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityStatus {

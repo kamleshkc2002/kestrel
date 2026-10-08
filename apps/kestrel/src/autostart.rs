@@ -12,9 +12,13 @@ use std::{
 };
 
 /// Desktop-file name in the user's autostart directory.
-pub const DESKTOP_FILE_NAME: &str = "io.github.kamleshkc2002.Kestrel.desktop";
+pub const DESKTOP_FILE_NAME: &str = if kestrel_core::DEVELOPMENT_BUILD {
+    "io.github.kamleshkc2002.Kestrel.Devel.desktop"
+} else {
+    "io.github.kamleshkc2002.Kestrel.desktop"
+};
 
-const APPLICATION_NAME: &str = "Kestrel";
+const APPLICATION_NAME: &str = kestrel_core::APPLICATION_NAME;
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Failure resolving or changing the autostart entry.
@@ -384,8 +388,10 @@ mod tests {
         let content = fs::read_to_string(&path).expect("read desktop entry");
         assert_eq!(
             content,
-            "[Desktop Entry]\nType=Application\nName=Kestrel\nExec=\"".to_owned()
-                + executable.to_str().expect("UTF-8 test path")
+            format!(
+                "[Desktop Entry]\nType=Application\nName={}\nExec=\"",
+                kestrel_core::APPLICATION_NAME
+            ) + executable.to_str().expect("UTF-8 test path")
                 + "\"\n"
         );
 

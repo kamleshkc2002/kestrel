@@ -79,7 +79,11 @@ pub fn configuration_path() -> Option<PathBuf> {
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(config_home.join("kestrel").join("config.toml"))
+    Some(
+        config_home
+            .join(kestrel_core::DATA_DIRECTORY_NAME)
+            .join("config.toml"),
+    )
 }
 
 /// Loads and migrates configuration, retaining valid settings.

@@ -21,7 +21,7 @@ pub use x11::X11ShortcutBackend;
 
 pub const FEATURE_ID: &str = "global.shortcuts";
 /// The application ID registered with the portal and used as the bus name.
-pub const APPLICATION_ID: &str = "io.github.kamleshkc2002.Kestrel";
+pub use kestrel_core::APPLICATION_ID;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
