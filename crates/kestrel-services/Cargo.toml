@@ -9,7 +9,7 @@ description = "Feature service lifecycle and registry boundaries for Kestrel"
 kestrel-core = { path = "../kestrel-core" }
 kestrel-platform = { path = "../kestrel-platform" }
 zeroize = "1.8"
-png = "0.17"
+png = "0.18"
 
 [dev-dependencies]
 tempfile = "3"
