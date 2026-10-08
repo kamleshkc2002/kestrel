@@ -78,7 +78,10 @@ pub fn decode_png(bytes: &[u8]) -> Result<RgbaImage, ImageError> {
     if !valid_dimensions(info.width, info.height) {
         return Err(ImageError::InvalidDimensions);
     }
-    let mut frame = vec![0; reader.output_buffer_size()];
+    let size = reader
+        .output_buffer_size()
+        .ok_or(ImageError::InvalidDimensions)?;
+    let mut frame = vec![0; size];
     let output = reader.next_frame(&mut frame).map_err(png_error)?;
     let raw = &frame[..output.buffer_size()];
     let pixel_count = usize::try_from(output.width)

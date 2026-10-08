@@ -275,7 +275,7 @@ fn validate_png(png: Vec<u8>) -> Result<CapturedImage, CaptureError> {
         return Err(invalid());
     }
     let (width, height) = {
-        let reader = png::Decoder::new(png.as_slice())
+        let reader = png::Decoder::new(std::io::Cursor::new(png.as_slice()))
             .read_info()
             .map_err(|_| invalid())?;
         let info = reader.info();
@@ -301,10 +301,13 @@ fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, Capt
 /// Decodes a PNG to RGBA for assertions.
 #[cfg(test)]
 fn decode_rgba(png: &[u8]) -> (u32, u32, Vec<u8>) {
-    let mut reader = png::Decoder::new(png)
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
         .read_info()
         .expect("decode PNG header");
-    let mut buffer = vec![0; reader.output_buffer_size()];
+    let size = reader
+        .output_buffer_size()
+        .expect("frame size fits in memory");
+    let mut buffer = vec![0; size];
     let frame = reader.next_frame(&mut buffer).expect("decode PNG frame");
     assert_eq!(frame.color_type, png::ColorType::Rgba);
     buffer.truncate(frame.buffer_size());
