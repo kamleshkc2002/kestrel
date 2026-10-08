@@ -1800,7 +1800,7 @@ fn main() -> glib::ExitCode {
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
     let initial_appearance = loaded.configuration.ui.appearance;
     let application = adw::Application::builder()
-        .application_id("io.github.kamleshkc2002.Kestrel")
+        .application_id(kestrel_core::APPLICATION_ID)
         .flags(adw::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
     application.connect_startup(move |_| {

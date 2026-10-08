@@ -63,6 +63,8 @@ cargo build --workspace --all-targets
 cargo test --workspace --all-targets
 ```
 
+Debug builds run as `io.github.kamleshkc2002.Kestrel.Devel` ("Kestrel (Development)") with `kestrel-devel` config/data folders (`kestrel_core::DEVELOPMENT_BUILD`), so `cargo run` never forwards to or shares state with the user's installed release. `bash scripts/install-local.sh` installs a release build from the checkout to `~/.local`.
+
 Focused examples:
 
 ```bash

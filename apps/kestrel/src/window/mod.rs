@@ -63,13 +63,13 @@ impl WindowView {
     ) -> Self {
         let window = adw::ApplicationWindow::builder()
             .application(application)
-            .title("Kestrel")
+            .title(kestrel_core::APPLICATION_NAME)
             .default_width(DEFAULT_WINDOW_WIDTH)
             .default_height(DEFAULT_WINDOW_HEIGHT)
             .build();
         window.set_size_request(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT);
 
-        let title = adw::WindowTitle::new("Kestrel", "Feature capabilities");
+        let title = adw::WindowTitle::new(kestrel_core::APPLICATION_NAME, "Feature capabilities");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
@@ -287,7 +287,7 @@ fn build_page(
     page.set_margin_start(18);
     page.set_margin_end(18);
 
-    let heading = gtk::Label::new(Some("Kestrel"));
+    let heading = gtk::Label::new(Some(kestrel_core::APPLICATION_NAME));
     heading.add_css_class("title-1");
     heading.set_halign(Align::Start);
     heading.set_wrap(true);

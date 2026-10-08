@@ -158,6 +158,20 @@ verifies downloads.
 bash scripts/build-appimage.sh 0.1.0
 ```
 
+## Install from source
+
+To use Kestrel day to day from a checkout of `main`:
+
+```bash
+bash scripts/install-local.sh            # build and install, or update
+bash scripts/install-local.sh --restart  # update and restart a running copy
+bash scripts/install-local.sh --uninstall
+```
+
+The script builds a release binary and installs it to `~/.local/bin/kestrel`, with a desktop entry and icon under `~/.local/share`. Settings and data stay in `~/.config/kestrel` and `~/.local/share/kestrel`.
+
+Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the ID `io.github.kamleshkc2002.Kestrel.Devel` and their own `kestrel-devel` config and data folders, so they run next to the installed copy without sharing settings, captures, or the single-instance bus name. Release builds, including the AppImage, use the regular ID and folders.
+
 ## Development
 
 ### Prerequisites

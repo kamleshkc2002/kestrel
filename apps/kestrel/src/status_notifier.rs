@@ -75,7 +75,7 @@ impl KestrelTray {
 
 impl Tray for KestrelTray {
     fn id(&self) -> String {
-        "kestrel".to_owned()
+        kestrel_core::DATA_DIRECTORY_NAME.to_owned()
     }
 
     fn category(&self) -> Category {
@@ -83,7 +83,7 @@ impl Tray for KestrelTray {
     }
 
     fn title(&self) -> String {
-        "Kestrel".to_owned()
+        kestrel_core::APPLICATION_NAME.to_owned()
     }
 
     fn status(&self) -> Status {
