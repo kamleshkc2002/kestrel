@@ -3,7 +3,8 @@
 # current user: the binary, desktop entry, and icon under ~/.local.
 #
 #   bash scripts/install-local.sh              install or update
-#   bash scripts/install-local.sh --restart    also restart a running Kestrel
+#   bash scripts/install-local.sh --restart    also (re)start Kestrel; output goes
+#                                              to ~/.local/state/kestrel/launch.log
 #   bash scripts/install-local.sh --uninstall  remove the installed files
 #
 # Settings and data in ~/.config/kestrel and ~/.local/share/kestrel are kept.
@@ -66,16 +67,32 @@ refresh_caches
 
 printf 'Installed %s (%s).\n' "$binary" "$("$binary" --version)"
 
-if running; then
-  if [ "${1:-}" = "--restart" ]; then
+launch() {
+  local log="${XDG_STATE_HOME:-$HOME/.local/state}/kestrel/launch.log"
+  mkdir -p "$(dirname -- "$log")"
+  setsid "$binary" >"$log" 2>&1 </dev/null &
+  for _ in $(seq 1 50); do
+    running && return 0
+    sleep 0.1
+  done
+  printf 'Kestrel did not start; see %s.\n' "$log" >&2
+  return 1
+}
+
+if [ "${1:-}" = "--restart" ]; then
+  if running; then
     "$binary" --command app.quit || true
     for _ in $(seq 1 50); do
       running || break
       sleep 0.1
     done
-    setsid "$binary" >/dev/null 2>&1 </dev/null &
-    printf 'Restarted Kestrel.\n'
-  else
-    printf 'Kestrel is running the previous build; rerun with --restart or quit and reopen it.\n'
+    if running; then
+      printf 'The running Kestrel did not quit; close it and start it again.\n' >&2
+      exit 1
+    fi
   fi
+  launch
+  printf 'Started Kestrel.\n'
+elif running; then
+  printf 'Kestrel is running the previous build; rerun with --restart or quit and reopen it.\n'
 fi
