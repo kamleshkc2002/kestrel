@@ -294,7 +294,7 @@ impl CommandGate {
 
     /// Rebuilds the gate a forwarded command ended with; the running
     /// instance's window shows the full reason.
-    pub fn from_exit_status(status: i32, feature_id: &str) -> Option<Self> {
+    pub fn from_exit_status(status: u8, feature_id: &str) -> Option<Self> {
         let feature = feature_id.to_owned();
         match status {
             3 => Some(Self::Disabled { feature }),
@@ -555,9 +555,8 @@ mod tests {
         assert_eq!(statuses.len(), gates.len());
         assert!(!statuses.contains(&0) && !statuses.contains(&CommandLineError::EXIT_STATUS));
         for gate in &gates {
-            let rebuilt =
-                CommandGate::from_exit_status(i32::from(gate.exit_status()), "clipboard.history")
-                    .expect("every gate status is recognized");
+            let rebuilt = CommandGate::from_exit_status(gate.exit_status(), "clipboard.history")
+                .expect("every gate status is recognized");
             assert_eq!(rebuilt.exit_status(), gate.exit_status());
         }
         assert_eq!(CommandGate::from_exit_status(0, "clipboard.history"), None);

@@ -1792,7 +1792,7 @@ fn main() -> glib::ExitCode {
         Err(error) => {
             eprintln!("kestrel: {error}");
             eprint!("{}", usage());
-            return glib::ExitCode::from(i32::from(CommandLineError::EXIT_STATUS));
+            return glib::ExitCode::from(CommandLineError::EXIT_STATUS);
         }
         Ok(invocation @ (Invocation::Present | Invocation::Run(_))) => invocation,
     };
@@ -1817,7 +1817,7 @@ fn main() -> glib::ExitCode {
         if let Invocation::Run(action) = requested {
             if let Some(gate) = action
                 .required_feature()
-                .and_then(|feature| CommandGate::from_exit_status(exit.value(), feature))
+                .and_then(|feature| CommandGate::from_exit_status(exit.get(), feature))
             {
                 eprintln!("kestrel: {}: {gate}", action.id());
             }
@@ -1898,10 +1898,10 @@ fn main() -> glib::ExitCode {
     application.connect_command_line(move |application, command_line| {
         let arguments = command_line.arguments();
         let Ok(invocation) = parse_arguments(arguments.get(1..).unwrap_or_default()) else {
-            return i32::from(CommandLineError::EXIT_STATUS);
+            return glib::ExitCode::from(CommandLineError::EXIT_STATUS);
         };
         let Some(controller) = weak_controller.upgrade() else {
-            return 1;
+            return glib::ExitCode::FAILURE;
         };
         match invocation {
             Invocation::Present => controller.present(application),
@@ -1918,14 +1918,14 @@ fn main() -> glib::ExitCode {
                         eprintln!("kestrel: {message}");
                     }
                     controller.show_message(&message);
-                    return i32::from(gate.exit_status());
+                    return glib::ExitCode::from(gate.exit_status());
                 }
                 let _ = command_line_commands.try_send(action.to_command());
             }
             // Answered locally before registration.
             Invocation::Help | Invocation::Version | Invocation::ListCommands => {}
         }
-        0
+        glib::ExitCode::SUCCESS
     });
 
     let exit = application.run_with_args(&arguments);
