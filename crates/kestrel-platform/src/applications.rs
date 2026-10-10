@@ -198,7 +198,7 @@ pub fn launch_desktop_entry(entry: &ApplicationEntry) -> Result<(), DesktopError
             format!("{} has no desktop file to launch", entry.name),
         ));
     };
-    let Some(info) = gio::DesktopAppInfo::from_filename(source) else {
+    let Some(info) = gio_unix::DesktopAppInfo::from_filename(source) else {
         return Err(DesktopError::new(
             DesktopErrorKind::NotAvailable,
             format!("{} is not a launchable desktop entry", entry.name),
@@ -703,7 +703,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(entries[0].terminal);
         let source = entries[0].source.as_deref().expect("scan records the file");
-        let info = gio::DesktopAppInfo::from_filename(source).expect("GIO loads the entry");
+        let info = gio_unix::DesktopAppInfo::from_filename(source).expect("GIO loads the entry");
         assert!(
             info.boolean("Terminal"),
             "GIO applies its terminal wrapping"
