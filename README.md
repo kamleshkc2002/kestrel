@@ -104,6 +104,16 @@ and running state separately.
 - **Configuration:** `[screen_tools] ocr_language` (Tesseract codes such as `eng` or `eng+deu`; default `eng`) and `ocr_timeout_seconds` (5–120; default 30), also editable under Settings → Screen tools.
 - Everything runs on this computer: text through the `tesseract` executable, QR codes in-process. The frame stays in memory only while you select and is dropped once reading starts or you cancel; results stay until cleared and are never saved. Text and QR results copy to the clipboard, web addresses in QR codes open in your browser, and colors copy as HEX, RGB, or HSL.
 
+### Screen recording — `capture.recording`
+
+- **Default:** disabled; Balanced and Everything enable it. Nothing is shared until you press Screen, Window, or Area; the desktop's ScreenCast dialog asks every time, and Kestrel never asks it to remember the choice.
+- **Needs:** a ScreenCast portal backend (GNOME, KDE Plasma, COSMIC, wlroots), PipeWire, and GStreamer with its PipeWire, Base, and Good plugins (`sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good`). The feature names whichever piece is missing.
+- **Sources:** a screen or a window as the desktop offers; Area shares a screen, then shows its current frame so you can drag the region to keep.
+- **Audio:** System audio (the default output's monitor) and Microphone (the default input) are separate opt-in switches, each recorded as its own Opus track. A track that fails or disconnects is marked in the panel and the rest of the recording continues.
+- **Configuration:** `[recording] framerate` (10–60; default 30), `cursor` (default true), `system_audio`, `microphone` (default false), also editable in the panel.
+- Recordings are VP8 WebM files in `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`), written as a hidden `.partial` file (0600) and renamed only once complete. Discard, failures, and leftovers from a crash remove the partial file; earlier recordings are never touched. Pause leaves the paused time out of the file.
+- Stop, disabling the feature, and quitting save the take; the desktop ending the share saves what was recorded and says so. Recording stops and saves when less than 512 MiB of disk space remains.
+
 ### Scratchpad — `notes.scratchpad`
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command scratchpad.open`.
@@ -188,7 +198,8 @@ trigger = "LOGO+ALT+o"
 
 Tagged versions are published as x86_64 AppImage previews on GitHub Releases;
 Ubuntu 24.04 builds bundle GTK4/libadwaita, and the matching `.sha256` file
-verifies downloads.
+verifies downloads. The AppImage uses the system's GStreamer (present on
+mainstream desktops), so screen recording uses the host's plugins.
 
 ```bash
 bash scripts/build-appimage.sh 0.1.0
@@ -214,13 +225,15 @@ Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the 
 
 The workspace is pinned to Rust 1.98.0 by `rust-toolchain.toml`; rustup selects
 Rust, rustfmt, and Clippy. The application requires GTK4, libadwaita, PulseAudio,
-D-Bus, and PipeWire development packages.
+D-Bus, PipeWire, and GStreamer development packages.
 
 On Debian/Ubuntu-derived distributions:
 
 ```bash
 sudo apt update
-sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libdbus-1-dev libpipewire-0.3-dev libpulse-dev
+sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libdbus-1-dev libpipewire-0.3-dev libpulse-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+# Screen recording at run time, and the recorder tests:
+sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 ```
 
 If Rust is unavailable:

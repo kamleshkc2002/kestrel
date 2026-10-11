@@ -86,6 +86,41 @@ pub fn configuration_path() -> Option<PathBuf> {
     )
 }
 
+/// `$XDG_VIDEOS_DIR/Kestrel` from `user-dirs.dirs`, else `~/Videos/Kestrel`.
+pub fn recordings_path() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    let videos = fs::read_to_string(config_home.join("user-dirs.dirs"))
+        .ok()
+        .and_then(|contents| videos_directory(&contents, &home))
+        .unwrap_or_else(|| home.join("Videos"));
+    Some(videos.join(if kestrel_core::DEVELOPMENT_BUILD {
+        "Kestrel (Development)"
+    } else {
+        "Kestrel"
+    }))
+}
+
+/// `XDG_VIDEOS_DIR` from `user-dirs.dirs` contents; only `$HOME/…` and
+/// absolute values are valid there.
+fn videos_directory(contents: &str, home: &Path) -> Option<PathBuf> {
+    let value = contents
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("XDG_VIDEOS_DIR="))
+        .next_back()?
+        .trim()
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    if let Some(relative) = value.strip_prefix("$HOME") {
+        let relative = relative.trim_start_matches('/');
+        // `$HOME` alone means the directory is disabled.
+        return (!relative.is_empty()).then(|| home.join(relative));
+    }
+    value.starts_with('/').then(|| PathBuf::from(value))
+}
+
 /// Loads and migrates configuration, retaining valid settings.
 pub fn load(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> {
     match fs::read_to_string(path) {
@@ -208,6 +243,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_clipboard(&mut loaded, document.get("clipboard"));
     parse_snippets(&mut loaded, document.get("snippets"));
     parse_scratchpad(&mut loaded, document.get("scratchpad"));
+    parse_recording(&mut loaded, document.get("recording"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
     Ok(loaded)
 }
@@ -860,6 +896,50 @@ fn parse_screen_tools(loaded: &mut LoadedConfiguration, value: Option<&toml::Val
     }
 }
 
+fn parse_recording(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "recording",
+            "The recording value must be a TOML table.",
+        ));
+        return;
+    };
+    if let Some(value) = table.get("framerate") {
+        match u32::deserialize(value.clone()) {
+            Ok(framerate)
+                if (kestrel_core::MIN_RECORDING_FRAMERATE
+                    ..=kestrel_core::MAX_RECORDING_FRAMERATE)
+                    .contains(&framerate) =>
+            {
+                loaded.configuration.recording.framerate = framerate;
+            }
+            _ => loaded.warnings.push(warning(
+                "recording.framerate",
+                "Must be between 10 and 60 frames per second; the default was retained.",
+            )),
+        }
+    }
+    for (key, field) in [
+        ("cursor", &mut loaded.configuration.recording.cursor),
+        (
+            "system_audio",
+            &mut loaded.configuration.recording.system_audio,
+        ),
+        ("microphone", &mut loaded.configuration.recording.microphone),
+    ] {
+        if let Some(value) = table.get(key) {
+            match value.as_bool() {
+                Some(enabled) => *field = enabled,
+                None => loaded.warnings.push(warning(
+                    &format!("recording.{key}"),
+                    "Must be true or false; the default was retained.",
+                )),
+            }
+        }
+    }
+}
+
 fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
     let Some(value) = value else { return };
     let Some(clipboard) = value.as_table() else {
@@ -1331,12 +1411,14 @@ fn feature_warning(location: &str, error: ConfigurationError) -> ConfigurationWa
 mod tests {
     use super::{
         ConfigurationLoadError, export_string, import_file, import_string, load, parse, save,
+        videos_directory,
     };
     use kestrel_core::{
         AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy, AudioOutputSwitch,
         CURRENT_CONFIGURATION_SCHEMA_VERSION, MonitorReadout, PanelSection,
         PanelSectionConfiguration,
     };
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn migrates_legacy_enabled_features() {
@@ -1795,6 +1877,60 @@ ocr_timeout_seconds = 60
             configuration.screen_tools
         );
         assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn recording_settings_reject_bad_values_alone_and_survive_export() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[recording]
+framerate = 240
+cursor = false
+microphone = "yes"
+system_audio = true
+"#,
+        )
+        .expect("document itself is valid TOML");
+        let recording = loaded.configuration.recording;
+        assert_eq!(
+            recording.framerate,
+            kestrel_core::DEFAULT_RECORDING_FRAMERATE
+        );
+        assert!(!recording.cursor);
+        assert!(recording.system_audio);
+        assert!(!recording.microphone);
+        let mut rejected: Vec<&str> = loaded
+            .warnings
+            .iter()
+            .map(|warning| warning.feature_id.as_str())
+            .collect();
+        rejected.sort_unstable();
+        assert_eq!(rejected, ["recording.framerate", "recording.microphone"]);
+
+        let mut configuration = loaded.configuration.clone();
+        configuration.recording.framerate = 60;
+        let exported = export_string(&configuration).expect("configuration exports");
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(reloaded.configuration.recording, configuration.recording);
+        assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn videos_folder_follows_user_dirs() {
+        let home = Path::new("/home/user");
+        let folder = |contents: &str| videos_directory(contents, home);
+        assert_eq!(
+            folder("# comment\nXDG_VIDEOS_DIR=\"$HOME/Filme\"\n"),
+            Some(PathBuf::from("/home/user/Filme"))
+        );
+        assert_eq!(
+            folder("XDG_VIDEOS_DIR=\"/data/videos\""),
+            Some(PathBuf::from("/data/videos"))
+        );
+        assert_eq!(folder("XDG_VIDEOS_DIR=\"$HOME/\""), None, "disabled entry");
+        assert_eq!(folder("XDG_VIDEOS_DIR=\"relative\""), None);
+        assert_eq!(folder("XDG_MUSIC_DIR=\"$HOME/Music\""), None);
     }
 
     #[test]

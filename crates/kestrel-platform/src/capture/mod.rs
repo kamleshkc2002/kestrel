@@ -3,7 +3,7 @@
 
 mod detect;
 mod grim;
-mod portal;
+pub(crate) mod portal;
 mod x11;
 
 use std::fmt;

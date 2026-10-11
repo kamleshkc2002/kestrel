@@ -14,10 +14,13 @@ pub mod launcher;
 pub mod notifications;
 pub mod processes;
 pub mod quick_toggles;
+pub mod recording;
 pub mod screen_tools;
 pub mod snippets;
 pub mod speed_test;
 pub mod system_monitor;
+#[cfg(test)]
+mod test_bus;
 
 /// Number of retries while an executable is momentarily busy.
 const SPAWN_ATTEMPTS: usize = 5;

@@ -13,6 +13,7 @@ pub mod microphone;
 pub mod processes;
 
 pub mod quick_toggles;
+pub mod recording;
 pub mod scratchpad;
 pub mod screen_tools;
 pub mod snippets;

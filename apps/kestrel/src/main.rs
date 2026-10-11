@@ -55,6 +55,7 @@ struct TickUpdate {
     listeners: Option<kestrel::ListenersViewModel>,
     screen_tools: Option<kestrel::ScreenToolsViewModel>,
     camera: Option<kestrel::CameraViewModel>,
+    recording: Option<kestrel::RecordingViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -85,6 +86,7 @@ struct ControllerState {
     listener_generation: u64,
     screen_tools_generation: u64,
     camera_generation: u64,
+    recording_generation: u64,
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
@@ -309,6 +311,7 @@ fn run_tick(
         listeners,
         screen_tools,
         camera,
+        recording,
     ) = {
         let mut guard = state
             .lock()
@@ -359,6 +362,11 @@ fn run_tick(
             guard.camera_generation = generation;
             guard.runtime.camera_view_model()
         });
+        let generation = guard.runtime.recording_generation();
+        let recording = (generation != guard.recording_generation).then(|| {
+            guard.recording_generation = generation;
+            guard.runtime.recording_view_model()
+        });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
@@ -370,6 +378,7 @@ fn run_tick(
             listeners,
             screen_tools,
             camera,
+            recording,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -385,6 +394,7 @@ fn run_tick(
         listeners,
         screen_tools,
         camera,
+        recording,
     }
 }
 
@@ -566,6 +576,7 @@ enum ControllerOperation {
     SetProcessLimit(kestrel::ProcessLimit),
     SetScratchpadLimit(kestrel::ScratchpadLimit),
     SetScreenToolsSetting(kestrel::ScreenToolsSetting),
+    SetRecordingSetting(kestrel::RecordingSetting),
     RefreshProcesses,
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
@@ -612,10 +623,13 @@ struct ApplicationController {
     listeners_running: Cell<bool>,
     screen_tools_running: Cell<bool>,
     camera_running: Cell<bool>,
+    recording_running: Cell<bool>,
     /// A selection view is open; at most one at a time.
     selection_open: Cell<bool>,
     /// A frame waits for a selection view.
     selection_pending: Cell<Option<kestrel::ScreenTool>>,
+    /// The recording area view is open.
+    recording_area_open: Cell<bool>,
     listener_last_refresh: Cell<Instant>,
     monitor_started_at: Instant,
     /// Bounds backend polling to the two-second interval.
@@ -653,6 +667,7 @@ impl ApplicationController {
             .into_iter()
             .any(|tool| runtime.screen_tool_is_running(tool));
         let camera_running = runtime.camera_is_running();
+        let recording_running = runtime.recording_is_running();
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -673,6 +688,7 @@ impl ApplicationController {
                 listener_generation: 0,
                 screen_tools_generation: 0,
                 camera_generation: 0,
+                recording_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -694,8 +710,10 @@ impl ApplicationController {
             listeners_running: Cell::new(listeners_running),
             screen_tools_running: Cell::new(screen_tools_running),
             camera_running: Cell::new(camera_running),
+            recording_running: Cell::new(recording_running),
             selection_open: Cell::new(false),
             selection_pending: Cell::new(None),
+            recording_area_open: Cell::new(false),
             listener_last_refresh: Cell::new(Instant::now()),
             monitor_started_at: Instant::now(),
             microphone_last_refresh: Cell::new(Instant::now()),
@@ -923,6 +941,7 @@ impl ApplicationController {
                 self.screen_tools_running
                     .set(view_model.screen_tools.available);
                 self.camera_running.set(view_model.camera.running);
+                self.recording_running.set(view_model.recording.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -941,6 +960,7 @@ impl ApplicationController {
                 self.screen_tools_running
                     .set(view_model.screen_tools.available);
                 self.camera_running.set(view_model.camera.running);
+                self.recording_running.set(view_model.recording.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
@@ -979,6 +999,7 @@ impl ApplicationController {
             && !self.listeners_running.get()
             && !self.screen_tools_running.get()
             && !self.camera_running.get()
+            && !self.recording_running.get()
             && !microphone_due
         {
             self.monitoring.set(false);
@@ -1018,6 +1039,7 @@ impl ApplicationController {
             listeners,
             screen_tools,
             camera,
+            recording,
         } = update;
         if let Some(screen_tools) = &screen_tools {
             self.screen_tools_running.set(screen_tools.available);
@@ -1029,6 +1051,13 @@ impl ApplicationController {
             }
         }
         self.open_pending_selection();
+        if let Some(recording) = &recording {
+            self.recording_running.set(recording.running);
+            if recording.choosing_area && self.window.borrow().is_none() {
+                let _ = self.commands.try_send(ApplicationCommand::PresentWindow);
+            }
+        }
+        self.open_recording_area();
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1039,6 +1068,9 @@ impl ApplicationController {
         if let Some(camera) = camera {
             self.camera_running.set(camera.running);
             view.set_camera(&camera);
+        }
+        if let Some(recording) = recording {
+            view.set_recording(&recording);
         }
         if let Some(monitor) = monitor {
             self.monitor_running.set(monitor.running);
@@ -1137,6 +1169,70 @@ impl ApplicationController {
         }
     }
 
+    /// Runs a recording request on the GTK thread; requests only signal the
+    /// recording worker.
+    fn recording_request(&self, request: kestrel::RecordingRequest) {
+        if matches!(
+            request,
+            kestrel::RecordingRequest::ChooseArea(_) | kestrel::RecordingRequest::Cancel
+        ) {
+            self.recording_area_open.set(false);
+        }
+        let (result, recording) = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let result = guard.runtime.recording_request(request);
+            (result, guard.runtime.recording_view_model())
+        };
+        self.recording_running.set(recording.running);
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_recording(&recording);
+            if let Err(error) = result {
+                view.show_message(&error);
+            }
+        }
+    }
+
+    /// Opens the area view while the recording waits for an area.
+    fn open_recording_area(&self) {
+        if self.recording_area_open.get() {
+            return;
+        }
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        let frame = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .recording_area_frame();
+        let Some(frame) = frame else {
+            return;
+        };
+        self.recording_area_open.set(true);
+        let commands = self.commands.clone();
+        screen_selection::open(
+            &view.window,
+            screen_selection::SelectionPurpose::RECORD_AREA,
+            frame,
+            move |choice| {
+                let request = match choice {
+                    Some(kestrel::Selection::Region(region)) => {
+                        kestrel::RecordingRequest::ChooseArea(region)
+                    }
+                    Some(kestrel::Selection::Pixel { .. }) | None => {
+                        kestrel::RecordingRequest::Cancel
+                    }
+                };
+                let _ = commands.try_send(ApplicationCommand::Recording(request));
+            },
+        );
+    }
+
     /// Opens the selection view for a waiting frame once a window exists.
     fn open_pending_selection(&self) {
         let Some(tool) = self.selection_pending.get() else {
@@ -1159,7 +1255,19 @@ impl ApplicationController {
             return;
         };
         self.selection_open.set(true);
-        screen_selection::open(&view.window, tool, frame, self.commands.clone());
+        let commands = self.commands.clone();
+        screen_selection::open(
+            &view.window,
+            screen_selection::SelectionPurpose::for_tool(tool),
+            frame,
+            move |choice| {
+                let request = choice.map_or(
+                    kestrel::ScreenToolRequest::Cancel,
+                    kestrel::ScreenToolRequest::Select,
+                );
+                let _ = commands.try_send(ApplicationCommand::ScreenTools(request));
+            },
+        );
     }
 
     fn confirm_process(
@@ -1779,6 +1887,38 @@ impl ControllerState {
                     kestrel::ScreenToolsSetting::OcrTimeoutSeconds(seconds) => {
                         candidate.screen_tools.ocr_timeout_seconds = seconds;
                         format!("Reading text stops after {seconds} s")
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetRecordingSetting(setting) => {
+                let mut candidate = self.configuration.clone();
+                let message = match setting {
+                    kestrel::RecordingSetting::Framerate(framerate) => {
+                        candidate.recording.framerate = framerate;
+                        format!("Recordings use {framerate} frames per second")
+                    }
+                    kestrel::RecordingSetting::Cursor(cursor) => {
+                        candidate.recording.cursor = cursor;
+                        format!(
+                            "The pointer is {} recordings",
+                            if cursor { "drawn into" } else { "left out of" }
+                        )
+                    }
+                    kestrel::RecordingSetting::Track(track, enabled) => {
+                        match track {
+                            kestrel::AudioTrack::System => {
+                                candidate.recording.system_audio = enabled
+                            }
+                            kestrel::AudioTrack::Microphone => {
+                                candidate.recording.microphone = enabled;
+                            }
+                        }
+                        format!(
+                            "{} is {} recordings",
+                            track.label(),
+                            if enabled { "added to" } else { "left out of" }
+                        )
                     }
                 };
                 self.commit_configuration(candidate, config_path, message)?
@@ -2626,6 +2766,11 @@ fn dispatch_commands(
                 ),
                 ApplicationCommand::ScreenTools(request) => controller.screen_tool_request(request),
                 ApplicationCommand::Camera(request) => controller.camera_request(request),
+                ApplicationCommand::Recording(request) => controller.recording_request(request),
+                ApplicationCommand::SetRecordingSetting(setting) => controller.request_operation(
+                    ControllerOperation::SetRecordingSetting(setting),
+                    "kestrel-recording-setting",
+                ),
                 ApplicationCommand::SetScreenToolsSetting(setting) => controller.request_operation(
                     ControllerOperation::SetScreenToolsSetting(setting),
                     "kestrel-screen-tools-setting",

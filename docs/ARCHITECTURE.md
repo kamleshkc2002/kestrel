@@ -589,6 +589,42 @@ reads at 30 Hz into a `GdkMemoryTexture`; stop clears it. The window stops the
 preview when it closes, and `reconcile_resources` stops it when the feature is
 disabled.
 
+### 5.17 Screen recording
+
+`capture.recording` reads the ScreenCast portal's `version`,
+`AvailableSourceTypes`, and `AvailableCursorModes`, the PipeWire socket, the
+GStreamer registry (`pipewiresrc`, `vp8enc`, `webmmux`, `videocrop`, Opus
+elements), and the PulseAudio default output and inputs; it opens no dialog
+and no stream. Screen, Window, and Area follow the source types; Area needs
+monitors and `videocrop`; each audio track needs its device and elements.
+
+`RecordingService` runs one session on the `kestrel-recording` worker:
+`CreateSession` → `SelectSources` (`persist_mode` 0) → `Start` →
+`OpenPipeWireRemote` on a dedicated bus connection that lives as long as the
+session, watching `Session::Closed`. A `CaptureCancel` closes the connection,
+which dismisses the dialog. One still frame sizes the encoder and, for Area,
+feeds the selection view; the chosen region is cropped to even sides.
+
+The GStreamer pipeline is `pipewiresrc` → leaky queue → `videocrop` →
+`videoscale` (fixed size, borders) → `videorate` → I420 → `vp8enc` (realtime,
+keyframe every 2 s) → `webmmux` → `filesink`, with one `pulsesrc` → Opus bin
+per audio track on the system clock. The pipeline never leaves PLAYING
+(`pipewiresrc` fails PAUSED → PLAYING): pause drops buffers in a probe before
+each encoder, and resume sets a negative pad offset of the total paused time
+there, so the file has no gap. A track error unlinks its bin and
+sends EOS to its muxer pad; a track that cannot open at start is removed and
+the pipeline starts without it. Finishing sends EOS into every branch's queue,
+so the file completes even after the source stopped, then waits up to 10 s.
+
+Takes are written to `.Kestrel-recording-<time>.webm.partial` (0600) in
+`$XDG_VIDEOS_DIR/Kestrel` and renamed once finished. Cancel, failures, and
+timeouts remove the partial file; the service removes stale partial files
+(untouched for a minute) when it starts. Free space is checked before
+recording and every second; below 512 MiB the take is finished. `shutdown`
+(feature disabled, application exit) finishes a running take, abandons a
+session still asking or choosing, and joins the worker; the recorder drops
+before the session, which closes the portal session.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

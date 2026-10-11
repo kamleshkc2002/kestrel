@@ -28,7 +28,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libadwaita-1-dev libgtk-4-dev libpulse-dev xvfb dbus
+            libadwaita-1-dev libgtk-4-dev libpulse-dev xvfb dbus \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -58,7 +60,8 @@ jobs:
       - name: Install clean-session packages
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libpulse-dev sway xvfb
+          sudo apt-get install --no-install-recommends -y libpulse-dev sway xvfb \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
       - name: Validate clipboard lifecycle in clean sessions
         run: KESTREL_REQUIRE_CLEAN_SESSION=1 bash scripts/clipboard-clean-session.sh

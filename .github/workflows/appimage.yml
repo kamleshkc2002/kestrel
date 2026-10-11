@@ -30,7 +30,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
-            libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb
+            libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
       - name: Validate desktop metadata
         run: desktop-file-validate data/io.github.kamleshkc2002.Kestrel.desktop
@@ -53,6 +54,8 @@ jobs:
           test -f squashfs-root/io.github.kamleshkc2002.Kestrel.desktop
           test -f squashfs-root/io.github.kamleshkc2002.Kestrel.svg
           grep -q 'libadwaita' <(ldd squashfs-root/usr/bin/kestrel)
+          # GStreamer comes from the host.
+          ! find squashfs-root/usr/lib -name 'libgst*' -print -quit | grep -q .
           (
             cd dist
             sha256sum --check "$(basename "$appimage").sha256"

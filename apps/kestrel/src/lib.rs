@@ -27,6 +27,7 @@ pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreferenc
 pub use kestrel_platform::capture::CaptureMode;
 pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
+pub use kestrel_platform::recording::{AudioTrack, RecordingSource};
 pub use kestrel_platform::screen_tools::{ALL_SCREEN_TOOLS, ScreenTool};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::camera::CameraFrameSlot;
@@ -58,11 +59,12 @@ pub use view_model::{
     MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel,
     QrRowViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
-    RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
-    ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
-    ShortcutRowViewModel, ShortcutsViewModel, SnippetBoundsViewModel, SnippetDraft,
-    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
-    SpeedTestViewModel,
+    RecordingControls, RecordingTakeViewModel, RecordingTrackOptionViewModel,
+    RecordingTrackViewModel, RecordingViewModel, RemediationViewModel, ScratchpadExpiredViewModel,
+    ScratchpadTabViewModel, ScratchpadViewModel, ScreenToolButtonViewModel,
+    ScreenToolResultViewModel, ScreenToolsViewModel, ShortcutRowViewModel, ShortcutsViewModel,
+    SnippetBoundsViewModel, SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel,
+    SnippetPolicyViewModel, SnippetsViewModel, SpeedTestViewModel,
 };
 
 /// Command-bar action from the window.
@@ -156,6 +158,33 @@ pub enum CameraRequest {
     /// Opens this camera; it must be one the window listed.
     Start(std::path::PathBuf),
     Stop,
+}
+
+/// Screen recording action from the window or the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordingRequest {
+    /// Asks the desktop to share this source and records it.
+    Start(RecordingSource),
+    /// The area view's choice; `None` records the whole frame.
+    ChooseArea(Option<Rect>),
+    Pause,
+    Resume,
+    /// Completes the take.
+    Stop,
+    /// Ends the session and discards what was recorded.
+    Cancel,
+    /// Clears the finished or failed outcome.
+    Dismiss,
+    /// Removes a listed take.
+    Delete(std::path::PathBuf),
+}
+
+/// Recording default changed in the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingSetting {
+    Framerate(u32),
+    Cursor(bool),
+    Track(AudioTrack, bool),
 }
 /// Bounded clipboard retention value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,6 +328,8 @@ pub enum ApplicationCommand {
     SetScratchpadLimit(ScratchpadLimit),
     Processes(ProcessRequest),
     Camera(CameraRequest),
+    Recording(RecordingRequest),
+    SetRecordingSetting(RecordingSetting),
     CopyText(String),
     OpenUri(String),
     ScreenTools(ScreenToolRequest),

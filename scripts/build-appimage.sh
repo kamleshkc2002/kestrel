@@ -38,12 +38,15 @@ curl --fail --location --retry 3 \
   "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/${plugin_revision}/linuxdeploy-plugin-gtk.sh"
 chmod +x "$linuxdeploy" "$gtk_plugin"
 
+# GStreamer stays the host's: its plugins must match the core library, and
+# screen recording reports missing plugins from the host registry.
 env DEPLOY_GTK_VERSION=4 \
   "$linuxdeploy" --appimage-extract-and-run \
   --appdir "$appdir" \
   --executable "$root_dir/target/release/kestrel" \
   --desktop-file "$desktop_file" \
   --icon-file "$icon_file" \
+  --exclude-library 'libgst*' \
   --plugin gtk
 
 # The GTK plugin carries GTK3-era overrides. Libadwaita must own its stylesheet,
