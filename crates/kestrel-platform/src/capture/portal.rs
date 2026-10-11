@@ -24,19 +24,19 @@ use super::{
 };
 use crate::global_shortcuts::APPLICATION_ID;
 
-const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
-const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+pub(crate) const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
+pub(crate) const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const SCREENSHOT_INTERFACE: &str = "org.freedesktop.portal.Screenshot";
 const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const RESPONSE_MEMBER: &str = "Response";
 const REGISTRY_BUS: &str = "org.freedesktop.host.portal.Registry";
 const REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";
-const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+pub(crate) const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a late response is awaited after a timeout or cancel, so its file is removed.
 const LATE_RESPONSE_GRACE: Duration = Duration::from_millis(200);
 
-type Response = (u32, HashMap<String, OwnedValue>);
+pub(crate) type Response = (u32, HashMap<String, OwnedValue>);
 
 pub struct PortalCaptureBackend {
     address: Option<String>,
@@ -95,12 +95,20 @@ impl Default for PortalColorPicker {
     }
 }
 
-fn connect(address: Option<&str>, timeout: Duration) -> Result<Connection, zbus::Error> {
+pub(crate) fn connect(address: Option<&str>, timeout: Duration) -> Result<Connection, zbus::Error> {
     let builder = match address {
         Some(address) => Builder::address(address)?,
         None => Builder::session()?,
     };
     builder.method_timeout(timeout).build()
+}
+
+/// Tells the host portal registry which app is asking; absent registries are fine.
+pub(crate) fn register_application(connection: &Connection) {
+    if let Ok(registry) = Proxy::new(connection, REGISTRY_BUS, PORTAL_PATH, REGISTRY_INTERFACE) {
+        let empty: HashMap<String, OwnedValue> = HashMap::new();
+        let _: Result<(), _> = registry.call("Register", &(APPLICATION_ID, empty));
+    }
 }
 
 impl Default for PortalCaptureBackend {
@@ -197,7 +205,11 @@ fn call_portal(
         close_request(&abort_connection, &abort_request);
         let _ = abort_connection.close();
     }));
-    let response = send_request(&connection, method, options, &request, deadline, discard);
+    register_application(&connection);
+    let response = send_request(&connection, &request, deadline, discard, || {
+        Proxy::new(&connection, PORTAL_BUS, PORTAL_PATH, SCREENSHOT_INTERFACE)?
+            .call(method, &("", options))
+    });
     cancel.clear_abort();
     let _ = connection.close();
     match response {
@@ -210,7 +222,7 @@ fn call_portal(
     }
 }
 
-enum Failure {
+pub(crate) enum Failure {
     Timeout,
     Error(CaptureError),
 }
@@ -219,26 +231,20 @@ fn failed(message: impl Into<String>) -> Failure {
     Failure::Error(CaptureError::new(CaptureErrorKind::Failed, message))
 }
 
-fn send_request(
+/// Makes one portal request through `call` and waits for its `Response`
+/// until `deadline`. On timeout the request and connection close; a response
+/// arriving shortly after goes to `discard`.
+pub(crate) fn send_request(
     connection: &Connection,
-    method: &str,
-    options: HashMap<String, OwnedValue>,
     request: &str,
     deadline: Instant,
     discard: fn(Response),
+    call: impl FnOnce() -> zbus::Result<OwnedObjectPath>,
 ) -> Result<Response, Failure> {
-    if let Ok(registry) = Proxy::new(connection, REGISTRY_BUS, PORTAL_PATH, REGISTRY_INTERFACE) {
-        let empty: HashMap<String, OwnedValue> = HashMap::new();
-        let _: Result<(), _> = registry.call("Register", &(APPLICATION_ID, empty));
-    }
     // Subscribed before the call, so a fast Response is not lost.
     let signals = response_signals(connection)
         .map_err(|error| failed(format!("Subscribing to portal responses failed: {error}")))?;
-    let portal = Proxy::new(connection, PORTAL_BUS, PORTAL_PATH, SCREENSHOT_INTERFACE)
-        .map_err(|error| failed(format!("Creating the portal proxy failed: {error}")))?;
-    let handle: OwnedObjectPath = portal
-        .call(method, &("", options))
-        .map_err(|error| failed(format!("The portal request failed: {error}")))?;
+    let handle = call().map_err(|error| failed(format!("The portal request failed: {error}")))?;
     // Portals older than version 0.9 answer on the returned handle.
     let paths = [request.to_owned(), handle.as_str().to_owned()];
     let receiver = spawn_waiter(signals, paths)?;
@@ -446,18 +452,18 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, CaptureError> {
     Ok(png)
 }
 
-fn close_request(connection: &Connection, path: &str) {
+pub(crate) fn close_request(connection: &Connection, path: &str) {
     if let Ok(proxy) = Proxy::new(connection, PORTAL_BUS, path, REQUEST_INTERFACE) {
         let _ = proxy.call_noreply("Close", &());
     }
 }
 
-fn request_path(sender: &str, token: &str) -> String {
+pub(crate) fn request_path(sender: &str, token: &str) -> String {
     let sender = sender.trim_start_matches(':').replace('.', "_");
     format!("{PORTAL_PATH}/request/{sender}/{token}")
 }
 
-fn token_suffix() -> u64 {
+pub(crate) fn token_suffix() -> u64 {
     static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
     NEXT_TOKEN.fetch_add(1, Ordering::Relaxed)
 }
@@ -466,9 +472,6 @@ fn token_suffix() -> u64 {
 mod tests {
     use super::*;
     use crate::capture::{decode_rgba, solid_png};
-    use std::io::{BufRead, BufReader};
-    use std::process::{Child, Command, Stdio};
-    use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Mutex};
     use zbus::object_server::SignalEmitter;
 
@@ -587,85 +590,29 @@ mod tests {
     struct FakeBus {
         address: String,
         observed: Arc<Mutex<Observed>>,
-        stop: Arc<AtomicBool>,
-        daemon: Child,
-        thread: Option<thread::JoinHandle<()>>,
+        /// Kept alive for the test's duration.
+        _bus: crate::test_bus::PrivateBus,
     }
 
     impl FakeBus {
         fn start(reply: Reply) -> Option<Self> {
-            let Ok(mut daemon) = Command::new("dbus-daemon")
-                .args(["--session", "--print-address", "--nofork"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-            else {
-                eprintln!("skipping: dbus-daemon is not available");
-                return None;
-            };
-            let mut address = String::new();
-            BufReader::new(daemon.stdout.take().expect("piped stdout"))
-                .read_line(&mut address)
-                .expect("read the private bus address");
-            let address = address.trim().to_owned();
-            assert!(!address.is_empty(), "dbus-daemon printed an address");
             let observed = Arc::new(Mutex::new(Observed::default()));
-            let stop = Arc::new(AtomicBool::new(false));
-            let (ready_tx, ready_rx) = mpsc::channel();
-            let worker_address = address.clone();
-            let worker_observed = Arc::clone(&observed);
-            let worker_stop = Arc::clone(&stop);
-            let thread = thread::Builder::new()
-                .name("kestrel-test-screenshot-portal".to_owned())
-                .spawn(move || {
-                    let portal = FakePortal {
-                        reply,
-                        observed: worker_observed,
-                    };
-                    let connection = Builder::address(worker_address.as_str())
-                        .and_then(|builder| builder.name(PORTAL_BUS))
-                        .and_then(|builder| builder.serve_at(PORTAL_PATH, portal))
-                        .and_then(|builder| builder.build());
-                    let connection = match connection {
-                        Ok(connection) => connection,
-                        Err(error) => {
-                            let _ = ready_tx.send(Err(error.to_string()));
-                            return;
-                        }
-                    };
-                    let _ = ready_tx.send(Ok(()));
-                    while !worker_stop.load(Ordering::Acquire) {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    let _ = connection.close();
-                })
-                .expect("spawn the fake portal");
-            ready_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("fake portal starts")
-                .expect("fake portal owns its name");
+            let portal = FakePortal {
+                reply,
+                observed: Arc::clone(&observed),
+            };
+            let bus = crate::test_bus::PrivateBus::start(PORTAL_BUS, move |builder| {
+                builder.serve_at(PORTAL_PATH, portal)
+            })?;
             Some(Self {
-                address,
+                address: bus.address.clone(),
                 observed,
-                stop,
-                daemon,
-                thread: Some(thread),
+                _bus: bus,
             })
         }
 
         fn observed(&self) -> std::sync::MutexGuard<'_, Observed> {
             self.observed.lock().expect("observed state")
-        }
-    }
-
-    impl Drop for FakeBus {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Release);
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
-            let _ = self.daemon.kill();
-            let _ = self.daemon.wait();
         }
     }
 

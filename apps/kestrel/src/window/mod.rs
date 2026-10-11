@@ -8,6 +8,7 @@ mod command_bar;
 mod features;
 mod monitor;
 mod processes;
+mod recording;
 mod scratchpad;
 mod screen_tools;
 mod settings;
@@ -34,6 +35,7 @@ use kestrel::{
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
+use recording::build_recording_group;
 use scratchpad::{ScratchpadPanel, build_scratchpad_panel};
 use screen_tools::build_screen_tools_group;
 use settings::build_settings_group;
@@ -59,6 +61,7 @@ pub struct WindowView {
     camera_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Preview frames shared with the camera service.
     camera_frames: CameraFrameSlot,
+    recording_container: std::cell::RefCell<Option<gtk::Box>>,
     shortcuts_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
@@ -130,6 +133,7 @@ impl WindowView {
             screen_tools_container: std::cell::RefCell::new(page.screen_tools_container),
             camera_container: std::cell::RefCell::new(page.camera_container),
             camera_frames,
+            recording_container: std::cell::RefCell::new(page.recording_container),
             shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
@@ -153,6 +157,7 @@ impl WindowView {
         *self.capture_container.borrow_mut() = page.capture_container;
         *self.screen_tools_container.borrow_mut() = page.screen_tools_container;
         *self.camera_container.borrow_mut() = page.camera_container;
+        *self.recording_container.borrow_mut() = page.recording_container;
         *self.shortcuts_container.borrow_mut() = Some(page.shortcuts_container);
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
@@ -291,6 +296,17 @@ impl WindowView {
         ));
     }
 
+    /// Replaces the recording group.
+    pub fn set_recording(&self, recording: &kestrel::RecordingViewModel) {
+        let Some(container) = self.recording_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_recording_group(recording, &self.commands));
+    }
+
     /// Replaces the capture group.
     pub fn set_capture(&self, capture: &CaptureViewModel) {
         let Some(container) = self.capture_container.borrow().as_ref().cloned() else {
@@ -361,6 +377,7 @@ struct PageBuild {
     capture_container: Option<gtk::Box>,
     screen_tools_container: Option<gtk::Box>,
     camera_container: Option<gtk::Box>,
+    recording_container: Option<gtk::Box>,
     shortcuts_container: gtk::Box,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
@@ -412,6 +429,7 @@ fn build_page(
     let mut capture_container = None;
     let mut screen_tools_container = None;
     let mut camera_container = None;
+    let mut recording_container = None;
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
     let mut command_panel = None;
@@ -449,6 +467,10 @@ fn build_page(
                 ));
                 page.append(&screen_tools);
                 screen_tools_container = Some(screen_tools);
+                let recording = gtk::Box::new(Orientation::Vertical, 0);
+                recording.append(&build_recording_group(&view_model.recording, commands));
+                page.append(&recording);
+                recording_container = Some(recording);
                 let camera = gtk::Box::new(Orientation::Vertical, 0);
                 camera.append(&build_camera_group(
                     &view_model.camera,
@@ -505,6 +527,7 @@ fn build_page(
         capture_container,
         screen_tools_container,
         camera_container,
+        recording_container,
         shortcuts_container,
         clipboard_panel,
         snippet_panel,

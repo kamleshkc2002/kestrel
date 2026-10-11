@@ -184,6 +184,11 @@ pub const MIN_OCR_TIMEOUT_SECONDS: u32 = 5;
 pub const DEFAULT_OCR_TIMEOUT_SECONDS: u32 = 30;
 pub const MAX_OCR_TIMEOUT_SECONDS: u32 = 120;
 
+// Screen recording bounds.
+pub const MIN_RECORDING_FRAMERATE: u32 = 10;
+pub const DEFAULT_RECORDING_FRAMERATE: u32 = 30;
+pub const MAX_RECORDING_FRAMERATE: u32 = 60;
+
 // Global-shortcut bounds.
 pub const MAX_SHORTCUT_BINDINGS: usize = 32;
 pub const MAX_SHORTCUT_COMMAND_CHARS: usize = 64;
@@ -484,6 +489,8 @@ pub struct ApplicationConfiguration {
     pub command_bar: CommandBarConfiguration,
     #[serde(default)]
     pub scratchpad: ScratchpadConfiguration,
+    #[serde(default)]
+    pub recording: RecordingConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -504,6 +511,7 @@ impl Default for ApplicationConfiguration {
             snippets: SnippetConfiguration::default(),
             command_bar: CommandBarConfiguration::default(),
             scratchpad: ScratchpadConfiguration::default(),
+            recording: RecordingConfiguration::default(),
         }
     }
 }
@@ -566,6 +574,7 @@ impl ApplicationConfiguration {
         self.clipboard.validate()?;
         self.snippets.validate()?;
         self.scratchpad.validate()?;
+        self.recording.validate()?;
         self.command_bar.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
@@ -1132,6 +1141,46 @@ impl ProcessConfiguration {
         if !(MIN_PROCESS_ROWS..=MAX_PROCESS_ROWS).contains(&self.max_rows) {
             return Err(ConfigurationError::InvalidProcessRows {
                 rows: self.max_rows,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Defaults for the next screen recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingConfiguration {
+    #[serde(default = "default_recording_framerate")]
+    pub framerate: u32,
+    /// Draw the pointer into the recording when the desktop can.
+    #[serde(default = "default_true")]
+    pub cursor: bool,
+    #[serde(default)]
+    pub system_audio: bool,
+    #[serde(default)]
+    pub microphone: bool,
+}
+
+fn default_recording_framerate() -> u32 {
+    DEFAULT_RECORDING_FRAMERATE
+}
+
+impl Default for RecordingConfiguration {
+    fn default() -> Self {
+        Self {
+            framerate: DEFAULT_RECORDING_FRAMERATE,
+            cursor: true,
+            system_audio: false,
+            microphone: false,
+        }
+    }
+}
+
+impl RecordingConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_RECORDING_FRAMERATE..=MAX_RECORDING_FRAMERATE).contains(&self.framerate) {
+            return Err(ConfigurationError::InvalidRecordingFramerate {
+                framerate: self.framerate,
             });
         }
         Ok(())
@@ -1863,6 +1912,7 @@ pub enum ConfigurationError {
     InvalidProcessRows { rows: u32 },
     InvalidOcrLanguage { language: String },
     InvalidOcrTimeoutSeconds { seconds: u32 },
+    InvalidRecordingFramerate { framerate: u32 },
     TooManyShortcutBindings { bindings: usize },
     InvalidShortcutCommand { command: String },
     InvalidShortcutTrigger { trigger: String },

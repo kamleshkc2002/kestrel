@@ -1,8 +1,9 @@
-//! Selection view for screen tools: drag a region to read, or click a pixel
-//! to sample, with a magnifier that follows the pointer.
+//! Selection view over a captured frame: drag a region (screen tools, area
+//! recording), or click a pixel to sample, with a magnifier that follows the
+//! pointer.
 //!
 //! The view holds the frame only while open; closing it without a choice
-//! cancels the job.
+//! cancels.
 
 use std::{
     cell::{Cell, RefCell},
@@ -11,9 +12,8 @@ use std::{
 };
 
 use adw::prelude::*;
-use async_channel::Sender;
 use gtk::{Orientation, accessible::Property, cairo, gdk};
-use kestrel::{ApplicationCommand, Rect, RgbaImage, ScreenTool, ScreenToolRequest, Selection};
+use kestrel::{Rect, RgbaImage, ScreenTool, Selection};
 
 use crate::capture_editor::surface_from;
 
@@ -55,30 +55,81 @@ struct SelectionState {
     drag: Option<((i32, i32), (i32, i32))>,
     region: Option<Rect>,
 }
+/// What the view is for, which sets its wording.
+#[derive(Clone, Copy)]
+pub struct SelectionPurpose {
+    title: &'static str,
+    action: &'static str,
+    hint: &'static str,
+    /// Describes the frame for assistive technology.
+    label: &'static str,
+    /// Readout when no region is selected.
+    whole: &'static str,
+    picking: bool,
+}
 
-/// Opens a modal selection view. It sends exactly one `Select` or `Cancel`.
+impl SelectionPurpose {
+    pub fn for_tool(tool: ScreenTool) -> Self {
+        if tool == ScreenTool::Color {
+            Self {
+                title: tool.label(),
+                action: "Pick",
+                hint: "Click a pixel, or move with the arrow keys and press Enter.",
+                label: "Capture to pick a color from",
+                whole: "",
+                picking: true,
+            }
+        } else {
+            Self {
+                title: tool.label(),
+                action: "Read",
+                hint: "Drag to select an area, or read the whole capture.",
+                label: "Capture to select an area from",
+                whole: "Whole capture",
+                picking: false,
+            }
+        }
+    }
+
+    pub const RECORD_AREA: Self = Self {
+        title: "Record an area",
+        action: "Record",
+        hint: "Drag the area to record, or record the whole screen.",
+        label: "Shared screen to select the recording area from",
+        whole: "Whole screen",
+        picking: false,
+    };
+}
+
+/// Opens a modal selection view. `on_choice` runs exactly once, with `None`
+/// when the user cancels or closes the view.
 pub fn open(
     parent: &adw::ApplicationWindow,
-    tool: ScreenTool,
+    purpose: SelectionPurpose,
     frame: Arc<RgbaImage>,
-    commands: Sender<ApplicationCommand>,
+    on_choice: impl FnOnce(Option<Selection>) + 'static,
 ) {
+    let on_choice = Cell::new(Some(on_choice));
+    let answer = move |choice: Option<Selection>| {
+        if let Some(callback) = on_choice.take() {
+            callback(choice);
+        }
+    };
     let Some(surface) = surface_from(&frame) else {
-        let _ = commands.try_send(ApplicationCommand::ScreenTools(ScreenToolRequest::Cancel));
+        answer(None);
         return;
     };
     let (width, height) = (frame.width as i32, frame.height as i32);
-    let picking = tool == ScreenTool::Color;
+    let picking = purpose.picking;
     let state = Rc::new(RefCell::new(SelectionState::default()));
     let viewport = Rc::new(Cell::new(Viewport {
         scale: 1.0,
         offset_x: 0.0,
         offset_y: 0.0,
     }));
-    let answered = Rc::new(Cell::new(false));
 
     let window = adw::Window::builder()
-        .title(tool.label())
+        .title(purpose.title)
         .modal(true)
         .transient_for(parent)
         .default_width(960)
@@ -87,16 +138,12 @@ pub fn open(
     let header = adw::HeaderBar::new();
     let cancel = gtk::Button::with_label("Cancel");
     header.pack_start(&cancel);
-    let read = gtk::Button::with_label(if picking { "Pick" } else { "Read" });
+    let read = gtk::Button::with_label(purpose.action);
     read.add_css_class("suggested-action");
     read.set_sensitive(!picking);
     header.pack_end(&read);
 
-    let hint = gtk::Label::new(Some(if picking {
-        "Click a pixel, or move with the arrow keys and press Enter."
-    } else {
-        "Drag to select an area, or read the whole capture."
-    }));
+    let hint = gtk::Label::new(Some(purpose.hint));
     hint.add_css_class("dim-label");
     hint.set_wrap(true);
     hint.set_margin_top(6);
@@ -110,11 +157,7 @@ pub fn open(
         .vexpand(true)
         .focusable(true)
         .build();
-    area.update_property(&[Property::Label(if picking {
-        "Capture to pick a color from"
-    } else {
-        "Capture to select an area from"
-    })]);
+    area.update_property(&[Property::Label(purpose.label)]);
     {
         let state = Rc::clone(&state);
         let viewport = Rc::clone(&viewport);
@@ -157,7 +200,7 @@ pub fn open(
                     "{} × {} px at {}, {}",
                     region.width, region.height, region.x, region.y
                 ),
-                (false, _, None) => format!("Whole capture, {width} × {height} px"),
+                (false, _, None) => format!("{}, {width} × {height} px", purpose.whole),
                 _ => String::new(),
             };
             readout.set_text(&text);
@@ -186,14 +229,12 @@ pub fn open(
     area.add_controller(motion);
 
     // Hands the choice over once and closes the view.
+    let answer = Rc::new(answer);
     let finish = {
         let window = window.clone();
-        let answered = Rc::clone(&answered);
-        let commands = commands.clone();
-        move |request: ScreenToolRequest| {
-            if !answered.replace(true) {
-                let _ = commands.try_send(ApplicationCommand::ScreenTools(request));
-            }
+        let answer = Rc::clone(&answer);
+        move |choice: Option<Selection>| {
+            answer(choice);
             window.close();
         }
     };
@@ -218,7 +259,7 @@ pub fn open(
                 Selection::Region(state.region)
             };
             drop(state);
-            finish(ScreenToolRequest::Select(selection));
+            finish(Some(selection));
         }
     };
 
@@ -318,18 +359,12 @@ pub fn open(
     }
     {
         let finish = finish.clone();
-        cancel.connect_clicked(move |_| finish(ScreenToolRequest::Cancel));
+        cancel.connect_clicked(move |_| finish(None));
     }
-    {
-        let answered = Rc::clone(&answered);
-        window.connect_close_request(move |_| {
-            if !answered.replace(true) {
-                let _ =
-                    commands.try_send(ApplicationCommand::ScreenTools(ScreenToolRequest::Cancel));
-            }
-            gtk::glib::Propagation::Proceed
-        });
-    }
+    window.connect_close_request(move |_| {
+        answer(None);
+        gtk::glib::Propagation::Proceed
+    });
 
     let content = gtk::Box::new(Orientation::Vertical, 0);
     content.append(&header);

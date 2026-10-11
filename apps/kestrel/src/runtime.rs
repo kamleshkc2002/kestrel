@@ -14,9 +14,10 @@ use crate::{
         CaptureViewModel, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
         CommandBarPresentation, CommandBarQuery, ListenersViewModel, MicrophonePresentation,
         MicrophoneViewModel, MonitorPresentation, MonitorViewModel, ProcessesViewModel,
-        ScratchpadPresentation, ScratchpadViewModel, ScreenToolGate, ScreenToolsPresentation,
-        ScreenToolsViewModel, ShortcutsPresentation, ShortcutsViewModel, SnippetQuery,
-        SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel,
+        RecordingPresentation, RecordingViewModel, ScratchpadPresentation, ScratchpadViewModel,
+        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
+        ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
+        SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -55,6 +56,9 @@ use kestrel_platform::{
         ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
         QuickToggleError, QuickToggleId,
     },
+    recording::{
+        AudioTrack, FEATURE_ID as RECORDING_ID, PortalRecordingBackend, RecordingDetection,
+    },
     screen_tools::{
         ALL_SCREEN_TOOLS, ColorSource, ScreenTool, TesseractAdapter, color_source,
         screen_tool_capability,
@@ -89,6 +93,7 @@ use kestrel_services::{
         ProcessSnapshot, confirmation_scope, kill, restart, terminate,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
+    recording::{RecordingOptions, RecordingPhase, RecordingService},
     scratchpad::{ScratchpadService, ScratchpadSnapshot},
     screen_tools::{
         ScreenToolSource, ScreenToolsService, ScreenToolsSnapshot, Selection, TesseractRecognizer,
@@ -163,6 +168,20 @@ struct SharedCaptureProbe(Arc<Mutex<Option<CaptureDetection>>>);
 impl CapabilityProbe for SharedCaptureProbe {
     fn probe(&self) -> CapabilityReport {
         let detection = CaptureDetection::detect();
+        let report = detection.capability();
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(detection);
+        report
+    }
+}
+
+struct SharedRecordingProbe(Arc<Mutex<Option<RecordingDetection>>>);
+
+impl CapabilityProbe for SharedRecordingProbe {
+    fn probe(&self) -> CapabilityReport {
+        let detection = RecordingDetection::detect();
         let report = detection.capability();
         *self
             .0
@@ -351,6 +370,10 @@ pub struct ApplicationRuntime {
     process_signalling: bool,
     screen_tools: ScreenToolsService,
     camera: CameraPreviewService,
+    recording: RecordingService,
+    /// Latest recording detection, shared with the capability probe.
+    recording_detection: Arc<Mutex<Option<RecordingDetection>>>,
+    recording_settings: kestrel_core::RecordingConfiguration,
     screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
     alerts: AlertEngine,
     scratchpad: Option<ScratchpadService>,
@@ -476,6 +499,18 @@ impl ApplicationRuntime {
             camera,
             configuration.feature_enabled(CAMERA_ID),
             CameraProbe,
+        )?;
+        let recording_detection = Arc::new(Mutex::new(None));
+        let recording = FeatureSpec::new(
+            RECORDING_ID,
+            "Screen recording",
+            CapabilityStatus::Supported,
+        )
+        .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        registry.register_probe(
+            recording,
+            configuration.feature_enabled(RECORDING_ID),
+            SharedRecordingProbe(Arc::clone(&recording_detection)),
         )?;
         for tool in ALL_SCREEN_TOOLS {
             let spec =
@@ -638,6 +673,13 @@ impl ApplicationRuntime {
                 capture_directory.clone().unwrap_or_default(),
             ),
             capture_detection,
+            recording_detection,
+            recording_settings: configuration.recording,
+            recording: RecordingService::new(
+                Arc::new(PortalRecordingBackend::new()),
+                crate::config::recordings_path()
+                    .unwrap_or_else(|| std::env::temp_dir().join("Kestrel recordings")),
+            ),
             capture_limits: configuration.capture,
             capture_storage: capture_directory.is_some(),
             global_shortcuts: GlobalShortcutService::new(),
@@ -740,6 +782,7 @@ impl ApplicationRuntime {
         configuration: &ApplicationConfiguration,
     ) -> Result<(), RegistryError> {
         self.screen_tool_settings = configuration.screen_tools.clone();
+        self.recording_settings = configuration.recording;
         self.screen_tools
             .set_recognizer(ocr_recognizer(&configuration.screen_tools));
         self.system_monitor
@@ -973,6 +1016,7 @@ impl ApplicationRuntime {
         model.processes = self.processes_view_model("");
         model.screen_tools = self.screen_tools_view_model();
         model.camera = self.camera_view_model();
+        model.recording = self.recording_view_model();
         model.listeners = self.listeners_view_model();
         model
     }
@@ -1476,6 +1520,122 @@ impl ApplicationRuntime {
 
     pub fn stop_camera(&mut self) {
         self.camera.stop();
+    }
+
+    pub fn recording_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == RECORDING_ID && registration.running)
+    }
+
+    pub fn recording_generation(&self) -> u64 {
+        self.recording.snapshot().generation
+    }
+
+    pub fn recording_view_model(&self) -> RecordingViewModel {
+        let registration = self
+            .registry
+            .registrations()
+            .find(|registration| registration.feature.id == RECORDING_ID);
+        let running = registration.is_some_and(|registration| registration.running);
+        let reason = registration.filter(|_| !running).map(|registration| {
+            if registration.enabled {
+                registration
+                    .capability
+                    .remediation
+                    .clone()
+                    .unwrap_or_else(|| registration.capability.summary.clone())
+            } else {
+                "Screen recording is off. Enable capture.recording in the Feature Hub.".to_owned()
+            }
+        });
+        let detection = self
+            .recording_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        RecordingViewModel::from_presentation(RecordingPresentation {
+            running,
+            reason,
+            snapshot: self.recording.snapshot(),
+            sources: detection
+                .as_ref()
+                .map(RecordingDetection::sources)
+                .unwrap_or_default(),
+            available_tracks: AudioTrack::ALL
+                .into_iter()
+                .filter(|track| {
+                    detection
+                        .as_ref()
+                        .is_some_and(|detection| detection.track_available(*track))
+                })
+                .collect(),
+            cursor_available: detection
+                .as_ref()
+                .is_some_and(RecordingDetection::cursor_available),
+            settings: self.recording_settings,
+            folder: self.recording.folder().to_path_buf(),
+        })
+    }
+
+    /// The frame to choose an area from, while one is being chosen.
+    pub fn recording_area_frame(&self) -> Option<Arc<kestrel_services::capture::image::RgbaImage>> {
+        match self.recording.snapshot().phase {
+            RecordingPhase::ChoosingArea { frame } => Some(frame),
+            _ => None,
+        }
+    }
+
+    pub fn recording_request(&mut self, request: crate::RecordingRequest) -> Result<(), String> {
+        use crate::RecordingRequest;
+        if !self.recording_is_running() {
+            return Err(
+                "Screen recording is not running; enable capture.recording in the Feature Hub."
+                    .to_owned(),
+            );
+        }
+        match request {
+            RecordingRequest::Start(source) => {
+                let detection = self
+                    .recording_detection
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+                    .ok_or_else(|| "Recording support has not been checked yet.".to_owned())?;
+                if !detection.sources().contains(&source) {
+                    return Err(format!(
+                        "This desktop cannot record a {}.",
+                        source.label().to_lowercase()
+                    ));
+                }
+                let settings = self.recording_settings;
+                let audio = AudioTrack::ALL
+                    .into_iter()
+                    .filter(|track| match track {
+                        AudioTrack::System => settings.system_audio,
+                        AudioTrack::Microphone => settings.microphone,
+                    })
+                    .filter(|track| detection.track_available(*track))
+                    .collect();
+                self.recording.start(RecordingOptions {
+                    source,
+                    cursor: settings.cursor && detection.cursor_available(),
+                    framerate: settings.framerate,
+                    audio,
+                })
+            }
+            RecordingRequest::ChooseArea(Some(region)) => self.recording.choose_area(Some(region)),
+            RecordingRequest::ChooseArea(None) => self.recording.record_whole_frame(),
+            RecordingRequest::Pause => self.recording.pause(),
+            RecordingRequest::Resume => self.recording.resume(),
+            RecordingRequest::Stop => self.recording.stop(),
+            RecordingRequest::Cancel => self.recording.cancel(),
+            RecordingRequest::Dismiss => {
+                self.recording.dismiss();
+                Ok(())
+            }
+            RecordingRequest::Delete(path) => self.recording.delete_take(&path),
+        }
     }
 }
 
@@ -2174,6 +2334,10 @@ impl ApplicationRuntime {
         // Stop services to release claims and join workers.
         if !self.camera_is_running() {
             self.camera.stop();
+        }
+        if !self.recording_is_running() {
+            // Completes a running take before the feature stops.
+            self.recording.shutdown();
         }
         if ALL_SCREEN_TOOLS
             .into_iter()
