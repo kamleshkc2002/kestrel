@@ -14,7 +14,8 @@ use std::sync::{
 
 pub use detect::{CaptureDetection, CaptureProbe, ScreenPermission};
 pub use grim::GrimCaptureBackend;
-pub use portal::PortalCaptureBackend;
+pub(crate) use grim::run_bounded;
+pub use portal::{PortalCaptureBackend, PortalColorPicker};
 pub use x11::X11CaptureBackend;
 
 pub const FEATURE_ID: &str = "capture.screenshot";

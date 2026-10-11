@@ -1,7 +1,7 @@
 //! `grim` (with `slurp` for Area) on compositors exposing screencopy.
 //! Children run from absolute paths, without a shell, in their own process group.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -55,7 +55,14 @@ impl GrimCaptureBackend {
         let slurp = self.slurp.as_deref().ok_or_else(|| {
             CaptureError::new(CaptureErrorKind::Unavailable, "Area capture needs slurp.")
         })?;
-        let output = run_bounded(slurp, &[], self.slurp_timeout, MAX_GEOMETRY_BYTES, cancel)?;
+        let output = run_bounded(
+            slurp,
+            &[],
+            None,
+            self.slurp_timeout,
+            MAX_GEOMETRY_BYTES,
+            cancel,
+        )?;
         if !output.status.success() {
             return Err(if output.stdout.is_empty() {
                 cancelled()
@@ -107,6 +114,7 @@ impl CaptureBackend for GrimCaptureBackend {
         let output = run_bounded(
             grim,
             &args,
+            None,
             self.grim_timeout,
             MAX_CAPTURE_PNG_BYTES,
             cancel,
@@ -148,14 +156,17 @@ fn parse_geometry(bytes: &[u8]) -> Result<String, CaptureError> {
     Ok(format!("{x},{y} {width}x{height}"))
 }
 
-struct ChildOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
+pub(crate) struct ChildOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: Vec<u8>,
 }
 
-fn run_bounded(
+/// Runs `executable` in its own process group with optional stdin bytes,
+/// bounding stdout to `limit` and the run to `timeout`; `cancel` kills the group.
+pub(crate) fn run_bounded(
     executable: &Path,
     args: &[&str],
+    input: Option<Vec<u8>>,
     timeout: Duration,
     limit: usize,
     cancel: &CaptureCancel,
@@ -169,7 +180,11 @@ fn run_bounded(
     let mut command = Command::new(executable);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .process_group(0);
@@ -180,6 +195,21 @@ fn run_bounded(
         )
     })?;
     let group = child.id() as libc::pid_t;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Written on its own thread so a child that stops reading cannot stall the timeout.
+        let writer = thread::Builder::new()
+            .name("kestrel-capture-input".to_owned())
+            .spawn(move || {
+                let _ = stdin.write_all(&input);
+            });
+        if writer.is_err() {
+            kill_and_reap(&mut child, group);
+            return Err(CaptureError::new(
+                CaptureErrorKind::Failed,
+                "Starting the input writer failed.",
+            ));
+        }
+    }
     let stdout = child.stdout.take().expect("child stdout is piped");
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::Builder::new()

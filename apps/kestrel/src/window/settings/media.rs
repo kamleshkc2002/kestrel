@@ -1,4 +1,4 @@
-//! Audio policy and screenshot limit settings.
+//! Audio policy, screenshot limit, and screen tool settings.
 
 use crate::window::widgets::plain_row;
 use adw::prelude::*;
@@ -233,4 +233,67 @@ pub(super) fn add_screenshot_limits_group(
         capture_group.add(&row);
     }
     group.add(&capture_group);
+}
+
+/// Adds the OCR language and time limit.
+pub(super) fn add_screen_tools_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let settings = &view_model.screen_tools.settings;
+    let tools_group = adw::PreferencesGroup::builder()
+        .title("Screen tools")
+        .description("Text is read locally by Tesseract with these settings.")
+        .build();
+
+    let language = adw::EntryRow::builder()
+        .title("OCR language")
+        .text(&settings.ocr_language)
+        .show_apply_button(true)
+        .build();
+    language.update_property(&[Property::Description(
+        "Tesseract language codes, such as eng or eng+deu; each needs its language pack.",
+    )]);
+    let sender = commands.clone();
+    language.connect_apply(move |row| {
+        let text = row.text().trim().to_owned();
+        if kestrel_core::valid_ocr_language(&text) {
+            row.remove_css_class("error");
+            let _ = sender.try_send(ApplicationCommand::SetScreenToolsSetting(
+                kestrel::ScreenToolsSetting::OcrLanguage(text),
+            ));
+        } else {
+            row.add_css_class("error");
+        }
+    });
+    filter_rows.push((
+        language.clone().upcast(),
+        "screen tools ocr language tesseract text".to_owned(),
+    ));
+    tools_group.add(&language);
+
+    let timeout = adw::SpinRow::with_range(
+        f64::from(kestrel_core::MIN_OCR_TIMEOUT_SECONDS),
+        f64::from(kestrel_core::MAX_OCR_TIMEOUT_SECONDS),
+        5.0,
+    );
+    timeout.set_title("OCR time limit");
+    timeout.set_subtitle("Seconds before reading text stops.");
+    timeout.set_value(f64::from(settings.ocr_timeout_seconds));
+    timeout.set_numeric(true);
+    timeout.update_property(&[Property::Label("Screen tools: OCR time limit")]);
+    let sender = commands.clone();
+    timeout.connect_value_notify(move |spin| {
+        let _ = sender.try_send(ApplicationCommand::SetScreenToolsSetting(
+            kestrel::ScreenToolsSetting::OcrTimeoutSeconds(spin.value() as u32),
+        ));
+    });
+    filter_rows.push((
+        timeout.clone().upcast(),
+        "screen tools ocr time limit timeout seconds".to_owned(),
+    ));
+    tools_group.add(&timeout);
+    group.add(&tools_group);
 }

@@ -7,6 +7,8 @@ mod command_bar;
 mod features;
 mod monitor;
 mod processes;
+mod scratchpad;
+mod screen_tools;
 mod settings;
 mod snippets;
 mod widgets;
@@ -30,6 +32,8 @@ use kestrel::{
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
+use scratchpad::{ScratchpadPanel, build_scratchpad_panel};
+use screen_tools::build_screen_tools_group;
 use settings::build_settings_group;
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use widgets::configure_wrapping_label;
@@ -49,6 +53,7 @@ pub struct WindowView {
     microphone_container: std::cell::RefCell<Option<gtk::Box>>,
     speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
     capture_container: std::cell::RefCell<Option<gtk::Box>>,
+    screen_tools_container: std::cell::RefCell<Option<gtk::Box>>,
     shortcuts_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
@@ -56,6 +61,7 @@ pub struct WindowView {
     /// Retained so searches keep text and focus.
     command_panel: std::cell::RefCell<Option<CommandPanel>>,
     processes_panel: std::cell::RefCell<Option<ProcessesPanel>>,
+    scratchpad_panel: std::cell::RefCell<Option<ScratchpadPanel>>,
 }
 
 impl WindowView {
@@ -115,10 +121,12 @@ impl WindowView {
             microphone_container: std::cell::RefCell::new(page.microphone_container),
             speed_test_container: std::cell::RefCell::new(page.speed_test_container),
             capture_container: std::cell::RefCell::new(page.capture_container),
+            screen_tools_container: std::cell::RefCell::new(page.screen_tools_container),
             shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
             processes_panel: std::cell::RefCell::new(page.processes_panel),
+            scratchpad_panel: std::cell::RefCell::new(page.scratchpad_panel),
             command_panel: std::cell::RefCell::new(page.command_panel),
         }
     }
@@ -130,31 +138,38 @@ impl WindowView {
         *self.microphone_container.borrow_mut() = page.microphone_container;
         *self.speed_test_container.borrow_mut() = page.speed_test_container;
         *self.capture_container.borrow_mut() = page.capture_container;
+        *self.screen_tools_container.borrow_mut() = page.screen_tools_container;
         *self.shortcuts_container.borrow_mut() = Some(page.shortcuts_container);
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
         *self.command_panel.borrow_mut() = page.command_panel;
         *self.processes_panel.borrow_mut() = page.processes_panel;
+        *self.scratchpad_panel.borrow_mut() = page.scratchpad_panel;
     }
 
     /// Focuses a control; false when its panel is hidden.
     pub fn focus(&self, target: FocusTarget) -> bool {
-        let entry = match target {
+        let entry: Option<gtk::Widget> = match target {
             FocusTarget::CommandBar => self
                 .command_panel
                 .borrow()
                 .as_ref()
-                .map(|panel| panel.query.clone()),
+                .map(|panel| panel.query.clone().upcast()),
             FocusTarget::Clipboard => self
                 .clipboard_panel
                 .borrow()
                 .as_ref()
-                .map(|panel| panel.search.clone()),
+                .map(|panel| panel.search.clone().upcast()),
             FocusTarget::Processes => self
                 .processes_panel
                 .borrow()
                 .as_ref()
-                .map(|panel| panel.search.clone()),
+                .map(|panel| panel.search.clone().upcast()),
+            FocusTarget::Scratchpad => self
+                .scratchpad_panel
+                .borrow()
+                .as_ref()
+                .map(|panel| panel.editor.clone().upcast()),
         };
         entry.is_some_and(|entry| entry.grab_focus())
     }
@@ -204,6 +219,17 @@ impl WindowView {
         fill_snippet_panel(panel, snippets, &self.commands);
     }
 
+    pub fn set_scratchpad(&self, scratchpad: &kestrel::ScratchpadViewModel) {
+        if let Some(panel) = self.scratchpad_panel.borrow().as_ref() {
+            panel.set_model(scratchpad);
+        }
+    }
+    pub fn set_scratchpad_preview(&self, scratchpad: &kestrel::ScratchpadViewModel) {
+        if let Some(panel) = self.scratchpad_panel.borrow().as_ref() {
+            panel.set_preview(scratchpad);
+        }
+    }
+
     pub fn set_monitor(&self, monitor: &MonitorViewModel) {
         let Some(container) = self.monitor_container.borrow().as_ref().cloned() else {
             return;
@@ -245,6 +271,17 @@ impl WindowView {
             child.unparent();
         }
         container.append(&build_capture_group(capture, &self.window, &self.commands));
+    }
+
+    /// Replaces the screen tools group.
+    pub fn set_screen_tools(&self, tools: &kestrel::ScreenToolsViewModel) {
+        let Some(container) = self.screen_tools_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_screen_tools_group(tools, &self.commands));
     }
 
     /// Updates the process list in place; the search keeps its text and focus.
@@ -293,11 +330,13 @@ struct PageBuild {
     microphone_container: Option<gtk::Box>,
     speed_test_container: Option<gtk::Box>,
     capture_container: Option<gtk::Box>,
+    screen_tools_container: Option<gtk::Box>,
     shortcuts_container: gtk::Box,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
     processes_panel: Option<ProcessesPanel>,
     command_panel: Option<CommandPanel>,
+    scratchpad_panel: Option<ScratchpadPanel>,
 }
 
 fn build_page(
@@ -340,10 +379,12 @@ fn build_page(
     let mut microphone_container = None;
     let mut speed_test_container = None;
     let mut capture_container = None;
+    let mut screen_tools_container = None;
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
     let mut command_panel = None;
     let mut processes_panel = None;
+    let mut scratchpad_panel = None;
     for panel in &view_model.panel_sections {
         if !panel.visible {
             continue;
@@ -369,12 +410,22 @@ fn build_page(
                 capture.append(&build_capture_group(&view_model.capture, window, commands));
                 page.append(&capture);
                 capture_container = Some(capture);
+                let screen_tools = gtk::Box::new(Orientation::Vertical, 0);
+                screen_tools.append(&build_screen_tools_group(
+                    &view_model.screen_tools,
+                    commands,
+                ));
+                page.append(&screen_tools);
+                screen_tools_container = Some(screen_tools);
                 let panel = build_clipboard_panel(&view_model.clipboard, commands);
                 page.append(&panel.container);
                 clipboard_panel = Some(panel);
-                let panel = build_snippet_panel(&view_model.snippets, commands);
-                page.append(&panel.container);
-                snippet_panel = Some(panel);
+                let snippet = build_snippet_panel(&view_model.snippets, commands);
+                page.append(&snippet.container);
+                snippet_panel = Some(snippet);
+                let scratchpad = build_scratchpad_panel(&view_model.scratchpad, window, commands);
+                page.append(&scratchpad.container);
+                scratchpad_panel = Some(scratchpad);
             }
             PanelSection::FeatureHub => {
                 page.append(&build_feature_hub_group(
@@ -412,10 +463,12 @@ fn build_page(
         microphone_container,
         speed_test_container,
         capture_container,
+        screen_tools_container,
         shortcuts_container,
         clipboard_panel,
         snippet_panel,
         command_panel,
         processes_panel,
+        scratchpad_panel,
     }
 }

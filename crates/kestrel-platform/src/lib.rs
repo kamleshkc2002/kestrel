@@ -13,6 +13,7 @@ pub mod launcher;
 pub mod notifications;
 pub mod processes;
 pub mod quick_toggles;
+pub mod screen_tools;
 pub mod snippets;
 pub mod speed_test;
 pub mod system_monitor;

@@ -1,4 +1,4 @@
-//! Clipboard, snippet, and command-bar settings.
+//! Clipboard, snippet, scratchpad, and command-bar settings.
 
 use crate::window::widgets::plain_row;
 use adw::prelude::*;
@@ -403,4 +403,65 @@ pub(super) fn add_command_bar_group(
         "command bar results limit launcher".to_owned(),
     ));
     group.add(&command_group);
+}
+
+/// Adds the scratchpad note count, note size, and age limit.
+pub(super) fn add_scratchpad_limits_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let limits = view_model.scratchpad.limits;
+    let scratchpad_group = adw::PreferencesGroup::builder()
+        .title("Scratchpad")
+        .description("Notes are saved privately on this computer and never exported.")
+        .build();
+    for (title, subtitle, (min, max), value, limit) in [
+        (
+            "Notes",
+            "How many notes the scratchpad keeps.",
+            (
+                kestrel_core::MIN_SCRATCHPAD_MAX_NOTES,
+                kestrel_core::MAX_SCRATCHPAD_MAX_NOTES,
+            ),
+            limits.max_notes,
+            kestrel::ScratchpadLimit::MaxNotes as fn(u32) -> kestrel::ScratchpadLimit,
+        ),
+        (
+            "Note size",
+            "Largest note, in KiB.",
+            (
+                kestrel_core::MIN_SCRATCHPAD_NOTE_BYTES / 1024,
+                kestrel_core::MAX_SCRATCHPAD_NOTE_BYTES / 1024,
+            ),
+            limits.max_note_bytes / 1024,
+            |kib| kestrel::ScratchpadLimit::MaxNoteBytes(kib * 1024),
+        ),
+        (
+            "Age limit",
+            "Days before an unedited note is offered for removal; 0 keeps notes.",
+            (0, kestrel_core::MAX_SCRATCHPAD_AGE_DAYS),
+            limits.max_age_days,
+            kestrel::ScratchpadLimit::MaxAgeDays,
+        ),
+    ] {
+        let row = adw::SpinRow::with_range(f64::from(min), f64::from(max), 1.0);
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_value(f64::from(value));
+        row.set_numeric(true);
+        row.update_property(&[Property::Label(&format!("Scratchpad: {title}"))]);
+        let sender = commands.clone();
+        row.connect_value_notify(move |spin| {
+            let value = (spin.value() as u32).clamp(min, max);
+            let _ = sender.try_send(ApplicationCommand::SetScratchpadLimit(limit(value)));
+        });
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("scratchpad notes {title} {subtitle}").to_lowercase(),
+        ));
+        scratchpad_group.add(&row);
+    }
+    group.add(&scratchpad_group);
 }

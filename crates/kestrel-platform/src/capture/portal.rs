@@ -53,14 +53,54 @@ impl PortalCaptureBackend {
             address: Some(address.to_owned()),
         }
     }
+}
 
-    fn connect(&self, timeout: Duration) -> Result<Connection, zbus::Error> {
-        let builder = match &self.address {
-            Some(address) => Builder::address(address.as_str())?,
-            None => Builder::session()?,
-        };
-        builder.method_timeout(timeout).build()
+/// The desktop's own color picker (`PickColor`), with its magnifier.
+pub struct PortalColorPicker {
+    address: Option<String>,
+}
+
+impl PortalColorPicker {
+    pub fn new() -> Self {
+        Self { address: None }
     }
+
+    #[cfg(test)]
+    fn with_bus_address(address: &str) -> Self {
+        Self {
+            address: Some(address.to_owned()),
+        }
+    }
+
+    /// Blocks until the user picks a pixel, dismisses the picker, or `cancel` fires.
+    pub fn pick(&self, cancel: &CaptureCancel) -> Result<[u8; 3], CaptureError> {
+        let response = call_portal(
+            self.address.as_deref(),
+            "PickColor",
+            HashMap::new(),
+            INTERACTIVE_TIMEOUT,
+            cancel,
+            |_| {},
+        );
+        if cancel.is_cancelled() {
+            return Err(cancelled());
+        }
+        color_from_response(response?)
+    }
+}
+
+impl Default for PortalColorPicker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn connect(address: Option<&str>, timeout: Duration) -> Result<Connection, zbus::Error> {
+    let builder = match address {
+        Some(address) => Builder::address(address)?,
+        None => Builder::session()?,
+    };
+    builder.method_timeout(timeout).build()
 }
 
 impl Default for PortalCaptureBackend {
@@ -93,47 +133,80 @@ impl CaptureBackend for PortalCaptureBackend {
                 ));
             }
         };
-        if cancel.is_cancelled() {
-            return Err(cancelled());
-        }
-        let deadline = Instant::now() + timeout;
-        let connection = self.connect(timeout).map_err(|error| {
-            CaptureError::new(
-                CaptureErrorKind::Unavailable,
-                format!("Connecting to the session bus failed: {error}"),
-            )
-        })?;
-        let Some(sender) = connection.unique_name().map(ToString::to_string) else {
-            let _ = connection.close();
-            return Err(CaptureError::new(
-                CaptureErrorKind::Failed,
-                "The session bus assigned no unique name.",
-            ));
-        };
-        let token = format!("kestrel_capture_{}", token_suffix());
-        let request = request_path(&sender, &token);
-        let abort_connection = connection.clone();
-        let abort_request = request.clone();
-        cancel.set_abort(Box::new(move || {
-            close_request(&abort_connection, &abort_request);
-            let _ = abort_connection.close();
-        }));
-        let response = request_screenshot(&connection, interactive, &token, &request, deadline);
-        cancel.clear_abort();
-        let _ = connection.close();
-        let outcome = match response {
-            Ok(response) => image_from_response(response),
-            Err(Failure::Timeout) => Err(CaptureError::new(
-                CaptureErrorKind::Timeout,
-                "The desktop did not answer the screenshot request in time.",
-            )),
-            Err(Failure::Error(error)) => Err(error),
-        };
+        let options = HashMap::from([
+            ("interactive".to_owned(), OwnedValue::from(interactive)),
+            ("modal".to_owned(), OwnedValue::from(false)),
+        ]);
+        let response = call_portal(
+            self.address.as_deref(),
+            "Screenshot",
+            options,
+            timeout,
+            cancel,
+            // A late image is still read so its temporary file is removed.
+            |response| {
+                let _ = image_from_response(response);
+            },
+        );
+        let outcome = response.and_then(image_from_response);
         if cancel.is_cancelled() {
             // Any image was already removed by `image_from_response`.
             return Err(cancelled());
         }
         outcome
+    }
+}
+
+/// Sends one Screenshot-portal request on a dedicated connection and waits
+/// for its `Response`. Cancel and timeout close the request and connection;
+/// a response arriving shortly after a timeout goes to `discard`.
+fn call_portal(
+    address: Option<&str>,
+    method: &str,
+    mut options: HashMap<String, OwnedValue>,
+    timeout: Duration,
+    cancel: &CaptureCancel,
+    discard: fn(Response),
+) -> Result<Response, CaptureError> {
+    if cancel.is_cancelled() {
+        return Err(cancelled());
+    }
+    let deadline = Instant::now() + timeout;
+    let connection = connect(address, timeout).map_err(|error| {
+        CaptureError::new(
+            CaptureErrorKind::Unavailable,
+            format!("Connecting to the session bus failed: {error}"),
+        )
+    })?;
+    let Some(sender) = connection.unique_name().map(ToString::to_string) else {
+        let _ = connection.close();
+        return Err(CaptureError::new(
+            CaptureErrorKind::Failed,
+            "The session bus assigned no unique name.",
+        ));
+    };
+    let token = format!("kestrel_capture_{}", token_suffix());
+    let request = request_path(&sender, &token);
+    options.insert(
+        "handle_token".to_owned(),
+        OwnedValue::from(Str::from(token)),
+    );
+    let abort_connection = connection.clone();
+    let abort_request = request.clone();
+    cancel.set_abort(Box::new(move || {
+        close_request(&abort_connection, &abort_request);
+        let _ = abort_connection.close();
+    }));
+    let response = send_request(&connection, method, options, &request, deadline, discard);
+    cancel.clear_abort();
+    let _ = connection.close();
+    match response {
+        Ok(response) => Ok(response),
+        Err(Failure::Timeout) => Err(CaptureError::new(
+            CaptureErrorKind::Timeout,
+            "The desktop did not answer the request in time.",
+        )),
+        Err(Failure::Error(error)) => Err(error),
     }
 }
 
@@ -146,12 +219,13 @@ fn failed(message: impl Into<String>) -> Failure {
     Failure::Error(CaptureError::new(CaptureErrorKind::Failed, message))
 }
 
-fn request_screenshot(
+fn send_request(
     connection: &Connection,
-    interactive: bool,
-    token: &str,
+    method: &str,
+    options: HashMap<String, OwnedValue>,
     request: &str,
     deadline: Instant,
+    discard: fn(Response),
 ) -> Result<Response, Failure> {
     if let Ok(registry) = Proxy::new(connection, REGISTRY_BUS, PORTAL_PATH, REGISTRY_INTERFACE) {
         let empty: HashMap<String, OwnedValue> = HashMap::new();
@@ -162,17 +236,9 @@ fn request_screenshot(
         .map_err(|error| failed(format!("Subscribing to portal responses failed: {error}")))?;
     let portal = Proxy::new(connection, PORTAL_BUS, PORTAL_PATH, SCREENSHOT_INTERFACE)
         .map_err(|error| failed(format!("Creating the portal proxy failed: {error}")))?;
-    let options = HashMap::from([
-        (
-            "handle_token".to_owned(),
-            OwnedValue::from(Str::from(token)),
-        ),
-        ("interactive".to_owned(), OwnedValue::from(interactive)),
-        ("modal".to_owned(), OwnedValue::from(false)),
-    ]);
     let handle: OwnedObjectPath = portal
-        .call("Screenshot", &("", options))
-        .map_err(|error| failed(format!("Requesting the screenshot failed: {error}")))?;
+        .call(method, &("", options))
+        .map_err(|error| failed(format!("The portal request failed: {error}")))?;
     // Portals older than version 0.9 answer on the returned handle.
     let paths = [request.to_owned(), handle.as_str().to_owned()];
     let receiver = spawn_waiter(signals, paths)?;
@@ -182,7 +248,9 @@ fn request_screenshot(
         Err(RecvTimeoutError::Timeout) => {
             close_request(connection, request);
             let _ = connection.clone().close();
-            discard_late_response(&receiver);
+            if let Ok(Ok(response)) = receiver.recv_timeout(LATE_RESPONSE_GRACE) {
+                discard(response);
+            }
             Err(Failure::Timeout)
         }
         Err(RecvTimeoutError::Disconnected) => Err(failed("The portal response waiter stopped.")),
@@ -233,9 +301,30 @@ fn spawn_waiter(
     Ok(receiver)
 }
 
-fn discard_late_response(receiver: &Receiver<Result<Response, String>>) {
-    if let Ok(Ok(response)) = receiver.recv_timeout(LATE_RESPONSE_GRACE) {
-        let _ = image_from_response(response);
+fn color_from_response((code, results): Response) -> Result<[u8; 3], CaptureError> {
+    match code {
+        0 => {
+            let (red, green, blue) = results
+                .get("color")
+                .and_then(|value| <(f64, f64, f64)>::try_from(value.clone()).ok())
+                .ok_or_else(|| {
+                    CaptureError::new(
+                        CaptureErrorKind::Failed,
+                        "The portal response named no color.",
+                    )
+                })?;
+            let channel = |value: f64| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+            Ok([channel(red), channel(green), channel(blue)])
+        }
+        1 => Err(cancelled()),
+        2 => Err(CaptureError::new(
+            CaptureErrorKind::Denied,
+            "The desktop denied the color picker.",
+        )),
+        _ => Err(CaptureError::new(
+            CaptureErrorKind::Failed,
+            "The color picker failed.",
+        )),
     }
 }
 
@@ -458,6 +547,41 @@ mod tests {
                 .map_err(fdo)?;
             Ok(handle)
         }
+
+        async fn pick_color(
+            &self,
+            _parent_window: String,
+            options: HashMap<String, OwnedValue>,
+            #[zbus(connection)] connection: &zbus::Connection,
+            #[zbus(header)] header: zbus::message::Header<'_>,
+        ) -> zbus::fdo::Result<OwnedObjectPath> {
+            let token = options
+                .get("handle_token")
+                .and_then(|value| String::try_from(value.clone()).ok())
+                .ok_or_else(|| fdo("missing handle token"))?;
+            let sender = header.sender().ok_or_else(|| fdo("missing sender"))?;
+            let path = request_path(sender.as_str(), &token);
+            let handle = OwnedObjectPath::try_from(path.as_str()).map_err(fdo)?;
+            let mut results = HashMap::new();
+            let code = match self.reply {
+                Reply::Never => return Ok(handle),
+                Reply::Code(code) => code,
+                Reply::Image | Reply::Clipboard => {
+                    let color = zbus::zvariant::Value::from((0.2_f64, 0.4_f64, 1.5_f64));
+                    results.insert(
+                        "color".to_owned(),
+                        OwnedValue::try_from(color).map_err(fdo)?,
+                    );
+                    0
+                }
+            };
+            let emitter = SignalEmitter::new(connection, path).map_err(fdo)?;
+            emitter
+                .emit(REQUEST_INTERFACE, RESPONSE_MEMBER, &(code, results))
+                .await
+                .map_err(fdo)?;
+            Ok(handle)
+        }
     }
 
     struct FakeBus {
@@ -660,5 +784,30 @@ mod tests {
             request_path(":1.42", "kestrel_capture_7"),
             "/org/freedesktop/portal/desktop/request/1_42/kestrel_capture_7"
         );
+    }
+
+    #[test]
+    fn picked_colors_are_clamped_to_bytes() {
+        let Some(bus) = FakeBus::start(Reply::Image) else {
+            return;
+        };
+        let picker = PortalColorPicker::with_bus_address(&bus.address);
+        let color = picker.pick(&CaptureCancel::new()).expect("color picked");
+        assert_eq!(color, [51, 102, 255]);
+    }
+
+    #[test]
+    fn a_dismissed_or_denied_picker_is_typed() {
+        for (code, kind) in [
+            (1, CaptureErrorKind::Cancelled),
+            (2, CaptureErrorKind::Denied),
+        ] {
+            let Some(bus) = FakeBus::start(Reply::Code(code)) else {
+                return;
+            };
+            let picker = PortalColorPicker::with_bus_address(&bus.address);
+            let error = picker.pick(&CaptureCancel::new()).unwrap_err();
+            assert_eq!(error.kind, kind);
+        }
     }
 }
