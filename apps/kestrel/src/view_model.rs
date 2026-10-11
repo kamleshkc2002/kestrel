@@ -8,7 +8,8 @@ use kestrel_platform::global_shortcuts::{
     BindingState, ShortcutErrorKind, ShortcutPhase, ShortcutStatus,
 };
 use kestrel_platform::processes::{
-    Ineligible, Listener, ListenerProtocol, ProcessIdentity, ProcfsProcesses, RestartTarget,
+    Ineligible, Listener, ListenerProtocol, NO_PIDFD_EXPLANATION, ProcessIdentity, ProcfsProcesses,
+    RestartTarget,
 };
 use kestrel_platform::quick_toggles::{
     MutationConfirmation, QuickToggleControl, QuickToggleId, ToggleAction,
@@ -962,11 +963,15 @@ pub(crate) struct ProcessesPresentation {
     pub current_uid: u32,
     pub own_pid: u32,
     pub limits: kestrel_core::ProcessConfiguration,
+    /// `pidfd_open` works; without it no row offers an action.
+    pub signalling: bool,
 }
 
 pub(crate) struct ListenersPresentation {
     pub snapshot: ListenerSnapshot,
     pub running: bool,
+    /// `pidfd_open` works; without it Stop owner is hidden.
+    pub signalling: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1012,6 +1017,8 @@ pub struct ListenersViewModel {
     pub running: bool,
     pub status: String,
     pub rows: Vec<ListenerRowViewModel>,
+    /// Stop owner is offered only when process signalling works.
+    pub can_stop: bool,
 }
 
 impl ProcessesViewModel {
@@ -1020,7 +1027,13 @@ impl ProcessesViewModel {
             let limit = presentation.limits.max_rows as usize;
             search_processes(&presentation.snapshot.rows, &presentation.query, limit)
                 .into_iter()
-                .map(|row| process_row(row, presentation.current_uid, presentation.own_pid))
+                .map(|row| {
+                    let mut row = process_row(row, presentation.current_uid, presentation.own_pid);
+                    if !presentation.signalling {
+                        row.actions.clear();
+                    }
+                    row
+                })
                 .collect()
         } else {
             Vec::new()
@@ -1031,13 +1044,14 @@ impl ProcessesViewModel {
             format!("Process scan failed: {}", error.message)
         } else {
             format!(
-                "{} process(es){}.",
+                "{} process(es){}.{}",
                 presentation.snapshot.total_processes,
                 if presentation.snapshot.truncated {
                     "; list truncated"
                 } else {
                     ""
-                }
+                },
+                signalling_note(presentation.signalling)
             )
         };
         let stale_notice = presentation.snapshot.stale.then(|| {
@@ -1061,6 +1075,14 @@ impl ProcessesViewModel {
             limits: presentation.limits,
             stale_notice,
         }
+    }
+}
+
+fn signalling_note(signalling: bool) -> String {
+    if signalling {
+        String::new()
+    } else {
+        format!(" {NO_PIDFD_EXPLANATION}")
     }
 }
 
@@ -1136,12 +1158,17 @@ impl ListenersViewModel {
         } else if let Some(error) = &presentation.snapshot.error {
             format!("Listener scan failed: {}", error.message)
         } else {
-            format!("{} listening port(s).", rows.len())
+            format!(
+                "{} listening port(s).{}",
+                rows.len(),
+                signalling_note(presentation.signalling)
+            )
         };
         Self {
             running: presentation.running,
             status,
             rows,
+            can_stop: presentation.signalling,
         }
     }
 }
@@ -2220,6 +2247,7 @@ impl Default for ListenersViewModel {
             running: false,
             status: "Listening ports are off.".to_owned(),
             rows: Vec::new(),
+            can_stop: false,
         }
     }
 }
@@ -4445,6 +4473,15 @@ mod tests {
         }
 
         fn view(rows: Vec<ProcessRow>, running: bool, query: &str) -> ProcessesViewModel {
+            view_with_signalling(rows, running, query, true)
+        }
+
+        fn view_with_signalling(
+            rows: Vec<ProcessRow>,
+            running: bool,
+            query: &str,
+            signalling: bool,
+        ) -> ProcessesViewModel {
             ProcessesViewModel::from_presentation(ProcessesPresentation {
                 snapshot: ProcessSnapshot {
                     total_processes: rows.len(),
@@ -4456,6 +4493,7 @@ mod tests {
                 current_uid: USER,
                 own_pid: KESTREL,
                 limits: kestrel_core::ProcessConfiguration::default(),
+                signalling,
             })
         }
 
@@ -4545,6 +4583,29 @@ mod tests {
         }
 
         #[test]
+        fn without_pidfd_no_process_or_listener_offers_an_action() {
+            let unit = ProcessScope::UserUnit {
+                unit: "pipewire.service".to_owned(),
+            };
+            let processes = view_with_signalling(
+                vec![sample(10, "pipewire", Some(USER), unit)],
+                true,
+                "",
+                false,
+            );
+            assert!(processes.rows[0].actions.is_empty());
+            assert!(processes.status.contains("pidfd"), "{}", processes.status);
+
+            let listeners = ListenersViewModel::from_presentation(ListenersPresentation {
+                snapshot: ListenerSnapshot::default(),
+                running: true,
+                signalling: false,
+            });
+            assert!(!listeners.can_stop);
+            assert!(listeners.status.contains("pidfd"), "{}", listeners.status);
+        }
+
+        #[test]
         fn search_filters_rows_and_a_stopped_feature_lists_none() {
             let rows = vec![
                 sample(100, "editor", Some(USER), ProcessScope::Other),
@@ -4593,6 +4654,7 @@ mod tests {
                     ..ListenerSnapshot::default()
                 },
                 running: true,
+                signalling: true,
             });
 
             let [owned, foreign] = view.rows.as_slice() else {
@@ -4603,6 +4665,7 @@ mod tests {
             assert_eq!(owned.open_url.as_deref(), Some("http://127.0.0.1:8765/"));
             assert_eq!(foreign.owner_identity, None);
             assert!(foreign.stop_disabled_reason.is_some());
+            assert!(view.can_stop);
             assert_eq!(foreign.open_url, None, "UDP has no browser action");
         }
     }

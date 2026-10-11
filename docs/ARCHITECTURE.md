@@ -519,8 +519,9 @@ only when `eligibility` passes: a user process with a readable real UID equal
 to Kestrel's, other than PID 1, the user's systemd manager, and Kestrel itself.
 `PidfdSignaller` opens a pidfd, then re-reads the start time, so the signal
 reaches the confirmed process or none; without `pidfd_open` the probe reports
-Limited and actions are unavailable. End sends SIGTERM and waits 3 s on the
-pidfd; Kill sends SIGKILL. Neither falls back to `kill(2)`.
+Limited, the runtime hides every action, and confirmation is refused. End
+sends SIGTERM and waits 3 s on the pidfd; Kill sends SIGKILL. Neither falls
+back to `kill(2)`.
 
 Restart derives a `RestartTarget` from the cgroup path: a user service outside
 `session.slice` restarts through `systemctl --user restart`; a desktop launch

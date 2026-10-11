@@ -481,6 +481,19 @@ impl PidfdSignaller {
         // SAFETY: the kernel returned a fresh descriptor this guard now owns.
         Ok(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
     }
+
+    /// Whether the kernel supports `pidfd_open`; without it no action is offered.
+    pub fn available() -> bool {
+        let pid = std::process::id() as libc::pid_t;
+        // SAFETY: pidfd_open takes a pid and flags and returns a new fd or -1.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if fd < 0 {
+            return false;
+        }
+        // SAFETY: the kernel returned a fresh descriptor; dropping it closes it.
+        drop(unsafe { OwnedFd::from_raw_fd(fd as RawFd) });
+        true
+    }
 }
 
 impl ProcessSignaller for PidfdSignaller {
@@ -571,10 +584,7 @@ fn errno_error(errno: i32) -> ProcessError {
             ProcessErrorKind::PermissionDenied,
             "Only your own processes can be signalled; Kestrel uses no root helper.",
         ),
-        libc::ENOSYS => ProcessError::new(
-            ProcessErrorKind::Unavailable,
-            "This kernel has no pidfd support, so process actions are disabled.",
-        ),
+        libc::ENOSYS => ProcessError::new(ProcessErrorKind::Unavailable, NO_PIDFD_EXPLANATION),
         _ => ProcessError::new(ProcessErrorKind::Failed, "Sending the signal failed."),
     }
 }
@@ -856,13 +866,7 @@ impl CapabilityProbe for ProcessProbe {
                 "Process inspection is unavailable.",
             );
         }
-        let pid = std::process::id();
-        let fd =
-            unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) as libc::c_int };
-        if fd >= 0 {
-            unsafe {
-                libc::close(fd);
-            }
+        if PidfdSignaller::available() {
             return CapabilityReport::new(
                 FEATURE_ID,
                 CapabilityStatus::Supported,
@@ -874,7 +878,7 @@ impl CapabilityProbe for ProcessProbe {
             CapabilityStatus::Limited {
                 reason: "pidfd is unavailable".into(),
             },
-            "Process inspection is available; process actions are disabled.",
+            "Process inspection is available; actions are hidden without pidfd support.",
         )
         .with_remediation("Use a Linux kernel with pidfd_open support.")
     }
