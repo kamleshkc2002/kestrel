@@ -3,6 +3,7 @@ use kestrel_core::{
     MonitorConfiguration, MonitorReadout, PanelSection, Permission, ResourceCost,
     SnippetExpansionTiming, SnippetProviderPreference,
 };
+use kestrel_platform::camera::CameraInfo;
 use kestrel_platform::capture::{CaptureErrorKind, CaptureMode, CaptureProvider};
 use kestrel_platform::global_shortcuts::{
     BindingState, ShortcutErrorKind, ShortcutPhase, ShortcutStatus,
@@ -21,6 +22,7 @@ use kestrel_services::{
     ServiceLifecycle, ServiceRegistration,
     alerts::{ActiveAlert, AlertPolicy, AlertSnapshot},
     audio::{AudioAvailability, AudioPolicy, AudioSnapshot},
+    camera::{CameraPhase, CameraSnapshot},
     capture::{CaptureId, CapturePhase, CaptureSnapshot},
     clipboard::{ClipboardMatch, ClipboardPreview, ClipboardSnapshot},
     microphone::{MicrophoneAvailability, MicrophoneMuteState, MicrophoneSnapshot},
@@ -1322,6 +1324,75 @@ fn listener_row(listener: &Listener) -> ListenerRowViewModel {
     }
 }
 
+pub(crate) struct CameraPresentation {
+    pub running: bool,
+    /// Why the feature is not running, when it is not.
+    pub reason: Option<String>,
+    pub snapshot: CameraSnapshot,
+    pub cameras: Vec<CameraInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraChoiceViewModel {
+    pub path: std::path::PathBuf,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CameraViewModel {
+    pub running: bool,
+    pub status: String,
+    pub cameras: Vec<CameraChoiceViewModel>,
+    /// A preview is opening or showing frames; Stop is offered.
+    pub active: bool,
+    /// Frames are arriving.
+    pub previewing: bool,
+}
+
+impl CameraViewModel {
+    pub(crate) fn from_presentation(presentation: CameraPresentation) -> Self {
+        let cameras = presentation
+            .cameras
+            .into_iter()
+            .map(|camera| CameraChoiceViewModel {
+                path: camera.path,
+                name: camera.name,
+            })
+            .collect::<Vec<_>>();
+        let phase = presentation.snapshot.phase;
+        let status = match (&phase, presentation.running) {
+            (_, false) => presentation
+                .reason
+                .unwrap_or_else(|| "Enable camera.preview in the Feature Hub.".to_owned()),
+            (CameraPhase::Idle, true) if cameras.is_empty() => "No camera is connected.".to_owned(),
+            (CameraPhase::Idle, true) => {
+                "The camera stays off until you start a preview. Frames are never saved.".to_owned()
+            }
+            (CameraPhase::Starting { name }, true) => format!("Opening {name}…"),
+            (
+                CameraPhase::Previewing {
+                    name,
+                    width,
+                    height,
+                },
+                true,
+            ) => format!("{name} · {width} × {height}. Frames are never saved."),
+            (CameraPhase::Failed { name, error }, true) => format!("{name}: {}", error.message),
+        };
+        Self {
+            running: presentation.running,
+            status,
+            cameras,
+            active: presentation.running
+                && matches!(
+                    phase,
+                    CameraPhase::Starting { .. } | CameraPhase::Previewing { .. }
+                ),
+            previewing: presentation.running && matches!(phase, CameraPhase::Previewing { .. }),
+        }
+    }
+}
+
 /// One screen tool's gate, from its registration.
 pub(crate) struct ScreenToolGate {
     pub tool: ScreenTool,
@@ -2505,6 +2576,7 @@ pub struct ApplicationViewModel {
     pub capture: CaptureViewModel,
     pub processes: ProcessesViewModel,
     pub screen_tools: ScreenToolsViewModel,
+    pub camera: CameraViewModel,
     pub listeners: ListenersViewModel,
     pub clipboard: ClipboardViewModel,
     pub snippets: SnippetsViewModel,
@@ -2584,6 +2656,7 @@ impl ApplicationViewModel {
             capture: CaptureViewModel::from_presentation(capture),
             processes: ProcessesViewModel::default(),
             screen_tools: ScreenToolsViewModel::default(),
+            camera: CameraViewModel::default(),
             listeners: ListenersViewModel::default(),
             clipboard: ClipboardViewModel::from_presentation(&configuration.clipboard, clipboard),
             snippets: SnippetsViewModel::from_presentation(snippets),
@@ -5121,6 +5194,70 @@ mod tests {
                     hsl: "hsl(220, 60%, 50%)".into(),
                 })
             );
+        }
+    }
+
+    mod camera {
+        use crate::view_model::{CameraPresentation, CameraViewModel};
+        use kestrel_platform::camera::{CameraError, CameraErrorKind, CameraInfo};
+        use kestrel_services::camera::{CameraPhase, CameraSnapshot};
+
+        fn view(running: bool, phase: CameraPhase) -> CameraViewModel {
+            CameraViewModel::from_presentation(CameraPresentation {
+                running,
+                reason: (!running).then(|| "Log in at the computer's own seat.".to_owned()),
+                snapshot: CameraSnapshot {
+                    phase,
+                    generation: 1,
+                },
+                cameras: vec![CameraInfo {
+                    path: "/dev/video0".into(),
+                    name: "Camera".into(),
+                }],
+            })
+        }
+
+        #[test]
+        fn preview_state_drives_stop_and_frame_display() {
+            let idle = view(true, CameraPhase::Idle);
+            assert!(!idle.active && !idle.previewing);
+            let starting = view(
+                true,
+                CameraPhase::Starting {
+                    name: "Camera".into(),
+                },
+            );
+            assert!(starting.active && !starting.previewing);
+            let previewing = view(
+                true,
+                CameraPhase::Previewing {
+                    name: "Camera".into(),
+                    width: 640,
+                    height: 480,
+                },
+            );
+            assert!(previewing.active && previewing.previewing);
+            assert!(
+                previewing.status.contains("640 × 480"),
+                "{}",
+                previewing.status
+            );
+        }
+
+        #[test]
+        fn failures_and_unavailable_features_explain_themselves() {
+            let failed = view(
+                true,
+                CameraPhase::Failed {
+                    name: "Camera".into(),
+                    error: CameraError::new(CameraErrorKind::Busy, "Another app has it."),
+                },
+            );
+            assert!(!failed.active);
+            assert!(failed.status.contains("Another app has it."));
+            let off = view(false, CameraPhase::Idle);
+            assert!(!off.active);
+            assert_eq!(off.status, "Log in at the computer's own seat.");
         }
     }
 }

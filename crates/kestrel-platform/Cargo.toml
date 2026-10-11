@@ -17,6 +17,9 @@ wayland-client = { version = "0.31", default-features = false }
 wl-clipboard-rs = "0.9.3"
 x11rb = "0.14"
 zbus = { version = "5.19.0", default-features = false, features = ["blocking-api", "async-io"] }
+linuxvideo = "0.3"
+zune-jpeg = "0.4"
+zune-core = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

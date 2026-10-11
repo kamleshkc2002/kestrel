@@ -10,13 +10,13 @@ use crate::{
     snippets::{save_snippets, snippet_path},
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
-        AudioPresentation, CapturePresentation, CaptureViewModel, ClipboardPresentation,
-        ClipboardQuery, ClipboardViewModel, CommandBarPresentation, CommandBarQuery,
-        ListenersViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
-        MonitorViewModel, ProcessesViewModel, ScratchpadPresentation, ScratchpadViewModel,
-        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
-        ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
-        SpeedTestViewModel,
+        AudioPresentation, CameraPresentation, CameraViewModel, CapturePresentation,
+        CaptureViewModel, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
+        CommandBarPresentation, CommandBarQuery, ListenersViewModel, MicrophonePresentation,
+        MicrophoneViewModel, MonitorPresentation, MonitorViewModel, ProcessesViewModel,
+        ScratchpadPresentation, ScratchpadViewModel, ScreenToolGate, ScreenToolsPresentation,
+        ScreenToolsViewModel, ShortcutsPresentation, ShortcutsViewModel, SnippetQuery,
+        SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -32,6 +32,7 @@ use kestrel_platform::{
     audio::{
         FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID, MicrophoneProbe, PulseAudioBackend,
     },
+    camera::{CameraProbe, FEATURE_ID as CAMERA_ID, V4l2Camera, system_cameras},
     capture::{
         CaptureDetection, CaptureMode, CaptureProvider, FEATURE_ID as CAPTURE_ID,
         PortalColorPicker, backend_for as capture_backend_for,
@@ -69,6 +70,7 @@ use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
     alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
     audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot},
+    camera::{CameraFrameSlot, CameraPreviewService},
     capture::{CaptureId, CapturePolicy, CaptureService, CaptureSnapshot, image::EditPlan},
     clipboard::{
         ClipboardCommand, ClipboardHistoryService, ClipboardMatch, ClipboardPolicy,
@@ -348,6 +350,7 @@ pub struct ApplicationRuntime {
     /// `pidfd_open` works; checked once since the kernel cannot change.
     process_signalling: bool,
     screen_tools: ScreenToolsService,
+    camera: CameraPreviewService,
     screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
     alerts: AlertEngine,
     scratchpad: Option<ScratchpadService>,
@@ -466,6 +469,13 @@ impl ApplicationRuntime {
             capture,
             configuration.feature_enabled(CAPTURE_ID),
             SharedCaptureProbe(Arc::clone(&capture_detection)),
+        )?;
+        let camera = FeatureSpec::new(CAMERA_ID, "Camera preview", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        registry.register_probe(
+            camera,
+            configuration.feature_enabled(CAMERA_ID),
+            CameraProbe,
         )?;
         for tool in ALL_SCREEN_TOOLS {
             let spec =
@@ -672,6 +682,7 @@ impl ApplicationRuntime {
             process_limits: configuration.processes,
             process_signalling: PidfdSignaller::available(),
             screen_tools: ScreenToolsService::new(ocr_recognizer(&configuration.screen_tools)),
+            camera: CameraPreviewService::new(Arc::new(V4l2Camera)),
             screen_tool_settings: configuration.screen_tools.clone(),
             alerts: AlertEngine::new(AlertPolicy::from_configuration(
                 &configuration.monitoring.alerts,
@@ -961,6 +972,7 @@ impl ApplicationRuntime {
         model.scratchpad = self.scratchpad_view_model();
         model.processes = self.processes_view_model("");
         model.screen_tools = self.screen_tools_view_model();
+        model.camera = self.camera_view_model();
         model.listeners = self.listeners_view_model();
         model
     }
@@ -1401,6 +1413,71 @@ pub fn run_process_action(
 
 const PROCESS_TERMINATE_GRACE: Duration = Duration::from_secs(3);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl ApplicationRuntime {
+    pub fn camera_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == CAMERA_ID && registration.running)
+    }
+
+    pub fn camera_view_model(&self) -> CameraViewModel {
+        let registration = self
+            .registry
+            .registrations()
+            .find(|registration| registration.feature.id == CAMERA_ID);
+        let running = registration.is_some_and(|registration| registration.running);
+        let reason = registration.filter(|_| !running).map(|registration| {
+            if registration.enabled {
+                registration
+                    .capability
+                    .remediation
+                    .clone()
+                    .unwrap_or_else(|| registration.capability.summary.clone())
+            } else {
+                "Camera preview is off. Enable camera.preview in the Feature Hub.".to_owned()
+            }
+        });
+        CameraViewModel::from_presentation(CameraPresentation {
+            running,
+            reason,
+            snapshot: self.camera.snapshot(),
+            cameras: if running {
+                system_cameras()
+            } else {
+                Vec::new()
+            },
+        })
+    }
+
+    pub fn camera_generation(&self) -> u64 {
+        self.camera.snapshot().generation
+    }
+
+    /// The slot the window reads preview frames from.
+    pub fn camera_frames(&self) -> CameraFrameSlot {
+        self.camera.frames()
+    }
+
+    /// Opens the camera at `path`; only listed cameras are accepted.
+    pub fn start_camera(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if !self.camera_is_running() {
+            return Err(
+                "Camera preview is not running; enable camera.preview in the Feature Hub."
+                    .to_owned(),
+            );
+        }
+        let camera = system_cameras()
+            .into_iter()
+            .find(|camera| camera.path == path)
+            .ok_or_else(|| "That camera is no longer connected; refresh the list.".to_owned())?;
+        self.camera.start(camera.path, camera.name)
+    }
+
+    pub fn stop_camera(&mut self) {
+        self.camera.stop();
+    }
+}
 
 impl ApplicationRuntime {
     pub fn screen_tool_is_running(&self, tool: ScreenTool) -> bool {
@@ -2095,6 +2172,9 @@ impl ApplicationRuntime {
 
     fn reconcile_resources(&mut self) {
         // Stop services to release claims and join workers.
+        if !self.camera_is_running() {
+            self.camera.stop();
+        }
         if ALL_SCREEN_TOOLS
             .into_iter()
             .any(|tool| self.screen_tool_is_running(tool))
@@ -2941,5 +3021,21 @@ mod tests {
             .scratchpad_create("test".to_owned())
             .expect_err("disabled feature");
         assert!(error.contains("notes.scratchpad"));
+    }
+
+    #[test]
+    fn a_disabled_camera_never_opens() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+        let error = runtime
+            .start_camera(std::path::Path::new("/dev/video0"))
+            .expect_err("disabled feature");
+        assert!(error.contains("camera.preview"), "{error}");
+        assert_eq!(
+            runtime.camera.snapshot().phase,
+            kestrel_services::camera::CameraPhase::Idle
+        );
+        assert!(runtime.camera_view_model().cameras.is_empty());
     }
 }

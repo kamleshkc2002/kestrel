@@ -575,6 +575,20 @@ limits only mark notes as expired; `RemoveExpired` performs deletion after
 user confirmation. Markdown preview uses escaped Pango markup and bounded
 pulldown-cmark input.
 
+### 5.16 Camera preview
+
+`camera.preview` lists index-0 nodes under `/sys/class/video4linux` (UVC
+metadata nodes have higher indexes) and checks access with `access(2)`; the
+probe never opens a device. `CameraPreviewService` opens the chosen node on
+the `kestrel-camera` worker through `linuxvideo`, negotiates 640 × 480 MJPEG
+or YUYV, and decodes each buffer to RGBA (`zune-jpeg` supplies the Huffman
+tables MJPEG webcams omit). The worker polls with a 100 ms timeout so `stop`
+joins promptly; dropping the stream issues `STREAMOFF`, unmaps the buffers,
+and closes the device. Only the newest frame is kept, in a slot the window
+reads at 30 Hz into a `GdkMemoryTexture`; stop clears it. The window stops the
+preview when it closes, and `reconcile_resources` stops it when the feature is
+disabled.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:
