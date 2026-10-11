@@ -313,11 +313,19 @@ pub(crate) struct GstRecording {
     pause: Option<Pause>,
     paused_total: gst::ClockTime,
     ended: bool,
+    /// The PipeWire connection `pipewiresrc` reads; closed after the pipeline.
+    remote: Option<std::os::fd::OwnedFd>,
 }
 
 impl GstRecording {
     pub(crate) fn start(input: VideoInput, plan: &RecordingPlan) -> Result<Self, RecordingError> {
         Self::start_with(input, plan, &pulse_source)
+    }
+
+    /// Keeps `remote` open for as long as the recording runs.
+    pub(crate) fn owning(mut self, remote: std::os::fd::OwnedFd) -> Self {
+        self.remote = Some(remote);
+        self
     }
 
     fn start_with(
@@ -428,6 +436,7 @@ impl GstRecording {
             pause: None,
             paused_total: gst::ClockTime::ZERO,
             ended: false,
+            remote: None,
         };
         recording.play()?;
         Ok(recording)
