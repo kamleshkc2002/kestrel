@@ -54,6 +54,7 @@ struct TickUpdate {
     processes: Option<kestrel::ProcessesViewModel>,
     listeners: Option<kestrel::ListenersViewModel>,
     screen_tools: Option<kestrel::ScreenToolsViewModel>,
+    camera: Option<kestrel::CameraViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -83,6 +84,7 @@ struct ControllerState {
     process_generation: u64,
     listener_generation: u64,
     screen_tools_generation: u64,
+    camera_generation: u64,
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
@@ -306,6 +308,7 @@ fn run_tick(
         processes,
         listeners,
         screen_tools,
+        camera,
     ) = {
         let mut guard = state
             .lock()
@@ -351,6 +354,11 @@ fn run_tick(
             guard.screen_tools_generation = generation;
             guard.runtime.screen_tools_view_model()
         });
+        let generation = guard.runtime.camera_generation();
+        let camera = (generation != guard.camera_generation).then(|| {
+            guard.camera_generation = generation;
+            guard.runtime.camera_view_model()
+        });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
@@ -361,6 +369,7 @@ fn run_tick(
             processes,
             listeners,
             screen_tools,
+            camera,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -375,6 +384,7 @@ fn run_tick(
         processes,
         listeners,
         screen_tools,
+        camera,
     }
 }
 
@@ -601,6 +611,7 @@ struct ApplicationController {
     processes_running: Cell<bool>,
     listeners_running: Cell<bool>,
     screen_tools_running: Cell<bool>,
+    camera_running: Cell<bool>,
     /// A selection view is open; at most one at a time.
     selection_open: Cell<bool>,
     /// A frame waits for a selection view.
@@ -641,6 +652,7 @@ impl ApplicationController {
         let screen_tools_running = kestrel::ALL_SCREEN_TOOLS
             .into_iter()
             .any(|tool| runtime.screen_tool_is_running(tool));
+        let camera_running = runtime.camera_is_running();
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -660,6 +672,7 @@ impl ApplicationController {
                 process_generation: 0,
                 listener_generation: 0,
                 screen_tools_generation: 0,
+                camera_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -680,6 +693,7 @@ impl ApplicationController {
             processes_running: Cell::new(processes_running),
             listeners_running: Cell::new(listeners_running),
             screen_tools_running: Cell::new(screen_tools_running),
+            camera_running: Cell::new(camera_running),
             selection_open: Cell::new(false),
             selection_pending: Cell::new(None),
             listener_last_refresh: Cell::new(Instant::now()),
@@ -705,10 +719,18 @@ impl ApplicationController {
         }
 
         let view_model = self.current_view_model();
-        let view = WindowView::new(application, &view_model, self.commands.clone());
+        let frames = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .camera_frames();
+        let view = WindowView::new(application, &view_model, self.commands.clone(), frames);
         let weak_controller = Rc::downgrade(self);
         view.window.connect_close_request(move |_| {
             if let Some(controller) = weak_controller.upgrade() {
+                // The camera never keeps running behind a closed window.
+                controller.camera_request(kestrel::CameraRequest::Stop);
                 controller.window.borrow_mut().take();
             }
             glib::Propagation::Proceed
@@ -900,6 +922,7 @@ impl ApplicationController {
                 self.listeners_running.set(view_model.listeners.running);
                 self.screen_tools_running
                     .set(view_model.screen_tools.available);
+                self.camera_running.set(view_model.camera.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -917,6 +940,7 @@ impl ApplicationController {
                 self.listeners_running.set(view_model.listeners.running);
                 self.screen_tools_running
                     .set(view_model.screen_tools.available);
+                self.camera_running.set(view_model.camera.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
@@ -954,6 +978,7 @@ impl ApplicationController {
             && !self.processes_running.get()
             && !self.listeners_running.get()
             && !self.screen_tools_running.get()
+            && !self.camera_running.get()
             && !microphone_due
         {
             self.monitoring.set(false);
@@ -992,6 +1017,7 @@ impl ApplicationController {
             processes,
             listeners,
             screen_tools,
+            camera,
         } = update;
         if let Some(screen_tools) = &screen_tools {
             self.screen_tools_running.set(screen_tools.available);
@@ -1009,6 +1035,10 @@ impl ApplicationController {
         };
         if let Some(screen_tools) = screen_tools {
             view.set_screen_tools(&screen_tools);
+        }
+        if let Some(camera) = camera {
+            self.camera_running.set(camera.running);
+            view.set_camera(&camera);
         }
         if let Some(monitor) = monitor {
             self.monitor_running.set(monitor.running);
@@ -1075,6 +1105,32 @@ impl ApplicationController {
         self.selection_pending.set(screen_tools.selecting);
         if let Some(view) = self.window.borrow().as_ref() {
             view.set_screen_tools(&screen_tools);
+            if let Err(error) = result {
+                view.show_message(&error);
+            }
+        }
+    }
+
+    /// Starts or stops the preview on the GTK thread; stopping joins the
+    /// camera worker, which waits at most one frame interval.
+    fn camera_request(&self, request: kestrel::CameraRequest) {
+        let (result, camera) = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let result = match request {
+                kestrel::CameraRequest::Start(path) => guard.runtime.start_camera(&path),
+                kestrel::CameraRequest::Stop => {
+                    guard.runtime.stop_camera();
+                    Ok(())
+                }
+            };
+            (result, guard.runtime.camera_view_model())
+        };
+        self.camera_running.set(camera.running);
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_camera(&camera);
             if let Err(error) = result {
                 view.show_message(&error);
             }
@@ -2569,6 +2625,7 @@ fn dispatch_commands(
                     "kestrel-scratchpad-limit",
                 ),
                 ApplicationCommand::ScreenTools(request) => controller.screen_tool_request(request),
+                ApplicationCommand::Camera(request) => controller.camera_request(request),
                 ApplicationCommand::SetScreenToolsSetting(setting) => controller.request_operation(
                     ControllerOperation::SetScreenToolsSetting(setting),
                     "kestrel-screen-tools-setting",

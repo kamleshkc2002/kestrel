@@ -111,6 +111,12 @@ and running state separately.
 - Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`.
 - Preview renders the note's Markdown. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
 
+### Camera preview — `camera.preview`
+
+- **Default:** disabled; Balanced and Everything enable it. The camera stays off until you press Start.
+- Lists cameras from sysfs without opening them, then opens the chosen one through V4L2 at 640 × 480 (MJPEG, else YUYV) only while the preview runs. Stop, closing the window, and disabling the feature turn the camera off.
+- Distinct states for no camera, no permission (log in at the computer's own seat or join the `video` group), a camera another application holds, and a camera that disconnects mid-preview. Frames stay in memory and are never recorded or saved.
+
 ### Processes — `system.processes`
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command processes.open`.

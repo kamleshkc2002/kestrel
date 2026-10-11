@@ -29,6 +29,7 @@ pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_platform::screen_tools::{ALL_SCREEN_TOOLS, ScreenTool};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
+pub use kestrel_services::camera::CameraFrameSlot;
 pub use kestrel_services::capture::{
     CaptureId,
     image::{Color, EditOperation, EditPlan, Rect, RgbaImage, decode_png},
@@ -47,10 +48,11 @@ pub use status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegr
 pub use view_model::{
     ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
     AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
-    CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel, CaptureEntryViewModel,
-    CaptureModeViewModel, CaptureViewModel, ClipboardBoundsViewModel, ClipboardItemViewModel,
-    ClipboardPolicyViewModel, ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel,
-    CommandProvider, CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
+    CameraChoiceViewModel, CameraViewModel, CapabilityKindViewModel, CapabilityStatusViewModel,
+    CapabilityViewModel, CaptureEntryViewModel, CaptureModeViewModel, CaptureViewModel,
+    ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
+    ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
+    CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
     ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
     FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
     MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
@@ -146,6 +148,14 @@ pub enum ScreenToolRequest {
     Cancel,
     /// Clears the shown result.
     Dismiss,
+}
+
+/// Camera preview action from the window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CameraRequest {
+    /// Opens this camera; it must be one the window listed.
+    Start(std::path::PathBuf),
+    Stop,
 }
 /// Bounded clipboard retention value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +298,7 @@ pub enum ApplicationCommand {
     SetProcessLimit(ProcessLimit),
     SetScratchpadLimit(ScratchpadLimit),
     Processes(ProcessRequest),
+    Camera(CameraRequest),
     CopyText(String),
     OpenUri(String),
     ScreenTools(ScreenToolRequest),

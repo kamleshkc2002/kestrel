@@ -1,6 +1,7 @@
 //! GTK rendering of the application window.
 
 mod audio;
+mod camera;
 mod capture;
 mod clipboard;
 mod command_bar;
@@ -16,6 +17,7 @@ mod widgets;
 use adw::prelude::*;
 use async_channel::Sender;
 use audio::{build_audio_controls, build_microphone_group};
+use camera::build_camera_group;
 use capture::build_capture_group;
 use clipboard::{
     ClipboardPanel, build_clipboard_panel, fill_clipboard_results,
@@ -27,8 +29,8 @@ use features::{
 };
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
-    ApplicationCommand, ApplicationViewModel, CaptureViewModel, FocusTarget, MicrophoneViewModel,
-    MonitorViewModel, PanelSection, ShortcutsViewModel, SpeedTestViewModel,
+    ApplicationCommand, ApplicationViewModel, CameraFrameSlot, CaptureViewModel, FocusTarget,
+    MicrophoneViewModel, MonitorViewModel, PanelSection, ShortcutsViewModel, SpeedTestViewModel,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
@@ -54,6 +56,9 @@ pub struct WindowView {
     speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
     capture_container: std::cell::RefCell<Option<gtk::Box>>,
     screen_tools_container: std::cell::RefCell<Option<gtk::Box>>,
+    camera_container: std::cell::RefCell<Option<gtk::Box>>,
+    /// Preview frames shared with the camera service.
+    camera_frames: CameraFrameSlot,
     shortcuts_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
@@ -69,6 +74,7 @@ impl WindowView {
         application: &adw::Application,
         view_model: &ApplicationViewModel,
         commands: Sender<ApplicationCommand>,
+        camera_frames: CameraFrameSlot,
     ) -> Self {
         let window = adw::ApplicationWindow::builder()
             .application(application)
@@ -100,7 +106,7 @@ impl WindowView {
             .propagate_natural_height(false)
             .vexpand(true)
             .build();
-        let page = build_page(view_model, &window, &commands);
+        let page = build_page(view_model, &window, &commands, &camera_frames);
         content.set_child(Some(&page.clamp));
 
         let toasts = adw::ToastOverlay::new();
@@ -122,6 +128,8 @@ impl WindowView {
             speed_test_container: std::cell::RefCell::new(page.speed_test_container),
             capture_container: std::cell::RefCell::new(page.capture_container),
             screen_tools_container: std::cell::RefCell::new(page.screen_tools_container),
+            camera_container: std::cell::RefCell::new(page.camera_container),
+            camera_frames,
             shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
@@ -132,13 +140,19 @@ impl WindowView {
     }
 
     pub fn set_view_model(&self, view_model: &ApplicationViewModel) {
-        let page = build_page(view_model, &self.window, &self.commands);
+        let page = build_page(
+            view_model,
+            &self.window,
+            &self.commands,
+            &self.camera_frames,
+        );
         self.content.set_child(Some(&page.clamp));
         *self.monitor_container.borrow_mut() = page.monitor_container;
         *self.microphone_container.borrow_mut() = page.microphone_container;
         *self.speed_test_container.borrow_mut() = page.speed_test_container;
         *self.capture_container.borrow_mut() = page.capture_container;
         *self.screen_tools_container.borrow_mut() = page.screen_tools_container;
+        *self.camera_container.borrow_mut() = page.camera_container;
         *self.shortcuts_container.borrow_mut() = Some(page.shortcuts_container);
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
@@ -262,6 +276,21 @@ impl WindowView {
         container.append(&build_speed_test_group(speed_test, &self.commands));
     }
 
+    /// Replaces the camera group.
+    pub fn set_camera(&self, camera: &kestrel::CameraViewModel) {
+        let Some(container) = self.camera_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_camera_group(
+            camera,
+            Some(&self.camera_frames),
+            &self.commands,
+        ));
+    }
+
     /// Replaces the capture group.
     pub fn set_capture(&self, capture: &CaptureViewModel) {
         let Some(container) = self.capture_container.borrow().as_ref().cloned() else {
@@ -331,6 +360,7 @@ struct PageBuild {
     speed_test_container: Option<gtk::Box>,
     capture_container: Option<gtk::Box>,
     screen_tools_container: Option<gtk::Box>,
+    camera_container: Option<gtk::Box>,
     shortcuts_container: gtk::Box,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
@@ -343,6 +373,7 @@ fn build_page(
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
+    camera_frames: &CameraFrameSlot,
 ) -> PageBuild {
     let page = gtk::Box::new(Orientation::Vertical, 24);
     page.set_margin_top(24);
@@ -380,6 +411,7 @@ fn build_page(
     let mut speed_test_container = None;
     let mut capture_container = None;
     let mut screen_tools_container = None;
+    let mut camera_container = None;
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
     let mut command_panel = None;
@@ -417,6 +449,14 @@ fn build_page(
                 ));
                 page.append(&screen_tools);
                 screen_tools_container = Some(screen_tools);
+                let camera = gtk::Box::new(Orientation::Vertical, 0);
+                camera.append(&build_camera_group(
+                    &view_model.camera,
+                    Some(camera_frames),
+                    commands,
+                ));
+                page.append(&camera);
+                camera_container = Some(camera);
                 let panel = build_clipboard_panel(&view_model.clipboard, commands);
                 page.append(&panel.container);
                 clipboard_panel = Some(panel);
@@ -464,6 +504,7 @@ fn build_page(
         speed_test_container,
         capture_container,
         screen_tools_container,
+        camera_container,
         shortcuts_container,
         clipboard_panel,
         snippet_panel,
