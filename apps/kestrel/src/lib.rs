@@ -59,12 +59,13 @@ pub use view_model::{
     MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel,
     QrRowViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
-    RecordingControls, RecordingTakeViewModel, RecordingTrackOptionViewModel,
-    RecordingTrackViewModel, RecordingViewModel, RemediationViewModel, ScratchpadExpiredViewModel,
-    ScratchpadTabViewModel, ScratchpadViewModel, ScreenToolButtonViewModel,
-    ScreenToolResultViewModel, ScreenToolsViewModel, ShortcutRowViewModel, ShortcutsViewModel,
-    SnippetBoundsViewModel, SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel,
-    SnippetPolicyViewModel, SnippetsViewModel, SpeedTestViewModel,
+    RecordingControls, RecordingExportViewModel, RecordingTakeViewModel,
+    RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel,
+    RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
+    ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
+    ShortcutRowViewModel, ShortcutsViewModel, SnippetBoundsViewModel, SnippetDraft,
+    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
+    SpeedTestViewModel,
 };
 
 /// Command-bar action from the window.
@@ -177,7 +178,22 @@ pub enum RecordingRequest {
     Dismiss,
     /// Removes a listed take.
     Delete(std::path::PathBuf),
+    /// Writes `start..end` of a listed take to a new file.
+    Export {
+        take: std::path::PathBuf,
+        start: std::time::Duration,
+        end: std::time::Duration,
+        destination: std::path::PathBuf,
+    },
+    /// Stops the running export and removes its partial file.
+    CancelExport,
+    /// Clears the finished or failed export.
+    DismissExport,
 }
+
+/// Frame of the take being trimmed at a position, for the trim preview.
+pub type TrimPreview =
+    std::sync::Arc<dyn Fn(std::time::Duration) -> Result<RgbaImage, String> + Send + Sync>;
 
 /// Recording default changed in the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +345,8 @@ pub enum ApplicationCommand {
     Processes(ProcessRequest),
     Camera(CameraRequest),
     Recording(RecordingRequest),
+    /// Opens the trim editor for a listed take.
+    TrimRecording(std::path::PathBuf),
     SetRecordingSetting(RecordingSetting),
     CopyText(String),
     OpenUri(String),

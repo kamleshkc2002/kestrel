@@ -1053,7 +1053,10 @@ impl ApplicationController {
         self.open_pending_selection();
         if let Some(recording) = &recording {
             self.recording_running.set(recording.running);
-            if recording.choosing_area && self.window.borrow().is_none() {
+            if !recording.choosing_area {
+                // The worker took the answer; a later choice opens a new view.
+                self.recording_area_open.set(false);
+            } else if self.window.borrow().is_none() {
                 let _ = self.commands.try_send(ApplicationCommand::PresentWindow);
             }
         }
@@ -1172,12 +1175,8 @@ impl ApplicationController {
     /// Runs a recording request on the GTK thread; requests only signal the
     /// recording worker.
     fn recording_request(&self, request: kestrel::RecordingRequest) {
-        if matches!(
-            request,
-            kestrel::RecordingRequest::ChooseArea(_) | kestrel::RecordingRequest::Cancel
-        ) {
-            self.recording_area_open.set(false);
-        }
+        // The area view stays marked open until a tick shows the worker left
+        // ChoosingArea, so it is never opened twice for one frame.
         let (result, recording) = {
             let mut guard = self
                 .state
@@ -1187,11 +1186,32 @@ impl ApplicationController {
             (result, guard.runtime.recording_view_model())
         };
         self.recording_running.set(recording.running);
+        if !recording.choosing_area {
+            self.recording_area_open.set(false);
+        }
         if let Some(view) = self.window.borrow().as_ref() {
             view.set_recording(&recording);
             if let Err(error) = result {
                 view.show_message(&error);
             }
+        }
+    }
+
+    /// Opens the trim editor for a listed take.
+    fn open_trim(&self, take: std::path::PathBuf) {
+        let trim = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .recording_trim(&take);
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        match trim {
+            Ok((duration, preview)) => view.open_trim(take, duration, preview),
+            Err(error) => view.show_message(&error),
         }
     }
 
@@ -2767,6 +2787,7 @@ fn dispatch_commands(
                 ApplicationCommand::ScreenTools(request) => controller.screen_tool_request(request),
                 ApplicationCommand::Camera(request) => controller.camera_request(request),
                 ApplicationCommand::Recording(request) => controller.recording_request(request),
+                ApplicationCommand::TrimRecording(take) => controller.open_trim(take),
                 ApplicationCommand::SetRecordingSetting(setting) => controller.request_operation(
                     ControllerOperation::SetRecordingSetting(setting),
                     "kestrel-recording-setting",

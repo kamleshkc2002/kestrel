@@ -28,7 +28,7 @@ const KEYFRAME_SECONDS: u32 = 2;
 static INIT: LazyLock<Result<(), String>> =
     LazyLock::new(|| gst::init().map_err(|error| error.to_string()));
 
-fn init() -> Result<(), String> {
+pub(super) fn init() -> Result<(), String> {
     INIT.clone()
 }
 
@@ -81,7 +81,7 @@ pub(crate) enum VideoInput {
     Test,
 }
 
-fn element(factory: &str) -> Result<gst::Element, RecordingError> {
+pub(super) fn element(factory: &str) -> Result<gst::Element, RecordingError> {
     gst::ElementFactory::make(factory).build().map_err(|_| {
         RecordingError::new(
             RecordingErrorKind::Unavailable,
@@ -145,7 +145,7 @@ fn bus_error(bus: &gst::Bus, timeout: Duration) -> Option<(Option<gst::Object>, 
     Some((message.src().cloned(), classify(&error.error())))
 }
 
-fn classify(error: &gst::glib::Error) -> RecordingError {
+pub(super) fn classify(error: &gst::glib::Error) -> RecordingError {
     if let Some(resource) = error.kind::<gst::ResourceError>() {
         match resource {
             gst::ResourceError::NoSpaceLeft
@@ -229,7 +229,7 @@ pub(crate) fn grab_still(
     result
 }
 
-fn frame_from_sample(sample: &gst::Sample) -> Result<VideoFrame, RecordingError> {
+pub(super) fn frame_from_sample(sample: &gst::Sample) -> Result<VideoFrame, RecordingError> {
     let malformed =
         || RecordingError::new(RecordingErrorKind::Failed, "The picture was malformed.");
     let structure = sample
@@ -281,7 +281,11 @@ struct Track {
     entry: gst::Pad,
     /// Feeds the encoder; pausing drops buffers here.
     gate: gst::Pad,
+    /// The bin's output, linked to `mux_pad`.
+    output: gst::Pad,
     mux_pad: gst::Pad,
+    /// Set once an encoded buffer reached the muxer.
+    produced: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A pause in progress: when it began, and the probes dropping buffers.
@@ -468,15 +472,38 @@ impl GstRecording {
     }
 
     /// Ends one failed track; the muxer continues with the others.
+    ///
+    /// A track that already fed the muxer gets EOS through its own queue,
+    /// whose thread carries it after any buffered audio; sending EOS to the
+    /// muxer pad directly, or stopping the bin, can deadlock against that
+    /// thread blocked in the muxer. A track that fed nothing would hold the
+    /// muxer back forever (it waits for data on every pad), so its pad is
+    /// released once the output is idle and the bin stopped.
     fn drop_track(&mut self, index: usize) -> AudioTrack {
         let track = self.tracks.remove(index);
-        let _ = track
-            .bin
-            .static_pad("src")
-            .map(|pad| pad.unlink(&track.mux_pad));
-        track.mux_pad.send_event(gst::event::Eos::new());
-        let _ = track.bin.set_state(gst::State::Null);
-        let _ = self.pipeline.remove(&track.bin);
+        if track.produced.load(std::sync::atomic::Ordering::Acquire) {
+            track.entry.send_event(gst::event::Eos::new());
+        } else {
+            let (detached, done) = std::sync::mpsc::sync_channel(1);
+            let mux_pad = track.mux_pad.clone();
+            track
+                .output
+                .add_probe(gst::PadProbeType::IDLE, move |pad, _| {
+                    let _ = pad.unlink(&mux_pad);
+                    if let Some(mux) = mux_pad.parent_element() {
+                        mux.release_request_pad(&mux_pad);
+                    }
+                    let _ = detached.try_send(());
+                    gst::PadProbeReturn::Remove
+                });
+            if done.recv_timeout(Duration::from_secs(1)).is_ok() {
+                let _ = track.bin.set_state(gst::State::Null);
+                let _ = self.pipeline.remove(&track.bin);
+                // An error while starting leaves the pipeline short of
+                // PLAYING; ask again now that the failed bin is gone.
+                let _ = self.pipeline.set_state(gst::State::Playing);
+            }
+        }
         self.dropped.push(track.bin);
         track.track
     }
@@ -537,6 +564,12 @@ fn audio_track(
     pipeline.add(&bin).map_err(|_| failed())?;
     let mux_pad = mux.request_pad_simple("audio_%u").ok_or_else(failed)?;
     ghost.link(&mux_pad).map_err(|_| failed())?;
+    let produced = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&produced);
+    ghost.add_probe(gst::PadProbeType::BUFFER, move |_, _| {
+        seen.store(true, std::sync::atomic::Ordering::Release);
+        gst::PadProbeReturn::Remove
+    });
     let entry = queue.static_pad("sink").ok_or_else(failed)?;
     let gate = filter.static_pad("src").ok_or_else(failed)?;
     Ok(Track {
@@ -544,7 +577,9 @@ fn audio_track(
         bin,
         entry,
         gate,
+        output: ghost.upcast(),
         mux_pad,
+        produced,
     })
 }
 
@@ -698,13 +733,13 @@ impl Drop for GstRecording {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::path::Path;
     use tempfile::TempDir;
 
     /// Skips when the local GStreamer lacks test or encoding elements.
-    fn ready(extra: &[&str]) -> bool {
+    pub(in crate::recording) fn ready(extra: &[&str]) -> bool {
         if init().is_err() {
             eprintln!("skipping: GStreamer did not start");
             return false;
@@ -763,6 +798,21 @@ mod tests {
         gst::parse::bin_from_description(description, true)
             .map(|bin| bin.upcast())
             .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test source"))
+    }
+
+    /// Records `length` of test video with a System tone track.
+    pub(in crate::recording) fn record_test_take(
+        directory: &TempDir,
+        length: std::time::Duration,
+    ) -> std::path::PathBuf {
+        let plan = plan(directory, vec![AudioTrack::System]);
+        let recording = Box::new(
+            GstRecording::start_with(VideoInput::Test, &plan, &test_audio)
+                .expect("recording starts"),
+        );
+        std::thread::sleep(length);
+        recording.finish().expect("recording completes");
+        plan.output
     }
 
     /// Streams in the WebM file, as GStreamer discovers them.
@@ -852,6 +902,37 @@ mod tests {
             stream_kinds(&plan.output),
             ["audio_0", "audio_1", "video_0"]
         );
+    }
+
+    #[test]
+    fn a_track_failing_on_its_first_buffer_still_lets_the_take_complete() {
+        if !ready(&["matroskademux", "fakesink"]) {
+            return;
+        }
+        let directory = TempDir::new().expect("temp dir");
+        let plan = plan(&directory, vec![AudioTrack::System, AudioTrack::Microphone]);
+        let early = |track: AudioTrack| -> Result<gst::Element, RecordingError> {
+            let description = match track {
+                AudioTrack::System => "audiotestsrc is-live=true",
+                AudioTrack::Microphone => "audiotestsrc is-live=true ! identity error-after=1",
+            };
+            gst::parse::bin_from_description(description, true)
+                .map(|bin| bin.upcast())
+                .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test source"))
+        };
+        let mut recording = Box::new(
+            GstRecording::start_with(VideoInput::Test, &plan, &early).expect("recording starts"),
+        );
+        assert!(matches!(
+            recording.poll(Duration::from_secs(3)),
+            Some(RecordingEvent::TrackFailed {
+                track: AudioTrack::Microphone,
+                ..
+            })
+        ));
+        assert_eq!(recording.poll(Duration::from_millis(400)), None);
+        recording.finish().expect("recording completes");
+        assert!(stream_kinds(&plan.output).contains(&"video_0".to_owned()));
     }
 
     #[test]

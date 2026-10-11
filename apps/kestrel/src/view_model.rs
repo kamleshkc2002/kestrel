@@ -29,7 +29,7 @@ use kestrel_services::{
     microphone::{MicrophoneAvailability, MicrophoneMuteState, MicrophoneSnapshot},
     processes::{ListenerSnapshot, ProcessRow, ProcessSnapshot, search as search_processes},
     quick_toggles::{QuickToggleSnapshot, ToggleStateSource},
-    recording::{RecordingClock, RecordingPhase, RecordingSnapshot},
+    recording::{ExportPhase, RecordingClock, RecordingPhase, RecordingSnapshot},
     scratchpad::ScratchpadSnapshot,
     screen_tools::{QrPayload, ScreenToolResult, ScreenToolsPhase, ScreenToolsSnapshot},
     snippets::{SnippetLibrary, SnippetMatch, SnippetPolicy},
@@ -1446,6 +1446,38 @@ pub enum RecordingControls {
     Stopping,
 }
 
+fn export_view(export: ExportPhase) -> Option<RecordingExportViewModel> {
+    let file_name = |path: &std::path::Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    match export {
+        ExportPhase::Idle => None,
+        ExportPhase::Exporting { name, percent } => Some(RecordingExportViewModel {
+            status: format!("Exporting {name}… {percent}%"),
+            running: true,
+            failed: false,
+            path: None,
+        }),
+        ExportPhase::Exported { path } => Some(RecordingExportViewModel {
+            status: format!("Exported {}.", file_name(&path)),
+            running: false,
+            failed: false,
+            path: Some(path),
+        }),
+        ExportPhase::Failed { error } => Some(RecordingExportViewModel {
+            status: match error.remediation() {
+                Some(remediation) => format!("Export failed: {} {remediation}", error.message),
+                None => format!("Export failed: {}", error.message),
+            },
+            running: false,
+            failed: true,
+            path: None,
+        }),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecordingViewModel {
     pub running: bool,
@@ -1467,6 +1499,18 @@ pub struct RecordingViewModel {
     pub dismissable: bool,
     /// The area view should open for the frame the runtime holds.
     pub choosing_area: bool,
+    /// The running or last trimmed export.
+    pub export: Option<RecordingExportViewModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingExportViewModel {
+    pub status: String,
+    /// Cancel is offered while it runs; Dismiss once it ended.
+    pub running: bool,
+    pub failed: bool,
+    /// The finished file, for Play.
+    pub path: Option<std::path::PathBuf>,
 }
 
 impl RecordingViewModel {
@@ -1519,11 +1563,13 @@ impl RecordingViewModel {
             framerate: settings.framerate,
             takes,
             folder,
+            export: export_view(snapshot.export),
             ..Self::default()
         };
         if !running {
             model.status =
                 reason.unwrap_or_else(|| "Enable capture.recording in the Feature Hub.".to_owned());
+            model.export = None;
             return model;
         }
         match snapshot.phase {
@@ -5507,6 +5553,7 @@ mod tests {
                         bytes: 3 * 1024 * 1024,
                         duration: Some(Duration::from_secs(75)),
                     }],
+                    export: kestrel_services::recording::ExportPhase::Idle,
                 },
                 sources: vec![RecordingSource::Screen, RecordingSource::Window],
                 available_tracks: available,
@@ -5594,6 +5641,41 @@ mod tests {
         fn clock_text_grows_hours_past_an_hour() {
             assert_eq!(format_clock(Duration::from_secs(59)), "0:59");
             assert_eq!(format_clock(Duration::from_secs(3_725)), "1:02:05");
+        }
+
+        #[test]
+        fn exports_show_progress_then_their_outcome() {
+            use kestrel_services::recording::ExportPhase;
+            let with_export = |export: ExportPhase| {
+                let mut presentation_view = view(RecordingPhase::Idle, Vec::new());
+                presentation_view.export = super::super::export_view(export);
+                presentation_view
+            };
+            let running = with_export(ExportPhase::Exporting {
+                name: "clip.webm".into(),
+                percent: 40,
+            })
+            .export
+            .expect("export row");
+            assert!(running.running && !running.failed);
+            assert_eq!(running.status, "Exporting clip.webm… 40%");
+            let failed = with_export(ExportPhase::Failed {
+                error: RecordingError::new(RecordingErrorKind::Unavailable, "No VP8 encoder."),
+            })
+            .export
+            .expect("export row");
+            assert!(failed.failed && !failed.running);
+            assert!(failed.status.contains("Install"), "{}", failed.status);
+            let done = with_export(ExportPhase::Exported {
+                path: "/clips/clip.webm".into(),
+            })
+            .export
+            .expect("export row");
+            assert_eq!(
+                done.path.as_deref(),
+                Some(std::path::Path::new("/clips/clip.webm"))
+            );
+            assert!(with_export(ExportPhase::Idle).export.is_none());
         }
     }
 }
