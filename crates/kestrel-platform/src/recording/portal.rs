@@ -76,7 +76,7 @@ impl PortalScreenCast {
                 connection,
                 session: session.unwrap_or_default(),
                 node,
-                remote,
+                remote: Some(remote),
                 closed,
                 watcher: Some(watcher),
             }),
@@ -181,18 +181,30 @@ fn negotiate(
         .and_then(|value| Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(value.clone()).ok())
         .and_then(|streams| streams.first().map(|(node, _)| *node))
         .ok_or_else(|| failed("The portal shared no stream."))?;
-    let remote: zbus::zvariant::OwnedFd = portal
-        .call(
-            "OpenPipeWireRemote",
-            &(&path, HashMap::<String, OwnedValue>::new()),
+    let remote = open_remote(connection, &handle)?;
+    Ok((node, remote, closed, watcher))
+}
+
+/// A new PipeWire connection for the session. Each pipeline gets its own:
+/// two clients cannot share one connection, even one after the other.
+fn open_remote(connection: &Connection, session: &str) -> Result<OwnedFd, RecordingError> {
+    let unavailable = |error: zbus::Error| {
+        RecordingError::new(
+            RecordingErrorKind::Unavailable,
+            format!("Opening the PipeWire stream failed: {error}"),
         )
-        .map_err(|error| {
-            RecordingError::new(
-                RecordingErrorKind::Unavailable,
-                format!("Opening the PipeWire stream failed: {error}"),
+    };
+    let path = ObjectPath::try_from(session)
+        .map_err(|_| failed("The portal returned an invalid session handle."))?;
+    let remote: zbus::zvariant::OwnedFd =
+        Proxy::new(connection, PORTAL_BUS, PORTAL_PATH, SCREENCAST_INTERFACE)
+            .map_err(unavailable)?
+            .call(
+                "OpenPipeWireRemote",
+                &(&path, HashMap::<String, OwnedValue>::new()),
             )
-        })?;
-    Ok((node, remote.into(), closed, watcher))
+            .map_err(unavailable)?;
+    Ok(remote.into())
 }
 
 /// Sends one request with a fresh handle token and maps its response code.
@@ -279,13 +291,14 @@ fn failed(message: impl Into<String>) -> RecordingError {
     RecordingError::new(RecordingErrorKind::Failed, message)
 }
 
-/// A consented ScreenCast session with its PipeWire remote. Dropping it
-/// closes the session and the connection.
+/// A consented ScreenCast session. Dropping it closes the session and the
+/// connection.
 pub struct ScreenCastSession {
     connection: Connection,
     session: String,
     node: u32,
-    remote: OwnedFd,
+    /// The remote opened with the session, until a pipeline takes it.
+    remote: Option<OwnedFd>,
     closed: Arc<AtomicBool>,
     watcher: Option<JoinHandle<()>>,
 }
@@ -295,13 +308,22 @@ impl ScreenCastSession {
     pub fn node(&self) -> u32 {
         self.node
     }
+
+    /// An unused PipeWire remote for the next pipeline.
+    fn fresh_remote(&mut self) -> Result<OwnedFd, RecordingError> {
+        match self.remote.take() {
+            Some(remote) => Ok(remote),
+            None => open_remote(&self.connection, &self.session),
+        }
+    }
 }
 
 impl CaptureSession for ScreenCastSession {
     fn still(&mut self) -> Result<VideoFrame, RecordingError> {
+        let remote = self.fresh_remote()?;
         pipeline::grab_still(
             pipeline::VideoInput::PipeWire {
-                fd: self.remote.as_raw_fd(),
+                fd: remote.as_raw_fd(),
                 node: self.node,
             },
             STILL_TIMEOUT,
@@ -309,14 +331,15 @@ impl CaptureSession for ScreenCastSession {
     }
 
     fn record(&mut self, plan: &RecordingPlan) -> Result<Box<dyn ActiveRecording>, RecordingError> {
+        let remote = self.fresh_remote()?;
         let recording = pipeline::GstRecording::start(
             pipeline::VideoInput::PipeWire {
-                fd: self.remote.as_raw_fd(),
+                fd: remote.as_raw_fd(),
                 node: self.node,
             },
             plan,
         )?;
-        Ok(Box::new(recording))
+        Ok(Box::new(recording.owning(remote)))
     }
 
     fn ended_by_desktop(&self) -> bool {
@@ -356,6 +379,7 @@ mod tests {
         cursor_mode: Option<u32>,
         persist_mode: Option<u32>,
         closed_sessions: Vec<String>,
+        remotes_opened: usize,
     }
 
     struct FakeScreenCast {
@@ -496,6 +520,7 @@ mod tests {
             _session: OwnedObjectPath,
             _options: HashMap<String, OwnedValue>,
         ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
+            self.observed.lock().map_err(fdo)?.remotes_opened += 1;
             let file = std::fs::File::open("/dev/null").map_err(fdo)?;
             Ok(OwnedFd::from(file).into())
         }
@@ -545,7 +570,7 @@ mod tests {
         let Some((bus, observed)) = fake(StartReply::Share) else {
             return;
         };
-        let session = PortalScreenCast::with_bus_address(&bus.address)
+        let mut session = PortalScreenCast::with_bus_address(&bus.address)
             .open(RecordingSource::Area, true, &CaptureCancel::new())
             .expect("sharing succeeds");
         assert_eq!(session.node(), 42);
@@ -560,6 +585,11 @@ mod tests {
             assert_eq!(observed.cursor_mode, Some(CURSOR_EMBEDDED));
             assert_eq!(observed.persist_mode, Some(0), "consent is never persisted");
         }
+        // The still and the recorder each get their own PipeWire connection.
+        let first = session.fresh_remote().expect("first remote");
+        let second = session.fresh_remote().expect("second remote");
+        assert_ne!(first.as_raw_fd(), second.as_raw_fd());
+        assert_eq!(observed.lock().expect("observed").remotes_opened, 2);
         drop(session);
         assert!(wait_for(|| observed
             .lock()

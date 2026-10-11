@@ -603,7 +603,9 @@ monitors and `videocrop`; each audio track needs its device and elements.
 `OpenPipeWireRemote` on a dedicated bus connection that lives as long as the
 session, watching `Session::Closed`. A `CaptureCancel` closes the connection,
 which dismisses the dialog. One still frame sizes the encoder and, for Area,
-feeds the selection view; the chosen region is cropped to even sides.
+feeds the selection view; the chosen region is cropped to even sides. The
+still and the recorder each get their own `OpenPipeWireRemote` connection
+(two clients cannot share one); the recording owns its fd until it stops.
 
 The GStreamer pipeline is `pipewiresrc` → leaky queue → `videocrop` →
 `videoscale` (fixed size, borders) → `videorate` → I420 → `vp8enc` (realtime,
