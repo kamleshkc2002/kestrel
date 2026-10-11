@@ -20,6 +20,7 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_10"], optional = tru
 kestrel-core = { path = "../../crates/kestrel-core" }
 kestrel-platform = { path = "../../crates/kestrel-platform" }
 kestrel-services = { path = "../../crates/kestrel-services" }
+libc = "0.2"
 ksni = { version = "0.3.6", features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"

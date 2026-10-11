@@ -50,6 +50,8 @@ struct TickUpdate {
     speed_test: Option<SpeedTestViewModel>,
     shortcuts: Option<ShortcutsViewModel>,
     capture: Option<kestrel::CaptureViewModel>,
+    processes: Option<kestrel::ProcessesViewModel>,
+    listeners: Option<kestrel::ListenersViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -75,6 +77,9 @@ struct ControllerState {
     speed_test_generation: u64,
     shortcut_generation: u64,
     capture_generation: u64,
+    process_query: String,
+    process_generation: u64,
+    listener_generation: u64,
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
@@ -84,7 +89,7 @@ struct ControllerState {
 
 impl ControllerState {
     fn view_model(&self) -> ApplicationViewModel {
-        self.runtime.view_model_with_panels(
+        let mut model = self.runtime.view_model_with_panels(
             &self.warnings,
             &self.configuration,
             self.preset_snapshot.is_some(),
@@ -102,7 +107,10 @@ impl ControllerState {
                 query: &self.command_query,
                 results: &self.command_results,
             },
-        )
+        );
+        // The runtime projects an unfiltered list; apply the panel search.
+        model.processes = self.runtime.processes_view_model(&self.process_query);
+        model
     }
 
     fn refresh_command_results(&mut self) {
@@ -283,8 +291,9 @@ fn run_tick(
     notifier: &dyn AlertNotifier,
     observed_at: Duration,
     microphone_due: bool,
+    listeners_due: bool,
 ) -> TickUpdate {
-    let (updated, alerts, microphone, speed_test, shortcuts, capture) = {
+    let (updated, alerts, microphone, speed_test, shortcuts, capture, processes, listeners) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -309,6 +318,21 @@ fn run_tick(
             guard.capture_generation = generation;
             guard.runtime.capture_view_model()
         });
+        let process_generation = guard.runtime.process_snapshot().generation;
+        let processes = (process_generation != guard.process_generation).then(|| {
+            guard.process_generation = process_generation;
+            guard.runtime.processes_view_model(&guard.process_query)
+        });
+        let listeners = if listeners_due && guard.runtime.listeners_is_running() {
+            let _ = guard.runtime.refresh_listeners();
+            let generation = guard.runtime.listener_generation();
+            (generation != guard.listener_generation).then(|| {
+                guard.listener_generation = generation;
+                guard.runtime.listeners_view_model()
+            })
+        } else {
+            None
+        };
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
@@ -316,6 +340,8 @@ fn run_tick(
             speed_test,
             shortcuts,
             capture,
+            processes,
+            listeners,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -327,6 +353,8 @@ fn run_tick(
         speed_test,
         shortcuts,
         capture,
+        processes,
+        listeners,
     }
 }
 
@@ -404,6 +432,7 @@ enum TargetedPanel {
     Microphone,
     SpeedTest,
     Capture,
+    Processes,
 }
 
 /// Fingerprinting avoids rebuilding presentation on every worker poll.
@@ -503,6 +532,8 @@ enum ControllerOperation {
     ClipboardPreview(u64),
     SetClipboardLimit(kestrel::ClipboardLimit),
     SetCaptureLimit(kestrel::CaptureLimit),
+    SetProcessLimit(kestrel::ProcessLimit),
+    RefreshProcesses,
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
     Snippet(SnippetCommand),
@@ -543,6 +574,9 @@ struct ApplicationController {
     speed_test_running: Cell<bool>,
     shortcuts_running: Cell<bool>,
     capture_running: Cell<bool>,
+    processes_running: Cell<bool>,
+    listeners_running: Cell<bool>,
+    listener_last_refresh: Cell<Instant>,
     monitor_started_at: Instant,
     /// Bounds backend polling to the two-second interval.
     microphone_last_refresh: Cell<Instant>,
@@ -572,6 +606,8 @@ impl ApplicationController {
         let microphone_running = runtime.microphone_is_running();
         let speed_test_running = runtime.speed_test_is_running();
         let shortcuts_running = runtime.global_shortcuts_is_running();
+        let processes_running = runtime.processes_is_running();
+        let listeners_running = runtime.listeners_is_running();
         let capture_running = runtime.capture_is_running();
         let state_commands = commands.clone();
         Rc::new(Self {
@@ -588,6 +624,9 @@ impl ApplicationController {
                 speed_test_generation: 0,
                 shortcut_generation: 0,
                 capture_generation: 0,
+                process_query: String::new(),
+                process_generation: 0,
+                listener_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -605,6 +644,9 @@ impl ApplicationController {
             speed_test_running: Cell::new(speed_test_running),
             shortcuts_running: Cell::new(shortcuts_running),
             capture_running: Cell::new(capture_running),
+            processes_running: Cell::new(processes_running),
+            listeners_running: Cell::new(listeners_running),
+            listener_last_refresh: Cell::new(Instant::now()),
             monitor_started_at: Instant::now(),
             microphone_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
@@ -818,6 +860,8 @@ impl ApplicationController {
                 self.speed_test_running.set(view_model.speed_test.running);
                 self.shortcuts_running.set(view_model.shortcuts.running);
                 self.capture_running.set(view_model.capture.running);
+                self.processes_running.set(view_model.processes.running);
+                self.listeners_running.set(view_model.listeners.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -831,6 +875,8 @@ impl ApplicationController {
                 self.speed_test_running.set(view_model.speed_test.running);
                 self.shortcuts_running.set(view_model.shortcuts.running);
                 self.capture_running.set(view_model.capture.running);
+                self.processes_running.set(view_model.processes.running);
+                self.listeners_running.set(view_model.listeners.running);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
@@ -851,11 +897,22 @@ impl ApplicationController {
             }
             due
         };
+        let listeners_due = self.listeners_running.get() && {
+            let now = Instant::now();
+            let due =
+                now.duration_since(self.listener_last_refresh.get()) >= Duration::from_secs(2);
+            if due {
+                self.listener_last_refresh.set(now);
+            }
+            due
+        };
         if !self.monitor_running.get()
             && !self.clipboard_running.get()
             && !self.speed_test_running.get()
             && !self.shortcuts_running.get()
             && !self.capture_running.get()
+            && !self.processes_running.get()
+            && !self.listeners_running.get()
             && !microphone_due
         {
             self.monitoring.set(false);
@@ -868,7 +925,13 @@ impl ApplicationController {
         let worker = thread::Builder::new()
             .name("kestrel-tick".to_owned())
             .spawn(move || {
-                let update = run_tick(&state, notifier.as_ref(), observed_at, microphone_due);
+                let update = run_tick(
+                    &state,
+                    notifier.as_ref(),
+                    observed_at,
+                    microphone_due,
+                    listeners_due,
+                );
                 let _ = results.send_blocking(update);
             });
         if worker.is_err() {
@@ -885,6 +948,8 @@ impl ApplicationController {
             speed_test,
             shortcuts,
             capture,
+            processes,
+            listeners,
         } = update;
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -911,8 +976,136 @@ impl ApplicationController {
             self.capture_running.set(capture.running);
             view.set_capture(&capture);
         }
+        if let Some(processes) = processes {
+            self.processes_running.set(processes.running);
+            view.set_processes(&processes);
+        }
+        if let Some(listeners) = listeners {
+            self.listeners_running.set(listeners.running);
+            view.set_listeners(&listeners);
+        }
     }
 
+    fn confirm_process(
+        &self,
+        identity: kestrel_platform::processes::ProcessIdentity,
+        action: kestrel::ProcessActionKind,
+    ) {
+        let result = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .process_confirmation(identity, action);
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        let confirmation = match result {
+            Ok(confirmation) => confirmation,
+            Err(error) => {
+                view.show_message(&error);
+                return;
+            }
+        };
+        let (heading, confirm) = match action {
+            kestrel::ProcessActionKind::Terminate => ("End process?", "End"),
+            kestrel::ProcessActionKind::Kill => ("Kill process?", "Kill"),
+            kestrel::ProcessActionKind::Restart { .. } => ("Restart?", "Restart"),
+        };
+        let dialog = adw::MessageDialog::builder()
+            .transient_for(&view.window)
+            .heading(heading)
+            .body(confirmation.scope)
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("confirm", confirm)]);
+        if confirmation.can_escalate {
+            // Escalation sends SIGKILL to members still running after the deadline.
+            dialog.add_response("force", "Force restart");
+            dialog.set_response_appearance("force", adw::ResponseAppearance::Destructive);
+        }
+        dialog.set_close_response("cancel");
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_response_appearance("confirm", adw::ResponseAppearance::Destructive);
+        let commands = self.commands.clone();
+        dialog.connect_response(None, move |dialog, response| {
+            let action = match (response, action) {
+                ("confirm", action) => Some(action),
+                ("force", kestrel::ProcessActionKind::Restart { .. }) => {
+                    Some(kestrel::ProcessActionKind::Restart { escalate: true })
+                }
+                _ => None,
+            };
+            if let Some(action) = action {
+                let _ = commands.try_send(ApplicationCommand::Processes(
+                    kestrel::ProcessRequest::Run { identity, action },
+                ));
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    /// Filters the process list on the GTK thread; rows are already bounded.
+    fn search_processes(&self, query: String) {
+        let processes = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.process_query = query;
+            guard.runtime.processes_view_model(&guard.process_query)
+        };
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_processes(&processes);
+        }
+    }
+
+    /// Runs a confirmed action on a worker without holding the controller
+    /// lock, since a termination waits for its grace period.
+    fn request_process_action(
+        &self,
+        identity: kestrel_platform::processes::ProcessIdentity,
+        action: kestrel::ProcessActionKind,
+    ) {
+        if self.refreshing.replace(true) {
+            if let Some(view) = self.window.borrow().as_ref() {
+                view.show_message("Another Kestrel operation is still running");
+            }
+            return;
+        }
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_refreshing(true);
+        }
+        self.targeted.set(TargetedPanel::Processes);
+        let state = Arc::clone(&self.state);
+        let results = self.refresh_results.clone();
+        let worker = thread::Builder::new()
+            .name("kestrel-process-action".to_owned())
+            .spawn(move || {
+                let running = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .runtime
+                    .processes_is_running();
+                let message = if running {
+                    kestrel::run_process_action(identity, action)
+                } else {
+                    "Processes are not running; enable system.processes in the Feature Hub."
+                        .to_owned()
+                };
+                let guard = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _ = guard.runtime.refresh_processes();
+                let _ = results.send_blocking(Ok((guard.view_model(), message)));
+            });
+        if let Err(error) = worker {
+            self.finish_refresh(Err(format!(
+                "Could not start the process action worker: {error}"
+            )));
+        }
+    }
     fn current_view_model(&self) -> ApplicationViewModel {
         self.state
             .lock()
@@ -1140,6 +1333,11 @@ impl ControllerState {
                 .cancel_speed_test()
                 .map(|()| "Network speed test cancellation requested".to_owned())
                 .unwrap_or_else(|error| error),
+            ControllerOperation::RefreshProcesses => self
+                .runtime
+                .refresh_processes()
+                .map(|()| "Process list refresh requested".to_owned())
+                .unwrap_or_else(|error| error),
             ControllerOperation::Capture(operation) => match operation {
                 CaptureOperation::Begin(mode) => self
                     .runtime
@@ -1333,6 +1531,20 @@ impl ControllerState {
                     kestrel::CaptureLimit::MaxAgeHours(hours) => {
                         candidate.capture.max_age_hours = hours;
                         format!("Captures are removed after {hours} hours")
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetProcessLimit(limit) => {
+                let mut candidate = self.configuration.clone();
+                let message = match limit {
+                    kestrel::ProcessLimit::RefreshMillis(millis) => {
+                        candidate.processes.refresh_millis = millis;
+                        format!("Processes refresh every {millis} ms")
+                    }
+                    kestrel::ProcessLimit::MaxRows(rows) => {
+                        candidate.processes.max_rows = rows;
+                        format!("Processes show at most {rows} rows")
                     }
                 };
                 self.commit_configuration(candidate, config_path, message)?
@@ -1717,6 +1929,10 @@ fn apply_targeted_panel(
         TargetedPanel::Microphone => view.set_microphone(&view_model.microphone),
         TargetedPanel::SpeedTest => view.set_speed_test(&view_model.speed_test),
         TargetedPanel::Capture => view.set_capture(&view_model.capture),
+        TargetedPanel::Processes => {
+            view.set_processes(&view_model.processes);
+            view.set_listeners(&view_model.listeners);
+        }
     }
 }
 
@@ -2118,6 +2334,38 @@ fn dispatch_commands(
                         ControllerOperation::Capture(operation),
                         "kestrel-capture",
                         TargetedPanel::Capture,
+                    );
+                }
+                ApplicationCommand::Processes(request) => match request {
+                    kestrel::ProcessRequest::Search(query) => controller.search_processes(query),
+                    kestrel::ProcessRequest::Refresh => controller.request_targeted_operation(
+                        ControllerOperation::RefreshProcesses,
+                        "kestrel-processes",
+                        TargetedPanel::Processes,
+                    ),
+                    kestrel::ProcessRequest::Confirm { identity, action } => {
+                        controller.confirm_process(identity, action);
+                    }
+                    kestrel::ProcessRequest::Run { identity, action } => {
+                        controller.request_process_action(identity, action);
+                    }
+                },
+                ApplicationCommand::SetProcessLimit(limit) => controller.request_operation(
+                    ControllerOperation::SetProcessLimit(limit),
+                    "kestrel-process-limit",
+                ),
+                ApplicationCommand::CopyText(text) => {
+                    if let Some(view) = controller.window.borrow().as_ref() {
+                        view.window.clipboard().set_text(&text);
+                    }
+                }
+                ApplicationCommand::OpenUri(uri) => {
+                    let window = controller.window.borrow();
+                    let parent = window.as_ref().map(|view| view.window.clone());
+                    gtk::UriLauncher::new(&uri).launch(
+                        parent.as_ref(),
+                        gtk::gio::Cancellable::NONE,
+                        |_| {},
                     );
                 }
                 ApplicationCommand::Clipboard(command) => controller.request_clipboard_operation(

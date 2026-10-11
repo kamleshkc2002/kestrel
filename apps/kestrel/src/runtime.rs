@@ -12,9 +12,9 @@ use crate::{
     view_model::{
         AudioPresentation, CapturePresentation, CaptureViewModel, ClipboardPresentation,
         ClipboardQuery, ClipboardViewModel, CommandBarPresentation, CommandBarQuery,
-        MicrophonePresentation, MicrophoneViewModel, MonitorPresentation, MonitorViewModel,
-        ShortcutsPresentation, ShortcutsViewModel, SnippetQuery, SnippetsPresentation,
-        SpeedTestPresentation, SpeedTestViewModel,
+        ListenersViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
+        MonitorViewModel, ProcessesViewModel, ShortcutsPresentation, ShortcutsViewModel,
+        SnippetQuery, SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -43,6 +43,11 @@ use kestrel_platform::{
         ShortcutRequest, ShortcutStatus, backend_for as shortcut_backend_for,
     },
     launcher::{ScriptOutcome, run_script, search_roots},
+    processes::{
+        FEATURE_ID as PROCESSES_ID, LISTENERS_FEATURE_ID, ListenersProbe, PidfdSignaller,
+        ProcessProbe, ProcessSource, ProcfsListeners, ProcfsProcesses, RestartTarget,
+        SystemRestarter,
+    },
     quick_toggles::{
         ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
         QuickToggleError, QuickToggleId,
@@ -70,6 +75,10 @@ use kestrel_services::{
     global_shortcuts::GlobalShortcutService,
     microphone::{
         MicrophoneCommand, MicrophoneCommandResult, MicrophoneService, MicrophoneSnapshot,
+    },
+    processes::{
+        ActionOutcome, ConfirmAction, ListenerService, ProcessInventoryService, ProcessPolicy,
+        ProcessSnapshot, confirmation_scope, kill, restart, terminate,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
     snippets::{
@@ -290,6 +299,9 @@ pub struct ApplicationRuntime {
     command_max_results: usize,
     command_launcher: Option<ExternalLauncher>,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
+    process_inventory: ProcessInventoryService,
+    listeners: ListenerService,
+    process_limits: kestrel_core::ProcessConfiguration,
     alerts: AlertEngine,
     /// Battery alerts can only be narrowed by the quick toggle.
     battery_alert_configured: bool,
@@ -403,6 +415,24 @@ impl ApplicationRuntime {
             capture,
             configuration.feature_enabled(CAPTURE_ID),
             SharedCaptureProbe(Arc::clone(&capture_detection)),
+        )?;
+        let processes = FeatureSpec::new(PROCESSES_ID, "Processes", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::Moderate));
+        registry.register_probe(
+            processes,
+            configuration.feature_enabled(PROCESSES_ID),
+            ProcessProbe::default(),
+        )?;
+        let listeners = FeatureSpec::new(
+            LISTENERS_FEATURE_ID,
+            "Listening ports",
+            CapabilityStatus::Supported,
+        )
+        .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::Low));
+        registry.register_probe(
+            listeners,
+            configuration.feature_enabled(LISTENERS_FEATURE_ID),
+            ListenersProbe::default(),
         )?;
         let clipboard_history = FeatureSpec::new(
             CLIPBOARD_HISTORY_ID,
@@ -554,6 +584,11 @@ impl ApplicationRuntime {
                 configuration.monitoring.history_samples,
             )
             .expect("the validated monitor configuration is valid"),
+            process_inventory: ProcessInventoryService::new(ProcessPolicy::from_configuration(
+                configuration.processes,
+            )),
+            listeners: ListenerService::new(),
+            process_limits: configuration.processes,
             alerts: AlertEngine::new(AlertPolicy::from_configuration(
                 &configuration.monitoring.alerts,
             )),
@@ -628,6 +663,9 @@ impl ApplicationRuntime {
         self.capture
             .set_policy(CapturePolicy::from_configuration(&configuration.capture));
         self.capture_limits = configuration.capture;
+        self.process_limits = configuration.processes;
+        self.process_inventory
+            .set_policy(ProcessPolicy::from_configuration(configuration.processes));
         let (requests, skipped) = Self::shortcut_requests(&configuration.shortcuts);
         if requests != self.shortcut_requests {
             // New bindings take effect through a fresh registration.
@@ -757,7 +795,7 @@ impl ApplicationRuntime {
         snippets: SnippetQuery<'_>,
         command_bar: CommandBarQuery<'_>,
     ) -> ApplicationViewModel {
-        ApplicationViewModel::new(
+        let mut model = ApplicationViewModel::new(
             self.registrations(),
             self.quick_toggles.snapshots(),
             AudioPresentation {
@@ -824,7 +862,10 @@ impl ApplicationRuntime {
             warnings,
             configuration,
             can_undo,
-        )
+        );
+        model.processes = self.processes_view_model("");
+        model.listeners = self.listeners_view_model();
+        model
     }
 
     pub fn sample_monitor(&mut self, observed_at: Duration) -> MonitorTick {
@@ -983,6 +1024,30 @@ impl ApplicationRuntime {
             .registrations()
             .any(|registration| registration.feature.id == CAPTURE_ID && registration.running)
     }
+    pub fn processes_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == PROCESSES_ID && registration.running)
+    }
+
+    fn require_processes(&self) -> Result<(), String> {
+        self.processes_is_running().then_some(()).ok_or_else(|| {
+            "Processes are not running; enable system.processes in the Feature Hub.".to_owned()
+        })
+    }
+
+    pub fn listeners_is_running(&self) -> bool {
+        self.registry.registrations().any(|registration| {
+            registration.feature.id == LISTENERS_FEATURE_ID && registration.running
+        })
+    }
+
+    fn require_listeners(&self) -> Result<(), String> {
+        self.listeners_is_running().then_some(()).ok_or_else(|| {
+            "Listening ports are not running; enable network.listeners in the Feature Hub."
+                .to_owned()
+        })
+    }
 
     fn require_capture(&self) -> Result<(), String> {
         if !self.capture_is_running() {
@@ -1083,6 +1148,150 @@ impl ApplicationRuntime {
         self.capture.snapshot()
     }
 
+    pub fn process_snapshot(&self) -> ProcessSnapshot {
+        self.process_inventory.snapshot()
+    }
+
+    pub fn processes_view_model(&self, query: &str) -> ProcessesViewModel {
+        ProcessesViewModel::from_presentation(crate::view_model::ProcessesPresentation {
+            snapshot: self.process_snapshot(),
+            running: self.processes_is_running(),
+            query: query.to_owned(),
+            current_uid: current_uid(),
+            own_pid: std::process::id(),
+            limits: self.process_limits,
+        })
+    }
+
+    pub fn refresh_processes(&self) -> Result<(), String> {
+        self.require_processes()?;
+        self.process_inventory.refresh_now();
+        Ok(())
+    }
+
+    pub fn listeners_view_model(&self) -> ListenersViewModel {
+        ListenersViewModel::from_presentation(crate::view_model::ListenersPresentation {
+            snapshot: self.listeners.snapshot(),
+            running: self.listeners_is_running(),
+        })
+    }
+
+    pub fn listener_generation(&self) -> u64 {
+        self.listeners.generation()
+    }
+
+    pub fn refresh_listeners(&mut self) -> Result<(), String> {
+        self.require_listeners()?;
+        self.listeners.refresh(
+            &ProcfsListeners::new("/proc"),
+            kestrel_platform::processes::MAX_LISTENERS,
+        );
+        Ok(())
+    }
+
+    pub fn process_confirmation(
+        &self,
+        identity: kestrel_platform::processes::ProcessIdentity,
+        action: crate::ProcessActionKind,
+    ) -> Result<ProcessConfirmation, String> {
+        self.require_processes()?;
+        let source = ProcfsProcesses::new("/proc");
+        let sample = source.sample(identity).map_err(describe_sample_error)?;
+        ProcfsProcesses::eligibility(&sample, current_uid(), std::process::id())
+            .map_err(|reason| reason.explanation().to_owned())?;
+        let (scope, can_escalate) = match action {
+            crate::ProcessActionKind::Terminate => {
+                (confirmation_scope(&sample, ConfirmAction::Terminate), false)
+            }
+            crate::ProcessActionKind::Kill => {
+                (confirmation_scope(&sample, ConfirmAction::Kill), false)
+            }
+            crate::ProcessActionKind::Restart { .. } => {
+                let target = ProcfsProcesses::restart_target(&sample)
+                    .ok_or_else(|| "This process has no supported restart target.".to_owned())?;
+                let members = source
+                    .scope_members(identity)
+                    .map_err(describe_sample_error)?
+                    .len();
+                let can_escalate = matches!(target, RestartTarget::DesktopApp { .. });
+                (
+                    confirmation_scope(&sample, ConfirmAction::Restart(&target, members)),
+                    can_escalate,
+                )
+            }
+        };
+        Ok(ProcessConfirmation {
+            scope,
+            can_escalate,
+        })
+    }
+}
+
+/// Text for a process action confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessConfirmation {
+    /// Executable, PID, owner, and signal or restart scope.
+    pub scope: String,
+    /// A desktop restart may send SIGKILL to members still running.
+    pub can_escalate: bool,
+}
+
+fn describe_sample_error(error: kestrel_platform::processes::ProcessError) -> String {
+    use kestrel_platform::processes::ProcessErrorKind;
+    match error.kind {
+        ProcessErrorKind::Reused => ActionOutcome::Reused,
+        ProcessErrorKind::Exited => ActionOutcome::AlreadyExited,
+        _ => ActionOutcome::Failed(error),
+    }
+    .to_string()
+}
+
+/// Real UID of this process; actions apply only to its processes.
+fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    unsafe { libc::getuid() }
+}
+
+/// Runs a confirmed process action. Callers hold no runtime lock: a
+/// termination waits up to its grace period.
+pub fn run_process_action(
+    identity: kestrel_platform::processes::ProcessIdentity,
+    action: crate::ProcessActionKind,
+) -> String {
+    let source = ProcfsProcesses::new("/proc");
+    let signaller = PidfdSignaller::for_current_user(ProcfsProcesses::new("/proc"));
+    let own_pid = std::process::id();
+    let uid = current_uid();
+    let eligibility = |sample: &kestrel_platform::processes::ProcessSample| {
+        ProcfsProcesses::eligibility(sample, uid, own_pid)
+    };
+    let outcome = match action {
+        crate::ProcessActionKind::Terminate => terminate(
+            &source,
+            &signaller,
+            eligibility,
+            identity,
+            PROCESS_TERMINATE_GRACE,
+        ),
+        crate::ProcessActionKind::Kill => kill(&source, &signaller, eligibility, identity),
+        crate::ProcessActionKind::Restart { escalate } => restart(
+            &source,
+            &signaller,
+            &SystemRestarter::new(),
+            eligibility,
+            ProcfsProcesses::restart_target,
+            identity,
+            PROCESS_STOP_TIMEOUT,
+            escalate,
+        ),
+    };
+    outcome.to_string()
+}
+
+const PROCESS_TERMINATE_GRACE: Duration = Duration::from_secs(3);
+const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
+impl ApplicationRuntime {
     pub fn capture_view_model(&self) -> CaptureViewModel {
         CaptureViewModel::from_presentation(self.capture_presentation())
     }
@@ -1600,6 +1809,16 @@ impl ApplicationRuntime {
 
     fn reconcile_resources(&mut self) {
         // Stop services to release claims and join workers.
+        if self.processes_is_running() {
+            if !self.process_inventory.is_running() {
+                self.process_inventory.start(ProcfsProcesses::new("/proc"));
+            }
+        } else {
+            self.process_inventory.stop();
+        }
+        if !self.listeners_is_running() {
+            self.listeners.clear();
+        }
         if !self.microphone_is_running() {
             self.microphone.reset();
         }
@@ -2340,5 +2559,41 @@ mod tests {
                 .names(),
             vec!["Greeting"]
         );
+    }
+
+    #[test]
+    fn disabling_process_features_joins_the_worker_and_refuses_actions() {
+        use super::{LISTENERS_FEATURE_ID, PROCESSES_ID};
+        let mut configuration = ApplicationConfiguration::default();
+        for feature in [PROCESSES_ID, LISTENERS_FEATURE_ID] {
+            configuration
+                .set_feature_enabled(feature, true)
+                .expect("valid feature ID");
+        }
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+        assert!(runtime.process_inventory.is_running());
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback binds");
+        runtime.refresh_listeners().expect("listeners are enabled");
+        assert!(!runtime.listeners.snapshot().listeners.is_empty());
+
+        runtime
+            .apply_configuration(&ApplicationConfiguration::default())
+            .expect("configuration applies");
+        drop(socket);
+
+        assert!(!runtime.process_inventory.is_running(), "worker joined");
+        assert!(runtime.listeners.snapshot().listeners.is_empty());
+        assert!(runtime.refresh_processes().is_err());
+        assert!(runtime.refresh_listeners().is_err());
+        let own = kestrel_platform::processes::ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: 0,
+        };
+        let refused = runtime
+            .process_confirmation(own, crate::ProcessActionKind::Kill)
+            .expect_err("a disabled feature confirms nothing");
+        assert!(refused.contains(PROCESSES_ID), "{refused}");
+        assert!(runtime.processes_view_model("").rows.is_empty());
     }
 }

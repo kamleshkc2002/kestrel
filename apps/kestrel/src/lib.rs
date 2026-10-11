@@ -36,7 +36,7 @@ pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
 pub use kestrel_services::microphone::MicrophoneCommand;
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
-pub use runtime::{ApplicationRuntime, FeaturePreset};
+pub use runtime::{ApplicationRuntime, FeaturePreset, run_process_action};
 pub use snippets::{
     CURRENT_SNIPPET_SCHEMA_VERSION, LoadedSnippets, SnippetFile, SnippetStoreError, load_snippets,
     save_snippets, snippet_path,
@@ -50,12 +50,13 @@ pub use view_model::{
     ClipboardPolicyViewModel, ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel,
     CommandProvider, CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
     ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
-    FeatureViewModel, MicrophoneInputViewModel, MicrophoneViewModel,
-    MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
-    PanelSectionViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
-    QuickToggleViewModel, RemediationViewModel, ShortcutRowViewModel, ShortcutsViewModel,
-    SnippetBoundsViewModel, SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel,
-    SnippetPolicyViewModel, SnippetsViewModel, SpeedTestViewModel,
+    FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
+    MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    PanelSectionViewModel, ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel,
+    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
+    RemediationViewModel, ShortcutRowViewModel, ShortcutsViewModel, SnippetBoundsViewModel,
+    SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel,
+    SnippetsViewModel, SpeedTestViewModel,
 };
 
 /// Command-bar action from the window.
@@ -109,6 +110,12 @@ pub enum CaptureLimit {
     MaxAgeHours(u32),
 }
 
+/// Process inspector setting edited from Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessLimit {
+    RefreshMillis(u32),
+    MaxRows(u32),
+}
 /// Bounded clipboard retention value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardLimit {
@@ -132,6 +139,34 @@ pub enum PanelMoveDirection {
 pub enum FocusTarget {
     CommandBar,
     Clipboard,
+    Processes,
+}
+
+/// A process action the user can confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessActionKind {
+    /// SIGTERM, then a short wait.
+    Terminate,
+    /// SIGKILL.
+    Kill,
+    /// Restart through the process's user unit or desktop launch;
+    /// `escalate` sends SIGKILL to scope members that outlive the stop timeout.
+    Restart { escalate: bool },
+}
+
+/// Process inspector request from the window or a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessRequest {
+    Search(String),
+    Refresh,
+    Confirm {
+        identity: kestrel_platform::processes::ProcessIdentity,
+        action: ProcessActionKind,
+    },
+    Run {
+        identity: kestrel_platform::processes::ProcessIdentity,
+        action: ProcessActionKind,
+    },
 }
 
 /// Command from an application entry surface.
@@ -198,6 +233,10 @@ pub enum ApplicationCommand {
     ClipboardPreview(u64),
     SetClipboardLimit(ClipboardLimit),
     SetCaptureLimit(CaptureLimit),
+    SetProcessLimit(ProcessLimit),
+    Processes(ProcessRequest),
+    CopyText(String),
+    OpenUri(String),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
     /// Snippet-library action.

@@ -1,4 +1,4 @@
-//! Panel layout, monitoring readout, and alert settings.
+//! Panel layout, monitoring readout, alert, and process settings.
 
 use crate::window::widgets::plain_row;
 use adw::prelude::*;
@@ -250,4 +250,56 @@ fn panel_title(section: PanelSection) -> &'static str {
         PanelSection::FeatureHub => "Feature Hub",
         PanelSection::Monitoring => "Monitoring",
     }
+}
+
+/// Adds the process inspector cadence and row bound.
+pub(super) fn add_process_limits_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let limits = view_model.processes.limits;
+    let process_group = adw::PreferencesGroup::builder()
+        .title("Processes")
+        .description("How often the process list refreshes and how many rows it keeps.")
+        .build();
+    for (title, subtitle, min, max, step, value, limit) in [
+        (
+            "Refresh interval",
+            "Milliseconds between process scans.",
+            kestrel_core::MIN_PROCESS_REFRESH_MILLIS,
+            kestrel_core::MAX_PROCESS_REFRESH_MILLIS,
+            500.0,
+            limits.refresh_millis,
+            kestrel::ProcessLimit::RefreshMillis as fn(u32) -> kestrel::ProcessLimit,
+        ),
+        (
+            "Maximum rows",
+            "Rows shown, busiest first; search covers every process.",
+            kestrel_core::MIN_PROCESS_ROWS,
+            kestrel_core::MAX_PROCESS_ROWS,
+            10.0,
+            limits.max_rows,
+            kestrel::ProcessLimit::MaxRows,
+        ),
+    ] {
+        let row = adw::SpinRow::with_range(f64::from(min), f64::from(max), step);
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_value(f64::from(value));
+        row.set_numeric(true);
+        row.update_property(&[Property::Label(&format!("Processes: {title}"))]);
+        let sender = commands.clone();
+        row.connect_value_notify(move |spin| {
+            let value = (spin.value() as u32).clamp(min, max);
+            let _ = sender.try_send(ApplicationCommand::SetProcessLimit(limit(value)));
+        });
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("processes {title} {subtitle}").to_lowercase(),
+        ));
+        process_group.add(&row);
+    }
+    group.add(&process_group);
 }

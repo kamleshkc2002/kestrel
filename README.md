@@ -97,6 +97,22 @@ and running state separately.
 - Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every file at once. Temporary files a portal leaves behind are deleted after import.
 - Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, and redacts regions; redaction overwrites the pixels with black in the saved copy, and the original capture stays until you delete it.
 
+### Processes — `system.processes`
+
+- **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command processes.open`.
+- **Configuration:** `[processes] refresh_millis` (1,000–10,000; default 2,000) and `max_rows` (rows shown, 10–500; default 100), also editable under Settings → Processes.
+- Rows show the executable, PID, start time in clock ticks since boot, owner, CPU, and resident memory, busiest first; search covers every process by name, executable, owner, or PID. Command lines and environments are never read.
+- End (SIGTERM, then a 3 s wait) and Kill (SIGKILL) apply only to your own processes. Kernel threads, other users' processes, PID 1, your systemd manager, and Kestrel itself show the reason instead. Each action asks for confirmation naming the executable, PID, owner, and signal.
+- Kestrel opens a pidfd and checks the start time again before every signal, so a PID reused by another process is refused. Without pidfd support (Linux 5.3+), the list still works and every action reports that signalling is unavailable.
+- Restart appears for systemd user services (`systemctl --user restart`) and apps the desktop launched into their own `app-…scope` (SIGTERM to every process in the scope, then a relaunch from the desktop entry). Force restart sends SIGKILL to anything still running after 5 s. Services in `session.slice` are never restarted.
+
+### Listening ports — `network.listeners`
+
+- **Default:** disabled; Balanced and Everything enable it.
+- **Configuration:** no feature-specific keys; the list refreshes every 2 s while enabled and holds at most 1,024 sockets.
+- Lists TCP and UDP listeners from `/proc/net` with the owning process when its sockets are visible to you. Each row copies the port, address, or PID; TCP listeners on loopback or all addresses open `http://localhost:<port>/` when a browser is installed.
+- Stop owner uses the same confirmed End flow; listeners owned by other users show the reason. Addresses stay in the window and are dropped when the feature is disabled.
+
 ### Desktop integration
 
 - The normal window is always available; the tray is optional.
@@ -116,7 +132,7 @@ kestrel --command toggle.power.keep-awake
 kestrel --list-commands                   # every ID with a description
 ```
 
-IDs cover the window, command bar, clipboard quick paste, capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
+IDs cover the window, command bar, clipboard quick paste, capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
 
 | Status | Meaning |
 |---|---|
