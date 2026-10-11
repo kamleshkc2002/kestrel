@@ -76,27 +76,29 @@ impl ProcessesPanel {
                 });
                 item.add_suffix(&open);
             }
-            let stop = gtk::Button::with_label("Stop owner");
-            stop.set_valign(Align::Center);
-            stop.add_css_class("flat");
-            match (row.owner_identity, &row.stop_disabled_reason) {
-                (Some(identity), None) => {
-                    let sender = commands.clone();
-                    stop.connect_clicked(move |_| {
-                        let _ = sender.try_send(ApplicationCommand::Processes(
-                            ProcessRequest::Confirm {
-                                identity,
-                                action: ProcessActionKind::Terminate,
-                            },
-                        ));
-                    });
+            if listeners.can_stop {
+                let stop = gtk::Button::with_label("Stop owner");
+                stop.set_valign(Align::Center);
+                stop.add_css_class("flat");
+                match (row.owner_identity, &row.stop_disabled_reason) {
+                    (Some(identity), None) => {
+                        let sender = commands.clone();
+                        stop.connect_clicked(move |_| {
+                            let _ = sender.try_send(ApplicationCommand::Processes(
+                                ProcessRequest::Confirm {
+                                    identity,
+                                    action: ProcessActionKind::Terminate,
+                                },
+                            ));
+                        });
+                    }
+                    (_, reason) => {
+                        stop.set_sensitive(false);
+                        item.set_tooltip_text(reason.as_deref());
+                    }
                 }
-                (_, reason) => {
-                    stop.set_sensitive(false);
-                    item.set_tooltip_text(reason.as_deref());
-                }
+                item.add_suffix(&stop);
             }
-            item.add_suffix(&stop);
             self.listener_rows.append(&item);
         }
         self.listener_rows

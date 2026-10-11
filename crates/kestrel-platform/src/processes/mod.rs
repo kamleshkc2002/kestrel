@@ -21,6 +21,9 @@ pub const MAX_SCANNED_PROCESSES: usize = 8192;
 pub const MAX_FIELD_CHARS: usize = 128;
 /// Most listening sockets one refresh reports.
 pub const MAX_LISTENERS: usize = 1024;
+/// Why no process action is offered when `pidfd_open` is missing.
+pub const NO_PIDFD_EXPLANATION: &str =
+    "Process actions are unavailable: this kernel has no pidfd support.";
 
 /// A process as it existed when sampled. A PID alone can be reused; the
 /// start time (field 22 of `/proc/<pid>/stat`, in clock ticks since boot)

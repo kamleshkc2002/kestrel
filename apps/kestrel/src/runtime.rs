@@ -302,6 +302,8 @@ pub struct ApplicationRuntime {
     process_inventory: ProcessInventoryService,
     listeners: ListenerService,
     process_limits: kestrel_core::ProcessConfiguration,
+    /// `pidfd_open` works; checked once since the kernel cannot change.
+    process_signalling: bool,
     alerts: AlertEngine,
     /// Battery alerts can only be narrowed by the quick toggle.
     battery_alert_configured: bool,
@@ -589,6 +591,7 @@ impl ApplicationRuntime {
             )),
             listeners: ListenerService::new(),
             process_limits: configuration.processes,
+            process_signalling: PidfdSignaller::available(),
             alerts: AlertEngine::new(AlertPolicy::from_configuration(
                 &configuration.monitoring.alerts,
             )),
@@ -1160,6 +1163,7 @@ impl ApplicationRuntime {
             current_uid: current_uid(),
             own_pid: std::process::id(),
             limits: self.process_limits,
+            signalling: self.process_signalling,
         })
     }
 
@@ -1173,6 +1177,7 @@ impl ApplicationRuntime {
         ListenersViewModel::from_presentation(crate::view_model::ListenersPresentation {
             snapshot: self.listeners.snapshot(),
             running: self.listeners_is_running(),
+            signalling: self.process_signalling,
         })
     }
 
@@ -1195,6 +1200,9 @@ impl ApplicationRuntime {
         action: crate::ProcessActionKind,
     ) -> Result<ProcessConfirmation, String> {
         self.require_processes()?;
+        if !self.process_signalling {
+            return Err(kestrel_platform::processes::NO_PIDFD_EXPLANATION.to_owned());
+        }
         let source = ProcfsProcesses::new("/proc");
         let sample = source.sample(identity).map_err(describe_sample_error)?;
         ProcfsProcesses::eligibility(&sample, current_uid(), std::process::id())
