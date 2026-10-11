@@ -852,6 +852,7 @@ dependencies = [
  "kestrel-services",
  "ksni",
  "libadwaita",
+ "libc",
  "serde",
  "tempfile",
  "toml",

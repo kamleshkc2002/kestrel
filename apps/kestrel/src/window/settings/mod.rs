@@ -29,6 +29,7 @@ pub(super) fn build_settings_group(
     panels::add_monitoring_alerts_group(&group, view_model, commands, &mut filter_rows);
     media::add_audio_policy_group(&group, view_model, commands, &mut filter_rows);
     media::add_screenshot_limits_group(&group, view_model, commands, &mut filter_rows);
+    panels::add_process_limits_group(&group, view_model, commands, &mut filter_rows);
     tools::add_clipboard_limits_group(&group, view_model, commands, &mut filter_rows);
     tools::add_snippet_limits_group(&group, view_model, commands, &mut filter_rows);
     tools::add_command_bar_group(&group, view_model, commands, &mut filter_rows);
@@ -138,7 +139,6 @@ fn add_general_rows(
     ));
     group.add(&preset_row);
 }
-
 /// Builds the configuration import and export row.
 fn build_configuration_files_row(
     window: &adw::ApplicationWindow,

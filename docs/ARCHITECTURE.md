@@ -504,6 +504,37 @@ operations) applied by `kestrel-services` to decoded RGBA pixels; redaction
 writes opaque black into every channel before encoding, and the result is a new
 capture so the source stays until deleted. The GTK editor only previews the plan.
 
+### 5.13 Processes and listening ports
+
+`system.processes` reads `/proc/<pid>/stat`, `status`, `exe`, and `cgroup`
+only; `cmdline` and `environ` are never opened. A scan visits at most 8192
+PIDs, bounds text fields to 128 characters, and keeps every row sorted by CPU;
+search runs over all of them, and `max_rows` caps the matches shown.
+`ProcessInventoryService` polls on the `kestrel-processes` worker at the
+configured cadence; stop joins it. A failed scan keeps the last rows marked
+stale.
+
+A process is identified by `ProcessIdentity { pid, start_ticks }`. Actions run
+only when `eligibility` passes: a user process with a readable real UID equal
+to Kestrel's, other than PID 1, the user's systemd manager, and Kestrel itself.
+`PidfdSignaller` opens a pidfd, then re-reads the start time, so the signal
+reaches the confirmed process or none; without `pidfd_open` the probe reports
+Limited and actions are unavailable. End sends SIGTERM and waits 3 s on the
+pidfd; Kill sends SIGKILL. Neither falls back to `kill(2)`.
+
+Restart derives a `RestartTarget` from the cgroup path: a user service outside
+`session.slice` restarts through `systemctl --user restart`; a desktop launch
+scope (`app-<launcher>-<desktop id>-<n>.scope`) has every member signalled with
+SIGTERM under one 5 s deadline, optionally SIGKILL for stragglers, then its
+desktop entry is launched again. Members left running yield
+`PartiallyStopped` and no relaunch. Units in `session.slice` have no target.
+
+`network.listeners` parses `/proc/net/{tcp,tcp6,udp,udp6}` for listening
+sockets (at most 1024) and maps socket inodes to owners through readable
+`/proc/<pid>/fd` links, so only the user's own processes get an owner. The
+controller refreshes it every 2 s while enabled; disabling clears it. Process
+and listener data stay in memory and never enter diagnostics or exports.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

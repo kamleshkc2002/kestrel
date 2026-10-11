@@ -11,6 +11,7 @@ pub mod global_shortcuts;
 pub mod launcher;
 
 pub mod notifications;
+pub mod processes;
 pub mod quick_toggles;
 pub mod snippets;
 pub mod speed_test;

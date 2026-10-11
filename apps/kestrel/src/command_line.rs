@@ -31,6 +31,8 @@ pub enum CommandLineAction {
     OpenCommandBar,
     /// Opens the window with the clipboard history search focused.
     QuickPaste,
+    /// Opens the window with the process search focused.
+    ProcessesOpen,
     RefreshCapabilities,
     Quit,
     NextOutput,
@@ -51,10 +53,11 @@ pub enum CommandLineAction {
     QuickToggle(QuickToggleId),
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 20] = [
+const FIXED_ACTIONS: [CommandLineAction; 21] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::QuickPaste,
+    CommandLineAction::ProcessesOpen,
     CommandLineAction::RefreshCapabilities,
     CommandLineAction::Quit,
     CommandLineAction::NextOutput,
@@ -89,6 +92,7 @@ impl CommandLineAction {
             Self::ShowWindow => "window.show",
             Self::OpenCommandBar => "command-bar.open",
             Self::QuickPaste => "clipboard.quick-paste",
+            Self::ProcessesOpen => "processes.open",
             Self::RefreshCapabilities => "capabilities.refresh",
             Self::Quit => "app.quit",
             Self::NextOutput => "audio.output-next",
@@ -116,6 +120,7 @@ impl CommandLineAction {
             Self::ShowWindow => "Open the Kestrel window".to_owned(),
             Self::OpenCommandBar => "Open the command bar".to_owned(),
             Self::QuickPaste => "Search clipboard history to copy an entry".to_owned(),
+            Self::ProcessesOpen => "Open the process inspector".to_owned(),
             Self::RefreshCapabilities => "Re-run capability probes".to_owned(),
             Self::Quit => "Quit Kestrel".to_owned(),
             Self::NextOutput => "Switch to the next audio output".to_owned(),
@@ -169,6 +174,7 @@ impl CommandLineAction {
             | Self::ApplyPreset(_)
             | Self::UndoPreset => None,
             Self::OpenCommandBar => Some(COMMAND_BAR_ID),
+            Self::ProcessesOpen => Some(kestrel_platform::processes::FEATURE_ID),
             Self::QuickPaste | Self::WipeClipboard | Self::ClearClipboardSelection => {
                 Some(CLIPBOARD_HISTORY_ID)
             }
@@ -187,6 +193,7 @@ impl CommandLineAction {
         match self {
             Self::ShowWindow => ApplicationCommand::PresentWindow,
             Self::OpenCommandBar => ApplicationCommand::Focus(FocusTarget::CommandBar),
+            Self::ProcessesOpen => ApplicationCommand::Focus(FocusTarget::Processes),
             Self::QuickPaste => ApplicationCommand::Focus(FocusTarget::Clipboard),
             Self::RefreshCapabilities => ApplicationCommand::RefreshCapabilities,
             Self::Quit => ApplicationCommand::Quit,
@@ -417,7 +424,7 @@ mod tests {
         );
         assert_eq!(
             actions.len(),
-            20 + ALL_QUICK_TOGGLES.len(),
+            21 + ALL_QUICK_TOGGLES.len(),
             "every quick toggle has exactly one ID"
         );
         for action in actions {

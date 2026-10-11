@@ -6,6 +6,7 @@ mod clipboard;
 mod command_bar;
 mod features;
 mod monitor;
+mod processes;
 mod settings;
 mod snippets;
 mod widgets;
@@ -28,6 +29,7 @@ use kestrel::{
     MonitorViewModel, PanelSection, ShortcutsViewModel, SpeedTestViewModel,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
+use processes::{ProcessesPanel, build_processes_panel};
 use settings::build_settings_group;
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use widgets::configure_wrapping_label;
@@ -53,6 +55,7 @@ pub struct WindowView {
     snippet_panel: std::cell::RefCell<Option<SnippetPanel>>,
     /// Retained so searches keep text and focus.
     command_panel: std::cell::RefCell<Option<CommandPanel>>,
+    processes_panel: std::cell::RefCell<Option<ProcessesPanel>>,
 }
 
 impl WindowView {
@@ -115,6 +118,7 @@ impl WindowView {
             shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
             clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
             snippet_panel: std::cell::RefCell::new(page.snippet_panel),
+            processes_panel: std::cell::RefCell::new(page.processes_panel),
             command_panel: std::cell::RefCell::new(page.command_panel),
         }
     }
@@ -130,6 +134,7 @@ impl WindowView {
         *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
         *self.snippet_panel.borrow_mut() = page.snippet_panel;
         *self.command_panel.borrow_mut() = page.command_panel;
+        *self.processes_panel.borrow_mut() = page.processes_panel;
     }
 
     /// Focuses a control; false when its panel is hidden.
@@ -142,6 +147,11 @@ impl WindowView {
                 .map(|panel| panel.query.clone()),
             FocusTarget::Clipboard => self
                 .clipboard_panel
+                .borrow()
+                .as_ref()
+                .map(|panel| panel.search.clone()),
+            FocusTarget::Processes => self
+                .processes_panel
                 .borrow()
                 .as_ref()
                 .map(|panel| panel.search.clone()),
@@ -237,6 +247,19 @@ impl WindowView {
         container.append(&build_capture_group(capture, &self.window, &self.commands));
     }
 
+    /// Updates the process list in place; the search keeps its text and focus.
+    pub fn set_processes(&self, processes: &kestrel::ProcessesViewModel) {
+        if let Some(panel) = self.processes_panel.borrow().as_ref() {
+            panel.set_processes(processes, &self.commands);
+        }
+    }
+
+    pub fn set_listeners(&self, listeners: &kestrel::ListenersViewModel) {
+        if let Some(panel) = self.processes_panel.borrow().as_ref() {
+            panel.set_listeners(listeners, &self.commands);
+        }
+    }
+
     /// Replaces the global-shortcuts group.
     pub fn set_shortcuts(&self, shortcuts: &ShortcutsViewModel) {
         let Some(container) = self.shortcuts_container.borrow().as_ref().cloned() else {
@@ -273,6 +296,7 @@ struct PageBuild {
     shortcuts_container: gtk::Box,
     clipboard_panel: Option<ClipboardPanel>,
     snippet_panel: Option<SnippetPanel>,
+    processes_panel: Option<ProcessesPanel>,
     command_panel: Option<CommandPanel>,
 }
 
@@ -319,6 +343,7 @@ fn build_page(
     let mut clipboard_panel = None;
     let mut snippet_panel = None;
     let mut command_panel = None;
+    let mut processes_panel = None;
     for panel in &view_model.panel_sections {
         if !panel.visible {
             continue;
@@ -368,6 +393,11 @@ fn build_page(
                 page.append(&container);
                 monitor_container = Some(container);
                 speed_test_container = Some(speed_test);
+                let panel =
+                    build_processes_panel(&view_model.processes, &view_model.listeners, commands);
+                panel.container.set_margin_top(24);
+                page.append(&panel.container);
+                processes_panel = Some(panel);
             }
         }
     }
@@ -386,5 +416,6 @@ fn build_page(
         clipboard_panel,
         snippet_panel,
         command_panel,
+        processes_panel,
     }
 }

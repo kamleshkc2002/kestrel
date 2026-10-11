@@ -162,6 +162,14 @@ pub const DEFAULT_CAPTURE_MAX_AGE_HOURS: u32 = 168;
 pub const MAX_CAPTURE_MAX_AGE_HOURS: u32 = 720;
 pub const CAPTURE_BYTES_PER_MEGABYTE: u64 = 1_048_576;
 
+// Process inspector bounds.
+pub const MIN_PROCESS_REFRESH_MILLIS: u32 = 1_000;
+pub const DEFAULT_PROCESS_REFRESH_MILLIS: u32 = 2_000;
+pub const MAX_PROCESS_REFRESH_MILLIS: u32 = 10_000;
+pub const MIN_PROCESS_ROWS: u32 = 10;
+pub const DEFAULT_PROCESS_ROWS: u32 = 100;
+pub const MAX_PROCESS_ROWS: u32 = 500;
+
 // Global-shortcut bounds.
 pub const MAX_SHORTCUT_BINDINGS: usize = 32;
 pub const MAX_SHORTCUT_COMMAND_CHARS: usize = 64;
@@ -449,6 +457,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub capture: CaptureConfiguration,
     #[serde(default)]
+    pub processes: ProcessConfiguration,
+    #[serde(default)]
     pub shortcuts: ShortcutConfiguration,
     #[serde(default)]
     pub clipboard: ClipboardConfiguration,
@@ -469,6 +479,7 @@ impl Default for ApplicationConfiguration {
             audio: AudioConfiguration::default(),
             speed_test: SpeedTestConfiguration::default(),
             capture: CaptureConfiguration::default(),
+            processes: ProcessConfiguration::default(),
             shortcuts: ShortcutConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
@@ -529,6 +540,7 @@ impl ApplicationConfiguration {
         self.audio.validate()?;
         self.speed_test.validate()?;
         self.capture.validate()?;
+        self.processes.validate()?;
         self.shortcuts.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
@@ -1009,6 +1021,49 @@ impl CaptureConfiguration {
 
     pub const fn max_total_bytes(&self) -> u64 {
         self.max_total_megabytes as u64 * CAPTURE_BYTES_PER_MEGABYTE
+    }
+}
+
+/// Refresh cadence and row bound for the process inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessConfiguration {
+    #[serde(default = "default_process_refresh_millis")]
+    pub refresh_millis: u32,
+    #[serde(default = "default_process_rows")]
+    pub max_rows: u32,
+}
+
+fn default_process_refresh_millis() -> u32 {
+    DEFAULT_PROCESS_REFRESH_MILLIS
+}
+
+fn default_process_rows() -> u32 {
+    DEFAULT_PROCESS_ROWS
+}
+
+impl Default for ProcessConfiguration {
+    fn default() -> Self {
+        Self {
+            refresh_millis: DEFAULT_PROCESS_REFRESH_MILLIS,
+            max_rows: DEFAULT_PROCESS_ROWS,
+        }
+    }
+}
+
+impl ProcessConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_PROCESS_REFRESH_MILLIS..=MAX_PROCESS_REFRESH_MILLIS).contains(&self.refresh_millis)
+        {
+            return Err(ConfigurationError::InvalidProcessRefreshMillis {
+                millis: self.refresh_millis,
+            });
+        }
+        if !(MIN_PROCESS_ROWS..=MAX_PROCESS_ROWS).contains(&self.max_rows) {
+            return Err(ConfigurationError::InvalidProcessRows {
+                rows: self.max_rows,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1681,6 +1736,8 @@ pub enum ConfigurationError {
     InvalidCaptureMaxEntries { entries: u32 },
     InvalidCaptureTotalMegabytes { megabytes: u32 },
     InvalidCaptureAgeHours { hours: u32 },
+    InvalidProcessRefreshMillis { millis: u32 },
+    InvalidProcessRows { rows: u32 },
     TooManyShortcutBindings { bindings: usize },
     InvalidShortcutCommand { command: String },
     InvalidShortcutTrigger { trigger: String },

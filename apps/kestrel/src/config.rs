@@ -202,6 +202,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_audio(&mut loaded, document.get("audio"));
     parse_speed_test(&mut loaded, document.get("speed_test"));
     parse_capture(&mut loaded, document.get("capture"));
+    parse_processes(&mut loaded, document.get("processes"));
     parse_shortcuts(&mut loaded, document.get("shortcuts"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
     parse_snippets(&mut loaded, document.get("snippets"));
@@ -719,6 +720,48 @@ fn parse_capture(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         &mut limits.max_age_hours,
     );
     loaded.configuration.capture = limits;
+}
+fn parse_processes(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(processes) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "processes",
+            "The processes value must be a TOML table.",
+        ));
+        return;
+    };
+    let defaults = loaded.configuration.processes;
+    let mut configuration = defaults;
+    if let Some(value) = processes.get("refresh_millis") {
+        match u32::deserialize(value.clone()) {
+            Ok(number)
+                if (kestrel_core::MIN_PROCESS_REFRESH_MILLIS
+                    ..=kestrel_core::MAX_PROCESS_REFRESH_MILLIS)
+                    .contains(&number) =>
+            {
+                configuration.refresh_millis = number;
+            }
+            _ => loaded.warnings.push(warning(
+                "processes.refresh_millis",
+                "Must be between 1000 and 10000 milliseconds; the default was retained.",
+            )),
+        }
+    }
+    if let Some(value) = processes.get("max_rows") {
+        match u32::deserialize(value.clone()) {
+            Ok(number)
+                if (kestrel_core::MIN_PROCESS_ROWS..=kestrel_core::MAX_PROCESS_ROWS)
+                    .contains(&number) =>
+            {
+                configuration.max_rows = number;
+            }
+            _ => loaded.warnings.push(warning(
+                "processes.max_rows",
+                "Must be between 10 and 500 rows; the default was retained.",
+            )),
+        }
+    }
+    loaded.configuration.processes = configuration;
 }
 
 fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -1592,6 +1635,39 @@ max_age_hours = 721
         let exported = export_string(&loaded.configuration).expect("configuration exports");
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.capture, loaded.configuration.capture);
+    }
+
+    #[test]
+    fn process_limits_reject_out_of_range_keys_alone_and_survive_export() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[processes]
+refresh_millis = 500
+max_rows = 250
+"#,
+        )
+        .expect("document itself is valid TOML");
+        let defaults = kestrel_core::ProcessConfiguration::default();
+        assert_eq!(
+            loaded.configuration.processes.refresh_millis,
+            defaults.refresh_millis
+        );
+        assert_eq!(loaded.configuration.processes.max_rows, 250);
+        let rejected = loaded
+            .warnings
+            .iter()
+            .map(|warning| warning.feature_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(rejected, ["processes.refresh_millis"]);
+
+        let exported = export_string(&loaded.configuration).expect("configuration exports");
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(
+            reloaded.configuration.processes,
+            loaded.configuration.processes
+        );
+        assert!(reloaded.warnings.is_empty());
     }
 
     #[test]
