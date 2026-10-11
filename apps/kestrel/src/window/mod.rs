@@ -13,6 +13,7 @@ mod scratchpad;
 mod screen_tools;
 mod settings;
 mod snippets;
+mod trim;
 mod widgets;
 
 use adw::prelude::*;
@@ -305,6 +306,16 @@ impl WindowView {
             child.unparent();
         }
         container.append(&build_recording_group(recording, &self.commands));
+    }
+
+    /// Opens the trim editor for a take.
+    pub fn open_trim(
+        &self,
+        take: std::path::PathBuf,
+        duration: std::time::Duration,
+        preview: kestrel::TrimPreview,
+    ) {
+        trim::open_trim_dialog(&self.window, take, duration, preview, self.commands.clone());
     }
 
     /// Replaces the capture group.

@@ -611,10 +611,15 @@ keyframe every 2 s) → `webmmux` → `filesink`, with one `pulsesrc` → Opus b
 per audio track on the system clock. The pipeline never leaves PLAYING
 (`pipewiresrc` fails PAUSED → PLAYING): pause drops buffers in a probe before
 each encoder, and resume sets a negative pad offset of the total paused time
-there, so the file has no gap. A track error unlinks its bin and
-sends EOS to its muxer pad; a track that cannot open at start is removed and
-the pipeline starts without it. Finishing sends EOS into every branch's queue,
-so the file completes even after the source stopped, then waits up to 10 s.
+there, so the file has no gap. A track that fails after feeding the muxer
+gets EOS through its own queue, whose thread carries it to the muxer (sending
+EOS to the muxer pad or stopping the bin can deadlock against that thread). A
+track that fails before feeding the muxer would stall it, since `webmmux`
+waits for data on every pad, so its pad is released from an IDLE probe, the
+bin stopped, and the pipeline asked for PLAYING again. A track that cannot
+open at start is removed and the pipeline starts without it. Finishing sends
+EOS into every branch's queue, so the file completes even after the source
+stopped, then waits up to 10 s.
 
 Takes are written to `.Kestrel-recording-<time>.webm.partial` (0600) in
 `$XDG_VIDEOS_DIR/Kestrel` and renamed once finished. Cancel, failures, and
@@ -624,6 +629,17 @@ recording and every second; below 512 MiB the take is finished. `shutdown`
 (feature disabled, application exit) finishes a running take, abandons a
 session still asking or choosing, and joins the worker; the recorder drops
 before the session, which closes the portal session.
+
+Trimming reads takes through `GstTakeEditor` (`filesrc` → `decodebin`, which
+holds PAUSED until every decoded stream is linked): the duration from a
+preroll, a preview frame from an accurate seek into an RGBA `appsink`, and an
+export that decodes from the start, drops buffers outside the range in a
+probe, shifts the rest to zero with a pad offset, and re-encodes every stream
+into `webmmux` (which refuses seeks). The export runs on
+`kestrel-recording-export`, writes `.<name>.partial` beside the chosen
+destination, renames it when complete, and removes it on failure or cancel
+(checked every 100 ms). The take is only read; deleting takes waits for the
+export, and `shutdown` cancels it and joins the worker.
 
 ## 6. Feature-service lifecycle
 

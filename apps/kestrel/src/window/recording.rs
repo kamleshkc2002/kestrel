@@ -8,8 +8,8 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, glib};
 use kestrel::{
-    ApplicationCommand, AudioTrack, RecordingControls, RecordingRequest, RecordingSetting,
-    RecordingSource, RecordingViewModel,
+    ApplicationCommand, AudioTrack, RecordingControls, RecordingExportViewModel, RecordingRequest,
+    RecordingSetting, RecordingSource, RecordingViewModel,
 };
 
 /// Framerates offered in the setup.
@@ -248,6 +248,9 @@ fn takes_group(
         });
         group.set_header_suffix(Some(&open));
     }
+    if let Some(export) = &recording.export {
+        group.add(&export_row(export, commands));
+    }
     if recording.takes.is_empty() {
         group.add(&plain_row().title("No recordings yet").build());
         return group;
@@ -264,6 +267,20 @@ fn takes_group(
             });
             row.add_suffix(&play);
         }
+        let trim = button("Trim", false);
+        trim.update_property(&[Property::Label(&format!("Trim {}", take.name))]);
+        trim.set_sensitive(
+            !recording
+                .export
+                .as_ref()
+                .is_some_and(|export| export.running),
+        );
+        let sender = commands.clone();
+        let path = take.path.clone();
+        trim.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::TrimRecording(path.clone()));
+        });
+        row.add_suffix(&trim);
         let delete = gtk::Button::from_icon_name("user-trash-symbolic");
         delete.set_valign(Align::Center);
         delete.add_css_class("flat");
@@ -286,6 +303,47 @@ fn takes_group(
         group.add(&row);
     }
     group
+}
+
+/// The running or last export, with Cancel, Play, or Dismiss.
+fn export_row(
+    export: &RecordingExportViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::ActionRow {
+    let row = plain_row()
+        .title("Trimmed copy")
+        .subtitle(&export.status)
+        .build();
+    if export.failed {
+        row.add_css_class("warning");
+    }
+    if export.running {
+        let cancel = button("Cancel", false);
+        cancel.update_property(&[Property::Label("Cancel the export")]);
+        let sender = commands.clone();
+        cancel.connect_clicked(move |_| send(&sender, RecordingRequest::CancelExport));
+        row.add_suffix(&cancel);
+        return row;
+    }
+    if let Some(uri) = export
+        .path
+        .as_ref()
+        .and_then(|path| glib::filename_to_uri(path, None).ok())
+    {
+        let play = button("Play", false);
+        play.update_property(&[Property::Label("Play the trimmed copy")]);
+        let sender = commands.clone();
+        let uri = uri.to_string();
+        play.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::OpenUri(uri.clone()));
+        });
+        row.add_suffix(&play);
+    }
+    let dismiss = button("Dismiss", false);
+    let sender = commands.clone();
+    dismiss.connect_clicked(move |_| send(&sender, RecordingRequest::DismissExport));
+    row.add_suffix(&dismiss);
+    row
 }
 
 /// Asks before a destructive recording request.

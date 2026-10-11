@@ -1,6 +1,7 @@
 //! Screen recording: `org.freedesktop.portal.ScreenCast` sessions recorded
 //! through GStreamer (`pipewiresrc` → VP8, optional Opus tracks → WebM).
 
+mod export;
 mod pipeline;
 mod portal;
 
@@ -13,6 +14,49 @@ use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 use zbus::blocking::{Connection, connection::Builder};
 use zbus::zvariant::OwnedValue;
 
+pub use export::{EXPORT_ELEMENTS, export_missing, export_range, frame_at, media_duration};
+
+/// Reads and trims completed takes.
+pub trait TakeEditor: Send + Sync {
+    fn duration(&self, take: &Path) -> Result<Duration, RecordingError>;
+    fn frame_at(&self, take: &Path, position: Duration) -> Result<VideoFrame, RecordingError>;
+    /// Writes `start..end` of `take` to `output`; see [`export_range`].
+    fn export(
+        &self,
+        take: &Path,
+        start: Duration,
+        end: Duration,
+        output: &Path,
+        cancel: &std::sync::atomic::AtomicBool,
+        progress: &dyn Fn(f64),
+    ) -> Result<(), RecordingError>;
+}
+
+/// Takes read and re-encoded through GStreamer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GstTakeEditor;
+
+impl TakeEditor for GstTakeEditor {
+    fn duration(&self, take: &Path) -> Result<Duration, RecordingError> {
+        media_duration(take)
+    }
+
+    fn frame_at(&self, take: &Path, position: Duration) -> Result<VideoFrame, RecordingError> {
+        frame_at(take, position)
+    }
+
+    fn export(
+        &self,
+        take: &Path,
+        start: Duration,
+        end: Duration,
+        output: &Path,
+        cancel: &std::sync::atomic::AtomicBool,
+        progress: &dyn Fn(f64),
+    ) -> Result<(), RecordingError> {
+        export_range(take, start, end, output, cancel, progress)
+    }
+}
 pub use pipeline::gstreamer_missing;
 pub use portal::{PortalScreenCast, ScreenCastSession};
 

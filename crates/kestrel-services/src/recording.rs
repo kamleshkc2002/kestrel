@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -18,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use kestrel_platform::capture::CaptureCancel;
 use kestrel_platform::recording::{
     AudioTrack, CaptureSession, CropRegion, RecordingBackend, RecordingError, RecordingErrorKind,
-    RecordingEvent, RecordingPlan, RecordingSource, available_space,
+    RecordingEvent, RecordingPlan, RecordingSource, TakeEditor, VideoFrame, available_space,
 };
 use kestrel_platform::snippets::{Clock, SystemClock};
 
@@ -142,12 +143,30 @@ impl RecordingPhase {
     }
 }
 
+/// The trimmed copy being written, or how the last one ended.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ExportPhase {
+    #[default]
+    Idle,
+    Exporting {
+        name: String,
+        percent: u8,
+    },
+    Exported {
+        path: PathBuf,
+    },
+    Failed {
+        error: RecordingError,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecordingSnapshot {
     pub phase: RecordingPhase,
-    /// Advances on every phase or take-list change.
+    /// Advances on every phase, export, or take-list change.
     pub generation: u64,
     pub takes: Vec<Take>,
+    pub export: ExportPhase,
 }
 
 enum Command {
@@ -180,16 +199,23 @@ impl Shared {
 
 pub struct RecordingService {
     backend: Arc<dyn RecordingBackend>,
+    editor: Arc<dyn TakeEditor>,
     folder: PathBuf,
     shared: Arc<Shared>,
     commands: Option<Sender<Command>>,
     cancel: CaptureCancel,
     worker: Option<JoinHandle<()>>,
+    export_cancel: Arc<AtomicBool>,
+    export_worker: Option<JoinHandle<()>>,
 }
 
 impl RecordingService {
     /// Takes live in `folder`; partial files left by a crash are removed.
-    pub fn new(backend: Arc<dyn RecordingBackend>, folder: PathBuf) -> Self {
+    pub fn new(
+        backend: Arc<dyn RecordingBackend>,
+        editor: Arc<dyn TakeEditor>,
+        folder: PathBuf,
+    ) -> Self {
         remove_partials(&folder);
         let shared = Arc::new(Shared {
             snapshot: Mutex::new(RecordingSnapshot {
@@ -199,11 +225,14 @@ impl RecordingService {
         });
         Self {
             backend,
+            editor,
             folder,
             shared,
             commands: None,
             cancel: CaptureCancel::new(),
             worker: None,
+            export_cancel: Arc::default(),
+            export_worker: None,
         }
     }
 
@@ -321,12 +350,12 @@ impl RecordingService {
 
     /// Removes one listed take.
     pub fn delete_take(&self, path: &Path) -> Result<(), String> {
-        let listed = lock(&self.shared.snapshot)
-            .takes
-            .iter()
-            .any(|take| take.path == path);
-        if !listed {
-            return Err("That recording is not in the list.".to_owned());
+        self.listed(path)?;
+        if matches!(
+            lock(&self.shared.snapshot).export,
+            ExportPhase::Exporting { .. }
+        ) {
+            return Err("Wait for the export to finish before deleting recordings.".to_owned());
         }
         fs::remove_file(path).map_err(|error| format!("Removing the recording failed: {error}"))?;
         let takes = list_takes(&self.folder);
@@ -339,8 +368,144 @@ impl RecordingService {
         Ok(())
     }
 
+    fn listed(&self, path: &Path) -> Result<(), String> {
+        lock(&self.shared.snapshot)
+            .takes
+            .iter()
+            .any(|take| take.path == path)
+            .then_some(())
+            .ok_or_else(|| "That recording is not in the list.".to_owned())
+    }
+
+    /// Length of a listed take, for the trim timeline.
+    pub fn take_duration(&self, path: &Path) -> Result<Duration, String> {
+        self.listed(path)?;
+        self.editor.duration(path).map_err(|error| error.message)
+    }
+
+    /// The frame of a listed take at `position`, for the trim preview.
+    pub fn take_frame(&self, path: &Path, position: Duration) -> Result<VideoFrame, String> {
+        self.listed(path)?;
+        self.editor
+            .frame_at(path, position)
+            .map_err(|error| error.message)
+    }
+
+    /// Writes `start..end` of a listed take to `destination` on the
+    /// `kestrel-recording-export` worker, through a hidden partial file
+    /// renamed once complete. The take itself is never modified.
+    pub fn export(
+        &mut self,
+        take: &Path,
+        start: Duration,
+        end: Duration,
+        destination: PathBuf,
+    ) -> Result<(), String> {
+        self.listed(take)?;
+        if matches!(
+            lock(&self.shared.snapshot).export,
+            ExportPhase::Exporting { .. }
+        ) {
+            return Err("An export is already running.".to_owned());
+        }
+        if end <= start {
+            return Err("Choose an end after the start.".to_owned());
+        }
+        if destination == take {
+            return Err("Export to a new file; the recording itself is kept.".to_owned());
+        }
+        self.join_export();
+        let partial = export_partial(&destination)
+            .map_err(|error| format!("Creating the export file failed: {error}"))?;
+        let unstarted = partial.clone();
+        let name = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.shared.update(|snapshot| {
+            snapshot.export = ExportPhase::Exporting {
+                name: name.clone(),
+                percent: 0,
+            };
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let editor = Arc::clone(&self.editor);
+        let shared = Arc::clone(&self.shared);
+        let worker_cancel = Arc::clone(&cancel);
+        let take = take.to_path_buf();
+        let worker = thread::Builder::new()
+            .name("kestrel-recording-export".to_owned())
+            .spawn(move || {
+                let progress = |fraction: f64| {
+                    let percent = (fraction * 100.0).round().clamp(0.0, 100.0) as u8;
+                    shared.update(|snapshot| {
+                        if let ExportPhase::Exporting { percent: shown, .. } = &mut snapshot.export
+                        {
+                            *shown = percent;
+                        }
+                    });
+                };
+                let outcome = editor
+                    .export(&take, start, end, &partial, &worker_cancel, &progress)
+                    .and_then(|()| {
+                        fs::rename(&partial, &destination).map_err(|error| {
+                            RecordingError::new(
+                                RecordingErrorKind::Storage,
+                                format!("Saving the export failed: {error}"),
+                            )
+                        })
+                    });
+                let export = match outcome {
+                    Ok(()) => ExportPhase::Exported { path: destination },
+                    Err(error) => {
+                        let _ = fs::remove_file(&partial);
+                        if error.kind == RecordingErrorKind::Cancelled {
+                            ExportPhase::Idle
+                        } else {
+                            ExportPhase::Failed { error }
+                        }
+                    }
+                };
+                shared.update(|snapshot| snapshot.export = export);
+            });
+        match worker {
+            Ok(worker) => {
+                self.export_worker = Some(worker);
+                self.export_cancel = cancel;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&unstarted);
+                self.shared
+                    .update(|snapshot| snapshot.export = ExportPhase::Idle);
+                Err(format!("Starting the export worker failed: {error}"))
+            }
+        }
+    }
+
+    /// Stops the running export, removing its partial file.
+    pub fn cancel_export(&mut self) {
+        self.export_cancel.store(true, Ordering::Release);
+        self.join_export();
+    }
+
+    /// Clears a finished or failed export.
+    pub fn dismiss_export(&self) {
+        self.shared.update(|snapshot| {
+            if !matches!(snapshot.export, ExportPhase::Exporting { .. }) {
+                snapshot.export = ExportPhase::Idle;
+            }
+        });
+    }
+
+    fn join_export(&mut self) {
+        if let Some(worker) = self.export_worker.take() {
+            let _ = worker.join();
+        }
+    }
+
     /// Completes a running take, or abandons a session still asking or
-    /// choosing, then joins the worker.
+    /// choosing, cancels an export, then joins the workers.
     pub fn shutdown(&mut self) {
         match self.shared.phase() {
             RecordingPhase::Requesting { .. } | RecordingPhase::ChoosingArea { .. } => {
@@ -352,6 +517,7 @@ impl RecordingService {
             }
             _ => {}
         }
+        self.cancel_export();
         self.join_worker();
     }
 
@@ -659,6 +825,40 @@ fn take_stem() -> String {
     )
 }
 
+/// A fresh hidden partial file beside `destination`.
+fn export_partial(destination: &Path) -> io::Result<PathBuf> {
+    let folder = destination
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no destination folder"))?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no destination name"))?
+        .to_string_lossy()
+        .into_owned();
+    for attempt in 0..100 {
+        let path = folder.join(if attempt == 0 {
+            format!(".{name}{PARTIAL_SUFFIX}")
+        } else {
+            format!(".{name}-{attempt}{PARTIAL_SUFFIX}")
+        });
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free file name",
+    ))
+}
+
 /// A fresh hidden partial file, private to the user.
 fn create_partial(folder: &Path) -> io::Result<PathBuf> {
     let stem = take_stem();
@@ -919,6 +1119,194 @@ mod tests {
         }
     }
 
+    /// How the fake editor exports.
+    #[derive(Clone, Copy, Default, PartialEq, Eq)]
+    enum Exporting {
+        #[default]
+        Succeeds,
+        Fails,
+        /// Writes part of the file, then waits for cancellation.
+        Hangs,
+    }
+
+    #[derive(Default)]
+    struct FakeEditor {
+        exporting: Exporting,
+    }
+
+    impl TakeEditor for FakeEditor {
+        fn duration(&self, _take: &Path) -> Result<Duration, RecordingError> {
+            Ok(Duration::from_secs(10))
+        }
+
+        fn frame_at(
+            &self,
+            _take: &Path,
+            _position: Duration,
+        ) -> Result<VideoFrame, RecordingError> {
+            Ok(VideoFrame {
+                width: 2,
+                height: 2,
+                pixels: vec![0; 16],
+            })
+        }
+
+        fn export(
+            &self,
+            _take: &Path,
+            _start: Duration,
+            _end: Duration,
+            output: &Path,
+            cancel: &AtomicBool,
+            progress: &dyn Fn(f64),
+        ) -> Result<(), RecordingError> {
+            fs::write(output, b"partial").expect("write export");
+            progress(0.5);
+            match self.exporting {
+                Exporting::Succeeds => {
+                    fs::write(output, b"trimmed").expect("write export");
+                    Ok(())
+                }
+                Exporting::Fails => Err(RecordingError::new(
+                    RecordingErrorKind::Unavailable,
+                    "no encoder",
+                )),
+                Exporting::Hangs => {
+                    while !cancel.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(RecordingError::new(
+                        RecordingErrorKind::Cancelled,
+                        "cancelled",
+                    ))
+                }
+            }
+        }
+    }
+
+    fn new_service(backend: impl RecordingBackend + 'static, folder: &Path) -> RecordingService {
+        RecordingService::new(
+            Arc::new(backend),
+            Arc::new(FakeEditor::default()),
+            folder.to_path_buf(),
+        )
+    }
+
+    fn exporting_service(exporting: Exporting, folder: &Path) -> RecordingService {
+        RecordingService::new(
+            Arc::new(FakeBackend::new(Script::default())),
+            Arc::new(FakeEditor { exporting }),
+            folder.to_path_buf(),
+        )
+    }
+
+    fn wait_for_export(
+        service: &RecordingService,
+        done: impl Fn(&ExportPhase) -> bool,
+    ) -> ExportPhase {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let export = service.snapshot().export;
+            if done(&export) {
+                return export;
+            }
+            assert!(Instant::now() < deadline, "timed out in {export:?}");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn finished(export: &ExportPhase) -> bool {
+        !matches!(export, ExportPhase::Exporting { .. })
+    }
+
+    #[test]
+    fn exports_write_a_new_file_and_keep_the_take() {
+        let folder = TempDir::new().expect("temp dir");
+        let take = folder.path().join("Kestrel-recording-1.webm");
+        fs::write(&take, b"take").expect("take");
+        let exports = TempDir::new().expect("export dir");
+        let destination = exports.path().join("clip.webm");
+        let mut service = exporting_service(Exporting::Succeeds, folder.path());
+        assert_eq!(service.take_duration(&take), Ok(Duration::from_secs(10)));
+        assert!(
+            service
+                .take_duration(&exports.path().join("other.webm"))
+                .is_err()
+        );
+        let (one, two, four) = (
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+        );
+        assert!(
+            service
+                .export(&take, two, one, destination.clone())
+                .is_err(),
+            "empty range"
+        );
+        assert!(
+            service.export(&take, one, two, take.clone()).is_err(),
+            "the take is never overwritten"
+        );
+        service
+            .export(&take, one, four, destination.clone())
+            .expect("export starts");
+        let export = wait_for_export(&service, finished);
+        assert_eq!(
+            export,
+            ExportPhase::Exported {
+                path: destination.clone()
+            }
+        );
+        assert_eq!(fs::read(&destination).expect("export"), b"trimmed");
+        assert_eq!(
+            files(exports.path()),
+            ["clip.webm"],
+            "no partial file remains"
+        );
+        assert_eq!(fs::read(&take).expect("take"), b"take");
+        service.dismiss_export();
+        assert_eq!(service.snapshot().export, ExportPhase::Idle);
+    }
+
+    #[test]
+    fn failed_and_cancelled_exports_leave_no_output() {
+        let folder = TempDir::new().expect("temp dir");
+        let take = folder.path().join("Kestrel-recording-1.webm");
+        fs::write(&take, b"take").expect("take");
+        let exports = TempDir::new().expect("export dir");
+        let range = (Duration::ZERO, Duration::from_secs(1));
+
+        let mut failing = exporting_service(Exporting::Fails, folder.path());
+        failing
+            .export(&take, range.0, range.1, exports.path().join("a.webm"))
+            .expect("export starts");
+        let export = wait_for_export(&failing, finished);
+        assert!(matches!(
+            export,
+            ExportPhase::Failed { error } if error.kind == RecordingErrorKind::Unavailable
+        ));
+        assert!(files(exports.path()).is_empty());
+
+        let mut hanging = exporting_service(Exporting::Hangs, folder.path());
+        hanging
+            .export(&take, range.0, range.1, exports.path().join("b.webm"))
+            .expect("export starts");
+        wait_for_export(&hanging, |export| {
+            matches!(export, ExportPhase::Exporting { percent: 50, .. })
+        });
+        assert!(
+            hanging
+                .export(&take, range.0, range.1, exports.path().join("c.webm"))
+                .is_err(),
+            "one export at a time"
+        );
+        hanging.shutdown();
+        assert_eq!(hanging.snapshot().export, ExportPhase::Idle);
+        assert!(files(exports.path()).is_empty());
+        assert_eq!(fs::read(&take).expect("take"), b"take");
+    }
+
     fn options(source: RecordingSource, audio: Vec<AudioTrack>) -> RecordingOptions {
         RecordingOptions {
             source,
@@ -961,7 +1349,7 @@ mod tests {
     fn a_stopped_recording_becomes_a_listed_take_and_releases_the_session() {
         let folder = TempDir::new().expect("temp dir");
         let backend = FakeBackend::new(Script::default());
-        let mut service = RecordingService::new(Arc::new(backend.clone()), folder.path().into());
+        let mut service = new_service(backend.clone(), folder.path());
         service
             .start(options(RecordingSource::Screen, Vec::new()))
             .expect("starts");
@@ -1009,7 +1397,7 @@ mod tests {
     fn cancelling_discards_the_partial_file() {
         let folder = TempDir::new().expect("temp dir");
         let backend = FakeBackend::new(Script::default());
-        let mut service = RecordingService::new(Arc::new(backend.clone()), folder.path().into());
+        let mut service = new_service(backend.clone(), folder.path());
         service
             .start(options(RecordingSource::Window, Vec::new()))
             .expect("starts");
@@ -1030,7 +1418,7 @@ mod tests {
             finish_error: true,
             ..Script::default()
         });
-        let mut service = RecordingService::new(Arc::new(backend), folder.path().into());
+        let mut service = new_service(backend, folder.path());
         service
             .start(options(RecordingSource::Screen, Vec::new()))
             .expect("starts");
@@ -1058,7 +1446,7 @@ mod tests {
                 open_error: Some(kind),
                 ..Script::default()
             });
-            let mut service = RecordingService::new(Arc::new(backend), folder.path().into());
+            let mut service = new_service(backend, folder.path());
             service
                 .start(options(RecordingSource::Screen, Vec::new()))
                 .expect("starts");
@@ -1073,7 +1461,7 @@ mod tests {
     fn the_desktop_ending_sharing_saves_the_take_with_a_note() {
         let folder = TempDir::new().expect("temp dir");
         let backend = FakeBackend::new(Script::default());
-        let mut service = RecordingService::new(Arc::new(backend.clone()), folder.path().into());
+        let mut service = new_service(backend.clone(), folder.path());
         service
             .start(options(RecordingSource::Screen, Vec::new()))
             .expect("starts");
@@ -1100,7 +1488,7 @@ mod tests {
             }],
             ..Script::default()
         });
-        let mut service = RecordingService::new(Arc::new(backend), folder.path().into());
+        let mut service = new_service(backend, folder.path());
         service
             .start(options(
                 RecordingSource::Screen,
@@ -1126,7 +1514,7 @@ mod tests {
     fn an_area_is_chosen_from_the_shared_frame_and_cropped_evenly() {
         let folder = TempDir::new().expect("temp dir");
         let backend = FakeBackend::new(Script::default());
-        let mut service = RecordingService::new(Arc::new(backend.clone()), folder.path().into());
+        let mut service = new_service(backend.clone(), folder.path());
         service
             .start(options(RecordingSource::Area, Vec::new()))
             .expect("starts");
@@ -1179,7 +1567,7 @@ mod tests {
     fn shutdown_saves_a_running_take_and_abandons_area_choice() {
         let folder = TempDir::new().expect("temp dir");
         let backend = FakeBackend::new(Script::default());
-        let mut service = RecordingService::new(Arc::new(backend.clone()), folder.path().into());
+        let mut service = new_service(backend.clone(), folder.path());
         service
             .start(options(RecordingSource::Screen, Vec::new()))
             .expect("starts");
@@ -1221,10 +1609,7 @@ mod tests {
             fs::write(folder.path().join(name), b"x").expect("take");
             thread::sleep(Duration::from_millis(20));
         }
-        let service = RecordingService::new(
-            Arc::new(FakeBackend::new(Script::default())),
-            folder.path().into(),
-        );
+        let service = new_service(FakeBackend::new(Script::default()), folder.path());
         let names: Vec<String> = service
             .snapshot()
             .takes

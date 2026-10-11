@@ -57,7 +57,8 @@ use kestrel_platform::{
         QuickToggleError, QuickToggleId,
     },
     recording::{
-        AudioTrack, FEATURE_ID as RECORDING_ID, PortalRecordingBackend, RecordingDetection,
+        AudioTrack, FEATURE_ID as RECORDING_ID, GstTakeEditor, PortalRecordingBackend,
+        RecordingDetection, TakeEditor,
     },
     screen_tools::{
         ALL_SCREEN_TOOLS, ColorSource, ScreenTool, TesseractAdapter, color_source,
@@ -374,6 +375,8 @@ pub struct ApplicationRuntime {
     /// Latest recording detection, shared with the capability probe.
     recording_detection: Arc<Mutex<Option<RecordingDetection>>>,
     recording_settings: kestrel_core::RecordingConfiguration,
+    /// Reads takes for the trim preview.
+    recording_editor: Arc<dyn TakeEditor>,
     screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
     alerts: AlertEngine,
     scratchpad: Option<ScratchpadService>,
@@ -675,8 +678,10 @@ impl ApplicationRuntime {
             capture_detection,
             recording_detection,
             recording_settings: configuration.recording,
+            recording_editor: Arc::new(GstTakeEditor),
             recording: RecordingService::new(
                 Arc::new(PortalRecordingBackend::new()),
+                Arc::new(GstTakeEditor),
                 crate::config::recordings_path()
                     .unwrap_or_else(|| std::env::temp_dir().join("Kestrel recordings")),
             ),
@@ -1635,7 +1640,50 @@ impl ApplicationRuntime {
                 Ok(())
             }
             RecordingRequest::Delete(path) => self.recording.delete_take(&path),
+            RecordingRequest::Export {
+                take,
+                start,
+                end,
+                destination,
+            } => self.recording.export(&take, start, end, destination),
+            RecordingRequest::CancelExport => {
+                self.recording.cancel_export();
+                Ok(())
+            }
+            RecordingRequest::DismissExport => {
+                self.recording.dismiss_export();
+                Ok(())
+            }
         }
+    }
+
+    /// The length of a listed take and a preview function over it, for the
+    /// trim editor.
+    pub fn recording_trim(
+        &self,
+        take: &Path,
+    ) -> Result<(std::time::Duration, crate::TrimPreview), String> {
+        if !self.recording_is_running() {
+            return Err(
+                "Screen recording is not running; enable capture.recording in the Feature Hub."
+                    .to_owned(),
+            );
+        }
+        let duration = self.recording.take_duration(take)?;
+        let editor = Arc::clone(&self.recording_editor);
+        let take = take.to_path_buf();
+        let preview: crate::TrimPreview = Arc::new(move |position| {
+            let frame = editor
+                .frame_at(&take, position)
+                .map_err(|error| error.message)?;
+            kestrel_services::capture::image::RgbaImage::new(
+                frame.width,
+                frame.height,
+                frame.pixels,
+            )
+            .map_err(|_| "The picture is too large to preview.".to_owned())
+        });
+        Ok((duration, preview))
     }
 }
 
