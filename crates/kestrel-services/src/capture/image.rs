@@ -335,7 +335,7 @@ fn blend(pixel: &mut [u8], color: Color) {
 }
 
 /// Copies the part of `image` inside `crop`.
-fn crop_image(image: &RgbaImage, crop: Rect) -> Result<RgbaImage, ImageError> {
+pub fn crop_image(image: &RgbaImage, crop: Rect) -> Result<RgbaImage, ImageError> {
     let bounds = crop
         .clip(image.width, image.height)
         .ok_or(ImageError::EmptyCrop)?;

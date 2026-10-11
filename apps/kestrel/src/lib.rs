@@ -27,6 +27,7 @@ pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreferenc
 pub use kestrel_platform::capture::CaptureMode;
 pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
+pub use kestrel_platform::screen_tools::{ALL_SCREEN_TOOLS, ScreenTool};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::capture::{
     CaptureId,
@@ -35,6 +36,7 @@ pub use kestrel_services::capture::{
 pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
 pub use kestrel_services::microphone::MicrophoneCommand;
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
+pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{ApplicationRuntime, FeaturePreset, run_process_action};
 pub use snippets::{
@@ -53,10 +55,12 @@ pub use view_model::{
     FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
     MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
     PanelSectionViewModel, ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel,
-    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
-    RemediationViewModel, ShortcutRowViewModel, ShortcutsViewModel, SnippetBoundsViewModel,
-    SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel,
-    SnippetsViewModel, SpeedTestViewModel,
+    QrRowViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
+    RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
+    ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
+    ShortcutRowViewModel, ShortcutsViewModel, SnippetBoundsViewModel, SnippetDraft,
+    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
+    SpeedTestViewModel,
 };
 
 /// Command-bar action from the window.
@@ -116,6 +120,33 @@ pub enum ProcessLimit {
     RefreshMillis(u32),
     MaxRows(u32),
 }
+
+/// Scratchpad bound edited from Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScratchpadLimit {
+    MaxNotes(u32),
+    MaxNoteBytes(u32),
+    MaxAgeDays(u32),
+}
+
+/// Screen tool setting edited from Settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenToolsSetting {
+    OcrLanguage(String),
+    OcrTimeoutSeconds(u32),
+}
+
+/// Screen tool action from the window or the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenToolRequest {
+    /// Captures a frame or opens the color picker.
+    Begin(ScreenTool),
+    /// Hands the selection view's choice over for processing.
+    Select(Selection),
+    Cancel,
+    /// Clears the shown result.
+    Dismiss,
+}
 /// Bounded clipboard retention value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardLimit {
@@ -140,6 +171,7 @@ pub enum FocusTarget {
     CommandBar,
     Clipboard,
     Processes,
+    Scratchpad,
 }
 
 /// A process action the user can confirm.
@@ -169,6 +201,26 @@ pub enum ProcessRequest {
     },
 }
 
+/// Scratchpad tab and editor actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScratchpadCommand {
+    New(String),
+    Rename {
+        id: u64,
+        title: String,
+    },
+    Switch(u64),
+    Close(u64),
+    Update {
+        id: u64,
+        text: String,
+    },
+    RemoveExpired,
+    Export {
+        id: u64,
+        destination: std::path::PathBuf,
+    },
+}
 /// Command from an application entry surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationCommand {
@@ -234,9 +286,12 @@ pub enum ApplicationCommand {
     SetClipboardLimit(ClipboardLimit),
     SetCaptureLimit(CaptureLimit),
     SetProcessLimit(ProcessLimit),
+    SetScratchpadLimit(ScratchpadLimit),
     Processes(ProcessRequest),
     CopyText(String),
     OpenUri(String),
+    ScreenTools(ScreenToolRequest),
+    SetScreenToolsSetting(ScreenToolsSetting),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
     /// Snippet-library action.
@@ -249,6 +304,8 @@ pub enum ApplicationCommand {
     SnippetNew,
     SetSnippetLimit(SnippetLimit),
     SetSnippetProvider(SnippetProviderPreference),
+    /// Scratchpad tab and editor actions.
+    Scratchpad(ScratchpadCommand),
     SetSnippetExpansionTiming(SnippetExpansionTiming),
     /// Runs the command bar query whose results the window shows.
     CommandQuery(String),

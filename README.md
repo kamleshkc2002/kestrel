@@ -97,6 +97,20 @@ and running state separately.
 - Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every file at once. Temporary files a portal leaves behind are deleted after import.
 - Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, and redacts regions; redaction overwrites the pixels with black in the saved copy, and the original capture stays until you delete it.
 
+### Screen tools — `capture.text`, `capture.qr`, `capture.color`
+
+- **Default:** disabled; Balanced and Everything enable all three. Each tool is its own feature and fails on its own: reading text needs Tesseract (`sudo apt install tesseract-ocr tesseract-ocr-eng`), and all three need a screenshot provider (see Screenshots).
+- **Use:** the Screen tools buttons in Quick Controls, or `kestrel --command capture.text` / `capture.qr` / `capture.color`. Kestrel takes one frame through the screenshot provider and opens a selection view with a magnifier: drag an area to read (or read the whole frame), or click a pixel for its color. Arrow keys move the cursor and Enter confirms. Where the Screenshot portal offers its color picker, colors come from the desktop's picker.
+- **Configuration:** `[screen_tools] ocr_language` (Tesseract codes such as `eng` or `eng+deu`; default `eng`) and `ocr_timeout_seconds` (5–120; default 30), also editable under Settings → Screen tools.
+- Everything runs on this computer: text through the `tesseract` executable, QR codes in-process. The frame stays in memory only while you select and is dropped once reading starts or you cancel; results stay until cleared and are never saved. Text and QR results copy to the clipboard, web addresses in QR codes open in your browser, and colors copy as HEX, RGB, or HSL.
+
+### Scratchpad — `notes.scratchpad`
+
+- **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command scratchpad.open`.
+- **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable under Settings → Scratchpad.
+- Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`.
+- Preview renders the note's Markdown. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
+
 ### Processes — `system.processes`
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command processes.open`.
@@ -110,7 +124,7 @@ and running state separately.
 
 - **Default:** disabled; Balanced and Everything enable it.
 - **Configuration:** no feature-specific keys; the list refreshes every 2 s while enabled and holds at most 1,024 sockets.
-- Lists TCP and UDP listeners from `/proc/net` with the owning process when its sockets are visible to you. Each row copies the port, address, or PID; TCP listeners on loopback or all addresses open `http://localhost:<port>/` when a browser is installed.
+- Lists TCP and UDP listeners from `/proc/net` with the owning process when its sockets are visible to you. Each row copies the port, address, or PID. When a browser is installed, TCP listeners on a loopback address open at that address (for example `http://127.0.0.1:8765/`), and listeners on every address open at `http://localhost:<port>/`.
 - Stop owner uses the same confirmed End flow; listeners owned by other users show the reason. Addresses stay in the window and are dropped when the feature is disabled.
 
 ### Desktop integration
@@ -132,7 +146,7 @@ kestrel --command toggle.power.keep-awake
 kestrel --list-commands                   # every ID with a description
 ```
 
-IDs cover the window, command bar, clipboard quick paste, capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
+IDs cover the window, command bar, clipboard quick paste, scratchpad (`scratchpad.open`), capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), screen tools (`capture.text`, `capture.qr`, `capture.color`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
 
 | Status | Meaning |
 |---|---|

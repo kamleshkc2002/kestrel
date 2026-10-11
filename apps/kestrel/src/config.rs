@@ -203,9 +203,11 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_speed_test(&mut loaded, document.get("speed_test"));
     parse_capture(&mut loaded, document.get("capture"));
     parse_processes(&mut loaded, document.get("processes"));
+    parse_screen_tools(&mut loaded, document.get("screen_tools"));
     parse_shortcuts(&mut loaded, document.get("shortcuts"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
     parse_snippets(&mut loaded, document.get("snippets"));
+    parse_scratchpad(&mut loaded, document.get("scratchpad"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
     Ok(loaded)
 }
@@ -721,6 +723,60 @@ fn parse_capture(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
     );
     loaded.configuration.capture = limits;
 }
+
+fn parse_scratchpad(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "scratchpad",
+            "The scratchpad value must be a TOML table.",
+        ));
+        return;
+    };
+    let mut configuration = loaded.configuration.scratchpad;
+    if let Some(value) = table.get("max_notes") {
+        match u32::deserialize(value.clone()) {
+            Ok(value)
+                if (kestrel_core::MIN_SCRATCHPAD_MAX_NOTES
+                    ..=kestrel_core::MAX_SCRATCHPAD_MAX_NOTES)
+                    .contains(&value) =>
+            {
+                configuration.max_notes = value
+            }
+            _ => loaded.warnings.push(warning(
+                "scratchpad.max_notes",
+                "Must be between 1 and 50 notes; the default was retained.",
+            )),
+        }
+    }
+    if let Some(value) = table.get("max_note_bytes") {
+        match u32::deserialize(value.clone()) {
+            Ok(value)
+                if (kestrel_core::MIN_SCRATCHPAD_NOTE_BYTES
+                    ..=kestrel_core::MAX_SCRATCHPAD_NOTE_BYTES)
+                    .contains(&value) =>
+            {
+                configuration.max_note_bytes = value
+            }
+            _ => loaded.warnings.push(warning(
+                "scratchpad.max_note_bytes",
+                "Must be between 1024 and 1048576 bytes; the default was retained.",
+            )),
+        }
+    }
+    if let Some(value) = table.get("max_age_days") {
+        match u32::deserialize(value.clone()) {
+            Ok(value) if value <= kestrel_core::MAX_SCRATCHPAD_AGE_DAYS => {
+                configuration.max_age_days = value
+            }
+            _ => loaded.warnings.push(warning(
+                "scratchpad.max_age_days",
+                "Must be between 0 and 365 days; the default was retained.",
+            )),
+        }
+    }
+    loaded.configuration.scratchpad = configuration;
+}
 fn parse_processes(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
     let Some(value) = value else { return };
     let Some(processes) = value.as_table() else {
@@ -762,6 +818,46 @@ fn parse_processes(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>
         }
     }
     loaded.configuration.processes = configuration;
+}
+
+fn parse_screen_tools(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "screen_tools",
+            "The screen_tools value must be a TOML table.",
+        ));
+        return;
+    };
+    let configuration = &mut loaded.configuration.screen_tools;
+    if let Some(value) = table.get("ocr_language") {
+        match value.as_str() {
+            Some(language) if kestrel_core::valid_ocr_language(language) => {
+                configuration.ocr_language = language.to_owned();
+            }
+            _ => loaded.warnings.push(warning(
+                "screen_tools.ocr_language",
+                "Must be Tesseract language codes such as \"eng\" or \"eng+deu\"; the default \
+                 was retained.",
+            )),
+        }
+    }
+    let configuration = &mut loaded.configuration.screen_tools;
+    if let Some(value) = table.get("ocr_timeout_seconds") {
+        match u32::deserialize(value.clone()) {
+            Ok(seconds)
+                if (kestrel_core::MIN_OCR_TIMEOUT_SECONDS
+                    ..=kestrel_core::MAX_OCR_TIMEOUT_SECONDS)
+                    .contains(&seconds) =>
+            {
+                configuration.ocr_timeout_seconds = seconds;
+            }
+            _ => loaded.warnings.push(warning(
+                "screen_tools.ocr_timeout_seconds",
+                "Must be between 5 and 120 seconds; the default was retained.",
+            )),
+        }
+    }
 }
 
 fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -1666,6 +1762,37 @@ max_rows = 250
         assert_eq!(
             reloaded.configuration.processes,
             loaded.configuration.processes
+        );
+        assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn screen_tool_settings_reject_unsafe_languages_alone_and_survive_export() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[screen_tools]
+ocr_language = "-l eng"
+ocr_timeout_seconds = 60
+"#,
+        )
+        .expect("document itself is valid TOML");
+        assert_eq!(loaded.configuration.screen_tools.ocr_language, "eng");
+        assert_eq!(loaded.configuration.screen_tools.ocr_timeout_seconds, 60);
+        let rejected = loaded
+            .warnings
+            .iter()
+            .map(|warning| warning.feature_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(rejected, ["screen_tools.ocr_language"]);
+
+        let mut configuration = loaded.configuration.clone();
+        configuration.screen_tools.ocr_language = "eng+deu".to_owned();
+        let exported = export_string(&configuration).expect("configuration exports");
+        let reloaded = parse(&exported).expect("exported configuration parses");
+        assert_eq!(
+            reloaded.configuration.screen_tools,
+            configuration.screen_tools
         );
         assert!(reloaded.warnings.is_empty());
     }

@@ -536,6 +536,45 @@ sockets (at most 1024) and maps socket inodes to owners through readable
 controller refreshes it every 2 s while enabled; disabling clears it. Process
 and listener data stay in memory and never enter diagnostics or exports.
 
+### 5.14 Screen tools
+
+`capture.text`, `capture.qr`, and `capture.color` register separately and
+probe from the capture probe's latest `CaptureDetection` (the capture feature
+registers first, so its detection is current); none of them captures during a
+probe. All three need a screenshot provider. `capture.text` also needs
+`tesseract` on `PATH` and otherwise reports `MissingDependency`. `capture.color`
+uses the portal's `PickColor` when the Screenshot portal is version 2 or newer.
+
+`ScreenToolsService` runs one job at a time on the `kestrel-screen-tools`
+worker. A job captures one frame in the provider's selecting mode (Area,
+else the portal dialog, else Screen) and decodes it to RGBA; the frame then
+waits as an `Arc` while the GTK selection view shows it with a magnifier.
+`select` takes the frame out of the service, so only the view and the
+processing job hold it, and both drop it when they finish. Cancel, a new job,
+and stop release it at once. Text is read from a PNG of the selected region by
+`tesseract stdin stdout -l <language>` in its own process group, with the
+configured time limit and 256 KiB of output; the language is validated before
+it becomes an argument. QR codes are decoded in-process (`rqrr`), at most 16
+codes of 4 KiB text each; binary payloads are kept as a size. Results stay in
+memory until dismissed, and their `Debug` output carries sizes only.
+
+### 5.15 Scratchpad
+
+`notes.scratchpad` is an opt-in local service. `ScratchpadService` keeps bounded
+notes in `$XDG_DATA_HOME/kestrel/scratchpad.json`, using a 0700 directory,
+0600 files, and a same-directory temporary file followed by fsync and rename.
+The versioned JSON contains note metadata, text, and the active tab; it is
+never included in configuration export. A corrupt document is renamed with a
+timestamp suffix before an empty state is presented.
+
+Edits are sent to the `kestrel-scratchpad` worker and saved after a 750 ms
+quiet period; the latest autosave failure stays in the snapshot until a save
+succeeds. Stop sends a final flush request and joins the worker. Count,
+per-note bytes, and total bounds are checked while loading and editing. Age
+limits only mark notes as expired; `RemoveExpired` performs deletion after
+user confirmation. Markdown preview uses escaped Pango markup and bounded
+pulldown-cmark input.
+
 ## 6. Feature-service lifecycle
 
 Each service follows the same lifecycle:

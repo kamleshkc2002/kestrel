@@ -13,8 +13,10 @@ use crate::{
         AudioPresentation, CapturePresentation, CaptureViewModel, ClipboardPresentation,
         ClipboardQuery, ClipboardViewModel, CommandBarPresentation, CommandBarQuery,
         ListenersViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
-        MonitorViewModel, ProcessesViewModel, ShortcutsPresentation, ShortcutsViewModel,
-        SnippetQuery, SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel,
+        MonitorViewModel, ProcessesViewModel, ScratchpadPresentation, ScratchpadViewModel,
+        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
+        ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
+        SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -32,7 +34,7 @@ use kestrel_platform::{
     },
     capture::{
         CaptureDetection, CaptureMode, CaptureProvider, FEATURE_ID as CAPTURE_ID,
-        backend_for as capture_backend_for,
+        PortalColorPicker, backend_for as capture_backend_for,
     },
     clipboard::{
         ArboardClipboardBackend, ClipboardBackend, ClipboardCapabilityProbe,
@@ -51,6 +53,10 @@ use kestrel_platform::{
     quick_toggles::{
         ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
         QuickToggleError, QuickToggleId,
+    },
+    screen_tools::{
+        ALL_SCREEN_TOOLS, ColorSource, ScreenTool, TesseractAdapter, color_source,
+        screen_tool_capability,
     },
     snippets::{
         Clock, ExecutableInsertionBackend, InsertionProvider, SnippetInsertionProbe, SystemClock,
@@ -81,6 +87,11 @@ use kestrel_services::{
         ProcessSnapshot, confirmation_scope, kill, restart, terminate,
     },
     quick_toggles::{QuickToggleCommand, QuickToggleService, QuickToggleSnapshot},
+    scratchpad::{ScratchpadService, ScratchpadSnapshot},
+    screen_tools::{
+        ScreenToolSource, ScreenToolsService, ScreenToolsSnapshot, Selection, TesseractRecognizer,
+        TextRecognizer,
+    },
     snippets::{
         InsertionReport, RenderContext, SnippetInsertionService, SnippetLibrary, SnippetMatch,
         SnippetPolicy, SnippetServiceError,
@@ -159,6 +170,36 @@ impl CapabilityProbe for SharedCaptureProbe {
     }
 }
 
+/// Reports one screen tool from the capture probe's latest detection.
+struct ScreenToolProbe {
+    tool: ScreenTool,
+    detection: Arc<Mutex<Option<CaptureDetection>>>,
+}
+
+impl CapabilityProbe for ScreenToolProbe {
+    fn probe(&self) -> CapabilityReport {
+        // The capture probe registers first, so its detection is current.
+        let mut detection = self
+            .detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let detection = detection.get_or_insert_with(CaptureDetection::detect);
+        screen_tool_capability(
+            self.tool,
+            detection,
+            TesseractAdapter::discover().executable(),
+        )
+    }
+}
+
+fn ocr_recognizer(settings: &kestrel_core::ScreenToolsConfiguration) -> Arc<dyn TextRecognizer> {
+    Arc::new(TesseractRecognizer {
+        adapter: TesseractAdapter::discover(),
+        language: settings.ocr_language.clone(),
+        timeout: Duration::from_secs(u64::from(settings.ocr_timeout_seconds)),
+    })
+}
+
 /// Private capture storage under the Kestrel data directory.
 fn capture_directory() -> Option<PathBuf> {
     crate::snippets::kestrel_data_directory().map(|directory| directory.join("captures"))
@@ -168,6 +209,8 @@ fn capture_directory() -> Option<PathBuf> {
 pub const SNIPPETS_ID: &str = "snippets.text";
 /// The stable feature identifier for the command bar.
 pub const COMMAND_BAR_ID: &str = "commands.bar";
+/// Stable feature identifier for the private scratchpad.
+pub const SCRATCHPAD_ID: &str = "notes.scratchpad";
 
 /// Reports available providers while preserving portable commands.
 pub struct CommandBarProbe {
@@ -304,7 +347,13 @@ pub struct ApplicationRuntime {
     process_limits: kestrel_core::ProcessConfiguration,
     /// `pidfd_open` works; checked once since the kernel cannot change.
     process_signalling: bool,
+    screen_tools: ScreenToolsService,
+    screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
     alerts: AlertEngine,
+    scratchpad: Option<ScratchpadService>,
+    scratchpad_path: Option<PathBuf>,
+    scratchpad_warning: Option<String>,
+    scratchpad_policy: kestrel_core::ScratchpadConfiguration,
     /// Battery alerts can only be narrowed by the quick toggle.
     battery_alert_configured: bool,
     quick_toggles: QuickToggleService,
@@ -418,6 +467,19 @@ impl ApplicationRuntime {
             configuration.feature_enabled(CAPTURE_ID),
             SharedCaptureProbe(Arc::clone(&capture_detection)),
         )?;
+        for tool in ALL_SCREEN_TOOLS {
+            let spec =
+                FeatureSpec::new(tool.feature_id(), tool.label(), CapabilityStatus::Supported)
+                    .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+            registry.register_probe(
+                spec,
+                configuration.feature_enabled(tool.feature_id()),
+                ScreenToolProbe {
+                    tool,
+                    detection: Arc::clone(&capture_detection),
+                },
+            )?;
+        }
         let processes = FeatureSpec::new(PROCESSES_ID, "Processes", CapabilityStatus::Supported)
             .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::Moderate));
         registry.register_probe(
@@ -465,6 +527,17 @@ impl ApplicationRuntime {
             snippets,
             configuration.feature_enabled(SNIPPETS_ID),
             SnippetInsertionProbe::new(configuration.snippets.preferred_provider),
+        )?;
+        let scratchpad = FeatureSpec::new(SCRATCHPAD_ID, "Scratchpad", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::None));
+        registry.register_probe(
+            scratchpad,
+            configuration.feature_enabled(SCRATCHPAD_ID),
+            StaticCapabilityProbe::new(CapabilityReport::new(
+                SCRATCHPAD_ID,
+                CapabilityStatus::Supported,
+                "Private local scratchpad storage is available.",
+            )),
         )?;
         let global_shortcuts = FeatureSpec::new(
             GLOBAL_SHORTCUTS_ID,
@@ -526,6 +599,12 @@ impl ApplicationRuntime {
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>();
         let command_max_results = configuration.command_bar.max_results as usize;
+        let scratchpad_path = crate::snippets::kestrel_data_directory()
+            .map(|directory| directory.join("scratchpad.json"));
+        let scratchpad_service = scratchpad_path
+            .clone()
+            .filter(|_| configuration.feature_enabled(SCRATCHPAD_ID))
+            .and_then(|path| ScratchpadService::open(path, configuration.scratchpad).ok());
         let command_launcher = ExternalLauncher::discover().ok();
         let command_ranking_warnings = loaded_ranking.warnings;
         let capture_directory = capture_directory();
@@ -592,9 +671,15 @@ impl ApplicationRuntime {
             listeners: ListenerService::new(),
             process_limits: configuration.processes,
             process_signalling: PidfdSignaller::available(),
+            screen_tools: ScreenToolsService::new(ocr_recognizer(&configuration.screen_tools)),
+            screen_tool_settings: configuration.screen_tools.clone(),
             alerts: AlertEngine::new(AlertPolicy::from_configuration(
                 &configuration.monitoring.alerts,
             )),
+            scratchpad_warning: None,
+            scratchpad: scratchpad_service,
+            scratchpad_path: scratchpad_path.clone(),
+            scratchpad_policy: configuration.scratchpad,
             battery_alert_configured: configuration.monitoring.alerts.battery.enabled,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
         };
@@ -643,6 +728,9 @@ impl ApplicationRuntime {
         &mut self,
         configuration: &ApplicationConfiguration,
     ) -> Result<(), RegistryError> {
+        self.screen_tool_settings = configuration.screen_tools.clone();
+        self.screen_tools
+            .set_recognizer(ocr_recognizer(&configuration.screen_tools));
         self.system_monitor
             .reconfigure(
                 Duration::from_millis(configuration.monitoring.refresh_interval_millis),
@@ -704,6 +792,10 @@ impl ApplicationRuntime {
         self.command_max_results = configuration.command_bar.max_results as usize;
         self.command_applications = Self::scan_command_applications(configuration);
         self.rebuild_command_index();
+        self.scratchpad_policy = configuration.scratchpad;
+        if let Some(scratchpad) = self.scratchpad.as_mut() {
+            scratchpad.set_policy(configuration.scratchpad);
+        }
         let desired = self
             .registry
             .registrations()
@@ -866,9 +958,20 @@ impl ApplicationRuntime {
             configuration,
             can_undo,
         );
+        model.scratchpad = self.scratchpad_view_model();
         model.processes = self.processes_view_model("");
+        model.screen_tools = self.screen_tools_view_model();
         model.listeners = self.listeners_view_model();
         model
+    }
+
+    pub fn scratchpad_view_model(&self) -> ScratchpadViewModel {
+        ScratchpadViewModel::from_presentation(ScratchpadPresentation {
+            running: self.scratchpad_is_running(),
+            warning: self.scratchpad_warning.clone(),
+            snapshot: self.scratchpad_snapshot(SystemTime::now()),
+            limits: self.scratchpad_policy,
+        })
     }
 
     pub fn sample_monitor(&mut self, observed_at: Duration) -> MonitorTick {
@@ -1300,6 +1403,113 @@ const PROCESS_TERMINATE_GRACE: Duration = Duration::from_secs(3);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl ApplicationRuntime {
+    pub fn screen_tool_is_running(&self, tool: ScreenTool) -> bool {
+        self.registry.registrations().any(|registration| {
+            registration.feature.id == tool.feature_id() && registration.running
+        })
+    }
+
+    pub fn screen_tools_snapshot(&self) -> ScreenToolsSnapshot {
+        self.screen_tools.snapshot()
+    }
+
+    pub fn screen_tools_view_model(&self) -> ScreenToolsViewModel {
+        let gates = ALL_SCREEN_TOOLS
+            .into_iter()
+            .map(|tool| {
+                let registration = self
+                    .registry
+                    .registrations()
+                    .find(|registration| registration.feature.id == tool.feature_id());
+                let running = registration.is_some_and(|registration| registration.running);
+                let reason = match registration {
+                    _ if running => None,
+                    Some(registration) if !registration.enabled => {
+                        Some(format!("Enable {} in the Feature Hub.", tool.feature_id()))
+                    }
+                    Some(registration) => Some(
+                        registration
+                            .capability
+                            .remediation
+                            .clone()
+                            .unwrap_or_else(|| registration.capability.summary.clone()),
+                    ),
+                    None => Some(format!("{} is not registered.", tool.feature_id())),
+                };
+                ScreenToolGate {
+                    tool,
+                    running,
+                    reason,
+                }
+            })
+            .collect();
+        ScreenToolsViewModel::from_presentation(ScreenToolsPresentation {
+            snapshot: self.screen_tools.snapshot(),
+            gates,
+            settings: self.screen_tool_settings.clone(),
+        })
+    }
+
+    /// Captures a frame for `tool`, or opens the desktop's color picker.
+    pub fn begin_screen_tool(&self, tool: ScreenTool) -> Result<(), String> {
+        if !self.screen_tool_is_running(tool) {
+            return Err(format!(
+                "{} is not running; enable {} in the Feature Hub.",
+                tool.label(),
+                tool.feature_id()
+            ));
+        }
+        let detection = self
+            .capture_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| {
+                "Screenshot providers have not been probed yet; refresh capabilities.".to_owned()
+            })?;
+        let source = match (tool, color_source(&detection)) {
+            (ScreenTool::Color, Some(ColorSource::Picker)) => {
+                ScreenToolSource::Picker(Box::new(PortalColorPicker::new()))
+            }
+            _ => {
+                let provider = detection.provider().ok_or_else(|| {
+                    "No screenshot provider is available; the Feature Hub lists setup steps."
+                        .to_owned()
+                })?;
+                let modes = detection.modes();
+                // Prefer a provider-side selection; the selection view refines it.
+                let mode = [CaptureMode::Area, CaptureMode::Interactive]
+                    .into_iter()
+                    .find(|mode| modes.contains(mode))
+                    .unwrap_or(CaptureMode::Screen);
+                ScreenToolSource::Frame {
+                    backend: capture_backend_for(provider, &detection),
+                    mode,
+                }
+            }
+        };
+        self.screen_tools.begin(tool, source)
+    }
+
+    /// The frame waiting in the selection view.
+    pub fn screen_tool_frame(&self) -> Option<Arc<kestrel_services::capture::RgbaImage>> {
+        self.screen_tools.frame()
+    }
+
+    pub fn select_screen_region(&self, selection: Selection) -> Result<(), String> {
+        self.screen_tools.select(selection)
+    }
+
+    pub fn cancel_screen_tool(&self) {
+        self.screen_tools.cancel();
+    }
+
+    pub fn dismiss_screen_tool(&self) {
+        self.screen_tools.dismiss();
+    }
+}
+
+impl ApplicationRuntime {
     pub fn capture_view_model(&self) -> CaptureViewModel {
         CaptureViewModel::from_presentation(self.capture_presentation())
     }
@@ -1663,6 +1873,74 @@ impl ApplicationRuntime {
         self.snippet_policy
     }
 
+    pub fn scratchpad_is_running(&self) -> bool {
+        self.registry
+            .registrations()
+            .any(|registration| registration.feature.id == SCRATCHPAD_ID && registration.running)
+    }
+
+    pub fn scratchpad_snapshot(&self, now: SystemTime) -> Option<ScratchpadSnapshot> {
+        self.scratchpad
+            .as_ref()
+            .map(|service| service.snapshot(now))
+    }
+
+    pub fn scratchpad_service(&mut self) -> Result<&mut ScratchpadService, String> {
+        if !self.scratchpad_is_running() {
+            return Err(
+                "Scratchpad is not running; enable notes.scratchpad in the Feature Hub.".to_owned(),
+            );
+        }
+        self.scratchpad.as_mut().ok_or_else(|| {
+            "No writable scratchpad data directory was resolved; set XDG_DATA_HOME or HOME."
+                .to_owned()
+        })
+    }
+
+    pub fn scratchpad_create(&mut self, title: String) -> Result<u64, String> {
+        self.scratchpad_service()?
+            .create(title, SystemTime::now())
+            .map(|id| id.get())
+            .map_err(|error| error.to_string())
+    }
+    pub fn scratchpad_rename(&mut self, id: u64, title: String) -> Result<(), String> {
+        self.scratchpad_service()?
+            .rename(
+                kestrel_services::scratchpad::NoteId::from(id),
+                title,
+                SystemTime::now(),
+            )
+            .map_err(|error| error.to_string())
+    }
+    pub fn scratchpad_switch(&mut self, id: u64) -> Result<(), String> {
+        self.scratchpad_service()?
+            .switch(kestrel_services::scratchpad::NoteId::from(id))
+            .map_err(|error| error.to_string())
+    }
+    pub fn scratchpad_close(&mut self, id: u64) -> Result<(), String> {
+        self.scratchpad_service()?
+            .close(kestrel_services::scratchpad::NoteId::from(id))
+            .map_err(|error| error.to_string())
+    }
+    pub fn scratchpad_update(&mut self, id: u64, text: String) -> Result<(), String> {
+        self.scratchpad_service()?
+            .update_text(
+                kestrel_services::scratchpad::NoteId::from(id),
+                text,
+                SystemTime::now(),
+            )
+            .map_err(|error| error.to_string())
+    }
+    pub fn scratchpad_remove_expired(&mut self) -> Result<usize, String> {
+        self.scratchpad_service()?
+            .remove_expired(SystemTime::now())
+            .map_err(|error| error.to_string())
+    }
+    pub fn scratchpad_export(&mut self, id: u64, destination: &Path) -> Result<(), String> {
+        self.scratchpad_service()?
+            .export(kestrel_services::scratchpad::NoteId::from(id), destination)
+            .map_err(|error| error.to_string())
+    }
     pub fn snippet_warnings(&self) -> &[ConfigurationWarning] {
         &self.snippet_warnings
     }
@@ -1817,6 +2095,17 @@ impl ApplicationRuntime {
 
     fn reconcile_resources(&mut self) {
         // Stop services to release claims and join workers.
+        if ALL_SCREEN_TOOLS
+            .into_iter()
+            .any(|tool| self.screen_tool_is_running(tool))
+        {
+            if !self.screen_tools.is_running() {
+                // A failed start leaves every job refusing with a message.
+                let _ = self.screen_tools.start();
+            }
+        } else {
+            self.screen_tools.stop();
+        }
         if self.processes_is_running() {
             if !self.process_inventory.is_running() {
                 self.process_inventory.start(ProcfsProcesses::new("/proc"));
@@ -1857,6 +2146,21 @@ impl ApplicationRuntime {
             self.clipboard_history.stop();
         }
 
+        if self.scratchpad_is_running() {
+            if self.scratchpad.is_none() {
+                self.scratchpad = self
+                    .scratchpad_path
+                    .clone()
+                    .and_then(|path| ScratchpadService::open(path, self.scratchpad_policy).ok());
+                if self.scratchpad.is_some() {
+                    self.scratchpad_warning = None;
+                }
+            }
+        } else if let Some(mut service) = self.scratchpad.take() {
+            if let Err(error) = service.stop() {
+                self.scratchpad_warning = Some(error.to_string());
+            }
+        }
         if !self.quick_toggle_is_running(QuickToggleId::BatteryAlerts) {
             self.quick_toggles.stop(QuickToggleId::BatteryAlerts);
         }
@@ -2603,5 +2907,39 @@ mod tests {
             .expect_err("a disabled feature confirms nothing");
         assert!(refused.contains(PROCESSES_ID), "{refused}");
         assert!(runtime.processes_view_model("").rows.is_empty());
+    }
+
+    #[test]
+    fn disabled_screen_tools_refuse_jobs_and_keep_no_worker() {
+        use kestrel_platform::screen_tools::{ALL_SCREEN_TOOLS, ScreenTool};
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+
+        let error = runtime
+            .begin_screen_tool(ScreenTool::Text)
+            .expect_err("a disabled tool never captures");
+        assert!(error.contains("capture.text"), "{error}");
+        assert!(!runtime.screen_tools.is_running());
+        let view = runtime.screen_tools_view_model();
+        assert!(view.buttons.iter().all(|button| !button.enabled));
+        assert!(view.buttons.iter().all(|button| button.reason.is_some()));
+        for tool in ALL_SCREEN_TOOLS {
+            assert!(ApplicationRuntime::preset_enabled(
+                FeaturePreset::Balanced,
+                tool.feature_id()
+            ));
+        }
+    }
+
+    #[test]
+    fn disabled_scratchpad_refuses_commands() {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.start();
+        let error = runtime
+            .scratchpad_create("test".to_owned())
+            .expect_err("disabled feature");
+        assert!(error.contains("notes.scratchpad"));
     }
 }

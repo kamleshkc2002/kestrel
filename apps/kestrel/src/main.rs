@@ -1,4 +1,5 @@
 mod capture_editor;
+mod screen_selection;
 mod window;
 
 use std::{
@@ -52,6 +53,7 @@ struct TickUpdate {
     capture: Option<kestrel::CaptureViewModel>,
     processes: Option<kestrel::ProcessesViewModel>,
     listeners: Option<kestrel::ListenersViewModel>,
+    screen_tools: Option<kestrel::ScreenToolsViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -80,6 +82,7 @@ struct ControllerState {
     process_query: String,
     process_generation: u64,
     listener_generation: u64,
+    screen_tools_generation: u64,
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
@@ -293,7 +296,17 @@ fn run_tick(
     microphone_due: bool,
     listeners_due: bool,
 ) -> TickUpdate {
-    let (updated, alerts, microphone, speed_test, shortcuts, capture, processes, listeners) = {
+    let (
+        updated,
+        alerts,
+        microphone,
+        speed_test,
+        shortcuts,
+        capture,
+        processes,
+        listeners,
+        screen_tools,
+    ) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -333,6 +346,11 @@ fn run_tick(
         } else {
             None
         };
+        let generation = guard.runtime.screen_tools_snapshot().generation;
+        let screen_tools = (generation != guard.screen_tools_generation).then(|| {
+            guard.screen_tools_generation = generation;
+            guard.runtime.screen_tools_view_model()
+        });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
@@ -342,6 +360,7 @@ fn run_tick(
             capture,
             processes,
             listeners,
+            screen_tools,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -355,6 +374,7 @@ fn run_tick(
         capture,
         processes,
         listeners,
+        screen_tools,
     }
 }
 
@@ -433,6 +453,7 @@ enum TargetedPanel {
     SpeedTest,
     Capture,
     Processes,
+    Scratchpad,
 }
 
 /// Fingerprinting avoids rebuilding presentation on every worker poll.
@@ -533,6 +554,8 @@ enum ControllerOperation {
     SetClipboardLimit(kestrel::ClipboardLimit),
     SetCaptureLimit(kestrel::CaptureLimit),
     SetProcessLimit(kestrel::ProcessLimit),
+    SetScratchpadLimit(kestrel::ScratchpadLimit),
+    SetScreenToolsSetting(kestrel::ScreenToolsSetting),
     RefreshProcesses,
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
@@ -550,6 +573,7 @@ enum ControllerOperation {
     SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
+    Scratchpad(kestrel::ScratchpadCommand),
 }
 
 struct ControllerContext {
@@ -576,6 +600,11 @@ struct ApplicationController {
     capture_running: Cell<bool>,
     processes_running: Cell<bool>,
     listeners_running: Cell<bool>,
+    screen_tools_running: Cell<bool>,
+    /// A selection view is open; at most one at a time.
+    selection_open: Cell<bool>,
+    /// A frame waits for a selection view.
+    selection_pending: Cell<Option<kestrel::ScreenTool>>,
     listener_last_refresh: Cell<Instant>,
     monitor_started_at: Instant,
     /// Bounds backend polling to the two-second interval.
@@ -609,6 +638,9 @@ impl ApplicationController {
         let processes_running = runtime.processes_is_running();
         let listeners_running = runtime.listeners_is_running();
         let capture_running = runtime.capture_is_running();
+        let screen_tools_running = kestrel::ALL_SCREEN_TOOLS
+            .into_iter()
+            .any(|tool| runtime.screen_tool_is_running(tool));
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -627,6 +659,7 @@ impl ApplicationController {
                 process_query: String::new(),
                 process_generation: 0,
                 listener_generation: 0,
+                screen_tools_generation: 0,
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
@@ -646,6 +679,9 @@ impl ApplicationController {
             capture_running: Cell::new(capture_running),
             processes_running: Cell::new(processes_running),
             listeners_running: Cell::new(listeners_running),
+            screen_tools_running: Cell::new(screen_tools_running),
+            selection_open: Cell::new(false),
+            selection_pending: Cell::new(None),
             listener_last_refresh: Cell::new(Instant::now()),
             monitor_started_at: Instant::now(),
             microphone_last_refresh: Cell::new(Instant::now()),
@@ -862,6 +898,8 @@ impl ApplicationController {
                 self.capture_running.set(view_model.capture.running);
                 self.processes_running.set(view_model.processes.running);
                 self.listeners_running.set(view_model.listeners.running);
+                self.screen_tools_running
+                    .set(view_model.screen_tools.available);
                 apply_targeted_panel(view, &view_model, targeted);
                 if !message.is_empty() {
                     view.show_message(&message);
@@ -877,6 +915,8 @@ impl ApplicationController {
                 self.capture_running.set(view_model.capture.running);
                 self.processes_running.set(view_model.processes.running);
                 self.listeners_running.set(view_model.listeners.running);
+                self.screen_tools_running
+                    .set(view_model.screen_tools.available);
                 apply_targeted_panel(view, &view_model, targeted);
                 view.show_message(&message);
             }
@@ -913,6 +953,7 @@ impl ApplicationController {
             && !self.capture_running.get()
             && !self.processes_running.get()
             && !self.listeners_running.get()
+            && !self.screen_tools_running.get()
             && !microphone_due
         {
             self.monitoring.set(false);
@@ -950,11 +991,25 @@ impl ApplicationController {
             capture,
             processes,
             listeners,
+            screen_tools,
         } = update;
+        if let Some(screen_tools) = &screen_tools {
+            self.screen_tools_running.set(screen_tools.available);
+            self.selection_pending.set(screen_tools.selecting);
+            let needs_window = screen_tools.selecting.is_some() || screen_tools.result.is_some();
+            if needs_window && self.window.borrow().is_none() {
+                // A command-line request finished with no window; the next tick shows it.
+                let _ = self.commands.try_send(ApplicationCommand::PresentWindow);
+            }
+        }
+        self.open_pending_selection();
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
         };
+        if let Some(screen_tools) = screen_tools {
+            view.set_screen_tools(&screen_tools);
+        }
         if let Some(monitor) = monitor {
             self.monitor_running.set(monitor.running);
             view.set_monitor(&monitor);
@@ -984,6 +1039,71 @@ impl ApplicationController {
             self.listeners_running.set(listeners.running);
             view.set_listeners(&listeners);
         }
+    }
+
+    /// Runs a screen tool request on the GTK thread; every call only signals the worker.
+    fn screen_tool_request(&self, request: kestrel::ScreenToolRequest) {
+        if matches!(
+            request,
+            kestrel::ScreenToolRequest::Select(_) | kestrel::ScreenToolRequest::Cancel
+        ) {
+            // Only the selection view sends these, once, as it closes.
+            self.selection_open.set(false);
+        }
+        let (result, screen_tools) = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let result = match request {
+                kestrel::ScreenToolRequest::Begin(tool) => guard.runtime.begin_screen_tool(tool),
+                kestrel::ScreenToolRequest::Select(selection) => {
+                    guard.runtime.select_screen_region(selection)
+                }
+                kestrel::ScreenToolRequest::Cancel => {
+                    guard.runtime.cancel_screen_tool();
+                    Ok(())
+                }
+                kestrel::ScreenToolRequest::Dismiss => {
+                    guard.runtime.dismiss_screen_tool();
+                    Ok(())
+                }
+            };
+            (result, guard.runtime.screen_tools_view_model())
+        };
+        self.screen_tools_running.set(screen_tools.available);
+        self.selection_pending.set(screen_tools.selecting);
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_screen_tools(&screen_tools);
+            if let Err(error) = result {
+                view.show_message(&error);
+            }
+        }
+    }
+
+    /// Opens the selection view for a waiting frame once a window exists.
+    fn open_pending_selection(&self) {
+        let Some(tool) = self.selection_pending.get() else {
+            return;
+        };
+        if self.selection_open.get() {
+            return;
+        }
+        let window = self.window.borrow();
+        let Some(view) = window.as_ref() else {
+            return;
+        };
+        let frame = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .screen_tool_frame();
+        let Some(frame) = frame else {
+            return;
+        };
+        self.selection_open.set(true);
+        screen_selection::open(&view.window, tool, frame, self.commands.clone());
     }
 
     fn confirm_process(
@@ -1058,6 +1178,27 @@ impl ApplicationController {
         };
         if let Some(view) = self.window.borrow().as_ref() {
             view.set_processes(&processes);
+        }
+    }
+
+    fn update_scratchpad(&self, command: kestrel::ScratchpadCommand) {
+        let model = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let kestrel::ScratchpadCommand::Update { id, text } = command else {
+                return;
+            };
+            if let Err(error) = guard.runtime.scratchpad_update(id, text) {
+                drop(guard);
+                self.show_message(&error);
+                return;
+            }
+            guard.runtime.scratchpad_view_model()
+        };
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_scratchpad_preview(&model);
         }
     }
 
@@ -1549,6 +1690,43 @@ impl ControllerState {
                 };
                 self.commit_configuration(candidate, config_path, message)?
             }
+            ControllerOperation::SetScratchpadLimit(limit) => {
+                let mut candidate = self.configuration.clone();
+                let message = match limit {
+                    kestrel::ScratchpadLimit::MaxNotes(notes) => {
+                        candidate.scratchpad.max_notes = notes;
+                        format!("The scratchpad keeps at most {notes} notes")
+                    }
+                    kestrel::ScratchpadLimit::MaxNoteBytes(bytes) => {
+                        candidate.scratchpad.max_note_bytes = bytes;
+                        format!("Scratchpad notes hold at most {} KiB", bytes / 1024)
+                    }
+                    kestrel::ScratchpadLimit::MaxAgeDays(0) => {
+                        candidate.scratchpad.max_age_days = 0;
+                        "Scratchpad notes never expire".to_owned()
+                    }
+                    kestrel::ScratchpadLimit::MaxAgeDays(days) => {
+                        candidate.scratchpad.max_age_days = days;
+                        format!("Scratchpad notes expire after {days} days")
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetScreenToolsSetting(setting) => {
+                let mut candidate = self.configuration.clone();
+                let message = match setting {
+                    kestrel::ScreenToolsSetting::OcrLanguage(language) => {
+                        let message = format!("Text is read with the {language} language data");
+                        candidate.screen_tools.ocr_language = language;
+                        message
+                    }
+                    kestrel::ScreenToolsSetting::OcrTimeoutSeconds(seconds) => {
+                        candidate.screen_tools.ocr_timeout_seconds = seconds;
+                        format!("Reading text stops after {seconds} s")
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
             ControllerOperation::SetClipboardFilterSensitive(filter) => {
                 let mut candidate = self.configuration.clone();
                 candidate.clipboard.filter_sensitive = filter;
@@ -1759,6 +1937,37 @@ impl ControllerState {
                 };
                 self.commit_configuration(candidate, config_path, message)?
             }
+            ControllerOperation::Scratchpad(command) => match command {
+                kestrel::ScratchpadCommand::New(title) => self
+                    .runtime
+                    .scratchpad_create(title)
+                    .map(|_| "Scratchpad tab created".to_owned()),
+                kestrel::ScratchpadCommand::Rename { id, title } => self
+                    .runtime
+                    .scratchpad_rename(id, title)
+                    .map(|_| "Scratchpad tab renamed".to_owned()),
+                kestrel::ScratchpadCommand::Switch(id) => self
+                    .runtime
+                    .scratchpad_switch(id)
+                    .map(|_| "Scratchpad tab selected".to_owned()),
+                kestrel::ScratchpadCommand::Close(id) => self
+                    .runtime
+                    .scratchpad_close(id)
+                    .map(|_| "Scratchpad tab closed".to_owned()),
+                kestrel::ScratchpadCommand::Update { id, text } => self
+                    .runtime
+                    .scratchpad_update(id, text)
+                    .map(|_| String::new()),
+                kestrel::ScratchpadCommand::RemoveExpired => self
+                    .runtime
+                    .scratchpad_remove_expired()
+                    .map(|count| format!("Removed {count} expired scratchpad note(s)")),
+                kestrel::ScratchpadCommand::Export { id, destination } => self
+                    .runtime
+                    .scratchpad_export(id, &destination)
+                    .map(|_| format!("Saved {}", destination.display())),
+            }
+            .unwrap_or_else(|error| error),
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -1933,6 +2142,7 @@ fn apply_targeted_panel(
             view.set_processes(&view_model.processes);
             view.set_listeners(&view_model.listeners);
         }
+        TargetedPanel::Scratchpad => view.set_scratchpad(&view_model.scratchpad),
     }
 }
 
@@ -2354,6 +2564,15 @@ fn dispatch_commands(
                     ControllerOperation::SetProcessLimit(limit),
                     "kestrel-process-limit",
                 ),
+                ApplicationCommand::SetScratchpadLimit(limit) => controller.request_operation(
+                    ControllerOperation::SetScratchpadLimit(limit),
+                    "kestrel-scratchpad-limit",
+                ),
+                ApplicationCommand::ScreenTools(request) => controller.screen_tool_request(request),
+                ApplicationCommand::SetScreenToolsSetting(setting) => controller.request_operation(
+                    ControllerOperation::SetScreenToolsSetting(setting),
+                    "kestrel-screen-tools-setting",
+                ),
                 ApplicationCommand::CopyText(text) => {
                     if let Some(view) = controller.window.borrow().as_ref() {
                         view.window.clipboard().set_text(&text);
@@ -2457,6 +2676,16 @@ fn dispatch_commands(
                     ControllerOperation::ExportConfiguration(path),
                     "kestrel-configuration-export",
                 ),
+                ApplicationCommand::Scratchpad(command) => match command {
+                    kestrel::ScratchpadCommand::Update { .. } => {
+                        controller.update_scratchpad(command)
+                    }
+                    command => controller.request_targeted_operation(
+                        ControllerOperation::Scratchpad(command),
+                        "kestrel-scratchpad",
+                        TargetedPanel::Scratchpad,
+                    ),
+                },
                 ApplicationCommand::Quit => application.quit(),
             }
         }

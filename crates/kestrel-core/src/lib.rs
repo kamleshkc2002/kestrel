@@ -161,6 +161,14 @@ pub const MAX_CAPTURE_MAX_TOTAL_MEGABYTES: u32 = 2048;
 pub const DEFAULT_CAPTURE_MAX_AGE_HOURS: u32 = 168;
 pub const MAX_CAPTURE_MAX_AGE_HOURS: u32 = 720;
 pub const CAPTURE_BYTES_PER_MEGABYTE: u64 = 1_048_576;
+// Scratchpad bounds.
+pub const MIN_SCRATCHPAD_MAX_NOTES: u32 = 1;
+pub const DEFAULT_SCRATCHPAD_MAX_NOTES: u32 = 20;
+pub const MAX_SCRATCHPAD_MAX_NOTES: u32 = 50;
+pub const MIN_SCRATCHPAD_NOTE_BYTES: u32 = 1024;
+pub const DEFAULT_SCRATCHPAD_NOTE_BYTES: u32 = 256 * 1024;
+pub const MAX_SCRATCHPAD_NOTE_BYTES: u32 = 1024 * 1024;
+pub const MAX_SCRATCHPAD_AGE_DAYS: u32 = 365;
 
 // Process inspector bounds.
 pub const MIN_PROCESS_REFRESH_MILLIS: u32 = 1_000;
@@ -169,6 +177,12 @@ pub const MAX_PROCESS_REFRESH_MILLIS: u32 = 10_000;
 pub const MIN_PROCESS_ROWS: u32 = 10;
 pub const DEFAULT_PROCESS_ROWS: u32 = 100;
 pub const MAX_PROCESS_ROWS: u32 = 500;
+
+// Screen tool bounds.
+pub const DEFAULT_OCR_LANGUAGE: &str = "eng";
+pub const MIN_OCR_TIMEOUT_SECONDS: u32 = 5;
+pub const DEFAULT_OCR_TIMEOUT_SECONDS: u32 = 30;
+pub const MAX_OCR_TIMEOUT_SECONDS: u32 = 120;
 
 // Global-shortcut bounds.
 pub const MAX_SHORTCUT_BINDINGS: usize = 32;
@@ -459,6 +473,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub processes: ProcessConfiguration,
     #[serde(default)]
+    pub screen_tools: ScreenToolsConfiguration,
+    #[serde(default)]
     pub shortcuts: ShortcutConfiguration,
     #[serde(default)]
     pub clipboard: ClipboardConfiguration,
@@ -466,6 +482,8 @@ pub struct ApplicationConfiguration {
     pub snippets: SnippetConfiguration,
     #[serde(default)]
     pub command_bar: CommandBarConfiguration,
+    #[serde(default)]
+    pub scratchpad: ScratchpadConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -480,10 +498,12 @@ impl Default for ApplicationConfiguration {
             speed_test: SpeedTestConfiguration::default(),
             capture: CaptureConfiguration::default(),
             processes: ProcessConfiguration::default(),
+            screen_tools: ScreenToolsConfiguration::default(),
             shortcuts: ShortcutConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
             command_bar: CommandBarConfiguration::default(),
+            scratchpad: ScratchpadConfiguration::default(),
         }
     }
 }
@@ -541,9 +561,11 @@ impl ApplicationConfiguration {
         self.speed_test.validate()?;
         self.capture.validate()?;
         self.processes.validate()?;
+        self.screen_tools.validate()?;
         self.shortcuts.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
+        self.scratchpad.validate()?;
         self.command_bar.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
@@ -1024,6 +1046,55 @@ impl CaptureConfiguration {
     }
 }
 
+/// Limits for private scratchpad notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScratchpadConfiguration {
+    #[serde(default = "default_scratchpad_max_notes")]
+    pub max_notes: u32,
+    #[serde(default = "default_scratchpad_note_bytes")]
+    pub max_note_bytes: u32,
+    #[serde(default)]
+    pub max_age_days: u32,
+}
+
+fn default_scratchpad_max_notes() -> u32 {
+    DEFAULT_SCRATCHPAD_MAX_NOTES
+}
+fn default_scratchpad_note_bytes() -> u32 {
+    DEFAULT_SCRATCHPAD_NOTE_BYTES
+}
+
+impl Default for ScratchpadConfiguration {
+    fn default() -> Self {
+        Self {
+            max_notes: DEFAULT_SCRATCHPAD_MAX_NOTES,
+            max_note_bytes: DEFAULT_SCRATCHPAD_NOTE_BYTES,
+            max_age_days: 0,
+        }
+    }
+}
+
+impl ScratchpadConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_SCRATCHPAD_MAX_NOTES..=MAX_SCRATCHPAD_MAX_NOTES).contains(&self.max_notes) {
+            return Err(ConfigurationError::InvalidScratchpadMaxNotes {
+                notes: self.max_notes,
+            });
+        }
+        if !(MIN_SCRATCHPAD_NOTE_BYTES..=MAX_SCRATCHPAD_NOTE_BYTES).contains(&self.max_note_bytes) {
+            return Err(ConfigurationError::InvalidScratchpadNoteBytes {
+                bytes: self.max_note_bytes,
+            });
+        }
+        if self.max_age_days > MAX_SCRATCHPAD_AGE_DAYS {
+            return Err(ConfigurationError::InvalidScratchpadAgeDays {
+                days: self.max_age_days,
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Refresh cadence and row bound for the process inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessConfiguration {
@@ -1065,6 +1136,58 @@ impl ProcessConfiguration {
         }
         Ok(())
     }
+}
+
+/// OCR language and time limit for reading text from the screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenToolsConfiguration {
+    /// Tesseract language codes, such as `eng` or `eng+deu`.
+    #[serde(default = "default_ocr_language")]
+    pub ocr_language: String,
+    #[serde(default = "default_ocr_timeout_seconds")]
+    pub ocr_timeout_seconds: u32,
+}
+
+fn default_ocr_language() -> String {
+    DEFAULT_OCR_LANGUAGE.to_owned()
+}
+
+fn default_ocr_timeout_seconds() -> u32 {
+    DEFAULT_OCR_TIMEOUT_SECONDS
+}
+
+impl Default for ScreenToolsConfiguration {
+    fn default() -> Self {
+        Self {
+            ocr_language: default_ocr_language(),
+            ocr_timeout_seconds: DEFAULT_OCR_TIMEOUT_SECONDS,
+        }
+    }
+}
+
+impl ScreenToolsConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !valid_ocr_language(&self.ocr_language) {
+            return Err(ConfigurationError::InvalidOcrLanguage {
+                language: self.ocr_language.clone(),
+            });
+        }
+        if !(MIN_OCR_TIMEOUT_SECONDS..=MAX_OCR_TIMEOUT_SECONDS).contains(&self.ocr_timeout_seconds)
+        {
+            return Err(ConfigurationError::InvalidOcrTimeoutSeconds {
+                seconds: self.ocr_timeout_seconds,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Tesseract language codes: 1–64 bytes of ASCII letters, digits, `_`, and `+`.
+pub fn valid_ocr_language(language: &str) -> bool {
+    (1..=64).contains(&language.len())
+        && language
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'+')
 }
 
 /// Modifier keys of a global shortcut trigger.
@@ -1738,6 +1861,8 @@ pub enum ConfigurationError {
     InvalidCaptureAgeHours { hours: u32 },
     InvalidProcessRefreshMillis { millis: u32 },
     InvalidProcessRows { rows: u32 },
+    InvalidOcrLanguage { language: String },
+    InvalidOcrTimeoutSeconds { seconds: u32 },
     TooManyShortcutBindings { bindings: usize },
     InvalidShortcutCommand { command: String },
     InvalidShortcutTrigger { trigger: String },
@@ -1753,6 +1878,9 @@ pub enum ConfigurationError {
     InvalidSnippetContentBytes { bytes: u32 },
     InvalidSnippetClipboardBytes { bytes: u32 },
     InvalidSnippetInsertTimeout { millis: u64 },
+    InvalidScratchpadMaxNotes { notes: u32 },
+    InvalidScratchpadNoteBytes { bytes: u32 },
+    InvalidScratchpadAgeDays { days: u32 },
     InvalidCommandResults { results: u32 },
     MissingCommandFileRoot,
     TooManyCommandFileRoots { roots: usize },

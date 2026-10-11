@@ -315,7 +315,7 @@ fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: 
 }
 
 /// Premultiplied ARGB32 copy of the capture for drawing.
-fn surface_from(image: &RgbaImage) -> Option<cairo::ImageSurface> {
+pub(crate) fn surface_from(image: &RgbaImage) -> Option<cairo::ImageSurface> {
     let width = i32::try_from(image.width).ok()?;
     let height = i32::try_from(image.height).ok()?;
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).ok()?;

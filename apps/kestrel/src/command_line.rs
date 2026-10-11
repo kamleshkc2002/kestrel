@@ -11,6 +11,7 @@ use kestrel_platform::{
     capture::{CaptureMode, FEATURE_ID as CAPTURE_ID},
     clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
     quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId},
+    screen_tools::ScreenTool,
     speed_test::FEATURE_ID as SPEED_TEST_ID,
 };
 use kestrel_services::{
@@ -19,7 +20,7 @@ use kestrel_services::{
     microphone::MicrophoneCommand,
 };
 
-use crate::{ApplicationCommand, CaptureRequest, FeaturePreset, FocusTarget};
+use crate::{ApplicationCommand, CaptureRequest, FeaturePreset, FocusTarget, ScreenToolRequest};
 
 const TOGGLE_PREFIX: &str = "toggle.";
 
@@ -32,6 +33,8 @@ pub enum CommandLineAction {
     /// Opens the window with the clipboard history search focused.
     QuickPaste,
     /// Opens the window with the process search focused.
+    /// Opens the scratchpad editor.
+    ScratchpadOpen,
     ProcessesOpen,
     RefreshCapabilities,
     Quit,
@@ -45,6 +48,8 @@ pub enum CommandLineAction {
     /// Captures in the provider's preferred mode.
     CaptureScreenshot,
     CaptureScreen,
+    /// Reads text, a QR code, or a color from the screen.
+    ScreenTool(ScreenTool),
     WipeClipboard,
     ClearClipboardSelection,
     ApplyPreset(FeaturePreset),
@@ -53,11 +58,12 @@ pub enum CommandLineAction {
     QuickToggle(QuickToggleId),
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 21] = [
+const FIXED_ACTIONS: [CommandLineAction; 25] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::QuickPaste,
     CommandLineAction::ProcessesOpen,
+    CommandLineAction::ScratchpadOpen,
     CommandLineAction::RefreshCapabilities,
     CommandLineAction::Quit,
     CommandLineAction::NextOutput,
@@ -69,6 +75,9 @@ const FIXED_ACTIONS: [CommandLineAction; 21] = [
     CommandLineAction::CancelSpeedTest,
     CommandLineAction::CaptureScreenshot,
     CommandLineAction::CaptureScreen,
+    CommandLineAction::ScreenTool(ScreenTool::Text),
+    CommandLineAction::ScreenTool(ScreenTool::Qr),
+    CommandLineAction::ScreenTool(ScreenTool::Color),
     CommandLineAction::WipeClipboard,
     CommandLineAction::ClearClipboardSelection,
     CommandLineAction::ApplyPreset(FeaturePreset::Essentials),
@@ -93,6 +102,7 @@ impl CommandLineAction {
             Self::OpenCommandBar => "command-bar.open",
             Self::QuickPaste => "clipboard.quick-paste",
             Self::ProcessesOpen => "processes.open",
+            Self::ScratchpadOpen => "scratchpad.open",
             Self::RefreshCapabilities => "capabilities.refresh",
             Self::Quit => "app.quit",
             Self::NextOutput => "audio.output-next",
@@ -104,6 +114,7 @@ impl CommandLineAction {
             Self::CancelSpeedTest => "speed-test.cancel",
             Self::CaptureScreenshot => "capture.screenshot",
             Self::CaptureScreen => "capture.screen",
+            Self::ScreenTool(tool) => tool.feature_id(),
             Self::WipeClipboard => "clipboard.wipe",
             Self::ClearClipboardSelection => "clipboard.clear-selection",
             Self::ApplyPreset(FeaturePreset::Essentials) => "preset.essentials",
@@ -121,6 +132,7 @@ impl CommandLineAction {
             Self::OpenCommandBar => "Open the command bar".to_owned(),
             Self::QuickPaste => "Search clipboard history to copy an entry".to_owned(),
             Self::ProcessesOpen => "Open the process inspector".to_owned(),
+            Self::ScratchpadOpen => "Open the scratchpad editor".to_owned(),
             Self::RefreshCapabilities => "Re-run capability probes".to_owned(),
             Self::Quit => "Quit Kestrel".to_owned(),
             Self::NextOutput => "Switch to the next audio output".to_owned(),
@@ -134,6 +146,9 @@ impl CommandLineAction {
                 "Take a screenshot (area, window, or the desktop's dialog)".to_owned()
             }
             Self::CaptureScreen => "Capture the whole screen".to_owned(),
+            Self::ScreenTool(ScreenTool::Text) => "Read text from part of the screen".to_owned(),
+            Self::ScreenTool(ScreenTool::Qr) => "Read a QR code from the screen".to_owned(),
+            Self::ScreenTool(ScreenTool::Color) => "Pick a color from the screen".to_owned(),
             Self::WipeClipboard => "Wipe clipboard history".to_owned(),
             Self::ClearClipboardSelection => "Clear the live clipboard selection".to_owned(),
             Self::ApplyPreset(preset) => format!("Apply the {} preset", preset.label()),
@@ -178,12 +193,14 @@ impl CommandLineAction {
             Self::QuickPaste | Self::WipeClipboard | Self::ClearClipboardSelection => {
                 Some(CLIPBOARD_HISTORY_ID)
             }
+            Self::ScratchpadOpen => Some("notes.scratchpad"),
             Self::NextOutput | Self::PreviousOutput => Some(AUDIO_MIXER_ID),
             Self::ToggleMicrophoneMute | Self::MuteMicrophone | Self::UnmuteMicrophone => {
                 Some(MICROPHONE_FEATURE_ID)
             }
             Self::StartSpeedTest | Self::CancelSpeedTest => Some(SPEED_TEST_ID),
             Self::CaptureScreenshot | Self::CaptureScreen => Some(CAPTURE_ID),
+            Self::ScreenTool(tool) => Some(tool.feature_id()),
             Self::QuickToggle(toggle) => Some(toggle.feature_id()),
         }
     }
@@ -194,6 +211,7 @@ impl CommandLineAction {
             Self::ShowWindow => ApplicationCommand::PresentWindow,
             Self::OpenCommandBar => ApplicationCommand::Focus(FocusTarget::CommandBar),
             Self::ProcessesOpen => ApplicationCommand::Focus(FocusTarget::Processes),
+            Self::ScratchpadOpen => ApplicationCommand::Focus(FocusTarget::Scratchpad),
             Self::QuickPaste => ApplicationCommand::Focus(FocusTarget::Clipboard),
             Self::RefreshCapabilities => ApplicationCommand::RefreshCapabilities,
             Self::Quit => ApplicationCommand::Quit,
@@ -217,6 +235,9 @@ impl CommandLineAction {
             Self::CaptureScreenshot => ApplicationCommand::Capture(CaptureRequest::Begin(None)),
             Self::CaptureScreen => {
                 ApplicationCommand::Capture(CaptureRequest::Begin(Some(CaptureMode::Screen)))
+            }
+            Self::ScreenTool(tool) => {
+                ApplicationCommand::ScreenTools(ScreenToolRequest::Begin(tool))
             }
             Self::WipeClipboard => ApplicationCommand::Clipboard(ClipboardCommand::Wipe),
             Self::ClearClipboardSelection => {
@@ -424,7 +445,7 @@ mod tests {
         );
         assert_eq!(
             actions.len(),
-            21 + ALL_QUICK_TOGGLES.len(),
+            25 + ALL_QUICK_TOGGLES.len(),
             "every quick toggle has exactly one ID"
         );
         for action in actions {
