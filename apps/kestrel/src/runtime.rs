@@ -336,7 +336,8 @@ pub struct ApplicationRuntime {
     shortcut_bindings: Vec<kestrel_core::ShortcutBinding>,
     /// Unknown configured commands.
     shortcut_skipped: Vec<String>,
-    /// One registration attempt per running period.
+    /// One registration attempt per running period, so a declined portal
+    /// dialog does not reappear on every refresh.
     shortcut_attempted: bool,
     /// Activations are sent as application commands.
     command_sender: Option<async_channel::Sender<ApplicationCommand>>,
@@ -365,7 +366,7 @@ pub struct ApplicationRuntime {
     process_inventory: ProcessInventoryService,
     listeners: ListenerService,
     process_limits: kestrel_core::ProcessConfiguration,
-    /// Checked once because the kernel cannot change.
+    /// `pidfd_open` works; checked once because the kernel cannot change.
     process_signalling: bool,
     screen_tools: ScreenToolsService,
     camera: CameraPreviewService,

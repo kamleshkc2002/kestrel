@@ -429,6 +429,7 @@ mod tests {
         assert_eq!(error.kind, ScriptErrorKind::TimedOut);
     }
 
+    /// Zombies awaiting reaping count as gone.
     fn process_is_gone(pid: i32) -> bool {
         match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Err(_) => true,
