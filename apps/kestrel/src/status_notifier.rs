@@ -1,4 +1,4 @@
-use crate::ApplicationCommand;
+use crate::{ApplicationCommand, tray_icon::readout_icon};
 use async_channel::Sender;
 use kestrel_core::{CapabilityReport, CapabilityStatus};
 use ksni::{
@@ -6,24 +6,29 @@ use ksni::{
     blocking::{Handle, TrayMethods},
     menu::StandardItem,
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 pub const FEATURE_ID: &str = "app.status-notifier";
+const APPLICATION_ICON: &str = "io.github.kamleshkc2002.Kestrel";
 
 pub struct StatusNotifierIntegration {
     handle: Option<Handle<KestrelTray>>,
+    sender: Sender<ApplicationCommand>,
     capability: CapabilityReport,
 }
 
 impl StatusNotifierIntegration {
     pub fn start(sender: Sender<ApplicationCommand>) -> Self {
         let tray = KestrelTray {
-            sender,
-            readouts: None,
+            sender: sender.clone(),
         };
         match tray.spawn() {
             Ok(handle) => Self {
                 handle: Some(handle),
+                sender,
                 capability: CapabilityReport::new(
                     FEATURE_ID,
                     CapabilityStatus::Supported,
@@ -33,6 +38,7 @@ impl StatusNotifierIntegration {
             },
             Err(error) => Self {
                 handle: None,
+                sender,
                 capability: unavailable_capability(format!(
                     "StatusNotifierItem registration failed: {error}"
                 )),
@@ -44,47 +50,12 @@ impl StatusNotifierIntegration {
         self.capability.clone()
     }
 
-    /// Publishes monitor readouts to the tray; `None` without a tray host.
+    /// Publishes monitor readouts as tray items; `None` without a tray host.
     pub fn readout_sink(&self) -> Option<TrayReadoutSink> {
-        self.handle.clone().map(|handle| TrayReadoutSink {
-            handle,
-            last: Arc::new(Mutex::new(None)),
+        self.handle.as_ref().map(|_| TrayReadoutSink {
+            sender: self.sender.clone(),
+            items: Arc::new(Mutex::new(BTreeMap::new())),
         })
-    }
-}
-
-/// Monitor readouts shown in the tray title, tooltip, and icon.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrayReadouts {
-    /// Bounded aggregate readings such as "CPU 12% · Memory 48%".
-    pub summary: String,
-    /// Fill level of the meter icon, from the first percentage readout.
-    pub meter_percent: Option<u8>,
-}
-
-/// Sends readouts to the tray service thread; unchanged values are skipped.
-#[derive(Clone)]
-pub struct TrayReadoutSink {
-    handle: Handle<KestrelTray>,
-    last: Arc<Mutex<Option<Option<TrayReadouts>>>>,
-}
-
-impl TrayReadoutSink {
-    /// Blocks briefly on the tray thread; call it off the GTK thread.
-    pub fn publish(&self, readouts: Option<TrayReadouts>) {
-        let mut last = self
-            .last
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if last.as_ref() == Some(&readouts) {
-            return;
-        }
-        if self.handle.is_closed() {
-            return;
-        }
-        let applied = readouts.clone();
-        self.handle.update(move |tray| tray.readouts = applied);
-        *last = Some(readouts);
     }
 }
 
@@ -94,6 +65,97 @@ impl Drop for StatusNotifierIntegration {
             handle.shutdown().wait();
         }
     }
+}
+
+/// One monitor readout shown as its own tray item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayReadout {
+    /// Stable per readout; it names the item for hosts that remember placement.
+    pub key: String,
+    pub label: &'static str,
+    /// Few letters for the icon, such as "MEM".
+    pub icon_label: &'static str,
+    /// Full reading for the title, tooltip, and menu, such as "1.6 Mbit/s".
+    pub value: String,
+    /// Icon text short enough for a square panel icon, such as "1.6Mb".
+    pub compact: String,
+    pub detail: String,
+}
+
+/// Keeps one tray item per configured readout: adds, updates, and removes
+/// items as the configuration and readings change.
+#[derive(Clone)]
+pub struct TrayReadoutSink {
+    sender: Sender<ApplicationCommand>,
+    items: Arc<Mutex<BTreeMap<String, ReadoutItem>>>,
+}
+
+struct ReadoutItem {
+    handle: Handle<ReadoutTray>,
+    readout: TrayReadout,
+}
+
+impl TrayReadoutSink {
+    /// Blocks briefly on each tray thread; call it off the GTK thread.
+    pub fn publish(&self, readouts: &[TrayReadout]) {
+        let mut items = self
+            .items
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        items.retain(|key, item| {
+            let keep = readouts.iter().any(|readout| &readout.key == key);
+            if !keep {
+                item.handle.shutdown().wait();
+            }
+            keep && !item.handle.is_closed()
+        });
+        for readout in readouts {
+            match items.get_mut(&readout.key) {
+                Some(item) if item.readout == *readout => {}
+                Some(item) => {
+                    let icon = (item.readout.compact != readout.compact
+                        || item.readout.icon_label != readout.icon_label)
+                        .then(|| icon_for(readout));
+                    let applied = readout.clone();
+                    item.handle.update(move |tray| {
+                        tray.readout = applied;
+                        if let Some(icon) = icon {
+                            tray.icon = icon;
+                        }
+                    });
+                    item.readout = readout.clone();
+                }
+                None => {
+                    let tray = ReadoutTray {
+                        sender: self.sender.clone(),
+                        icon: icon_for(readout),
+                        readout: readout.clone(),
+                    };
+                    // A host that rejects the item leaves the readout in the window only.
+                    if let Ok(handle) = tray.spawn() {
+                        items.insert(
+                            readout.key.clone(),
+                            ReadoutItem {
+                                handle,
+                                readout: readout.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn icon_for(readout: &TrayReadout) -> Vec<Icon> {
+    readout_icon(readout.icon_label, &readout.compact)
+        .map(|pixels| Icon {
+            width: pixels.width,
+            height: pixels.height,
+            data: pixels.argb,
+        })
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn unavailable_capability(reason: impl Into<String>) -> CapabilityReport {
@@ -109,55 +171,24 @@ pub(crate) fn unavailable_capability(reason: impl Into<String>) -> CapabilityRep
     )
 }
 
+fn send(sender: &Sender<ApplicationCommand>, command: ApplicationCommand) {
+    let _ = sender.try_send(command);
+}
+
+fn open_item<T: Tray>(sender: &Sender<ApplicationCommand>) -> MenuItem<T> {
+    let sender = sender.clone();
+    StandardItem {
+        label: "Open Kestrel".to_owned(),
+        icon_name: "window-new-symbolic".to_owned(),
+        activate: Box::new(move |_: &mut T| send(&sender, ApplicationCommand::PresentWindow)),
+        ..StandardItem::default()
+    }
+    .into()
+}
+
 #[derive(Debug)]
 struct KestrelTray {
     sender: Sender<ApplicationCommand>,
-    readouts: Option<TrayReadouts>,
-}
-
-impl KestrelTray {
-    fn send(&self, command: ApplicationCommand) {
-        let _ = self.sender.try_send(command);
-    }
-}
-
-const METER_SIZE: i32 = 22;
-
-/// A vertical meter in network-order ARGB32: an outlined bar filled from the bottom.
-fn meter_icon(percent: u8) -> Icon {
-    let size = METER_SIZE as usize;
-    let (left, right, top, bottom) = (5, size - 5, 1, size - 1);
-    let inner_height = bottom - top - 2;
-    let filled = (usize::from(percent.min(100)) * inner_height).div_ceil(100);
-    let mut data = vec![0_u8; size * size * 4];
-    for y in 0..size {
-        for x in 0..size {
-            let inside = (left..right).contains(&x) && (top..bottom).contains(&y);
-            if !inside {
-                continue;
-            }
-            let border = x == left || x == right - 1 || y == top || y == bottom - 1;
-            let fill = y >= bottom - 1 - filled;
-            let argb: [u8; 4] = if border {
-                [0xff, 0xe8, 0xe8, 0xe8]
-            } else if fill {
-                match percent {
-                    90.. => [0xff, 0xe0, 0x4b, 0x3c],
-                    70..=89 => [0xff, 0xf0, 0xb0, 0x30],
-                    _ => [0xff, 0x4c, 0xb0, 0x5a],
-                }
-            } else {
-                [0x80, 0x20, 0x20, 0x20]
-            };
-            let offset = (y * size + x) * 4;
-            data[offset..offset + 4].copy_from_slice(&argb);
-        }
-    }
-    Icon {
-        width: METER_SIZE,
-        height: METER_SIZE,
-        data,
-    }
 }
 
 impl Tray for KestrelTray {
@@ -170,67 +201,43 @@ impl Tray for KestrelTray {
     }
 
     fn title(&self) -> String {
-        match &self.readouts {
-            Some(readouts) => format!("{} · {}", kestrel_core::APPLICATION_NAME, readouts.summary),
-            None => kestrel_core::APPLICATION_NAME.to_owned(),
-        }
+        kestrel_core::APPLICATION_NAME.to_owned()
     }
 
     fn status(&self) -> Status {
         Status::Active
     }
 
-    /// Hosts prefer a named icon, so the meter replaces it while one is set.
     fn icon_name(&self) -> String {
-        match self
-            .readouts
-            .as_ref()
-            .and_then(|readouts| readouts.meter_percent)
-        {
-            Some(_) => String::new(),
-            None => "io.github.kamleshkc2002.Kestrel".to_owned(),
-        }
-    }
-
-    fn icon_pixmap(&self) -> Vec<Icon> {
-        self.readouts
-            .as_ref()
-            .and_then(|readouts| readouts.meter_percent)
-            .map(meter_icon)
-            .into_iter()
-            .collect()
+        APPLICATION_ICON.to_owned()
     }
 
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
-            icon_name: "io.github.kamleshkc2002.Kestrel".to_owned(),
-            title: kestrel_core::APPLICATION_NAME.to_owned(),
-            description: match &self.readouts {
-                Some(readouts) => readouts.summary.clone(),
-                None => "Open Kestrel's capability and feature status window.".to_owned(),
-            },
+            icon_name: self.icon_name(),
+            title: self.title(),
+            description: "Open Kestrel's capability and feature status window.".to_owned(),
             ..ToolTip::default()
         }
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        self.send(ApplicationCommand::PresentWindow);
+        send(&self.sender, ApplicationCommand::PresentWindow);
+    }
+
+    /// Wayland hosts send this before an activation so the window may come forward.
+    fn provide_xdg_activation_token(&mut self, token: String) {
+        send(&self.sender, ApplicationCommand::ActivationToken(token));
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         vec![
-            StandardItem {
-                label: "Open Kestrel".to_owned(),
-                icon_name: "window-new-symbolic".to_owned(),
-                activate: Box::new(|tray: &mut Self| tray.send(ApplicationCommand::PresentWindow)),
-                ..StandardItem::default()
-            }
-            .into(),
+            open_item(&self.sender),
             StandardItem {
                 label: "Refresh capabilities".to_owned(),
                 icon_name: "view-refresh-symbolic".to_owned(),
                 activate: Box::new(|tray: &mut Self| {
-                    tray.send(ApplicationCommand::RefreshCapabilities)
+                    send(&tray.sender, ApplicationCommand::RefreshCapabilities)
                 }),
                 ..StandardItem::default()
             }
@@ -239,9 +246,12 @@ impl Tray for KestrelTray {
                 label: "Toggle microphone mute".to_owned(),
                 icon_name: "audio-input-microphone-symbolic".to_owned(),
                 activate: Box::new(|tray: &mut Self| {
-                    tray.send(ApplicationCommand::Microphone(
-                        kestrel_services::microphone::MicrophoneCommand::ToggleMute,
-                    ))
+                    send(
+                        &tray.sender,
+                        ApplicationCommand::Microphone(
+                            kestrel_services::microphone::MicrophoneCommand::ToggleMute,
+                        ),
+                    )
                 }),
                 ..StandardItem::default()
             }
@@ -250,7 +260,7 @@ impl Tray for KestrelTray {
             StandardItem {
                 label: "Quit".to_owned(),
                 icon_name: "application-exit-symbolic".to_owned(),
-                activate: Box::new(|tray: &mut Self| tray.send(ApplicationCommand::Quit)),
+                activate: Box::new(|tray: &mut Self| send(&tray.sender, ApplicationCommand::Quit)),
                 ..StandardItem::default()
             }
             .into(),
@@ -258,39 +268,94 @@ impl Tray for KestrelTray {
     }
 }
 
+/// A tray item whose icon shows one readout's label and value.
+#[derive(Debug)]
+struct ReadoutTray {
+    sender: Sender<ApplicationCommand>,
+    readout: TrayReadout,
+    icon: Vec<Icon>,
+}
+
+impl ReadoutTray {
+    fn reading(&self) -> String {
+        format!("{} {}", self.readout.label, self.readout.value)
+    }
+}
+
+impl Tray for ReadoutTray {
+    fn id(&self) -> String {
+        format!("{}-{}", kestrel_core::DATA_DIRECTORY_NAME, self.readout.key)
+    }
+
+    fn category(&self) -> Category {
+        Category::Hardware
+    }
+
+    fn title(&self) -> String {
+        self.reading()
+    }
+
+    fn status(&self) -> Status {
+        Status::Active
+    }
+
+    /// Hosts prefer a named icon, so none is set and the readout pixmap shows.
+    fn icon_name(&self) -> String {
+        String::new()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        self.icon.clone()
+    }
+
+    fn tool_tip(&self) -> ToolTip {
+        ToolTip {
+            icon_name: APPLICATION_ICON.to_owned(),
+            title: self.reading(),
+            description: self.readout.detail.clone(),
+            ..ToolTip::default()
+        }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        send(&self.sender, ApplicationCommand::PresentWindow);
+    }
+
+    fn provide_xdg_activation_token(&mut self, token: String) {
+        send(&self.sender, ApplicationCommand::ActivationToken(token));
+    }
+
+    /// Hosts without tooltips still show the full reading here.
+    fn menu(&self) -> Vec<MenuItem<Self>> {
+        let mut items: Vec<MenuItem<Self>> = vec![
+            StandardItem {
+                label: self.reading(),
+                enabled: false,
+                ..StandardItem::default()
+            }
+            .into(),
+        ];
+        if !self.readout.detail.is_empty() {
+            items.push(
+                StandardItem {
+                    label: self.readout.detail.clone(),
+                    enabled: false,
+                    ..StandardItem::default()
+                }
+                .into(),
+            );
+        }
+        items.push(MenuItem::Separator);
+        items.push(open_item(&self.sender));
+        items
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use kestrel_core::CapabilityStatus;
 
-    use super::{FEATURE_ID, meter_icon, unavailable_capability};
-
-    #[test]
-    fn meter_fill_follows_the_percentage() {
-        let filled_pixels = |percent| {
-            let icon = meter_icon(percent);
-            assert_eq!(icon.data.len(), (icon.width * icon.height * 4) as usize);
-            // Green, amber, or red fill pixels; the border and track differ.
-            icon.data
-                .chunks(4)
-                .filter(|pixel| {
-                    matches!(
-                        pixel,
-                        [0xff, 0x4c, 0xb0, 0x5a]
-                            | [0xff, 0xf0, 0xb0, 0x30]
-                            | [0xff, 0xe0, 0x4b, 0x3c]
-                    )
-                })
-                .count()
-        };
-        assert_eq!(filled_pixels(0), 0);
-        assert!(filled_pixels(30) < filled_pixels(60));
-        assert!(filled_pixels(60) < filled_pixels(100));
-        assert_eq!(
-            filled_pixels(100),
-            filled_pixels(255),
-            "values above 100 are capped"
-        );
-    }
+    use super::{FEATURE_ID, unavailable_capability};
 
     #[test]
     fn unavailable_tray_keeps_the_normal_window_as_remediation() {

@@ -8,6 +8,7 @@ mod private_file;
 mod runtime;
 mod snippets;
 mod status_notifier;
+mod tray_icon;
 pub mod view_model;
 
 pub use autostart::{AutostartError, DESKTOP_FILE_NAME, autostart_path, disable, enable};
@@ -46,7 +47,7 @@ pub use snippets::{
     save_snippets, snippet_path,
 };
 pub use status_notifier::{
-    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayReadoutSink, TrayReadouts,
+    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayReadout, TrayReadoutSink,
 };
 pub use view_model::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
@@ -431,6 +432,8 @@ pub enum ScratchpadCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationCommand {
     PresentWindow,
+    /// An XDG activation token from a tray host; the next presentation uses it.
+    ActivationToken(String),
     /// Presents the window and focuses one control.
     Focus(FocusTarget),
     RefreshCapabilities,

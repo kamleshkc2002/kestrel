@@ -392,15 +392,7 @@ fn run_tick(
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
     if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
-        tray.publish(
-            monitor
-                .tray_summary
-                .clone()
-                .map(|summary| kestrel::TrayReadouts {
-                    summary,
-                    meter_percent: monitor.tray_meter_percent,
-                }),
-        );
+        tray.publish(&monitor.tray);
     }
     let clipboard = clipboard_tick_update(state);
     TickUpdate {
@@ -668,6 +660,8 @@ struct ApplicationController {
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
     tray: Option<kestrel::TrayReadoutSink>,
+    /// The latest XDG activation token from a tray host, used once.
+    activation_token: RefCell<Option<String>>,
     refresh_results: Sender<RefreshResult>,
     tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
@@ -754,6 +748,7 @@ impl ApplicationController {
             pending_command_query: RefCell::new(None),
             notifier,
             tray,
+            activation_token: RefCell::new(None),
             refresh_results,
             tick_results,
             commands,
@@ -766,7 +761,12 @@ impl ApplicationController {
             .borrow()
             .as_ref()
             .map(|view| view.window.clone());
+        let token = self.activation_token.take();
         if let Some(window) = existing {
+            // Wayland compositors raise a window only with a fresh activation token.
+            if let Some(token) = &token {
+                window.set_startup_id(token);
+            }
             // The close button may have minimized it; present alone does not
             // restore a minimized X11 window.
             window.unminimize();
@@ -803,6 +803,9 @@ impl ApplicationController {
             controller.window.borrow_mut().take();
             glib::Propagation::Proceed
         });
+        if let Some(token) = &token {
+            view.window.set_startup_id(token);
+        }
         view.window.present();
         self.window.replace(Some(view));
     }
@@ -2733,6 +2736,9 @@ fn dispatch_commands(
             };
             match command {
                 ApplicationCommand::PresentWindow => controller.present(&application),
+                ApplicationCommand::ActivationToken(token) => {
+                    controller.activation_token.replace(Some(token));
+                }
                 ApplicationCommand::Focus(target) => controller.focus(&application, target),
                 ApplicationCommand::RefreshCapabilities => controller.request_refresh(),
                 ApplicationCommand::QuickToggle(command) => {
