@@ -346,6 +346,16 @@ fn parse_ui(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
         }
     }
 
+    if let Some(close_action) = ui.get("close_action") {
+        match kestrel_core::CloseAction::deserialize(close_action.clone()) {
+            Ok(close_action) => loaded.configuration.ui.close_action = close_action,
+            Err(_) => loaded.warnings.push(warning(
+                "ui.close_action",
+                "Must be \"minimize\" or \"quit\"; the default was retained.",
+            )),
+        }
+    }
+
     if let Some(panel_sections) = ui.get("panel_sections") {
         parse_panel_sections(loaded, panel_sections);
     }
@@ -1914,6 +1924,36 @@ system_audio = true
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.recording, configuration.recording);
         assert!(reloaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn close_action_defaults_to_minimize_and_rejects_unknown_values() {
+        let default = parse("schema_version = 3\n").expect("valid");
+        assert_eq!(
+            default.configuration.ui.close_action,
+            kestrel_core::CloseAction::Minimize
+        );
+        let quit = parse("schema_version = 3\n[ui]\nclose_action = \"quit\"\n").expect("valid");
+        assert_eq!(
+            quit.configuration.ui.close_action,
+            kestrel_core::CloseAction::Quit
+        );
+        let reloaded =
+            parse(&export_string(&quit.configuration).expect("exports")).expect("parses");
+        assert_eq!(
+            reloaded.configuration.ui.close_action,
+            kestrel_core::CloseAction::Quit
+        );
+        let bad = parse("schema_version = 3\n[ui]\nclose_action = \"hide\"\n").expect("valid TOML");
+        assert_eq!(
+            bad.configuration.ui.close_action,
+            kestrel_core::CloseAction::Minimize
+        );
+        assert!(
+            bad.warnings
+                .iter()
+                .any(|warning| warning.feature_id == "ui.close_action")
+        );
     }
 
     #[test]

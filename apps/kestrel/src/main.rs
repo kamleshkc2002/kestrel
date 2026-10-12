@@ -23,7 +23,7 @@ use kestrel::view_model::{
 };
 use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
-    ClipboardLifecycle, ClipboardViewModel, ConfigurationWarning, FeaturePreset,
+    ClipboardLifecycle, ClipboardViewModel, CloseAction, ConfigurationWarning, FeaturePreset,
     LoadedConfiguration, MicrophoneCommand, MonitorReadout, MonitorViewModel, PanelMoveDirection,
     PanelSection, SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch,
     SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
@@ -533,6 +533,7 @@ enum ControllerOperation {
     ApplyPreset(FeaturePreset),
     UndoPreset,
     SetAppearance(AppearancePreference),
+    SetCloseAction(CloseAction),
     SetAutostart(bool),
     SetPanelVisibility {
         section: PanelSection,
@@ -732,6 +733,9 @@ impl ApplicationController {
             .as_ref()
             .map(|view| view.window.clone());
         if let Some(window) = existing {
+            // The close button may have minimized it; present alone does not
+            // restore a minimized X11 window.
+            window.unminimize();
             window.present();
             return;
         }
@@ -745,12 +749,24 @@ impl ApplicationController {
             .camera_frames();
         let view = WindowView::new(application, &view_model, self.commands.clone(), frames);
         let weak_controller = Rc::downgrade(self);
-        view.window.connect_close_request(move |_| {
-            if let Some(controller) = weak_controller.upgrade() {
-                // The camera never keeps running behind a closed window.
-                controller.camera_request(kestrel::CameraRequest::Stop);
-                controller.window.borrow_mut().take();
+        view.window.connect_close_request(move |window| {
+            let Some(controller) = weak_controller.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            // The camera never keeps running behind a closed or minimized window.
+            controller.camera_request(kestrel::CameraRequest::Stop);
+            let close_action = controller
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .configuration
+                .ui
+                .close_action;
+            if close_action == CloseAction::Minimize {
+                window.minimize();
+                return glib::Propagation::Stop;
             }
+            controller.window.borrow_mut().take();
             glib::Propagation::Proceed
         });
         view.window.present();
@@ -1526,6 +1542,18 @@ impl ControllerState {
                 }
 
                 "Appearance updated".to_owned()
+            }
+            ControllerOperation::SetCloseAction(close_action) => {
+                let old = self.configuration.clone();
+                self.configuration.ui.close_action = close_action;
+                if let Err(error) = persist(config_path, &self.configuration) {
+                    self.configuration = old;
+                    return Err(format!("The close button setting was not saved: {error}"));
+                }
+                match close_action {
+                    CloseAction::Minimize => "The close button minimizes Kestrel".to_owned(),
+                    CloseAction::Quit => "The close button quits Kestrel".to_owned(),
+                }
             }
             ControllerOperation::SetAutostart(enabled) => {
                 self.set_autostart(enabled, config_path)?;
@@ -2660,6 +2688,10 @@ fn dispatch_commands(
                 ApplicationCommand::SetAppearance(appearance) => controller.request_operation(
                     ControllerOperation::SetAppearance(appearance),
                     "kestrel-appearance-change",
+                ),
+                ApplicationCommand::SetCloseAction(close_action) => controller.request_operation(
+                    ControllerOperation::SetCloseAction(close_action),
+                    "kestrel-close-action-change",
                 ),
                 ApplicationCommand::SetAutostart(enabled) => controller.request_operation(
                     ControllerOperation::SetAutostart(enabled),

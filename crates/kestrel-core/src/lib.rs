@@ -382,12 +382,24 @@ pub struct PanelSectionConfiguration {
     pub visible: bool,
 }
 
+/// What the window's close button does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseAction {
+    /// Minimize the window; Kestrel keeps running in the taskbar.
+    #[default]
+    Minimize,
+    Quit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiConfiguration {
     #[serde(default)]
     pub appearance: AppearancePreference,
     #[serde(default = "default_panel_sections")]
     pub panel_sections: Vec<PanelSectionConfiguration>,
+    #[serde(default)]
+    pub close_action: CloseAction,
 }
 
 fn default_panel_sections() -> Vec<PanelSectionConfiguration> {
@@ -405,6 +417,7 @@ impl Default for UiConfiguration {
         Self {
             appearance: AppearancePreference::default(),
             panel_sections: default_panel_sections(),
+            close_action: CloseAction::default(),
         }
     }
 }
