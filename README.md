@@ -49,8 +49,11 @@ and running states separately.
 ### System monitoring — `system.monitor`
 
 - **Default:** disabled; Essentials enables it.
-- **Configuration:** `[monitoring] refresh_interval_millis` (250–60,000; default 1,000), `history_samples` (1–600; default 120), `readouts`, and `[monitoring.alerts]` rules (`threshold` >0 and ≤100% or ≤150 °C, `sustain_samples` 1–600, `cooldown_seconds` ≤86,400).
+- **Configuration:** `[monitoring] refresh_interval_millis` (250–60,000; default 1,000), `history_samples` (1–600; default 120), `readouts`, `network_rate_unit` (`bytes` or `bits`; default `bytes`), `per_core_cpu` (default false), `tray_readouts` (up to 3; default none), and `[monitoring.alerts]` rules (`threshold` >0 and ≤100% or ≤150 °C, `sustain_samples` 1–600, `cooldown_seconds` ≤86,400).
 - Samples `/proc` and `/sys`; missing backends stay visible with their source reason. History is bounded and kept in memory; process IDs and command lines are excluded.
+- Per-core CPU load is grouped into performance and efficiency cores on hybrid processors. Network shows the transfer since monitoring started, and the battery shows its power source, including a paused charge on external power.
+- NVIDIA GPUs are read through NVML (`libnvidia-ml.so.1`) when the driver is loaded; a missing library or a driver/library mismatch is shown with its remedy. Accessory batteries (mice, keyboards, headsets, controllers) come from UPower; no serial numbers are read.
+- Local addresses appear only after **Show** in the Monitoring panel and are never stored, logged, or exported.
 
 ### Audio mixer — `audio.mixer`
 
@@ -151,7 +154,7 @@ and running states separately.
 
 - The normal window is always available; the tray is optional.
 - The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make it quit instead. Ctrl+Q, the Quit button beside that setting, and the tray's Quit always quit. Minimizing turns off a running camera preview.
-- The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension.
+- The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Readouts marked **Tray** in Settings appear in the tray title and tooltip, and the first percentage readout replaces the icon with a meter.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 
 ### Keyboard shortcuts

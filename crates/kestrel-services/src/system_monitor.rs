@@ -7,10 +7,13 @@ use std::{
     time::Duration,
 };
 
-use kestrel_platform::system_monitor::{
-    CpuCounters, DiskCounters, FilesystemUsage, GpuReading, MemoryCounters, Metric,
-    NetworkCounters, PowerSupplyReading, RawSystemSample, SourceIssue, SystemMonitorSource,
-    TemperatureReading,
+use kestrel_platform::{
+    system_monitor::{
+        CoreKind, CpuCounters, DiskCounters, FilesystemUsage, GpuReading, MemoryCounters, Metric,
+        NetworkCounters, PowerSupplyReading, RawSystemSample, SourceIssue, SystemMonitorSource,
+        TemperatureReading,
+    },
+    upower::PeripheralBattery,
 };
 
 pub const MIN_REFRESH_INTERVAL: Duration =
@@ -132,6 +135,25 @@ pub struct GpuSnapshot {
     pub device: String,
     pub label: Option<String>,
     pub busy_percent: Option<u8>,
+    pub memory_used_bytes: Option<u64>,
+    pub memory_total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreUsage {
+    pub index: u32,
+    pub kind: Option<CoreKind>,
+    /// `None` until two samples of this core exist.
+    pub usage_percent: Option<f64>,
+}
+
+/// Bytes moved on non-loopback interfaces since monitoring started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetworkSessionTotals {
+    pub received_bytes: u64,
+    pub transmitted_bytes: u64,
+    /// Monitor clock time of the baseline sample.
+    pub since: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +169,7 @@ pub struct PowerSupplySnapshot {
     pub energy_full_microwatt_hours: Option<u64>,
     pub power_microwatts: Option<u64>,
     pub remaining_seconds: Option<u64>,
+    pub online: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -184,13 +207,16 @@ pub struct SystemSnapshot {
     pub observed_at: Duration,
     pub cpu_usage_percent: Option<f64>,
     pub logical_cpus: Option<usize>,
+    pub cores: Vec<CoreUsage>,
     pub memory: Option<MemorySnapshot>,
     pub disk_usage: Vec<DiskUsageSnapshot>,
     pub disk_activity: Vec<DiskActivitySnapshot>,
     pub network: Vec<NetworkSnapshot>,
+    pub network_session: Option<NetworkSessionTotals>,
     pub temperatures: Vec<TemperatureReading>,
     pub power_supplies: Vec<PowerSupplySnapshot>,
     pub gpu: Vec<GpuSnapshot>,
+    pub peripherals: Vec<PeripheralBattery>,
     pub issues: Vec<SourceIssue>,
 }
 
@@ -207,6 +233,7 @@ pub struct SystemMonitorService<S> {
     previous_sample: Option<(Duration, RawSystemSample)>,
     latest: Option<SystemSnapshot>,
     history: VecDeque<HistorySample>,
+    network_session: Option<NetworkSessionTotals>,
 }
 
 impl<S: SystemMonitorSource> SystemMonitorService<S> {
@@ -234,6 +261,7 @@ impl<S: SystemMonitorSource> SystemMonitorService<S> {
             previous_sample: None,
             latest: None,
             history: VecDeque::with_capacity(history_capacity as usize),
+            network_session: None,
         })
     }
 
@@ -317,13 +345,13 @@ impl<S: SystemMonitorSource> SystemMonitorService<S> {
         }
 
         let raw = self.source.sample();
-        let snapshot = build_snapshot(
-            observed_at,
-            &raw,
-            self.previous_sample
-                .as_ref()
-                .map(|(at, sample)| (*at, sample)),
-        );
+        let previous = self
+            .previous_sample
+            .as_ref()
+            .map(|(at, sample)| (*at, sample));
+        let mut snapshot = build_snapshot(observed_at, &raw, previous);
+        self.network_session = advance_session(self.network_session, observed_at, &raw, previous);
+        snapshot.network_session = self.network_session;
         let sample = history_sample(&snapshot);
         self.previous_sample = Some((observed_at, raw));
         self.latest = Some(snapshot);
@@ -377,10 +405,14 @@ fn build_snapshot(
         observed_at,
         cpu_usage_percent: cpu_usage(cpu, previous_cpu),
         logical_cpus: cpu.map(|counters| counters.logical_cpus),
+        cores: cpu
+            .map(|counters| core_usage(counters, previous_cpu))
+            .unwrap_or_default(),
         memory,
         disk_usage,
         disk_activity,
         network,
+        network_session: None,
         temperatures: available(&raw.temperatures).cloned().unwrap_or_default(),
         power_supplies: available(&raw.power_supplies)
             .map(|supplies| supplies.iter().map(power_supply_snapshot).collect())
@@ -388,8 +420,50 @@ fn build_snapshot(
         gpu: available(&raw.gpu)
             .map(|gpus| gpus.iter().map(gpu_snapshot).collect())
             .unwrap_or_default(),
+        peripherals: available(&raw.peripherals).cloned().unwrap_or_default(),
         issues: collect_issues(raw),
     }
+}
+
+/// Adds the latest non-loopback counter deltas; a counter that went backwards
+/// restarted from zero, so its current value is the delta.
+fn advance_session(
+    session: Option<NetworkSessionTotals>,
+    observed_at: Duration,
+    raw: &RawSystemSample,
+    previous: Option<(Duration, &RawSystemSample)>,
+) -> Option<NetworkSessionTotals> {
+    let Some(current) = available(&raw.network) else {
+        return session;
+    };
+    let mut totals = session.unwrap_or(NetworkSessionTotals {
+        received_bytes: 0,
+        transmitted_bytes: 0,
+        since: observed_at,
+    });
+    let Some(previous) = previous.and_then(|(_, sample)| available(&sample.network)) else {
+        return Some(totals);
+    };
+    let previous = previous
+        .iter()
+        .map(|interface| (interface.interface.as_str(), interface))
+        .collect::<BTreeMap<_, _>>();
+    for interface in current
+        .iter()
+        .filter(|interface| interface.interface != "lo")
+    {
+        let Some(prior) = previous.get(interface.interface.as_str()) else {
+            continue;
+        };
+        let delta = |now: u64, before: u64| now.checked_sub(before).unwrap_or(now);
+        totals.received_bytes = totals
+            .received_bytes
+            .saturating_add(delta(interface.received_bytes, prior.received_bytes));
+        totals.transmitted_bytes = totals
+            .transmitted_bytes
+            .saturating_add(delta(interface.transmitted_bytes, prior.transmitted_bytes));
+    }
+    Some(totals)
 }
 
 fn available<T>(metric: &Metric<T>) -> Option<&T> {
@@ -416,6 +490,7 @@ fn collect_issues(raw: &RawSystemSample) -> Vec<SourceIssue> {
         issue(&raw.disk_usage),
         issue(&raw.disk_io),
         issue(&raw.gpu),
+        issue(&raw.peripherals),
     ]
     .into_iter()
     .flatten()
@@ -433,6 +508,31 @@ fn cpu_usage(current: Option<&CpuCounters>, previous: Option<&CpuCounters>) -> O
     Some(clamp_percent(
         (total_delta - idle_delta) as f64 * 100.0 / total_delta as f64,
     ))
+}
+
+fn core_usage(current: &CpuCounters, previous: Option<&CpuCounters>) -> Vec<CoreUsage> {
+    let previous = previous
+        .into_iter()
+        .flat_map(|counters| counters.cores.iter())
+        .map(|core| (core.index, core))
+        .collect::<BTreeMap<_, _>>();
+    current
+        .cores
+        .iter()
+        .map(|core| {
+            let usage_percent = previous.get(&core.index).and_then(|prior| {
+                let total = core.total.checked_sub(prior.total)?;
+                let idle = core.idle.checked_sub(prior.idle)?;
+                (total > 0 && idle <= total)
+                    .then(|| clamp_percent((total - idle) as f64 * 100.0 / total as f64))
+            });
+            CoreUsage {
+                index: core.index,
+                kind: core.kind,
+                usage_percent,
+            }
+        })
+        .collect()
 }
 
 fn memory_snapshot(counters: &MemoryCounters) -> MemorySnapshot {
@@ -553,6 +653,7 @@ fn power_supply_snapshot(reading: &PowerSupplyReading) -> PowerSupplySnapshot {
         energy_full_microwatt_hours: reading.energy_full_microwatt_hours,
         power_microwatts: reading.power_microwatts,
         remaining_seconds,
+        online: reading.online,
     }
 }
 
@@ -561,6 +662,8 @@ fn gpu_snapshot(reading: &GpuReading) -> GpuSnapshot {
         device: reading.device.clone(),
         label: reading.label.clone(),
         busy_percent: reading.busy_percent,
+        memory_used_bytes: reading.memory_used_bytes,
+        memory_total_bytes: reading.memory_total_bytes,
     }
 }
 
@@ -650,6 +753,7 @@ mod tests {
                 total,
                 idle,
                 logical_cpus: 4,
+                cores: Vec::new(),
             }),
             memory: Metric::Available(MemoryCounters {
                 total_bytes: 1_000,
@@ -685,7 +789,10 @@ mod tests {
                 device: "gpu0".to_string(),
                 busy_percent: Some(50),
                 label: Some("card0".to_string()),
+                memory_used_bytes: None,
+                memory_total_bytes: None,
             }]),
+            peripherals: Metric::Available(Vec::new()),
         }
     }
 
@@ -856,6 +963,7 @@ mod tests {
             energy_now_microwatt_hours: Some(5_000),
             energy_full_microwatt_hours: None,
             power_microwatts: Some(0),
+            online: None,
         }]);
         let mut service = service(vec![raw], 2);
         assert_eq!(service.refresh(Duration::ZERO), RefreshOutcome::Updated);
@@ -880,6 +988,7 @@ mod tests {
             disk_usage: unavailable("disk_usage"),
             disk_io: unavailable("disk_io"),
             gpu: unavailable("gpu"),
+            peripherals: unavailable("peripherals"),
         };
         let mut service = service(vec![raw], 1);
         assert_eq!(service.refresh(Duration::ZERO), RefreshOutcome::Updated);
@@ -899,8 +1008,86 @@ mod tests {
                 "power",
                 "disk_usage",
                 "disk_io",
-                "gpu"
+                "gpu",
+                "peripherals"
             ]
         );
+    }
+
+    #[test]
+    fn per_core_load_needs_two_samples_and_survives_counter_resets() {
+        use kestrel_platform::system_monitor::{CoreCounters, CoreKind};
+        let with_cores = |cores: [(u64, u64); 2]| {
+            let mut raw = sample(100, 50, 0, 0);
+            if let Metric::Available(cpu) = &mut raw.cpu {
+                cpu.cores = cores
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (total, idle))| CoreCounters {
+                        index: index as u32,
+                        total: *total,
+                        idle: *idle,
+                        kind: Some(CoreKind::Performance),
+                    })
+                    .collect();
+            }
+            raw
+        };
+        let mut service = service(
+            vec![
+                with_cores([(100, 50), (100, 90)]),
+                with_cores([(200, 75), (50, 40)]),
+            ],
+            4,
+        );
+        service.refresh(Duration::ZERO);
+        let first = service.latest().expect("first sample").cores.clone();
+        assert!(first.iter().all(|core| core.usage_percent.is_none()));
+        service.refresh(Duration::from_secs(1));
+        let second = &service.latest().expect("second sample").cores;
+        assert_eq!(second[0].usage_percent, Some(75.0));
+        assert_eq!(second[1].usage_percent, None, "a reset counter has no rate");
+        assert_eq!(second[0].kind, Some(CoreKind::Performance));
+    }
+
+    #[test]
+    fn session_totals_skip_loopback_count_resets_and_survive_gaps() {
+        let with_interfaces = |eth0: (u64, u64), lo: (u64, u64)| {
+            let mut raw = sample(100, 50, eth0.0, eth0.1);
+            if let Metric::Available(interfaces) = &mut raw.network {
+                interfaces.push(NetworkCounters {
+                    interface: "lo".to_string(),
+                    received_bytes: lo.0,
+                    transmitted_bytes: lo.1,
+                });
+            }
+            raw
+        };
+        let mut gap = sample(100, 50, 0, 0);
+        gap.network = Metric::Unavailable(SourceIssue {
+            source: "/proc/net/dev".to_string(),
+            reason: "unreadable".to_string(),
+        });
+        let mut service = service(
+            vec![
+                with_interfaces((1_000, 500), (10, 10)),
+                with_interfaces((1_600, 700), (9_000, 9_000)),
+                // The interface restarted its counters.
+                with_interfaces((100, 50), (9_100, 9_100)),
+                gap,
+            ],
+            8,
+        );
+        let mut totals = Vec::new();
+        for second in 0..4 {
+            service.refresh(Duration::from_secs(second));
+            let session = service
+                .latest()
+                .and_then(|snapshot| snapshot.network_session)
+                .expect("session totals start with the first readable sample");
+            assert_eq!(session.since, Duration::ZERO);
+            totals.push((session.received_bytes, session.transmitted_bytes));
+        }
+        assert_eq!(totals, [(0, 0), (600, 200), (700, 250), (700, 250)]);
     }
 }

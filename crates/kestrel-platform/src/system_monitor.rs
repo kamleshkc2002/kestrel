@@ -5,6 +5,8 @@ use std::{
     ffi::CString,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use libc::statvfs;
@@ -14,8 +16,15 @@ use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 pub const MAX_FILESYSTEMS: usize = 16;
 pub const MAX_DISK_DEVICES: usize = 16;
 pub const MAX_GPUS: usize = 8;
+pub const MAX_CPU_CORES: usize = 512;
+/// A failed NVML load is retried at most this often.
+const NVML_RETRY: Duration = Duration::from_secs(30);
 
-use crate::CapabilityProbe;
+use crate::{
+    CapabilityProbe,
+    nvml::{Nvml, NvmlUnavailable},
+    upower::{PeripheralBattery, UPowerPeripherals},
+};
 
 pub const FEATURE_ID: &str = "system.monitor";
 
@@ -51,6 +60,23 @@ pub struct CpuCounters {
     pub total: u64,
     pub idle: u64,
     pub logical_cpus: usize,
+    /// Numbered `cpuN` lines, at most [`MAX_CPU_CORES`].
+    pub cores: Vec<CoreCounters>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreKind {
+    Performance,
+    Efficiency,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreCounters {
+    pub index: u32,
+    pub total: u64,
+    pub idle: u64,
+    /// Set on hybrid processors whose sysfs lists `cpu_core` and `cpu_atom`.
+    pub kind: Option<CoreKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +115,8 @@ pub struct PowerSupplyReading {
     pub energy_now_microwatt_hours: Option<u64>,
     pub energy_full_microwatt_hours: Option<u64>,
     pub power_microwatts: Option<u64>,
+    /// Mains adapters report whether they supply power.
+    pub online: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +140,8 @@ pub struct GpuReading {
     pub device: String,
     pub busy_percent: Option<u8>,
     pub label: Option<String>,
+    pub memory_used_bytes: Option<u64>,
+    pub memory_total_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,30 +154,65 @@ pub struct RawSystemSample {
     pub disk_usage: Metric<Vec<FilesystemUsage>>,
     pub disk_io: Metric<Vec<DiskCounters>>,
     pub gpu: Metric<Vec<GpuReading>>,
+    pub peripherals: Metric<Vec<PeripheralBattery>>,
 }
 
 pub trait SystemMonitorSource {
     fn sample(&mut self) -> RawSystemSample;
 }
 
-#[derive(Debug, Clone)]
+/// Procfs/sysfs reader with optional NVML and UPower device services.
+#[derive(Clone)]
 pub struct ProcSysMonitor {
     proc_root: PathBuf,
     sys_root: PathBuf,
+    devices: Option<DeviceServices>,
+}
+
+/// NVML and UPower handles shared by the source and its capability probe.
+#[derive(Clone, Default)]
+struct DeviceServices {
+    nvml: Arc<Mutex<NvmlState>>,
+    upower: Arc<UPowerPeripherals>,
+}
+
+#[derive(Default)]
+struct NvmlState {
+    nvml: Option<Nvml>,
+    failure: Option<(Instant, NvmlUnavailable)>,
+}
+
+impl std::fmt::Debug for ProcSysMonitor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcSysMonitor")
+            .field("proc_root", &self.proc_root)
+            .field("sys_root", &self.sys_root)
+            .field("device_services", &self.devices.is_some())
+            .finish()
+    }
 }
 
 impl Default for ProcSysMonitor {
     fn default() -> Self {
-        Self::new("/proc", "/sys")
+        Self::new("/proc", "/sys").with_device_services()
     }
 }
 
 impl ProcSysMonitor {
+    /// Reads only `proc_root` and `sys_root`.
     pub fn new(proc_root: impl Into<PathBuf>, sys_root: impl Into<PathBuf>) -> Self {
         Self {
             proc_root: proc_root.into(),
             sys_root: sys_root.into(),
+            devices: None,
         }
+    }
+
+    /// Adds NVIDIA GPUs through NVML and accessory batteries through UPower.
+    pub fn with_device_services(mut self) -> Self {
+        self.devices = Some(DeviceServices::default());
+        self
     }
 
     fn read_sample(&self) -> RawSystemSample {
@@ -160,6 +225,7 @@ impl ProcSysMonitor {
             disk_usage: self.read_disk_usage(),
             disk_io: self.read_disk_io(),
             gpu: self.read_gpu(),
+            peripherals: self.read_peripherals(),
         }
     }
 
@@ -173,22 +239,58 @@ impl ProcSysMonitor {
         let Some(aggregate) = lines.next() else {
             return Metric::Unavailable(SourceIssue::new(source, "aggregate CPU line is missing"));
         };
-        let values = match parse_u64_fields(aggregate.split_whitespace().skip(1), source) {
-            Ok(values) if values.len() >= 4 => values,
-            _ => {
-                return Metric::Unavailable(SourceIssue::new(
-                    source,
-                    "aggregate CPU counters are malformed",
-                ));
-            }
+        let Some((total, idle)) = cpu_line_counters(aggregate, source) else {
+            return Metric::Unavailable(SourceIssue::new(
+                source,
+                "aggregate CPU counters are malformed",
+            ));
         };
-        let total = values.iter().copied().fold(0_u64, u64::saturating_add);
-        let idle = values[3].saturating_add(values.get(4).copied().unwrap_or(0));
+        let numbered = lines
+            .filter(|line| cpu_line_is_numbered(line))
+            .collect::<Vec<_>>();
+        let kinds = self.read_core_kinds();
+        let cores = numbered
+            .iter()
+            .take(MAX_CPU_CORES)
+            .filter_map(|line| {
+                let index = line
+                    .split_whitespace()
+                    .next()?
+                    .strip_prefix("cpu")?
+                    .parse()
+                    .ok()?;
+                let (total, idle) = cpu_line_counters(line, source)?;
+                Some(CoreCounters {
+                    index,
+                    total,
+                    idle,
+                    kind: kinds.get(&index).copied(),
+                })
+            })
+            .collect();
         Metric::Available(CpuCounters {
             total,
             idle,
-            logical_cpus: lines.filter(|line| cpu_line_is_numbered(line)).count(),
+            logical_cpus: numbered.len(),
+            cores,
         })
+    }
+
+    /// Hybrid processors list performance and efficiency CPUs separately.
+    fn read_core_kinds(&self) -> BTreeMap<u32, CoreKind> {
+        let mut kinds = BTreeMap::new();
+        for (device, kind) in [
+            ("cpu_core", CoreKind::Performance),
+            ("cpu_atom", CoreKind::Efficiency),
+        ] {
+            let path = self.sys_root.join("devices").join(device).join("cpus");
+            if let Some(list) = read_optional(&path) {
+                for index in parse_cpu_list(&list) {
+                    kinds.insert(index, kind);
+                }
+            }
+        }
+        kinds
     }
 
     fn read_memory(&self) -> Metric<MemoryCounters> {
@@ -356,6 +458,7 @@ impl ProcSysMonitor {
                         .and_then(|value| value.parse().ok()),
                     power_microwatts: read_optional(&path.join("power_now"))
                         .and_then(|value| value.parse().ok()),
+                    online: read_optional(&path.join("online")).map(|value| value != "0"),
                 })
             })
             .collect::<Vec<_>>();
@@ -468,7 +571,6 @@ impl ProcSysMonitor {
     fn read_gpu(&self) -> Metric<Vec<GpuReading>> {
         let source = "/sys/class/drm";
         let mut readings = Vec::new();
-        let mut any_busy = false;
         for card in sorted_entries(&self.sys_root.join("class/drm"))
             .into_iter()
             .filter(|path| path.is_dir())
@@ -485,28 +587,110 @@ impl ProcSysMonitor {
             let Some(device) = self.canonical_device_identity(&card) else {
                 continue;
             };
-            let busy_percent = read_optional(&card.join("device/gpu_busy_percent"))
+            // DRM cards of the proprietary NVIDIA driver have no busy attribute.
+            let Some(busy_percent) = read_optional(&card.join("device/gpu_busy_percent"))
                 .and_then(|value| value.parse::<u16>().ok())
-                .map(|value| {
-                    any_busy = true;
-                    value.min(100) as u8
-                });
+            else {
+                continue;
+            };
             readings.push(GpuReading {
                 device,
-                busy_percent,
+                busy_percent: Some(busy_percent.min(100) as u8),
                 label: card
                     .file_name()
                     .and_then(|name| name.to_str())
                     .map(str::to_owned),
+                memory_used_bytes: None,
+                memory_total_bytes: None,
             });
         }
-        if !any_busy {
-            Metric::Unavailable(SourceIssue::new(
+        let nvml = self.read_nvml();
+        let nvml_issue = match nvml {
+            Some(Ok(gpus)) => {
+                readings.extend(
+                    gpus.into_iter()
+                        .take(MAX_GPUS.saturating_sub(readings.len())),
+                );
+                None
+            }
+            Some(Err(unavailable)) => Some(unavailable),
+            None => None,
+        };
+        if !readings.is_empty() {
+            return Metric::Available(readings);
+        }
+        let reason = match nvml_issue {
+            Some(NvmlUnavailable::LibraryMissing) | None => {
+                "no GPU exposes gpu_busy_percent or NVML".to_owned()
+            }
+            Some(unavailable) => format!(
+                "no GPU exposes gpu_busy_percent; NVML: {}. {}",
+                unavailable.reason(),
+                unavailable.remediation()
+            ),
+        };
+        Metric::Unavailable(SourceIssue::new(source, reason))
+    }
+
+    /// NVIDIA GPUs, or `None` without device services.
+    fn read_nvml(&self) -> Option<Result<Vec<GpuReading>, NvmlUnavailable>> {
+        let devices = self.devices.as_ref()?;
+        let mut state = devices
+            .nvml
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.nvml.is_none() {
+            if let Some((failed_at, unavailable)) = &state.failure {
+                if failed_at.elapsed() < NVML_RETRY {
+                    return Some(Err(unavailable.clone()));
+                }
+            }
+            match Nvml::open() {
+                Ok(nvml) => {
+                    state.nvml = Some(nvml);
+                    state.failure = None;
+                }
+                Err(unavailable) => {
+                    state.failure = Some((Instant::now(), unavailable.clone()));
+                    return Some(Err(unavailable));
+                }
+            }
+        }
+        let nvml = state.nvml.as_ref()?;
+        Some(match nvml.sample() {
+            Ok(gpus) => Ok(gpus
+                .into_iter()
+                .map(|gpu| GpuReading {
+                    device: format!("nvml:{}", gpu.index),
+                    busy_percent: Some(gpu.utilization_percent),
+                    label: Some(gpu.name),
+                    memory_used_bytes: Some(gpu.memory_used_bytes),
+                    memory_total_bytes: Some(gpu.memory_total_bytes),
+                })
+                .collect()),
+            Err(unavailable) => {
+                // A driver reload invalidates the handle; reopen after the retry delay.
+                state.nvml = None;
+                state.failure = Some((Instant::now(), unavailable.clone()));
+                Err(unavailable)
+            }
+        })
+    }
+
+    fn read_peripherals(&self) -> Metric<Vec<PeripheralBattery>> {
+        let source = "UPower";
+        let Some(devices) = self.devices.as_ref() else {
+            return Metric::Unavailable(SourceIssue::new(
                 source,
-                "no GPU exposes gpu_busy_percent; NVIDIA requires an NVML adapter that is not registered yet",
-            ))
-        } else {
-            Metric::Available(readings)
+                "accessory batteries are not read by this source",
+            ));
+        };
+        match devices.upower.read() {
+            Ok(peripherals) => Metric::Available(peripherals),
+            Err(issue) => Metric::Unavailable(SourceIssue::new(
+                source,
+                format!("{}. {}", issue.reason, issue.remediation),
+            )),
         }
     }
 }
@@ -573,12 +757,19 @@ impl CapabilityProbe for ProcSysMonitor {
             sample.gpu.is_available().to_string(),
         ))
         .with_evidence(CapabilityEvidence::new(
+            "accessory_batteries",
+            match &sample.peripherals {
+                Metric::Available(peripherals) => peripherals.len().to_string(),
+                Metric::Unavailable(_) => "unavailable".to_owned(),
+            },
+        ))
+        .with_evidence(CapabilityEvidence::new(
             "per_process_metrics",
             "not_collected",
         ));
         if core_count < 3 || optional_count < 5 {
             report = report.with_remediation(
-                "Unavailable metrics stay visible; verify procfs/sysfs mounts and kernel hardware drivers. NVIDIA GPU readings need an NVML adapter, and per-process metrics are not collected.",
+                "Unavailable metrics stay visible; verify procfs/sysfs mounts and kernel hardware drivers. NVIDIA GPU readings need a working NVML driver, and per-process metrics are not collected.",
             );
         }
         report
@@ -645,6 +836,38 @@ fn cpu_line_is_numbered(line: &str) -> bool {
         .is_some_and(|suffix| {
             !suffix.is_empty() && suffix.chars().all(|char| char.is_ascii_digit())
         })
+}
+
+/// Total and idle (idle + iowait) jiffies of one `cpu` line.
+fn cpu_line_counters(line: &str, source: &str) -> Option<(u64, u64)> {
+    let values = parse_u64_fields(line.split_whitespace().skip(1), source).ok()?;
+    if values.len() < 4 {
+        return None;
+    }
+    let total = values.iter().copied().fold(0_u64, u64::saturating_add);
+    let idle = values[3].saturating_add(values.get(4).copied().unwrap_or(0));
+    Some((total, idle))
+}
+
+/// Expands a sysfs CPU list such as `0-3,8,10-11`; malformed parts are skipped.
+fn parse_cpu_list(list: &str) -> Vec<u32> {
+    let mut indices = Vec::new();
+    for part in list.trim().split(',') {
+        let range = match part.split_once('-') {
+            Some((start, end)) => start
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .zip(end.trim().parse().ok()),
+            None => part.trim().parse::<u32>().ok().map(|index| (index, index)),
+        };
+        if let Some((start, end)) = range {
+            for index in start..=end.min(start.saturating_add(MAX_CPU_CORES as u32)) {
+                indices.push(index);
+            }
+        }
+    }
+    indices
 }
 
 fn parse_memory_fields(text: &str) -> BTreeMap<String, u64> {
@@ -851,5 +1074,51 @@ mod tests {
         assert!(matches!(sample.disk_usage, Metric::Unavailable(_)));
         assert!(matches!(sample.disk_io, Metric::Unavailable(_)));
         assert!(matches!(sample.gpu, Metric::Unavailable(_)));
+    }
+
+    #[test]
+    fn hybrid_cores_carry_their_type_and_adapters_report_online() {
+        let (root, mut monitor) = fixture();
+        let sys = root.path().join("sys");
+        for (device, list) in [("cpu_core", "0\n"), ("cpu_atom", "1\n")] {
+            fs::create_dir_all(sys.join("devices").join(device)).expect("core type fixture");
+            fs::write(sys.join("devices").join(device).join("cpus"), list).expect("cpu list");
+        }
+        let adapter = sys.join("class/power_supply/ADP0");
+        fs::create_dir_all(&adapter).expect("adapter fixture");
+        fs::write(adapter.join("type"), "Mains\n").expect("adapter type");
+        fs::write(adapter.join("online"), "1\n").expect("adapter online");
+
+        let sample = monitor.sample();
+        let Metric::Available(cpu) = &sample.cpu else {
+            panic!("CPU counters are readable");
+        };
+        let cores = cpu
+            .cores
+            .iter()
+            .map(|core| (core.index, core.total, core.idle, core.kind))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cores,
+            [
+                (0, 49, 42, Some(super::CoreKind::Performance)),
+                (1, 51, 43, Some(super::CoreKind::Efficiency)),
+            ]
+        );
+        let Metric::Available(supplies) = &sample.power_supplies else {
+            panic!("power supplies are readable");
+        };
+        let adapter = supplies.iter().find(|supply| supply.name == "ADP0");
+        assert_eq!(adapter.and_then(|supply| supply.online), Some(true));
+    }
+
+    #[test]
+    fn cpu_lists_expand_ranges_and_skip_malformed_parts() {
+        assert_eq!(
+            super::parse_cpu_list("0-3,8,10-11\n"),
+            [0, 1, 2, 3, 8, 10, 11]
+        );
+        assert_eq!(super::parse_cpu_list("4,x,6-"), [4]);
+        assert!(super::parse_cpu_list("").is_empty());
     }
 }

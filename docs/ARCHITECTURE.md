@@ -263,6 +263,18 @@ an unavailable capability rather than probing process identity or command
 lines, so snapshots, history, and diagnostics carry only system-level,
 non-identifying measurements.
 
+Two device services extend the procfs/sysfs source. NVML is loaded at runtime
+through `dlopen`, so the binary links without NVIDIA software; a failed load is
+cached and retried at most every 30 seconds, and its typed reason becomes the
+GPU family's source issue. UPower is read over one cached system-bus
+connection; only device kind, model, percentage, and charge state leave the
+adapter, under a hash of the native path. Network totals accumulate in the
+service from counter deltas on non-loopback interfaces, and a counter that
+goes backwards counts as restarted. Local addresses are read through
+`getifaddrs` only on an explicit window request and live only in the runtime
+until hidden. Tray readouts are formatted from the same monitor view model and
+published from the tick worker; the tray thread receives only changed values.
+
 ### 5.6 Audio mixer policy and device-loss handling
 
 `audio.mixer` follows the same layering as monitoring. `kestrel-core` owns the

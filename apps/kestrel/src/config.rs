@@ -473,6 +473,47 @@ fn parse_monitoring(loaded: &mut LoadedConfiguration, value: Option<&toml::Value
         }
     }
 
+    if let Some(unit) = monitoring.get("network_rate_unit") {
+        match kestrel_core::NetworkRateUnit::deserialize(unit.clone()) {
+            Ok(unit) => loaded.configuration.monitoring.network_rate_unit = unit,
+            Err(_) => loaded.warnings.push(warning(
+                "monitoring.network_rate_unit",
+                "Network rate unit must be \"bytes\" or \"bits\"; the default was retained.",
+            )),
+        }
+    }
+
+    if let Some(per_core) = monitoring.get("per_core_cpu") {
+        match per_core.as_bool() {
+            Some(per_core) => loaded.configuration.monitoring.per_core_cpu = per_core,
+            None => loaded.warnings.push(warning(
+                "monitoring.per_core_cpu",
+                "Must be true or false; the default was retained.",
+            )),
+        }
+    }
+
+    if let Some(tray) = monitoring.get("tray_readouts") {
+        match Vec::<MonitorReadout>::deserialize(tray.clone()) {
+            Ok(readouts)
+                if readouts.len() <= kestrel_core::MAX_TRAY_READOUTS
+                    && readouts
+                        .iter()
+                        .enumerate()
+                        .all(|(index, readout)| !readouts[..index].contains(readout)) =>
+            {
+                loaded.configuration.monitoring.tray_readouts = readouts;
+            }
+            _ => loaded.warnings.push(warning(
+                "monitoring.tray_readouts",
+                format!(
+                    "Tray readouts must be at most {} different readouts; none are shown.",
+                    kestrel_core::MAX_TRAY_READOUTS
+                ),
+            )),
+        }
+    }
+
     if let Some(readouts) = monitoring.get("readouts") {
         let Some(entries) = readouts.as_array() else {
             loaded.warnings.push(warning(
@@ -1678,6 +1719,67 @@ sustain_samples = "bad"
                     .warnings
                     .iter()
                     .any(|warning| warning.feature_id == location)
+            );
+        }
+    }
+
+    #[test]
+    fn monitoring_depth_fields_parse_and_fail_independently() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[monitoring]
+network_rate_unit = "bits"
+per_core_cpu = true
+tray_readouts = ["cpu", "battery"]
+"#,
+        )
+        .expect("document itself is valid TOML");
+        let monitoring = &loaded.configuration.monitoring;
+        assert_eq!(
+            monitoring.network_rate_unit,
+            kestrel_core::NetworkRateUnit::Bits
+        );
+        assert!(monitoring.per_core_cpu);
+        assert_eq!(
+            monitoring.tray_readouts,
+            [MonitorReadout::Cpu, MonitorReadout::Battery]
+        );
+        assert!(loaded.warnings.is_empty());
+
+        let loaded = parse(
+            r#"
+schema_version = 3
+[monitoring]
+refresh_interval_millis = 2000
+network_rate_unit = "nibbles"
+per_core_cpu = "yes"
+tray_readouts = ["cpu", "memory", "swap", "disk"]
+"#,
+        )
+        .expect("document itself is valid TOML");
+        let monitoring = &loaded.configuration.monitoring;
+        assert_eq!(
+            monitoring.refresh_interval_millis, 2000,
+            "valid keys still apply"
+        );
+        assert_eq!(
+            monitoring.network_rate_unit,
+            kestrel_core::NetworkRateUnit::Bytes
+        );
+        assert!(!monitoring.per_core_cpu);
+        assert!(monitoring.tray_readouts.is_empty());
+        for location in [
+            "monitoring.network_rate_unit",
+            "monitoring.per_core_cpu",
+            "monitoring.tray_readouts",
+        ] {
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == location),
+                "{location} must report an isolated warning"
             );
         }
     }

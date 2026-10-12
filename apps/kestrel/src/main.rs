@@ -294,6 +294,7 @@ impl ControllerState {
 fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
+    tray: Option<&kestrel::TrayReadoutSink>,
     observed_at: Duration,
     audio_due: bool,
     listeners_due: bool,
@@ -390,6 +391,17 @@ fn run_tick(
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
+    if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
+        tray.publish(
+            monitor
+                .tray_summary
+                .clone()
+                .map(|summary| kestrel::TrayReadouts {
+                    summary,
+                    meter_percent: monitor.tray_meter_percent,
+                }),
+        );
+    }
     let clipboard = clipboard_tick_update(state);
     TickUpdate {
         monitor,
@@ -477,6 +489,8 @@ enum TargetedPanel {
     Clipboard,
     Snippets,
     Commands,
+    /// Address requests keep the monitoring scroll position.
+    Monitor,
     /// Keeps mute updates from resetting scroll.
     Microphone,
     /// Mixer and microphone panels after preference edits.
@@ -557,6 +571,8 @@ enum ControllerOperation {
         readout: MonitorReadout,
         visible: bool,
     },
+    SetMonitorSetting(kestrel::MonitorSetting),
+    ShowLocalAddresses(bool),
     MoveMonitorReadout {
         readout: MonitorReadout,
         direction: PanelMoveDirection,
@@ -615,6 +631,7 @@ struct ControllerContext {
     tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
+    tray: Option<kestrel::TrayReadoutSink>,
 }
 
 struct ApplicationController {
@@ -650,6 +667,7 @@ struct ApplicationController {
     /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
+    tray: Option<kestrel::TrayReadoutSink>,
     refresh_results: Sender<RefreshResult>,
     tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
@@ -667,6 +685,7 @@ impl ApplicationController {
             tick_results,
             commands,
             notifier,
+            tray,
         } = context;
         let monitor_running = runtime.monitor_is_running();
         let clipboard_running = runtime.clipboard_is_running();
@@ -734,6 +753,7 @@ impl ApplicationController {
             audio_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
+            tray,
             refresh_results,
             tick_results,
             commands,
@@ -1037,6 +1057,7 @@ impl ApplicationController {
         }
         let state = Arc::clone(&self.state);
         let notifier = Arc::clone(&self.notifier);
+        let tray = self.tray.clone();
         let results = self.tick_results.clone();
         let observed_at = self.monitor_started_at.elapsed();
         let worker = thread::Builder::new()
@@ -1045,6 +1066,7 @@ impl ApplicationController {
                 let update = run_tick(
                     &state,
                     notifier.as_ref(),
+                    tray.as_ref(),
                     observed_at,
                     audio_due,
                     listeners_due,
@@ -1640,6 +1662,24 @@ impl ControllerState {
                         if visible { "shown" } else { "hidden" }
                     ),
                 )?
+            }
+            ControllerOperation::SetMonitorSetting(setting) => {
+                let mut candidate = self.configuration.clone();
+                if !setting.apply(&mut candidate.monitoring) {
+                    return Ok((
+                        self.view_model(),
+                        "Monitoring settings unchanged".to_owned(),
+                    ));
+                }
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    "Monitoring settings updated".to_owned(),
+                )?
+            }
+            ControllerOperation::ShowLocalAddresses(shown) => {
+                self.runtime.set_local_addresses_shown(shown);
+                String::new()
             }
             ControllerOperation::MoveMonitorReadout { readout, direction } => {
                 let mut candidate = self.configuration.clone();
@@ -2407,6 +2447,7 @@ fn apply_targeted_panel(
         TargetedPanel::Clipboard => view.set_clipboard(&view_model.clipboard),
         TargetedPanel::Snippets => view.set_snippets(&view_model.snippets),
         TargetedPanel::Commands => view.set_command_bar(&view_model.command_bar),
+        TargetedPanel::Monitor => view.set_monitor(&view_model.monitor),
         TargetedPanel::Microphone => view.set_microphone(&view_model.microphone),
         TargetedPanel::Audio => {
             view.set_audio(&view_model.audio);
@@ -2575,6 +2616,7 @@ fn main() -> glib::ExitCode {
             tick_results,
             commands: commands.clone(),
             notifier,
+            tray: status_notifier.readout_sink(),
         },
     );
     let command_line_commands = commands.clone();
@@ -2742,6 +2784,16 @@ fn dispatch_commands(
                     .request_operation(
                         ControllerOperation::SetMonitorReadoutVisible { readout, visible },
                         "kestrel-monitor-readout-visibility",
+                    ),
+                ApplicationCommand::SetMonitorSetting(setting) => controller.request_operation(
+                    ControllerOperation::SetMonitorSetting(setting),
+                    "kestrel-monitor-setting",
+                ),
+                ApplicationCommand::ShowLocalAddresses(shown) => controller
+                    .request_targeted_operation(
+                        ControllerOperation::ShowLocalAddresses(shown),
+                        "kestrel-local-addresses",
+                        TargetedPanel::Monitor,
                     ),
                 ApplicationCommand::MoveMonitorReadout { readout, direction } => controller
                     .request_operation(
@@ -3140,6 +3192,7 @@ mod tests {
                     tick_results,
                     commands,
                     notifier: Arc::new(SilentNotifier),
+                    tray: None,
                 },
             )
         }

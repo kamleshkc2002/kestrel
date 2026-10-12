@@ -148,7 +148,31 @@ pub(super) fn add_monitoring_readouts_group(
                 direction: PanelMoveDirection::Down,
             });
         });
+        let tray = gtk::ToggleButton::with_label("Tray");
+        tray.set_active(setting.in_tray);
+        tray.set_sensitive(setting.can_toggle_tray);
+        tray.set_valign(Align::Center);
+        let tray_label = format!("Show {} in the tray title and tooltip", setting.label);
+        tray.update_property(&[Property::Label(&tray_label)]);
+        tray.set_tooltip_text(Some(&if setting.can_toggle_tray {
+            tray_label.clone()
+        } else {
+            format!(
+                "The tray shows at most {} readouts",
+                kestrel_core::MAX_TRAY_READOUTS
+            )
+        }));
+        let sender = commands.clone();
+        tray.connect_toggled(move |button| {
+            let _ = sender.try_send(ApplicationCommand::SetMonitorSetting(
+                kestrel::MonitorSetting::TrayReadout {
+                    readout,
+                    shown: button.is_active(),
+                },
+            ));
+        });
         controls.append(&visibility);
+        controls.append(&tray);
         controls.append(&up);
         controls.append(&down);
         row.add_suffix(&controls);
@@ -160,9 +184,60 @@ pub(super) fn add_monitoring_readouts_group(
         readout_group.add(&row);
         filter_rows.push((
             row.clone().upcast(),
-            format!("monitoring readouts {} order visibility", setting.label),
+            format!(
+                "monitoring readouts {} order visibility tray",
+                setting.label
+            ),
         ));
     }
+
+    let units = [
+        kestrel::NetworkRateUnit::Bytes,
+        kestrel::NetworkRateUnit::Bits,
+    ];
+    let unit_row = adw::ComboRow::builder()
+        .title("Network rate unit")
+        .subtitle("Bytes use KiB/s; bits use kbit/s and Mbit/s.")
+        .model(&gtk::StringList::new(
+            &units.iter().map(|unit| unit.label()).collect::<Vec<_>>(),
+        ))
+        .selected(
+            units
+                .iter()
+                .position(|unit| *unit == view_model.monitor.network_rate_unit)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let sender = commands.clone();
+    unit_row.connect_selected_notify(move |row| {
+        if let Some(unit) = units.get(row.selected() as usize) {
+            let _ = sender.try_send(ApplicationCommand::SetMonitorSetting(
+                kestrel::MonitorSetting::NetworkRateUnit(*unit),
+            ));
+        }
+    });
+    readout_group.add(&unit_row);
+    filter_rows.push((
+        unit_row.clone().upcast(),
+        "network rate unit bits bytes".to_owned(),
+    ));
+
+    let per_core = adw::SwitchRow::builder()
+        .title("Per-core CPU load")
+        .subtitle("List each logical CPU under the CPU readout, grouped by core type.")
+        .active(view_model.monitor.per_core_cpu)
+        .build();
+    let sender = commands.clone();
+    per_core.connect_active_notify(move |row| {
+        let _ = sender.try_send(ApplicationCommand::SetMonitorSetting(
+            kestrel::MonitorSetting::PerCoreCpu(row.is_active()),
+        ));
+    });
+    readout_group.add(&per_core);
+    filter_rows.push((
+        per_core.clone().upcast(),
+        "per core cpu load cores".to_owned(),
+    ));
     group.add(&readout_group);
 }
 

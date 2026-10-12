@@ -21,7 +21,7 @@ pub use config::{
 };
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, CloseAction,
-    MonitorReadout, PanelSection,
+    MonitorReadout, NetworkRateUnit, PanelSection,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -45,22 +45,24 @@ pub use snippets::{
     CURRENT_SNIPPET_SCHEMA_VERSION, LoadedSnippets, SnippetFile, SnippetStoreError, load_snippets,
     save_snippets, snippet_path,
 };
-pub use status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration};
+pub use status_notifier::{
+    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayReadoutSink, TrayReadouts,
+};
 pub use view_model::{
-    ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
-    AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
-    CameraChoiceViewModel, CameraViewModel, CapabilityKindViewModel, CapabilityStatusViewModel,
-    CapabilityViewModel, CaptureEntryViewModel, CaptureModeViewModel, CaptureStreamViewModel,
-    CaptureViewModel, ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
-    ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
-    CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
-    ConfigurationWarningViewModel, ConfirmationViewModel, DevicePriorityViewModel,
-    FeatureLifecycleViewModel, FeatureViewModel, ListenerRowViewModel, ListenersViewModel,
-    MicrophoneInputViewModel, MicrophoneViewModel, MonitorReadoutSettingViewModel,
-    MonitorReadoutViewModel, MonitorViewModel, PanelSectionViewModel, PriorityDeviceViewModel,
-    ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel, QrRowViewModel,
-    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
-    RecordingControls, RecordingExportViewModel, RecordingTakeViewModel,
+    AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
+    ApplicationViewModel, AudioOutputGroupViewModel, AudioOutputViewModel, AudioPolicyViewModel,
+    AudioStreamViewModel, AudioViewModel, CameraChoiceViewModel, CameraViewModel,
+    CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel, CaptureEntryViewModel,
+    CaptureModeViewModel, CaptureStreamViewModel, CaptureViewModel, ClipboardBoundsViewModel,
+    ClipboardItemViewModel, ClipboardPolicyViewModel, ClipboardPreviewViewModel,
+    ClipboardViewModel, CommandBarViewModel, CommandProvider, CommandProviderViewModel,
+    CommandRankingViewModel, CommandResultViewModel, ConfigurationWarningViewModel,
+    ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureLifecycleViewModel,
+    FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
+    MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    PanelSectionViewModel, PriorityDeviceViewModel, ProcessActionViewModel, ProcessRowViewModel,
+    ProcessesViewModel, QrRowViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
+    QuickToggleViewModel, RecordingControls, RecordingExportViewModel, RecordingTakeViewModel,
     RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel,
     RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
     ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
@@ -219,6 +221,44 @@ pub enum ClipboardLimit {
 pub enum PanelMoveDirection {
     Up,
     Down,
+}
+
+/// A monitoring preference edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorSetting {
+    NetworkRateUnit(NetworkRateUnit),
+    PerCoreCpu(bool),
+    TrayReadout {
+        readout: MonitorReadout,
+        shown: bool,
+    },
+}
+
+impl MonitorSetting {
+    /// Applies the edit within bounds; false when nothing changed.
+    pub fn apply(self, monitoring: &mut kestrel_core::MonitorConfiguration) -> bool {
+        match self {
+            Self::NetworkRateUnit(unit) => {
+                unit != std::mem::replace(&mut monitoring.network_rate_unit, unit)
+            }
+            Self::PerCoreCpu(enabled) => {
+                enabled != std::mem::replace(&mut monitoring.per_core_cpu, enabled)
+            }
+            Self::TrayReadout { readout, shown } => {
+                let tray = &mut monitoring.tray_readouts;
+                let present = tray.contains(&readout);
+                if shown && !present && tray.len() < kestrel_core::MAX_TRAY_READOUTS {
+                    tray.push(readout);
+                    true
+                } else if !shown && present {
+                    tray.retain(|entry| *entry != readout);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
 }
 
 /// The server side a device ranking applies to.
@@ -418,6 +458,10 @@ pub enum ApplicationCommand {
         readout: MonitorReadout,
         visible: bool,
     },
+    /// Monitoring units, per-core load, and tray readouts.
+    SetMonitorSetting(MonitorSetting),
+    /// Reads local addresses into the monitoring panel, or hides them.
+    ShowLocalAddresses(bool),
     MoveMonitorReadout {
         readout: MonitorReadout,
         direction: PanelMoveDirection,
@@ -549,6 +593,31 @@ mod tests {
             .apply(&mut audio)
         );
         assert_eq!(audio.output_priority, ["speakers"]);
+    }
+
+    #[test]
+    fn tray_readouts_stop_at_the_limit_and_report_no_ops() {
+        use super::{MonitorReadout, MonitorSetting};
+        let mut monitoring = kestrel_core::MonitorConfiguration::default();
+        let tray = |readout, shown| MonitorSetting::TrayReadout { readout, shown };
+        assert!(tray(MonitorReadout::Cpu, true).apply(&mut monitoring));
+        assert!(
+            !tray(MonitorReadout::Cpu, true).apply(&mut monitoring),
+            "already shown"
+        );
+        assert!(tray(MonitorReadout::Memory, true).apply(&mut monitoring));
+        assert!(tray(MonitorReadout::Battery, true).apply(&mut monitoring));
+        assert!(
+            !tray(MonitorReadout::Gpu, true).apply(&mut monitoring),
+            "tray is full"
+        );
+        assert!(tray(MonitorReadout::Memory, false).apply(&mut monitoring));
+        assert_eq!(
+            monitoring.tray_readouts,
+            [MonitorReadout::Cpu, MonitorReadout::Battery]
+        );
+        assert!(!MonitorSetting::PerCoreCpu(false).apply(&mut monitoring));
+        assert!(MonitorSetting::PerCoreCpu(true).apply(&mut monitoring));
     }
 
     #[test]
