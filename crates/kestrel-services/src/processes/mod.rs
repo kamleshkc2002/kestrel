@@ -13,7 +13,6 @@ use kestrel_platform::processes::{
     ProcessSignaller, ProcessSource, RestartTarget,
 };
 
-/// Polling cadence for the process inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProcessPolicy {
     pub refresh: Duration,
@@ -69,7 +68,6 @@ struct InventoryState {
     running: bool,
 }
 
-/// Background process sampler.
 pub struct ProcessInventoryService {
     shared: Arc<InventoryShared>,
     worker: Option<JoinHandle<()>>,
@@ -102,7 +100,7 @@ impl ProcessInventoryService {
         }
     }
 
-    /// Starts sampling. A running service ignores a second start request.
+    /// Starts sampling; repeated starts are ignored.
     pub fn start<S: ProcessSource + 'static>(&mut self, source: S) {
         self.reap_finished();
         if self.worker.is_some() {
@@ -301,8 +299,7 @@ fn same_content(left: &ProcessSnapshot, right: &ProcessSnapshot) -> bool {
         && left.stale == right.stale
 }
 
-/// Case-insensitive search over every scanned row, keeping at most `limit`
-/// matches in CPU order.
+/// Case-insensitive search, limited to `limit` CPU-ordered matches.
 pub fn search<'a>(rows: &'a [ProcessRow], query: &str, limit: usize) -> Vec<&'a ProcessRow> {
     let query = query.chars().take(128).collect::<String>().to_lowercase();
     rows.iter()
@@ -473,7 +470,7 @@ pub fn restart(
     if !unique.contains(&identity) {
         unique.push(identity);
     }
-    // Every member gets SIGTERM first, then all share one stop deadline.
+    // SIGTERM all members before one shared deadline.
     let deadline = Instant::now()
         .checked_add(stop_timeout)
         .unwrap_or_else(Instant::now);
@@ -535,12 +532,11 @@ pub fn restart(
     }
 }
 
-/// How long a SIGKILL is given to take effect.
+/// SIGKILL wait bound.
 const KILL_WAIT: Duration = Duration::from_secs(1);
-/// Bound for launching the desktop entry again.
+/// Relaunch timeout bound.
 const RELAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Waits for each process until `deadline`; returns those still running.
 fn wait_all(
     signaller: &dyn ProcessSignaller,
     members: Vec<ProcessIdentity>,
@@ -641,12 +637,12 @@ impl ListenerService {
         self.snapshot.clone()
     }
 
-    /// Changes whenever the listener list or error changes.
+    /// Increments when listeners or the error changes.
     pub fn generation(&self) -> u64 {
         self.snapshot.generation
     }
 
-    /// Drops retained listeners; the generation still advances.
+    /// Clearing listeners also advances generation.
     pub fn clear(&mut self) {
         if self.snapshot.listeners.is_empty() && self.snapshot.error.is_none() {
             return;
@@ -1027,7 +1023,6 @@ mod tests {
                 .expect("row")
                 .cpu_percent
         };
-        // 20 of 100 ticks across 2 CPUs.
         assert_eq!(cpu(10), Some(40.0));
         assert_eq!(cpu(20), None, "a counter that went backwards has no rate");
         assert_eq!(cpu(30), None, "a reused PID starts over");
@@ -1052,7 +1047,6 @@ mod tests {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(2));
         }
-        // The second tick establishes the rate baseline; later ticks repeat it.
         thread::sleep(Duration::from_millis(30));
         let settled = service.snapshot().generation;
         thread::sleep(Duration::from_millis(50));

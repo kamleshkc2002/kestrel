@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Runs the production clipboard lifecycle integration test against fresh,
-# no-manager X11 (private Xvfb) and Wayland (headless Sway) sessions. The test
-# uses a generated marker; no clipboard content is printed or saved.
+# Run the clipboard lifecycle integration test in fresh no-manager X11
+# (private Xvfb) and headless Sway sessions. Clipboard content is never printed
+# or saved; the test uses a generated marker.
 #
-# Missing Xvfb or Sway skips the run; KESTREL_REQUIRE_CLEAN_SESSION=1 makes a
-# missing dependency fatal.
+# Missing Xvfb or Sway skips the run; KESTREL_REQUIRE_CLEAN_SESSION=1 makes it fatal.
 
 set -euo pipefail
 
@@ -50,11 +49,10 @@ run_lifecycle_test() {
     production_backend_reowns_and_releases_a_clean_session_selection
 }
 
-# 600 polls of 0.05 s: a cold CI runner can take several seconds to start a
-# server (keymap compilation, first-run caches).
+# 600 polls of 0.05 s allow cold CI startup (keymap compilation, first-run caches).
 readiness_polls=600
 
-# Server logs carry no clipboard data; their tail explains a startup failure.
+# Server logs contain no clipboard data; their tail explains startup failures.
 fail_with_log() {
   local message="$1"
   local log="$2"
@@ -63,10 +61,8 @@ fail_with_log() {
   return 1
 }
 
-# Xvfb picks a free display itself (-displayfd) and reports it once its socket
-# is listening, so the test never attaches to another X server. Xvfb writes
-# "<number>\n" in one write; read keeps an unterminated line too, so a missing
-# newline cannot stall the wait.
+# Xvfb chooses a free display and reports it once listening. read accepts an
+# unterminated line, so a missing newline cannot stall the wait.
 wait_for_x11() {
   local display_file="$1"
   local display_number
@@ -105,9 +101,8 @@ wait_for_wayland() {
 
 x11_display_file="$artifacts_dir/x11-display"
 : >"$x11_display_file"
-# -noreset keeps the server up between clients: a reset after provider
-# discovery races the backend's connection, and selection release must come
-# from the owner exiting.
+# -noreset keeps the server between clients: reset races provider discovery, and
+# selection release must come from the owner exiting.
 Xvfb -displayfd 3 -noreset -screen 0 640x480x24 -nolisten tcp \
   3>"$x11_display_file" >"$artifacts_dir/xvfb.log" 2>&1 &
 xvfb_pid="$!"

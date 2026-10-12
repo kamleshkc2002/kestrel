@@ -128,9 +128,8 @@ pub struct AudioSwitchOutcome {
     pub reason: AudioSwitchReason,
 }
 
-/// Ranked device names. While followed, the highest-ranked connected device
-/// becomes the default whenever devices arrive or leave, or the ranking
-/// changes; a manual choice stands until then.
+/// While followed, the highest-ranked connected device becomes default when
+/// devices or the ranking change; a manual choice stands until then.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DevicePriority {
     pub ranked: Vec<String>,
@@ -138,7 +137,6 @@ pub struct DevicePriority {
 }
 
 impl DevicePriority {
-    /// The highest-ranked device present in `devices`.
     pub fn preferred<'a, T>(&self, devices: &'a [T], name: impl Fn(&T) -> &str) -> Option<&'a T> {
         self.ranked
             .iter()
@@ -146,7 +144,6 @@ impl DevicePriority {
     }
 }
 
-/// Whether the set of device names differs between two discoveries.
 pub(crate) fn device_set_changed<'a>(
     previous: Option<impl Iterator<Item = &'a str>>,
     current: impl Iterator<Item = &'a str>,
@@ -343,8 +340,7 @@ impl<B: AudioBackend> AudioMixerService<B> {
         Ok(())
     }
 
-    /// Replaces the output ranking; a changed, followed ranking applies on
-    /// the next refresh.
+    /// Applies a changed ranking on the next refresh when following.
     pub fn set_priority(&mut self, priority: DevicePriority) {
         if priority != self.priority {
             self.priority_pending = priority.follow;
@@ -352,7 +348,7 @@ impl<B: AudioBackend> AudioMixerService<B> {
         }
     }
 
-    /// Replaces the pinned applications, listed first in this order.
+    /// Lists pinned applications first.
     pub fn set_favorites(&mut self, favorites: Vec<String>) {
         self.favorites = favorites;
         if let Some(discovery) = self.discovered.as_ref() {

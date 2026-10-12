@@ -21,7 +21,6 @@ pub use history::{
 pub use image::{Color, EditOperation, EditPlan, ImageError, Rect, RgbaImage};
 use image::{apply, decode_png, encode_png};
 
-/// Rejected capture command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureCommandError {
     NotStarted,
@@ -43,7 +42,6 @@ impl std::fmt::Display for CaptureCommandError {
 
 impl std::error::Error for CaptureCommandError {}
 
-/// Failure saving an edited copy of a capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureEditError {
     UnknownCapture,
@@ -65,7 +63,6 @@ impl std::fmt::Display for CaptureEditError {
 
 impl std::error::Error for CaptureEditError {}
 
-/// Progress of the most recent capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapturePhase {
     Idle,
@@ -83,7 +80,7 @@ pub enum CapturePhase {
     },
 }
 
-/// Owned service state for presentation; `generation` increases on every change.
+/// Presentation state; `generation` increases on every change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureSnapshot {
     pub phase: CapturePhase,
@@ -133,7 +130,6 @@ pub struct CaptureService {
 }
 
 impl CaptureService {
-    /// A stopped service storing captures in `directory`.
     pub fn new(policy: CapturePolicy, directory: PathBuf) -> Self {
         Self {
             policy,
@@ -149,12 +145,11 @@ impl CaptureService {
         }
     }
 
-    /// Whether `start` was called without a later `stop`.
     pub fn is_started(&self) -> bool {
         self.started
     }
 
-    /// Opens the history; a storage failure is published in `storage_error`.
+    /// Opens history and publishes storage failures in `storage_error`.
     pub fn start(&mut self) -> Result<(), HistoryError> {
         self.started = true;
         if self.history.is_some() {
@@ -179,7 +174,7 @@ impl CaptureService {
         Ok(())
     }
 
-    /// Cancels and joins any capture, then releases the history.
+    /// Cancels and joins capture, then releases history.
     pub fn stop(&mut self) {
         self.started = false;
         if let Some(worker) = self.worker.take() {
@@ -193,7 +188,7 @@ impl CaptureService {
         }
     }
 
-    /// Starts `backend` capturing `mode` on a worker thread.
+    /// Starts `backend` capturing `mode` on a worker.
     pub fn begin(
         &mut self,
         backend: Box<dyn CaptureBackend>,
@@ -229,7 +224,6 @@ impl CaptureService {
         Ok(())
     }
 
-    /// Aborts the in-flight capture, if any.
     pub fn cancel(&self) {
         if let Some(worker) = &self.worker {
             worker.cancel.cancel();
@@ -264,7 +258,6 @@ impl CaptureService {
         }
     }
 
-    /// Removes one capture.
     pub fn delete(&mut self, id: CaptureId) {
         self.reap();
         if let Some(history) = &self.history {
@@ -275,7 +268,6 @@ impl CaptureService {
         }
     }
 
-    /// Removes every capture.
     pub fn clear(&mut self) -> Result<(), HistoryError> {
         self.reap();
         let Some(history) = &self.history else {
@@ -289,7 +281,6 @@ impl CaptureService {
         result
     }
 
-    /// The stored PNG bytes of `id`.
     pub fn read_png(&self, id: CaptureId) -> Result<Vec<u8>, HistoryError> {
         self.locked_history()?.read(id)
     }
@@ -304,7 +295,7 @@ impl CaptureService {
         self.locked_history()?.export(id, destination)
     }
 
-    /// Applies `plan` to `id` and stores the result as a new edited capture.
+    /// Applies `plan` to `id` and stores a new edited capture.
     pub fn save_edit(
         &mut self,
         id: CaptureId,
@@ -392,7 +383,7 @@ impl Drop for CaptureService {
     }
 }
 
-/// Worker body: captures, then stores the image unless cancelled.
+/// Captures and stores unless cancelled.
 fn run_capture(
     backend: &dyn CaptureBackend,
     mode: CaptureMode,
@@ -512,7 +503,6 @@ mod tests {
         CapturedImage { png, width, height }
     }
 
-    /// Returns a fixed image at once.
     struct ImageBackend(CapturedImage);
 
     impl CaptureBackend for ImageBackend {
@@ -533,7 +523,6 @@ mod tests {
         }
     }
 
-    /// Fails at once with a fixed kind.
     struct FailingBackend(CaptureErrorKind);
 
     impl CaptureBackend for FailingBackend {
@@ -718,7 +707,6 @@ mod tests {
         assert!(snapshot.entries.is_empty());
         assert_eq!(png_files(&capture_dir(&root)), 0);
 
-        // The finished worker is reaped and a new capture may begin.
         capture_once(&mut service, captured_image(2, 2));
         service.stop();
     }

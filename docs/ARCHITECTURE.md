@@ -7,16 +7,16 @@ Date: 2026-08-24
 
 This document turns the product requirements into an implementable initial
 architecture. It defines stable boundaries and contracts for the Kestrel MVP; it
-does not select unvalidated Phase 0 dependencies or promise feature support that
-has not been tested on a target desktop.
+does not select unvalidated Phase 0 dependencies or promise untested feature
+support on a target desktop.
 
 Kestrel is a local-first, human-facing utility host. It works alongside an
-existing Linux desktop rather than replacing its shell, panel, launcher,
+existing Linux desktop without replacing its shell, panel, launcher,
 notification daemon, or compositor configuration.
 
-The architecture must make a feature's actual availability visible. A feature
-may be enabled in configuration while being limited by a missing portal,
-dependency, permission, device, package mode, or compositor interface.
+The architecture must expose actual availability. A feature may be enabled in
+configuration while limited by a missing portal, dependency, permission,
+device, package mode, or compositor interface.
 
 ## 2. Goals and non-goals
 
@@ -29,10 +29,8 @@ dependency, permission, device, package mode, or compositor interface.
   desktop name or `XDG_SESSION_TYPE` alone.
 - Let each feature own its state, lifecycle, privacy policy, and platform
   adapters.
-- Preserve a future path to separate the persistent session services from the
-  UI through a versioned D-Bus API.
-- Keep the initial core small enough to validate tray, monitoring, audio,
-  clipboard, capture, and shortcut assumptions in Phase 0.
+- Preserve a future path to separate persistent session services from the UI through a versioned D-Bus API.
+- Keep the initial core small enough to validate tray, monitoring, audio, clipboard, capture, and shortcut assumptions in Phase 0.
 
 ### Non-goals
 
@@ -46,9 +44,8 @@ dependency, permission, device, package mode, or compositor interface.
 
 ## 3. Deployment model
 
-The MVP is one user-session process. It keeps four internal layers separate so
-that the UI can later move into a different process without rewriting feature
-logic.
+The MVP is one user-session process. Four internal layers stay separate so the
+UI can later move to another process without rewriting feature logic.
 
 ```mermaid
 flowchart TB
@@ -78,9 +75,9 @@ flowchart TB
 ### 3.2 Future extraction seam
 
 The first process boundary is between the UI/application client and a
-`kestrel-session` service. The internal service API must therefore avoid direct
-GTK ownership, raw pointers, or process-local callback types. Extraction is
-allowed only after Phase 0 or MVP evidence shows a concrete need, such as:
+`kestrel-session` service. Its internal API must avoid direct GTK ownership,
+raw pointers, and process-local callback types. Extraction is allowed only after
+Phase 0 or MVP evidence shows a concrete need, such as:
 
 - persistent clipboard ownership surviving UI restarts;
 - crash isolation between a UI and a long-running service;
@@ -92,9 +89,9 @@ state, command, and error payloads. It is not introduced preemptively.
 
 ## 4. Workspace boundaries
 
-The current workspace remains intentionally small. Production adapters were
-adopted after Phase 0 validated their APIs and dependency costs; the evidence is
-recorded in closed issues #2–#8. New crates require the same evidence.
+The current workspace remains intentionally small. Production adapters followed
+Phase 0 validation of their APIs and dependency costs; evidence is recorded in
+closed issues #2–#8. New crates require the same evidence.
 
 ```text
 apps/
@@ -121,7 +118,7 @@ commands, or a specific async runtime.
 
 ### 4.2 `kestrel-platform`
 
-This future crate owns adapters that communicate with the session and OS:
+This crate owns future adapters that communicate with the session and OS:
 
 - `/proc`, `/sys`, UPower, NetworkManager, BlueZ, and systemd user-session
   services;
@@ -138,7 +135,7 @@ or construct GTK widgets.
 This future crate owns feature orchestration. A service combines one or more
 platform adapters, produces immutable state snapshots, applies feature-specific
 privacy policy, and handles typed commands. It does not import GTK types or
-decide which UI surface presents a state.
+choose the UI surface for a state.
 
 ### 4.4 `apps/kestrel`
 
@@ -155,25 +152,24 @@ The application crate is the composition root:
 ### 5.1 Identifiers and registry
 
 Every feature has a stable, namespaced identifier such as `audio.mixer`,
-`clipboard.history`, or `capture.screenshot`. IDs are persisted in
-configuration, referenced by diagnostics, and never derived from localized
-labels.
+`clipboard.history`, or `capture.screenshot`. IDs persist in configuration,
+appear in diagnostics, and are never derived from localized labels.
 
-The registry is the source of truth for known features and their configuration
-policy. It separates:
+The registry is the source of truth for known features and configuration policy.
+It separates:
 
 1. **Registered** — Kestrel knows the feature.
 2. **Enabled** — the user has opted into the feature.
 3. **Available** — the current session can execute it.
 4. **Running** — its service is currently active.
 
-An enabled feature can be unavailable or stopped; availability must not be
-represented as a boolean enablement flag.
+An enabled feature can be unavailable or stopped; availability is not a boolean
+enablement flag.
 
 ### 5.2 Capability report
 
-The existing `CapabilityStatus` enum remains the high-level summary. Each
-runtime probe expands it into a structured report:
+`CapabilityStatus` remains the high-level summary. Each runtime probe expands it
+into a structured report:
 
 ```text
 CapabilityReport
@@ -198,14 +194,14 @@ CapabilityReport
 - `observed_at` allows the runtime to invalidate stale hardware or service
   probes.
 
-Probes are read-only. They must never trigger a portal consent dialog, request
-input privileges, modify system configuration, or launch a helper merely to
-decide availability.
+Probes are read-only. They never trigger portal consent, request input
+privileges, modify system configuration, or launch a helper merely to decide
+availability.
 
 ### 5.3 Commands and results
 
 Feature actions are typed requests with declared side-effect and permission
-requirements. Examples include `SetStreamVolume`, `CopyHistoryItem`,
+requirements, such as `SetStreamVolume`, `CopyHistoryItem`,
 `BeginScreenCapture`, and `SetKeepAwake`.
 
 Each command produces one of:
@@ -214,15 +210,14 @@ Each command produces one of:
 - a structured domain error;
 - a refreshed capability report when the action cannot proceed.
 
-Commands that can prompt, alter data, or invoke privileged services declare
-that fact before the UI presents confirmation. Platform adapters do not silently
-fall back from a denied safe path to a broader-privilege path.
+Commands that can prompt, alter data, or invoke privileged services declare that
+fact before the UI presents confirmation. Platform adapters never silently
+broaden privileges after a safe path is denied.
 
 ### 5.4 State snapshots and events
 
-Services own mutable internal state but publish immutable snapshots. Snapshot
-publication is coalesced for high-frequency sources such as monitoring, while
-commands receive ordered handling per feature.
+Services own mutable state but publish immutable snapshots. High-frequency
+publication is coalesced, while commands receive ordered handling per feature.
 
 Events have three scopes:
 
@@ -232,9 +227,9 @@ Events have three scopes:
 - **AttentionRequired** — user action is needed, such as a portal grant,
   expired consent, missing runtime package, or privacy limit.
 
-The application runtime routes events through an internal event interface. The
-implementation may use async channels, but channel types do not escape
-`kestrel-services` or `apps/kestrel`.
+The application runtime routes events through an internal interface. It may use
+async channels, but channel types do not escape `kestrel-services` or
+`apps/kestrel`.
 
 ### 5.5 Monitoring sampling and alert policy
 
@@ -676,25 +671,25 @@ register → probe → configure → start → publish → refresh/handle comman
 7. **Stop:** resources, portal sessions, clipboard ownership, subscriptions,
    and tasks are released deterministically.
 
-Feature crashes or unavailable adapters must resolve to a feature-level error
-state and diagnostic event, not terminate the application.
+Feature crashes and unavailable adapters must produce a feature-level error state
+and diagnostic event without terminating the application.
 
 ## 7. Platform-adapter rules
 
 ### 7.1 Adapter selection
 
-Services request a capability, not a session type. The platform layer uses a
+Services request capabilities, not session types. The platform layer applies
 feature-specific ordered policy:
 
 1. Prefer a standard portal or documented D-Bus API that matches the action.
 2. Use a supported native user-session API where portals are insufficient.
 3. Use a well-defined executable integration only when its availability and
-   behavior can be diagnosed.
+   behavior are diagnosable.
 4. Return an explicit limited or unsupported state when no safe, verified path
    exists.
 
-Kestrel never interprets the presence of Wayland, X11, GNOME, KDE, or a
-compositor name as proof that a specific capability exists.
+Kestrel never treats Wayland, X11, GNOME, KDE, or a compositor name as proof
+that a capability exists.
 
 ### 7.2 Probe and mutation separation
 

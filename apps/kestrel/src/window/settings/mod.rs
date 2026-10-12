@@ -48,7 +48,6 @@ pub(super) fn build_settings_group(
     group
 }
 
-/// Adds search, appearance, autostart, and preset rows.
 fn add_general_rows(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -176,7 +175,7 @@ fn add_general_rows(
     ));
     group.add(&preset_row);
 }
-/// Builds the configuration import and export row.
+
 fn build_configuration_files_row(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,

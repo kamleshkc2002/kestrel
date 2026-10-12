@@ -322,7 +322,6 @@ mod tests {
         path
     }
 
-    /// A fake grim that logs its arguments and prints a 5x4 PNG.
     fn fake_grim(dir: &TempDir) -> PathBuf {
         let image = dir.path().join("image.png");
         fs::write(&image, solid_png(5, 4, [1, 2, 3, 255])).expect("write image");

@@ -18,10 +18,8 @@ pub(crate) const FILE_MODE: u32 = 0o600;
 const DIRECTORY_MODE: u32 = 0o700;
 /// Temporary-name attempts before failure.
 const TEMPORARY_ATTEMPTS: u32 = 16;
-
 static TEMPORARY_SERIAL: AtomicU64 = AtomicU64::new(0);
 
-/// Atomically replaces `path` with owner-only permissions.
 pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
@@ -51,7 +49,6 @@ pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<(
     Ok(())
 }
 
-/// Creates a unique owner-only temporary file beside the target.
 fn create_temporary(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, File)> {
     for _ in 0..TEMPORARY_ATTEMPTS {
         let nanos = SystemTime::now()
@@ -70,7 +67,6 @@ fn create_temporary(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, Fi
             .open(&candidate)
         {
             Ok(file) => return Ok((candidate, file)),
-            // A name held by another file or link is skipped.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }

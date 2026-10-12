@@ -4,10 +4,10 @@ use std::fmt;
 
 use kestrel_platform::capture::MAX_CAPTURE_DIMENSION;
 
-/// Most operations one edit plan may contain.
+/// Maximum operations in one edit plan.
 const MAX_EDIT_OPERATIONS: usize = 256;
 
-/// Opaque black written over redacted pixels.
+/// Pixel written for redaction.
 const REDACTED_PIXEL: [u8; 4] = [0, 0, 0, 255];
 
 /// Non-premultiplied 8-bit RGBA pixels, row-major, within capture bounds.
@@ -160,7 +160,6 @@ impl Rect {
         }
     }
 
-    /// The part of this rectangle inside a `width` x `height` image, if any.
     fn clip(self, width: u32, height: u32) -> Option<Bounds> {
         let left = i64::from(self.x).max(0);
         let top = i64::from(self.y).max(0);
@@ -175,7 +174,6 @@ impl Rect {
     }
 }
 
-/// Non-empty pixel range inside an image; `right` and `bottom` are exclusive.
 #[derive(Debug, Clone, Copy)]
 struct Bounds {
     left: u32,
@@ -216,7 +214,6 @@ impl Color {
     };
 }
 
-/// One drawing step of an edit plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditOperation {
     Redact(Rect),
@@ -299,12 +296,10 @@ fn png_error(error: impl fmt::Display) -> ImageError {
     ImageError::Png(error.to_string())
 }
 
-/// Byte offset of pixel `(x, y)` in an image `width` pixels wide.
 fn offset(width: u32, x: u32, y: u32) -> usize {
     (y as usize * width as usize + x as usize) * 4
 }
 
-/// Calls `visit` with each pixel of `rect` clipped to the image, plus its coordinates and clip.
 fn for_each_pixel(
     image: &mut RgbaImage,
     rect: Rect,
@@ -321,7 +316,7 @@ fn for_each_pixel(
     }
 }
 
-/// Source-over blend of `color` onto one RGBA pixel.
+/// Source-over blend onto one RGBA pixel.
 fn blend(pixel: &mut [u8], color: Color) {
     let alpha = u16::from(color.a);
     let inverse = 255 - alpha;
@@ -350,7 +345,7 @@ pub fn crop_image(image: &RgbaImage, crop: Rect) -> Result<RgbaImage, ImageError
     RgbaImage::new(width, height, pixels)
 }
 
-/// Shaft from `from` to `to` with a filled head at `to`.
+/// Arrow with a filled head.
 fn draw_arrow(
     image: &mut RgbaImage,
     from: (i32, i32),
@@ -394,7 +389,7 @@ fn draw_arrow(
     }
 }
 
-/// Round-capped line of `thickness` pixels, clipped to the image.
+/// Round-capped line clipped to the image.
 fn draw_segment(
     image: &mut RgbaImage,
     from: (i32, i32),

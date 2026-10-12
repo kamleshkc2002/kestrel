@@ -6,7 +6,6 @@ use async_channel::Sender;
 use gtk::{Align, accessible::Property};
 use kestrel::{ApplicationCommand, CaptureEntryViewModel, CaptureRequest, CaptureViewModel};
 
-/// Builds screenshot controls and the recent-capture list.
 pub(super) fn build_capture_group(
     capture: &CaptureViewModel,
     window: &adw::ApplicationWindow,

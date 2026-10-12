@@ -162,7 +162,6 @@ pub fn import_file(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoad
     import_string(&contents)
 }
 
-/// Exports a portable configuration file.
 pub fn export_file(
     path: &Path,
     configuration: &ApplicationConfiguration,

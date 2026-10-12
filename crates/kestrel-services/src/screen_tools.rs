@@ -19,12 +19,12 @@ use kestrel_platform::screen_tools::{ScreenTool, TesseractAdapter};
 use crate::capture::Rect;
 use crate::capture::image::{RgbaImage, crop_image, decode_png, encode_png};
 
-/// Most QR codes kept from one frame.
+/// Maximum QR codes retained per frame.
 pub const MAX_QR_PAYLOADS: usize = 16;
-/// Largest QR payload kept as text.
+/// Maximum text QR payload size in bytes.
 pub const MAX_QR_PAYLOAD_BYTES: usize = 4096;
 
-/// One sampled sRGB pixel.
+/// sRGB sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorSample {
     pub red: u8,
@@ -46,7 +46,7 @@ impl ColorSample {
         format!("hsl({hue}, {saturation}%, {lightness}%)")
     }
 
-    /// Hue in degrees, saturation and lightness in rounded percent.
+    /// HSL as degrees and rounded percentages.
     pub fn hsl_components(self) -> (u16, u8, u8) {
         let channels = [self.red, self.green, self.blue].map(|value| f64::from(value) / 255.0);
         let [red, green, blue] = channels;
@@ -73,11 +73,10 @@ impl ColorSample {
     }
 }
 
-/// One decoded QR code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QrPayload {
     Text(String),
-    /// Binary or oversized content, kept as a size only.
+    /// Binary or oversized payload, stored by byte count.
     Binary {
         bytes: usize,
     },
@@ -91,7 +90,7 @@ pub enum ScreenToolResult {
 }
 
 impl fmt::Debug for ScreenToolResult {
-    // Recognized content stays out of logs.
+    // Avoid logging recognized content.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Text(text) => write!(formatter, "Text({} bytes)", text.len()),
@@ -105,9 +104,9 @@ impl fmt::Debug for ScreenToolResult {
 pub enum ScreenToolsPhase {
     #[default]
     Idle,
-    /// The provider or picker is collecting the frame or color.
+    /// Capture or picker in progress.
     Capturing(ScreenTool),
-    /// A frame waits for the user's region or pixel.
+    /// Waiting for frame selection.
     Selecting(ScreenTool),
     Processing(ScreenTool),
     Done(ScreenTool, ScreenToolResult),
@@ -117,20 +116,21 @@ pub enum ScreenToolsPhase {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScreenToolsSnapshot {
     pub phase: ScreenToolsPhase,
-    /// Advances on every phase change.
+    /// Increments on phase changes.
     pub generation: u64,
 }
 
-/// What the user chose in the selection view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selection {
     /// Text or QR from this region; `None` uses the whole frame.
     Region(Option<Rect>),
-    /// The color of this pixel.
-    Pixel { x: u32, y: u32 },
+    Pixel {
+        x: u32,
+        y: u32,
+    },
 }
 
-/// The desktop's own color picker.
+/// Desktop color picker implementation.
 pub trait ColorPicker: Send {
     fn pick(&self, cancel: &CaptureCancel) -> Result<[u8; 3], CaptureError>;
 }
@@ -146,7 +146,7 @@ pub trait TextRecognizer: Send + Sync {
     fn recognize(&self, png: &[u8], cancel: &CaptureCancel) -> Result<String, CaptureError>;
 }
 
-/// Tesseract with the configured language and time limit.
+/// Tesseract with configured language and time limit.
 pub struct TesseractRecognizer {
     pub adapter: TesseractAdapter,
     pub language: String,
@@ -160,7 +160,7 @@ impl TextRecognizer for TesseractRecognizer {
     }
 }
 
-/// Where a job's input comes from.
+/// Input source for a screen-tools job.
 pub enum ScreenToolSource {
     Frame {
         backend: Box<dyn CaptureBackend>,
@@ -187,7 +187,7 @@ enum Job {
 
 struct State {
     snapshot: ScreenToolsSnapshot,
-    /// Identifies the current job; results of replaced jobs are dropped.
+    /// Identifies the current job; replaced-job results are dropped.
     job: u64,
     frame: Option<Arc<RgbaImage>>,
     cancel: Option<CaptureCancel>,
@@ -257,7 +257,7 @@ impl ScreenToolsService {
         Ok(())
     }
 
-    /// Cancels any job, joins the worker, and drops frames and results.
+    /// Cancels jobs, joins the worker, and drops frames and results.
     pub fn stop(&mut self) {
         lock(&self.state).reset();
         self.jobs = None;
@@ -267,7 +267,7 @@ impl ScreenToolsService {
         lock(&self.state).reset();
     }
 
-    /// Starts a job, replacing any current one.
+    /// Starts a job, replacing any current job.
     pub fn begin(&self, tool: ScreenTool, source: ScreenToolSource) -> Result<(), String> {
         let jobs = self
             .jobs
@@ -290,7 +290,7 @@ impl ScreenToolsService {
         .map_err(|_| "The screen tools worker stopped.".to_owned())
     }
 
-    /// The frame waiting for a selection.
+    /// Frame waiting for selection.
     pub fn frame(&self) -> Option<Arc<RgbaImage>> {
         let state = lock(&self.state);
         matches!(state.snapshot.phase, ScreenToolsPhase::Selecting(_))
@@ -298,7 +298,7 @@ impl ScreenToolsService {
             .flatten()
     }
 
-    /// Hands the selection over; the service keeps no reference to the frame.
+    /// Hands over the selection and releases the frame reference.
     pub fn select(&self, selection: Selection) -> Result<(), String> {
         let mut state = lock(&self.state);
         let ScreenToolsPhase::Selecting(tool) = state.snapshot.phase else {
@@ -354,7 +354,6 @@ impl ScreenToolsService {
         lock(&self.state).reset();
     }
 
-    /// Clears a finished result.
     pub fn dismiss(&self) {
         let mut state = lock(&self.state);
         if matches!(
@@ -582,7 +581,6 @@ mod tests {
         }
     }
 
-    /// Reports the size of the PNG it was given.
     struct SizeRecognizer;
 
     impl TextRecognizer for SizeRecognizer {

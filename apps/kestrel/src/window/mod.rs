@@ -198,7 +198,6 @@ impl WindowView {
         entry.is_some_and(|entry| entry.grab_focus())
     }
 
-    /// Updates the command bar in place.
     pub fn set_command_bar(&self, command_bar: &kestrel::CommandBarViewModel) {
         let panel = self.command_panel.borrow();
         let Some(panel) = panel.as_ref() else {
@@ -211,7 +210,6 @@ impl WindowView {
         fill_command_panel(panel, command_bar, &self.commands);
     }
 
-    /// Updates the clipboard group in place.
     pub fn set_clipboard(&self, clipboard: &kestrel::ClipboardViewModel) {
         let panel = self.clipboard_panel.borrow();
         let Some(panel) = panel.as_ref() else {
@@ -226,7 +224,6 @@ impl WindowView {
         request_initial_clipboard_listing(clipboard, &self.commands);
     }
 
-    /// Updates the snippet group in place.
     pub fn set_snippets(&self, snippets: &kestrel::SnippetsViewModel) {
         let panel = self.snippet_panel.borrow();
         let Some(panel) = panel.as_ref() else {
@@ -264,7 +261,6 @@ impl WindowView {
         container.append(&build_monitor_group(monitor));
     }
 
-    /// Replaces the mixer controls.
     pub fn set_audio(&self, audio: &AudioViewModel) {
         let Some(container) = self.audio_container.borrow().as_ref().cloned() else {
             return;
@@ -275,7 +271,6 @@ impl WindowView {
         container.append(&build_audio_controls(audio, &self.commands));
     }
 
-    /// Replaces the microphone group.
     pub fn set_microphone(&self, microphone: &MicrophoneViewModel) {
         let Some(container) = self.microphone_container.borrow().as_ref().cloned() else {
             return;
@@ -286,7 +281,6 @@ impl WindowView {
         container.append(&build_microphone_controls(microphone, &self.commands));
     }
 
-    /// Replaces the speed-test group.
     pub fn set_speed_test(&self, speed_test: &SpeedTestViewModel) {
         let Some(container) = self.speed_test_container.borrow().as_ref().cloned() else {
             return;
@@ -297,7 +291,6 @@ impl WindowView {
         container.append(&build_speed_test_group(speed_test, &self.commands));
     }
 
-    /// Replaces the camera group.
     pub fn set_camera(&self, camera: &kestrel::CameraViewModel) {
         let Some(container) = self.camera_container.borrow().as_ref().cloned() else {
             return;
@@ -312,7 +305,6 @@ impl WindowView {
         ));
     }
 
-    /// Replaces the recording group.
     pub fn set_recording(&self, recording: &kestrel::RecordingViewModel) {
         let Some(container) = self.recording_container.borrow().as_ref().cloned() else {
             return;
@@ -323,7 +315,6 @@ impl WindowView {
         container.append(&build_recording_group(recording, &self.commands));
     }
 
-    /// Opens the trim editor for a take.
     pub fn open_trim(
         &self,
         take: std::path::PathBuf,
@@ -333,7 +324,6 @@ impl WindowView {
         trim::open_trim_dialog(&self.window, take, duration, preview, self.commands.clone());
     }
 
-    /// Replaces the capture group.
     pub fn set_capture(&self, capture: &CaptureViewModel) {
         let Some(container) = self.capture_container.borrow().as_ref().cloned() else {
             return;
@@ -344,7 +334,6 @@ impl WindowView {
         container.append(&build_capture_group(capture, &self.window, &self.commands));
     }
 
-    /// Replaces the screen tools group.
     pub fn set_screen_tools(&self, tools: &kestrel::ScreenToolsViewModel) {
         let Some(container) = self.screen_tools_container.borrow().as_ref().cloned() else {
             return;
@@ -368,7 +357,6 @@ impl WindowView {
         }
     }
 
-    /// Replaces the global-shortcuts group.
     pub fn set_shortcuts(&self, shortcuts: &ShortcutsViewModel) {
         let Some(container) = self.shortcuts_container.borrow().as_ref().cloned() else {
             return;

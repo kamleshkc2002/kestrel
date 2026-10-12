@@ -11,14 +11,14 @@ use std::time::Duration;
 
 use kestrel_platform::camera::{CameraBackend, CameraError, CameraFrame};
 
-/// How long the worker waits for a frame before checking for stop.
+/// Frame wait interval for stop checks.
 const FRAME_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CameraPhase {
     #[default]
     Idle,
-    /// The camera is opening.
+    /// Camera opening.
     Starting {
         name: String,
     },
@@ -36,11 +36,11 @@ pub enum CameraPhase {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CameraSnapshot {
     pub phase: CameraPhase,
-    /// Advances on every phase change.
+    /// Increments on phase changes.
     pub generation: u64,
 }
 
-/// A frame with its sequence number.
+/// Camera frame with sequence number.
 pub type SequencedFrame = (u64, Arc<CameraFrame>);
 
 /// The newest preview frame, shared with the window.
@@ -48,7 +48,6 @@ pub type SequencedFrame = (u64, Arc<CameraFrame>);
 pub struct CameraFrameSlot(Arc<Mutex<Option<SequencedFrame>>>);
 
 impl CameraFrameSlot {
-    /// The newest frame and its sequence number.
     pub fn latest(&self) -> Option<SequencedFrame> {
         lock(&self.0).clone()
     }
@@ -99,7 +98,7 @@ impl CameraPreviewService {
         }
     }
 
-    /// Opens `path` and streams until `stop`; a running preview is stopped first.
+    /// Opens `path` and streams until `stop`; stops any running preview first.
     pub fn start(&mut self, path: PathBuf, name: String) -> Result<(), String> {
         self.stop();
         self.shared.stop.store(false, Ordering::Release);
@@ -123,7 +122,7 @@ impl CameraPreviewService {
         }
     }
 
-    /// Joins the worker, which closes the camera, and drops the last frame.
+    /// Joins the worker, closes the camera, and drops the last frame.
     pub fn stop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {

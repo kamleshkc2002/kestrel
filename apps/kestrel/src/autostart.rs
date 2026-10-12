@@ -11,7 +11,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// Desktop-file name in the user's autostart directory.
 pub const DESKTOP_FILE_NAME: &str = if kestrel_core::DEVELOPMENT_BUILD {
     "io.github.kamleshkc2002.Kestrel.Devel.desktop"
 } else {
@@ -145,20 +144,20 @@ impl std::error::Error for AutostartError {
     }
 }
 
-/// Enable Kestrel's user autostart entry using the current environment.
+/// Enables the user autostart entry from the current environment.
 pub fn enable() -> Result<(), AutostartError> {
     let config_home = config_home()?;
     let executable = executable_path()?;
     enable_at(&config_home, &executable)
 }
 
-/// Disabling a missing entry succeeds.
+/// Succeeds when the entry is missing.
 pub fn disable() -> Result<(), AutostartError> {
     let config_home = config_home()?;
     disable_at(&config_home)
 }
 
-/// Resolves the path, preferring non-empty `XDG_CONFIG_HOME`.
+/// Resolves the autostart path, preferring non-empty `XDG_CONFIG_HOME`.
 pub fn autostart_path() -> Result<PathBuf, AutostartError> {
     autostart_path_in(&config_home()?)
 }

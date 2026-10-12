@@ -154,7 +154,6 @@ pub struct CurlSpeedTestBackend {
 }
 
 impl CurlSpeedTestBackend {
-    /// Resolves curl using local `PATH` inspection.
     pub fn discover() -> Self {
         Self {
             executable: resolve_executable("curl", env::var_os("PATH").as_deref()),
@@ -492,7 +491,6 @@ fn spawn(mut command: Command) -> Result<(Child, libc::pid_t), SpeedTestError> {
     Ok((child, group))
 }
 
-/// Sends `SIGKILL` to every member of a curl process group.
 fn kill_group(group: libc::pid_t) {
     // SAFETY: The negative ID targets this run's group; `ESRCH` is harmless.
     unsafe {
@@ -543,8 +541,6 @@ fn wait_process(
     }
 }
 
-/// Maps curl exit codes to typed failures.
-///
 /// Curl stderr stays private because it may contain resolved addresses or identifiers.
 fn error_for_exit(code: Option<i32>) -> SpeedTestError {
     let (kind, message) = match code {
@@ -721,8 +717,6 @@ mod tests {
         SpeedTestErrorKind, SpeedTestPhase, SpeedTestPlan,
     };
 
-    /// Writes a curl stand-in that logs invocation arguments.
-    ///
     /// Latency is the sole phase with no upload or download arguments.
     fn stub(dir: &TempDir, body: &str) -> PathBuf {
         let path = dir.path().join("curl");

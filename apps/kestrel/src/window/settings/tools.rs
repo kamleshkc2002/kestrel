@@ -6,7 +6,6 @@ use async_channel::Sender;
 use gtk::{Align, accessible::Property};
 use kestrel::{ApplicationCommand, ApplicationViewModel};
 
-/// Adds clipboard retention bounds and filters.
 pub(super) fn add_clipboard_limits_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -226,7 +225,6 @@ pub(super) fn add_clipboard_limits_group(
     group.add(&clipboard_group);
 }
 
-/// Adds snippet library bounds and provider choices.
 pub(super) fn add_snippet_limits_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -367,7 +365,6 @@ pub(super) fn add_snippet_limits_group(
     group.add(&snippet_group);
 }
 
-/// Adds the command-bar result limit.
 pub(super) fn add_command_bar_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -405,7 +402,6 @@ pub(super) fn add_command_bar_group(
     group.add(&command_group);
 }
 
-/// Adds the scratchpad note count, note size, and age limit.
 pub(super) fn add_scratchpad_limits_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,

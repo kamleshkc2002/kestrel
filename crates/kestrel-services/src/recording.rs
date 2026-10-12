@@ -28,18 +28,17 @@ use crate::capture::image::{Rect, RgbaImage};
 const TAKE_PREFIX: &str = "Kestrel-recording-";
 const TAKE_EXTENSION: &str = "webm";
 const PARTIAL_SUFFIX: &str = ".partial";
-/// Takes listed in the panel, newest first.
+/// Maximum listed takes, newest first.
 pub const MAX_LISTED_TAKES: usize = 10;
-/// Recording does not start, and stops, below this much free space.
+/// Minimum free space in bytes before recording stops.
 pub const MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(100);
 const SPACE_CHECK: Duration = Duration::from_secs(1);
-/// Smallest area worth recording, per side.
+/// Minimum recording area side in pixels.
 pub const MIN_AREA_SIDE: u32 = 16;
-/// A partial file untouched this long belongs to no running recording.
+/// Age after which an untouched partial file is stale.
 const ABANDONED_PARTIAL_AGE: Duration = Duration::from_secs(60);
 
-/// What the next recording captures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingOptions {
     pub source: RecordingSource,
@@ -48,7 +47,7 @@ pub struct RecordingOptions {
     pub audio: Vec<AudioTrack>,
 }
 
-/// Elapsed recording time that stands still while paused.
+/// Elapsed time excluding pauses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RecordingClock {
     accumulated: Duration,
@@ -83,20 +82,19 @@ impl RecordingClock {
     }
 }
 
-/// One audio track and why it stopped, when it did.
+/// Audio track state and failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackState {
     pub track: AudioTrack,
     pub error: Option<RecordingError>,
 }
 
-/// A completed recording on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Take {
     pub path: PathBuf,
     pub name: String,
     pub bytes: u64,
-    /// Known for takes recorded in this run.
+    /// Set for takes recorded in this run.
     pub duration: Option<Duration>,
 }
 
@@ -104,11 +102,11 @@ pub struct Take {
 pub enum RecordingPhase {
     #[default]
     Idle,
-    /// The desktop's sharing dialog is open.
+    /// Desktop sharing request is open.
     Requesting {
         source: RecordingSource,
     },
-    /// Waiting for the user to choose the area within this frame.
+    /// Waiting for area selection.
     ChoosingArea {
         frame: Arc<RgbaImage>,
     },
@@ -118,11 +116,10 @@ pub enum RecordingPhase {
         paused: bool,
         clock: RecordingClock,
     },
-    /// Completing the file.
     Stopping,
     Completed {
         take: Take,
-        /// Why recording stopped early, when it did.
+        /// Early-stop reason.
         note: Option<RecordingError>,
     },
     Failed {
@@ -143,7 +140,6 @@ impl RecordingPhase {
     }
 }
 
-/// The trimmed copy being written, or how the last one ended.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ExportPhase {
     #[default]
@@ -163,7 +159,7 @@ pub enum ExportPhase {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecordingSnapshot {
     pub phase: RecordingPhase,
-    /// Advances on every phase, export, or take-list change.
+    /// Increments on phase, export, and take-list changes.
     pub generation: u64,
     pub takes: Vec<Take>,
     pub export: ExportPhase,
@@ -210,7 +206,7 @@ pub struct RecordingService {
 }
 
 impl RecordingService {
-    /// Takes live in `folder`; partial files left by a crash are removed.
+    /// Removes stale partial files and loads takes from `folder`.
     pub fn new(
         backend: Arc<dyn RecordingBackend>,
         editor: Arc<dyn TakeEditor>,
@@ -322,7 +318,6 @@ impl RecordingService {
         self.recording_command(Command::Resume)
     }
 
-    /// Completes the take.
     pub fn stop(&self) -> Result<(), String> {
         self.recording_command(Command::Stop)
     }
@@ -348,7 +343,6 @@ impl RecordingService {
         }
     }
 
-    /// Removes one listed take.
     pub fn delete_take(&self, path: &Path) -> Result<(), String> {
         self.listed(path)?;
         if matches!(
@@ -489,7 +483,6 @@ impl RecordingService {
         self.join_export();
     }
 
-    /// Clears a finished or failed export.
     pub fn dismiss_export(&self) {
         self.shared.update(|snapshot| {
             if !matches!(snapshot.export, ExportPhase::Exporting { .. }) {
@@ -504,8 +497,7 @@ impl RecordingService {
         }
     }
 
-    /// Completes a running take, or abandons a session still asking or
-    /// choosing, cancels an export, then joins the workers.
+    /// Completes a running take or abandons a pending session, cancels export, then joins workers.
     pub fn shutdown(&mut self) {
         match self.shared.phase() {
             RecordingPhase::Requesting { .. } | RecordingPhase::ChoosingArea { .. } => {
@@ -910,8 +902,7 @@ fn is_take(name: &str) -> bool {
     name.starts_with(TAKE_PREFIX) && name.ends_with(&format!(".{TAKE_EXTENSION}"))
 }
 
-/// Removes partial takes nothing has written to for a while; a recording in
-/// progress elsewhere keeps its file fresh.
+/// Removes stale partial takes; active recordings keep files fresh.
 fn remove_partials(folder: &Path) {
     let Ok(entries) = fs::read_dir(folder) else {
         return;
@@ -980,7 +971,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::TempDir;
 
-    /// What the fake desktop and recorder do.
     #[derive(Clone, Default)]
     struct Script {
         open_error: Option<RecordingErrorKind>,
@@ -1119,7 +1109,6 @@ mod tests {
         }
     }
 
-    /// How the fake editor exports.
     #[derive(Clone, Copy, Default, PartialEq, Eq)]
     enum Exporting {
         #[default]

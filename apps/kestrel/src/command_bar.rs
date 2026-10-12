@@ -15,7 +15,6 @@ use crate::{ConfigurationWarning, private_file::write_private_atomic};
 
 pub const CURRENT_RANKING_SCHEMA_VERSION: u32 = 1;
 
-/// On-disk learned ranking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RankingFile {
     pub schema_version: u32,
@@ -47,13 +46,11 @@ pub struct LoadedRanking {
     pub warnings: Vec<ConfigurationWarning>,
 }
 
-/// XDG data path for command ranking.
 pub fn ranking_path() -> Option<PathBuf> {
     crate::snippets::kestrel_data_directory()
         .map(|directory| directory.join("command_ranking.toml"))
 }
 
-/// Loads ranking, ignoring missing or unreadable files.
 pub fn load_ranking(path: &Path) -> LoadedRanking {
     let contents = match fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -75,7 +72,6 @@ pub fn load_ranking(path: &Path) -> LoadedRanking {
     parse_ranking(&contents)
 }
 
-/// Parses ranking and warns about malformed entries.
 pub fn parse_ranking(contents: &str) -> LoadedRanking {
     let document: RankingFile = match toml::from_str(contents) {
         Ok(document) => document,
@@ -126,7 +122,6 @@ pub fn parse_ranking(contents: &str) -> LoadedRanking {
     }
 }
 
-/// Atomically writes ranking with private permissions.
 pub fn save_ranking(path: &Path, ranking: &CommandRanking) -> Result<(), String> {
     let document = RankingFile {
         schema_version: CURRENT_RANKING_SCHEMA_VERSION,

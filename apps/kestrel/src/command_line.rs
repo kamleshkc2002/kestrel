@@ -28,12 +28,8 @@ const TOGGLE_PREFIX: &str = "toggle.";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandLineAction {
     ShowWindow,
-    /// Opens the window with the command bar query focused.
     OpenCommandBar,
-    /// Opens the window with the clipboard history search focused.
     QuickPaste,
-    /// Opens the window with the process search focused.
-    /// Opens the scratchpad editor.
     ScratchpadOpen,
     ProcessesOpen,
     RefreshCapabilities,
@@ -45,16 +41,13 @@ pub enum CommandLineAction {
     UnmuteMicrophone,
     StartSpeedTest,
     CancelSpeedTest,
-    /// Captures in the provider's preferred mode.
     CaptureScreenshot,
     CaptureScreen,
-    /// Reads text, a QR code, or a color from the screen.
     ScreenTool(ScreenTool),
     WipeClipboard,
     ClearClipboardSelection,
     ApplyPreset(FeaturePreset),
     UndoPreset,
-    /// Flips a quick toggle from its current observed state.
     QuickToggle(QuickToggleId),
 }
 
@@ -157,7 +150,6 @@ impl CommandLineAction {
         }
     }
 
-    /// Resolves a stable ID.
     pub fn parse(id: &str) -> Result<Self, CommandLineError> {
         let well_formed = !id.is_empty()
             && id.len() <= MAX_SHORTCUT_COMMAND_CHARS
@@ -250,10 +242,8 @@ impl CommandLineAction {
     }
 }
 
-/// What one invocation asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Invocation {
-    /// No arguments: open the window.
     Present,
     Run(CommandLineAction),
     ListCommands,

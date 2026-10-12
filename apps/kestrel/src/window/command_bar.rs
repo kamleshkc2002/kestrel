@@ -6,7 +6,6 @@ use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
 use kestrel::ApplicationCommand;
 
-/// Reusable command-bar widgets.
 pub(super) struct CommandPanel {
     pub(super) container: gtk::Box,
     pub(super) query: gtk::SearchEntry,
@@ -14,7 +13,6 @@ pub(super) struct CommandPanel {
     pub(super) results: gtk::Box,
 }
 
-/// Builds the retained command-bar group.
 pub(super) fn build_command_panel(
     command_bar: &kestrel::CommandBarViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -95,7 +93,6 @@ pub(super) fn build_command_panel(
         group.add(&row);
     }
 
-    // Ranking stores identifiers and counts, and can be reset.
     let ranking_summary = if command_bar.ranking_entries.is_empty() {
         "Nothing learned yet".to_string()
     } else {
@@ -145,7 +142,6 @@ pub(super) fn build_command_panel(
     panel
 }
 
-/// Fills ranked result rows.
 pub(super) fn fill_command_panel(
     panel: &CommandPanel,
     command_bar: &kestrel::CommandBarViewModel,

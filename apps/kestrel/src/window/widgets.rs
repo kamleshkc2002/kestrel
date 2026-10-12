@@ -36,8 +36,6 @@ pub(super) fn choose_path(
     }
 }
 
-/// Builds an action row whose title and subtitle are plain text.
-///
 /// Rows show runtime text (device names, clipboard previews, remediation with
 /// `<id>` or `&`). `use-markup` is cleared before any text is set; a GTK builder
 /// would apply the text first and parse it as markup once.

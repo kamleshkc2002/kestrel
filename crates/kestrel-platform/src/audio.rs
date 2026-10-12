@@ -25,7 +25,6 @@ use pulse::{
 use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "audio.mixer";
-/// Feature identifier for global microphone controls.
 pub const MICROPHONE_FEATURE_ID: &str = "audio.microphone";
 
 /// A capture source; sink monitors are excluded.
@@ -38,12 +37,10 @@ pub struct InputDevice {
     pub description: String,
     pub volume_percent: u8,
     pub muted: bool,
-    /// Whether this is the server's default input.
     pub is_default: bool,
 }
 
-/// An application reading from a source (a Pulse source output). Only the
-/// bounded application name and identity are kept; media titles are dropped.
+/// Source-reading application; bounded identity, media titles dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureStream {
     pub id: u32,
@@ -66,7 +63,6 @@ pub struct InputDiscovery {
     pub streams: Vec<CaptureStream>,
 }
 
-/// Capture-source operations for the microphone service.
 pub trait MicrophoneBackend {
     fn discover_inputs(&mut self) -> Result<InputDiscovery, AudioError>;
     fn set_input_mute(&mut self, input_id: u32, muted: bool) -> Result<(), AudioError>;
@@ -78,7 +74,6 @@ pub trait MicrophoneBackend {
     fn set_capture_mute(&mut self, stream_id: u32, muted: bool) -> Result<(), AudioError>;
 }
 
-/// Read-only `audio.microphone` probe.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MicrophoneProbe;
 
@@ -106,7 +101,6 @@ pub struct OutputDevice {
     pub description: String,
     pub volume_percent: u8,
     pub muted: bool,
-    /// Whether this is the server's default output.
     pub is_default: bool,
     /// Hardware card index; absent for virtual devices.
     pub card_id: Option<u32>,
@@ -122,8 +116,7 @@ pub struct PlaybackStream {
     pub id: u32,
     pub name: String,
     pub application_name: Option<String>,
-    /// Stable identity across restarts: `application.id`, else the process
-    /// binary, else the application name. Never a title or PID.
+    /// Identity priority: application ID, binary, application name; no title or PID.
     pub application_id: Option<String>,
     pub media_name: Option<String>,
     pub media_role: Option<String>,
@@ -713,7 +706,6 @@ impl PulseSession {
         Ok(server)
     }
 
-    /// Resolves card indices to labels for device grouping.
     fn cards(&mut self) -> Result<Vec<(u32, String)>, AudioError> {
         let result = Rc::new(RefCell::new(Vec::new()));
         let failed = Rc::new(Cell::new(false));
@@ -969,7 +961,6 @@ impl PulseSession {
         }
     }
 
-    /// Volume channels of an input or a capture stream.
     fn channel_count(&mut self, target: ChannelTarget) -> Result<u8, AudioError> {
         let channels = Rc::new(Cell::new(None));
         let failed = Rc::new(Cell::new(false));
@@ -1028,7 +1019,6 @@ impl fmt::Display for ChannelTarget {
     }
 }
 
-/// A callback's success flag as a result.
 fn accepted(success: Option<bool>, message: impl FnOnce() -> String) -> Result<(), AudioError> {
     if success == Some(true) {
         Ok(())
@@ -1084,7 +1074,6 @@ fn channel_volumes(channels: u8, volume_percent: u8) -> ChannelVolumes {
     volumes
 }
 
-/// Builds a capability report from borrowed discovery data.
 pub fn capability_for(discovery: &AudioDiscovery) -> CapabilityReport {
     let stream_count = discovery.streams.len();
     let output_count = discovery.outputs.len();
@@ -1135,7 +1124,6 @@ pub fn capability_for_discovery(
     }
 }
 
-/// Builds the unavailable capability report for a failed discovery.
 pub fn capability_for_error(error: &AudioError) -> CapabilityReport {
     CapabilityReport::new(
         FEATURE_ID,

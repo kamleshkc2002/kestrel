@@ -6,7 +6,6 @@ use async_channel::Sender;
 use gtk::{Align, accessible::Property};
 use kestrel::{ApplicationCommand, ApplicationViewModel};
 
-/// Adds audio mixer policy controls.
 pub(super) fn add_audio_policy_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -177,7 +176,6 @@ pub(super) fn add_audio_policy_group(
     group.add(&audio_group);
 }
 
-/// Adds screenshot retention limits.
 pub(super) fn add_screenshot_limits_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -235,7 +233,6 @@ pub(super) fn add_screenshot_limits_group(
     group.add(&capture_group);
 }
 
-/// Adds the OCR language and time limit.
 pub(super) fn add_screen_tools_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,

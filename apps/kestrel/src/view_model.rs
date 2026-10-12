@@ -39,7 +39,6 @@ use kestrel_services::{
 
 use crate::{ConfigurationWarning, ProcessActionKind, command_line::CommandLineAction};
 
-/// Inputs for the monitor view.
 pub(crate) struct ScratchpadPresentation {
     pub warning: Option<String>,
     pub running: bool,
@@ -157,7 +156,6 @@ pub(crate) struct MonitorPresentation<'a> {
     pub policy: Option<&'a AlertPolicy>,
 }
 
-/// Monitor panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorViewModel {
     pub running: bool,
@@ -204,7 +202,6 @@ pub struct AlertRuleViewModel {
 }
 
 impl MonitorViewModel {
-    /// Builds the monitor presentation.
     pub(crate) fn from_configuration(
         configuration: &MonitorConfiguration,
         presentation: MonitorPresentation<'_>,
@@ -574,17 +571,12 @@ fn monitor_readout(
     }
 }
 
-/// Inputs for the audio view.
 pub(crate) struct AudioPresentation<'a> {
-    /// Snapshot, if the opt-in service has produced one.
     pub snapshot: Option<&'a AudioSnapshot>,
-    /// Whether the mixer registration is running.
     pub running: bool,
-    /// Effective mixer policy.
     pub policy: AudioPolicy,
 }
 
-/// Audio mixer panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioViewModel {
     pub running: bool,
@@ -603,7 +595,6 @@ pub struct AudioViewModel {
     pub output_priority: DevicePriorityViewModel,
 }
 
-/// A device in a priority list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PriorityDeviceViewModel {
     /// Server device name, the stored identity.
@@ -847,7 +838,6 @@ pub struct CaptureStreamViewModel {
     pub muted: bool,
 }
 
-/// One capture input as the window lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MicrophoneInputViewModel {
     pub id: u32,
@@ -1010,7 +1000,6 @@ pub(crate) struct SpeedTestPresentation {
     pub running: bool,
 }
 
-/// Speed-test panel state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpeedTestViewModel {
     pub running: bool,
@@ -1808,7 +1797,6 @@ pub fn format_clock(duration: std::time::Duration) -> String {
     }
 }
 
-/// One screen tool's gate, from its registration.
 pub(crate) struct ScreenToolGate {
     pub tool: ScreenTool,
     pub running: bool,
@@ -1984,7 +1972,6 @@ fn screen_tool_result(result: ScreenToolResult) -> (String, ScreenToolResultView
     }
 }
 
-/// Inputs for the capture panel.
 pub(crate) struct CapturePresentation {
     pub snapshot: CaptureSnapshot,
     pub running: bool,
@@ -2251,7 +2238,6 @@ fn audio_stream_detail(
     parts.join(" · ")
 }
 
-/// Inputs for the clipboard view.
 #[derive(Default)]
 pub(crate) struct ClipboardPresentation<'a> {
     /// Metadata only; no clipboard content.
@@ -2262,7 +2248,6 @@ pub(crate) struct ClipboardPresentation<'a> {
     pub preview: Option<&'a ClipboardPreview>,
 }
 
-/// Clipboard history panel state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardViewModel {
     pub running: bool,
@@ -2529,7 +2514,6 @@ pub struct SnippetDraft {
     pub content: String,
 }
 
-/// Clipboard query state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ClipboardQuery<'a> {
     pub query: &'a str,
@@ -2537,7 +2521,6 @@ pub struct ClipboardQuery<'a> {
     pub preview: Option<&'a ClipboardPreview>,
 }
 
-/// Snippet query and draft state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SnippetQuery<'a> {
     pub query: &'a str,
@@ -2545,14 +2528,12 @@ pub struct SnippetQuery<'a> {
     pub draft: Option<&'a SnippetDraft>,
 }
 
-/// Command-bar query state.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CommandBarQuery<'a> {
     pub query: &'a str,
     pub results: &'a [kestrel_services::command_bar::CommandResult],
 }
 
-/// Inputs for the snippet view.
 pub(crate) struct SnippetsPresentation<'a> {
     pub library: &'a SnippetLibrary,
     pub policy: SnippetPolicy,
@@ -2570,7 +2551,6 @@ pub(crate) struct SnippetsPresentation<'a> {
     pub warnings: &'a [ConfigurationWarning],
 }
 
-/// Snippet library panel state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetsViewModel {
     pub running: bool,
@@ -2787,11 +2767,9 @@ impl Default for CommandBarPresentation<'_> {
     }
 }
 
-/// Shared empty ranking for default presentations.
 static EMPTY_COMMAND_RANKING: kestrel_services::command_bar::CommandRanking =
     kestrel_services::command_bar::CommandRanking::EMPTY;
 
-/// Command-bar panel state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandBarViewModel {
     pub running: bool,
@@ -2993,7 +2971,6 @@ fn command_bar_status(
     status
 }
 
-/// State for the main window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplicationViewModel {
     pub features: Vec<FeatureViewModel>,

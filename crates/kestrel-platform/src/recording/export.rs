@@ -92,7 +92,6 @@ fn open(
     Ok(pipeline)
 }
 
-/// Waits for the pipeline to reach PAUSED, or for an error.
 fn preroll(pipeline: &gst::Pipeline) -> Result<(), RecordingError> {
     pipeline
         .set_state(gst::State::Paused)

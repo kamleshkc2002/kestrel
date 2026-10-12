@@ -179,7 +179,6 @@ fn clip_to_root(x: i32, y: i32, width: u16, height: u16, screen: &Screen) -> Opt
     })
 }
 
-/// A TrueColor ZPixmap layout.
 #[derive(Debug, Clone, Copy)]
 struct PixelFormat {
     bytes_per_pixel: usize,
@@ -253,7 +252,6 @@ impl PixelFormat {
     }
 }
 
-/// Scales the masked bits to 8 bits.
 fn channel(value: u32, mask: u32) -> u8 {
     let shift = mask.trailing_zeros();
     let max = u64::from(mask >> shift);

@@ -62,7 +62,6 @@ pub struct StaticCapabilityProbe {
 }
 
 impl StaticCapabilityProbe {
-    /// Returns the supplied report with no I/O.
     pub fn new(report: CapabilityReport) -> Self {
         Self { report }
     }

@@ -309,7 +309,6 @@ pub enum ClipboardLifecycle {
     Unavailable,
 }
 
-/// Metadata for one retained entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardItemMetadata {
     pub id: u64,
@@ -364,7 +363,6 @@ pub struct ClipboardMatch {
     pub preview: String,
 }
 
-/// A bounded preview returned for an explicit request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardPreview {
     pub id: u64,
@@ -748,7 +746,6 @@ impl HistoryStore {
         }
     }
 
-    /// Stores new, bounded, unfiltered content and returns its ID.
     fn capture(&mut self, content: ClipboardEntryContent, now: Instant) -> CaptureOutcome {
         self.prune(now);
         if content.size_bytes() == 0 {
@@ -1014,7 +1011,6 @@ enum CaptureOutcome {
     Empty,
 }
 
-/// A bounded, character-safe preview of `text`.
 fn bounded_text(text: &str, max_bytes: usize) -> (String, bool) {
     if text.len() <= max_bytes {
         return (text.to_string(), false);

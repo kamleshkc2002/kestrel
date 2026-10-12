@@ -80,7 +80,6 @@ pub(super) fn build_monitor_group(monitor: &MonitorViewModel) -> adw::Preference
     group
 }
 
-/// Builds the speed-test group.
 pub(super) fn build_speed_test_group(
     speed_test: &SpeedTestViewModel,
     commands: &Sender<ApplicationCommand>,

@@ -1,7 +1,6 @@
-# Weekly version updates. Security updates are enabled in the repository
-# settings and arrive as soon as an advisory is published.
+# Weekly version updates; security updates arrive as advisories are published.
 #
-# Not covered: the Rust toolchain pinned in rust-toolchain.toml.
+# The Rust toolchain in rust-toolchain.toml is not covered.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -13,7 +12,7 @@ updates:
     commit-message:
       prefix: deps
     groups:
-      # gtk-rs crates release together and must move as one.
+      # gtk-rs crates release together.
       gtk-rs:
         patterns:
           - "gtk4*"

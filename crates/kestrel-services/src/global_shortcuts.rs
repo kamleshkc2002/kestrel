@@ -106,7 +106,6 @@ mod tests {
 
     use super::GlobalShortcutService;
 
-    /// Binds everything at once, records stops, and exposes the sink.
     struct FakeBackend {
         fail: bool,
         stops: Arc<AtomicUsize>,

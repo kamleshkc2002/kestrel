@@ -6,7 +6,6 @@ use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
 use kestrel::ApplicationCommand;
 
-/// Reusable clipboard widgets; search state survives row refreshes.
 pub(super) struct ClipboardPanel {
     pub(super) container: gtk::Box,
     pub(super) search: gtk::SearchEntry,
@@ -29,7 +28,6 @@ pub(super) fn request_initial_clipboard_listing(
     }
 }
 
-/// Builds the retained clipboard group.
 pub(super) fn build_clipboard_panel(
     clipboard: &kestrel::ClipboardViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -172,7 +170,6 @@ pub(super) fn build_clipboard_panel(
     panel
 }
 
-/// Rebuilds clipboard result rows.
 pub(super) fn fill_clipboard_results(
     panel: &ClipboardPanel,
     clipboard: &kestrel::ClipboardViewModel,
@@ -321,7 +318,6 @@ pub(super) fn fill_clipboard_results(
     }
 }
 
-/// Builds the explicitly requested preview row.
 fn build_clipboard_preview_row(
     preview: &kestrel::ClipboardPreviewViewModel,
     commands: &Sender<ApplicationCommand>,

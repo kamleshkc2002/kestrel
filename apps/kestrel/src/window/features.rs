@@ -283,8 +283,7 @@ fn send_with_confirmation(
     dialog.present();
 }
 
-/// Builds the global-shortcuts group: one row per configured binding.
-/// Text is plain: commands, triggers, and remediation contain `<` and `&`.
+/// Runtime labels contain `<` and `&`; keep them as plain text.
 pub(super) fn build_shortcuts_group(shortcuts: &ShortcutsViewModel) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Global shortcuts")

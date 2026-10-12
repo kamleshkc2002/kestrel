@@ -1,17 +1,17 @@
 # Kestrel
 
 Kestrel is a local-first, capability-aware utility host for Linux desktops. It
-combines monitoring, audio, clipboard, capture, and automation workflows in a
-single application alongside an existing desktop environment. The core is
-Wayland-first with X11 compatibility, and each integration reports its actual
-session, dependency, hardware, and permission capabilities.
+combines monitoring, audio, clipboard, capture, and automation workflows in one
+application alongside an existing desktop. The core is Wayland-first with X11
+compatibility; each integration reports its actual session, dependency,
+hardware, and permission capabilities.
 
 ## Status
 
-Phase 0 capability validation is complete. Phase 1 has a production workspace,
-versioned non-sensitive configuration, and a GTK/libadwaita capability window;
-optional StatusNotifierItem tray actions are available when a compatible host
-exists.
+Phase 0 capability validation is complete. Phase 1 provides a production
+workspace, versioned non-sensitive configuration, and a GTK/libadwaita
+capability window; optional StatusNotifierItem tray actions are available when
+a compatible host exists.
 
 - [Requirements and support contract](docs/REQUIREMENTS.md)
 - [Initial architecture](docs/ARCHITECTURE.md)
@@ -20,7 +20,7 @@ exists.
 
 - Local-first, with no telemetry or accounts.
 - Runs entirely as the unprivileged session user.
-- Every feature reports supported, limited, permission-gated, dependency-gated, or unsupported status with remediation.
+- Every feature reports supported, limited, permission-gated, dependency-gated, or unsupported status and remediation.
 - Works alongside your existing shell, panel, launcher, and compositor; support claims name the tested desktop and session.
 
 ## Workspace
@@ -40,9 +40,9 @@ settings are ignored individually and reported in the window. Export contains
 only typed application-owned preferences; it excludes clipboard content,
 runtime snapshots, credentials, and resolved executable paths.
 
-Essentials, Balanced, and Everything presets change feature enablement as one
+Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub reports registered, enabled, available,
-and running state separately.
+and running states separately.
 
 ## Features
 
@@ -201,10 +201,10 @@ trigger = "LOGO+ALT+o"
 
 ## AppImage preview
 
-Tagged versions are published as x86_64 AppImage previews on GitHub Releases;
-Ubuntu 24.04 builds bundle GTK4/libadwaita, and the matching `.sha256` file
-verifies downloads. The AppImage uses the system's GStreamer (present on
-mainstream desktops), so screen recording uses the host's plugins.
+Tagged versions are published as x86_64 AppImage previews on GitHub Releases.
+Ubuntu 24.04 builds bundle GTK4/libadwaita; the matching `.sha256` file verifies
+downloads. The AppImage uses the system's GStreamer (present on mainstream
+desktops), so screen recording uses the host's plugins.
 
 ```bash
 bash scripts/build-appimage.sh 0.1.0
@@ -212,7 +212,7 @@ bash scripts/build-appimage.sh 0.1.0
 
 ## Install from source
 
-To use Kestrel day to day from a checkout of `main`:
+To use Kestrel day to day from a `main` checkout:
 
 ```bash
 bash scripts/install-local.sh            # build and install, or update
@@ -222,7 +222,7 @@ bash scripts/install-local.sh --uninstall
 
 The script builds a release binary and installs it to `~/.local/bin/kestrel`, with a desktop entry and icon under `~/.local/share`. Settings and data stay in `~/.config/kestrel` and `~/.local/share/kestrel`.
 
-Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the ID `io.github.kamleshkc2002.Kestrel.Devel` and their own `kestrel-devel` config and data folders, so they run next to the installed copy without sharing settings, captures, or the single-instance bus name. Release builds, including the AppImage, use the regular ID and folders.
+Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the ID `io.github.kamleshkc2002.Kestrel.Devel` and separate `kestrel-devel` config and data folders. They run next to the installed copy without sharing settings, captures, or the single-instance bus name. Release builds, including the AppImage, use the regular ID and folders.
 
 ## Development
 

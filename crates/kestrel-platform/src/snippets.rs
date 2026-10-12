@@ -105,11 +105,8 @@ impl InsertionPath {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertionErrorKind {
-    /// No verified insertion provider is available.
     MissingDependency,
-    /// Provider startup failed.
     SpawnFailed,
-    /// Provider exit status collection failed.
     WaitFailed,
     TimedOut,
     Rejected,
@@ -141,12 +138,9 @@ impl Error for InsertionError {}
 
 pub trait InsertionBackend: Send + 'static {
     fn provider(&self) -> InsertionProvider;
-    /// Types `text` into the focused window.
     fn insert_text(&mut self, text: &str) -> Result<(), InsertionError>;
 }
 
-/// Finds a provider executable through direct path lookup.
-///
 /// `preferred` pins one provider; automatic search uses providers suitable for unattended access.
 pub fn discover_insertion_provider_with(
     preferred: SnippetProviderPreference,
@@ -187,14 +181,12 @@ pub fn discover_insertion_provider_with(
     ))
 }
 
-/// Probes for a provider using `PATH`.
 pub fn discover_insertion_provider(
     preferred: SnippetProviderPreference,
 ) -> Result<InsertionPath, InsertionError> {
     discover_insertion_provider_with(preferred, env::var_os("PATH").as_deref())
 }
 
-/// Splits `PATH` into nonempty absolute roots.
 fn search_roots(path_env: Option<&OsStr>) -> Vec<PathBuf> {
     let Some(path_env) = path_env else {
         return Vec::new();
@@ -204,7 +196,6 @@ fn search_roots(path_env: Option<&OsStr>) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolves an executable from the configured search roots.
 fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     for root in roots {
         let candidate = root.join(name);
@@ -218,10 +209,7 @@ fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
-/// Runs a verified provider for one insertion.
-///
-/// Text travels via stdin, keeping it out of `/proc/<pid>/cmdline`;
-/// provider output is discarded to bound output and failure exposure.
+/// Stdin keeps text out of `/proc/<pid>/cmdline`; discarded output bounds exposure.
 pub struct ExecutableInsertionBackend {
     provider: InsertionProvider,
     executable: PathBuf,
@@ -261,7 +249,6 @@ impl ExecutableInsertionBackend {
         })
     }
 
-    /// Fixed provider arguments; text arrives on stdin.
     fn argument_list(&self) -> Vec<OsString> {
         match self.provider {
             // `-` makes wtype read text from stdin.
@@ -361,7 +348,6 @@ impl InsertionBackend for ExecutableInsertionBackend {
     }
 }
 
-/// Local wall-clock fields for one instant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalTime {
     pub year: i32,
@@ -398,14 +384,12 @@ impl LocalTime {
     }
 }
 
-/// Supplies local time for snippet rendering.
 pub trait Clock: Send + Sync {
     /// Local time-zone name, or a neutral fallback.
     fn timezone_name(&self) -> String;
     fn local_time(&self) -> LocalTime;
 }
 
-/// Reads local time through the C library.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
@@ -538,7 +522,6 @@ fn io_kind(error: &io::Error) -> &'static str {
 }
 
 impl InsertionError {
-    /// Stable machine-readable kind for capability evidence.
     fn kind(&self) -> &'static str {
         match self.kind {
             InsertionErrorKind::MissingDependency => "missing_dependency",
@@ -551,7 +534,6 @@ impl InsertionError {
     }
 }
 
-/// Checks a path's executable bit.
 pub fn is_executable(path: &Path) -> bool {
     path.metadata()
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)

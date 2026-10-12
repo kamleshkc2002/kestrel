@@ -17,13 +17,10 @@ use kestrel::{Rect, RgbaImage, ScreenTool, Selection};
 
 use crate::capture_editor::surface_from;
 
-/// Pixels on each side of the magnified center pixel.
 const MAGNIFIER_RADIUS: i32 = 5;
-/// On-screen size of one magnified pixel.
 const MAGNIFIER_ZOOM: f64 = 12.0;
 const MAGNIFIER_OFFSET: f64 = 24.0;
 
-/// Maps widget coordinates to frame pixels; refreshed on every draw.
 #[derive(Clone, Copy)]
 struct Viewport {
     scale: f64,
@@ -49,21 +46,16 @@ impl Viewport {
 
 #[derive(Default)]
 struct SelectionState {
-    /// Pixel under the pointer or keyboard cursor.
     cursor: Option<(i32, i32)>,
-    /// Drag start and current pixel.
     drag: Option<((i32, i32), (i32, i32))>,
     region: Option<Rect>,
 }
-/// What the view is for, which sets its wording.
 #[derive(Clone, Copy)]
 pub struct SelectionPurpose {
     title: &'static str,
     action: &'static str,
     hint: &'static str,
-    /// Describes the frame for assistive technology.
     label: &'static str,
-    /// Readout when no region is selected.
     whole: &'static str,
     picking: bool,
 }
@@ -101,8 +93,6 @@ impl SelectionPurpose {
     };
 }
 
-/// Opens a modal selection view. `on_choice` runs exactly once, with `None`
-/// when the user cancels or closes the view.
 pub fn open(
     parent: &adw::ApplicationWindow,
     purpose: SelectionPurpose,
@@ -183,7 +173,6 @@ pub fn open(
         });
     }
 
-    // Updates the readout and the Pick button for the current cursor.
     let refresh = {
         let state = Rc::clone(&state);
         let frame = Arc::clone(&frame);
@@ -228,7 +217,6 @@ pub fn open(
     }
     area.add_controller(motion);
 
-    // Hands the choice over once and closes the view.
     let answer = Rc::new(answer);
     let finish = {
         let window = window.clone();
@@ -312,7 +300,6 @@ pub fn open(
                     let mut state = state.borrow_mut();
                     if let Some((from, to)) = state.drag.take() {
                         let rect = Rect::normalized(from, to);
-                        // A click clears the selection; tiny drags read nothing useful.
                         state.region = (rect.width >= 4 && rect.height >= 4).then_some(rect);
                     }
                 }
@@ -407,7 +394,6 @@ fn draw(
         .map(|(from, to)| Rect::normalized(from, to))
         .or(state.region);
     if let Some(region) = region {
-        // Dim everything outside the area to read.
         context.set_fill_rule(cairo::FillRule::EvenOdd);
         context.rectangle(0.0, 0.0, f64::from(frame.width), f64::from(frame.height));
         rectangle(context, region);
@@ -432,7 +418,6 @@ fn draw(
     Ok(())
 }
 
-/// Draws the pixels around `(x, y)` enlarged, near the pointer and inside the area.
 fn draw_magnifier(
     context: &cairo::Context,
     surface: &cairo::ImageSurface,

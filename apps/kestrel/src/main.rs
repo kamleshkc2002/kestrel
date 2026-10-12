@@ -44,7 +44,6 @@ const TICK_INTERVAL: Duration = Duration::from_millis(250);
 const AUDIO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
-/// Fields are `None` when unchanged.
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
     clipboard: Option<ClipboardViewModel>,
@@ -71,7 +70,6 @@ const SNIPPET_SEARCH_LIMIT: usize = 100;
 
 struct ControllerState {
     runtime: ApplicationRuntime,
-    /// Routes command-bar actions through the normal application channel.
     commands: Sender<ApplicationCommand>,
     configuration: ApplicationConfiguration,
     warnings: Vec<ConfigurationWarning>,
@@ -117,7 +115,6 @@ impl ControllerState {
                 results: &self.command_results,
             },
         );
-        // The runtime projects an unfiltered list; apply the panel search.
         model.processes = self.runtime.processes_view_model(&self.process_query);
         model
     }
@@ -193,7 +190,6 @@ impl ControllerState {
             },
         };
 
-        // Record only attempted IDs and counts.
         let _ = self.runtime.record_command_use(id);
         self.refresh_command_results();
         outcome
@@ -267,7 +263,6 @@ impl ControllerState {
             _ => return None,
         };
 
-        // Route through the operation gate and worker.
         let queued = self.commands.try_send(command).is_ok();
         Some(if queued {
             format!("{action} queued")
@@ -331,7 +326,6 @@ fn run_tick(
                 .runtime
                 .microphone_view_model(&controller.configuration.audio)
         });
-        // Publish only on generation changes.
         let generation = guard.runtime.speed_test_snapshot().generation;
         let speed_test = (generation != guard.speed_test_generation).then(|| {
             guard.speed_test_generation = generation;
@@ -522,7 +516,6 @@ impl ClipboardFingerprint {
     }
 }
 
-/// Capture work that runs on a controller worker.
 enum CaptureOperation {
     Begin(Option<kestrel::CaptureMode>),
     Cancel,
@@ -826,7 +819,6 @@ impl ApplicationController {
             .capture_png(id)
     }
 
-    /// Puts a capture on the clipboard as an image.
     fn copy_capture(&self, id: CaptureId) {
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -1238,7 +1230,6 @@ impl ApplicationController {
         }
     }
 
-    /// Opens the trim editor for a listed take.
     fn open_trim(&self, take: std::path::PathBuf) {
         let trim = self
             .state
@@ -2632,7 +2623,6 @@ fn main() -> glib::ExitCode {
                 }
                 let _ = command_line_commands.try_send(action.to_command());
             }
-            // Answered locally before registration.
             Invocation::Help | Invocation::Version | Invocation::ListCommands => {}
         }
         glib::ExitCode::SUCCESS
