@@ -512,9 +512,14 @@ specific remediation rather than simply hiding a feature without explanation.
 ### 11.1 Reference-feature coverage contract
 
 The product roadmap is audited against the Vorssaint feature catalog at commit
-`0cf7529` (upstream `main` on 2026-10-04, 77 identifiers; the previous audit at
-`29bd174` covered 57). This is a product-scope ledger, not a promise of
-identical implementation or uniform Linux support.
+`fe24c17` (upstream `main` on 2026-10-12, 77 identifiers, unchanged since the
+`0cf7529` audit of 2026-10-04; the audit before that, at `29bd174`, covered 57).
+The `fe24c17` audit added depth to existing stories: snap zones, clipboard
+reuse ordering and layouts, text-only redaction, per-core CPU, and overlay
+controls. Behavior tied to macOS hardware or apps (AirPlay targets, Wine input,
+notch gap filling) needs no Linux counterpart; per-stream routing to any output
+already covers single-app output choice. This is a product-scope ledger, not a
+promise of identical implementation or uniform Linux support.
 Every reference feature must be either scheduled, translated to an appropriate
 Linux workflow, or explicitly excluded with a reason.
 Repeat this identifier audit when the reference catalog changes, recording the
