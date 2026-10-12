@@ -172,10 +172,8 @@ pub struct MonitorViewModel {
     pub local_addresses: Option<Result<Vec<String>, String>>,
     pub network_rate_unit: kestrel_core::NetworkRateUnit,
     pub per_core_cpu: bool,
-    /// Tray title text for the configured tray readouts.
-    pub tray_summary: Option<String>,
-    /// The first tray readout that is a percentage, for the tray meter icon.
-    pub tray_meter_percent: Option<u8>,
+    /// One tray item per configured tray readout, in configured order.
+    pub tray: Vec<crate::TrayReadout>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -334,22 +332,31 @@ impl MonitorViewModel {
         .then(|| snapshot.map(core_groups))
         .flatten()
         .filter(|groups| !groups.is_empty());
-        let tray_views = configuration
+        let tray = configuration
             .tray_readouts
             .iter()
-            .map(|readout| monitor_readout(snapshot, *readout, configuration))
-            .collect::<Vec<_>>();
-        let tray_summary = (!tray_views.is_empty()).then(|| {
-            tray_views
-                .iter()
-                .map(|view| format!("{} {}", view.label, view.value.as_deref().unwrap_or("–")))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        });
-        // `percentage` renders whole percents as "<n>%".
-        let tray_meter_percent = tray_views
-            .iter()
-            .find_map(|view| view.value.as_deref()?.strip_suffix('%')?.parse::<u8>().ok());
+            .map(|readout| {
+                let view = monitor_readout(snapshot, *readout, configuration);
+                let value = view.value.unwrap_or_else(|| "–".to_owned());
+                crate::TrayReadout {
+                    key: readout.label().to_ascii_lowercase(),
+                    label: readout.label(),
+                    icon_label: match readout {
+                        MonitorReadout::Cpu => "CPU",
+                        MonitorReadout::Memory => "MEM",
+                        MonitorReadout::Swap => "SWAP",
+                        MonitorReadout::Disk => "DISK",
+                        MonitorReadout::Network => "NET",
+                        MonitorReadout::Temperature => "TEMP",
+                        MonitorReadout::Battery => "BAT",
+                        MonitorReadout::Gpu => "GPU",
+                    },
+                    compact: compact_reading(&value),
+                    value,
+                    detail: view.detail,
+                }
+            })
+            .collect();
         Self {
             running: presentation.running,
             status,
@@ -363,11 +370,9 @@ impl MonitorViewModel {
             local_addresses: None,
             network_rate_unit: configuration.network_rate_unit,
             per_core_cpu: configuration.per_core_cpu,
-            tray_summary,
-            tray_meter_percent,
+            tray,
         }
     }
-
     /// Adds addresses fetched on an explicit request.
     pub(crate) fn with_local_addresses(
         mut self,
@@ -388,6 +393,34 @@ impl MonitorViewModel {
         });
         self
     }
+}
+
+/// Shortens a formatted reading to fit a square tray icon.
+fn compact_reading(value: &str) -> String {
+    if let Some(degrees) = value.strip_suffix("°C") {
+        return format!("{degrees}°");
+    }
+    let Some((number, unit)) = value.split_once(' ') else {
+        return value.to_owned();
+    };
+    let suffix = match unit {
+        "bit/s" => "b",
+        "kbit/s" => "Kb",
+        "Mbit/s" => "Mb",
+        "Gbit/s" => "Gb",
+        "Tbit/s" => "Tb",
+        "B/s" => "B",
+        "KiB/s" => "KB",
+        "MiB/s" => "MB",
+        "GiB/s" => "GB",
+        "TiB/s" => "TB",
+        _ => return value.to_owned(),
+    };
+    let number = match number.parse::<f64>() {
+        Ok(parsed) if parsed >= 10.0 => format!("{parsed:.0}"),
+        _ => number.to_owned(),
+    };
+    format!("{number}{suffix}")
 }
 
 fn core_groups(snapshot: &SystemSnapshot) -> Vec<CoreGroupViewModel> {
@@ -4198,12 +4231,46 @@ mod tests {
             .map(|group| (group.label, group.cores.len()))
             .collect::<Vec<_>>();
         assert_eq!(groups, [("Performance cores", 1), ("Efficiency cores", 2)]);
+        let tray = monitor
+            .tray
+            .iter()
+            .map(|item| {
+                (
+                    item.key.as_str(),
+                    item.value.as_str(),
+                    item.compact.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            monitor.tray_summary.as_deref(),
-            Some("Network 1.0 Mbit/s · Battery 80%")
+            tray,
+            [
+                ("network", "1.0 Mbit/s", "1.0Mb"),
+                ("battery", "80%", "80%"),
+            ],
+            "one tray item per readout, in configured order"
         );
-        assert_eq!(monitor.tray_meter_percent, Some(80), "the first percentage");
+        assert_eq!(
+            monitor.tray[1].detail,
+            "BAT0 · On external power, charging paused"
+        );
         assert_eq!(monitor.local_addresses, None, "addresses need a request");
+    }
+
+    #[test]
+    fn tray_icon_readings_fit_a_square_icon() {
+        for (reading, compact) in [
+            ("12%", "12%"),
+            ("54°C", "54°"),
+            ("1.6 Mbit/s", "1.6Mb"),
+            ("12.3 Mbit/s", "12Mb"),
+            ("999 bit/s", "999b"),
+            ("512 B/s", "512B"),
+            ("2.0 KiB/s", "2.0KB"),
+            ("–", "–"),
+        ] {
+            assert_eq!(super::compact_reading(reading), compact, "{reading}");
+        }
     }
 
     #[test]

@@ -272,8 +272,11 @@ adapter, under a hash of the native path. Network totals accumulate in the
 service from counter deltas on non-loopback interfaces, and a counter that
 goes backwards counts as restarted. Local addresses are read through
 `getifaddrs` only on an explicit window request and live only in the runtime
-until hidden. Tray readouts are formatted from the same monitor view model and
-published from the tick worker; the tray thread receives only changed values.
+until hidden. Each tray readout is its own StatusNotifierItem whose pixmap shows
+the label and a compact value, rendered with Pango on the tick worker only when
+that text changes; items are added and removed as the configuration changes.
+Tray items forward the host's XDG activation token so Wayland compositors let a
+tray click raise the window.
 
 ### 5.6 Audio mixer policy and device-loss handling
 
