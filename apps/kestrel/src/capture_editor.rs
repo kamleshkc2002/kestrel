@@ -37,10 +37,8 @@ const TOOLS: [(Tool, &str, &str); 5] = [
     (Tool::Crop, "Crop", "Keep only the selected region"),
 ];
 
-/// One undoable change.
 enum Step {
     Operation,
-    /// The crop that was in place before.
     Crop(Option<Rect>),
 }
 
@@ -48,11 +46,9 @@ struct EditorState {
     plan: EditPlan,
     steps: Vec<Step>,
     tool: Tool,
-    /// Drag start and current point, in image pixels.
     drag: Option<((i32, i32), (i32, i32))>,
 }
 
-/// Maps widget coordinates to image pixels; refreshed on every draw.
 #[derive(Clone, Copy)]
 struct Viewport {
     scale: f64,
@@ -69,7 +65,6 @@ impl Viewport {
     }
 }
 
-/// Opens a modal editor for one capture.
 pub fn open(
     parent: &adw::ApplicationWindow,
     id: CaptureId,
@@ -279,7 +274,6 @@ pub fn open(
     window.present();
 }
 
-/// Records a finished drag; empty drags are ignored.
 fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: u32) {
     let rect = Rect::normalized(from, to);
     let empty = rect.width == 0 || rect.height == 0;
@@ -314,7 +308,6 @@ fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: 
     state.steps.push(Step::Operation);
 }
 
-/// Premultiplied ARGB32 copy of the capture for drawing.
 pub(crate) fn surface_from(image: &RgbaImage) -> Option<cairo::ImageSurface> {
     let width = i32::try_from(image.width).ok()?;
     let height = i32::try_from(image.height).ok()?;
@@ -333,7 +326,6 @@ pub(crate) fn surface_from(image: &RgbaImage) -> Option<cairo::ImageSurface> {
             for (target, source) in targets.iter_mut().zip(sources) {
                 let alpha = u32::from(source[3]);
                 let premultiply = |channel: u8| (u32::from(channel) * alpha / 255) as u8;
-                // Cairo stores native-endian 0xAARRGGBB.
                 let pixel = u32::from(source[3]) << 24
                     | u32::from(premultiply(source[0])) << 16
                     | u32::from(premultiply(source[1])) << 8
@@ -455,7 +447,6 @@ fn draw(
         }
     }
     if let Some(crop) = crop {
-        // Dim everything outside the kept region.
         context.set_fill_rule(cairo::FillRule::EvenOdd);
         context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
         rectangle(context, crop);

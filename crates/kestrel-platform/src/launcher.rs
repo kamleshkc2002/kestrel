@@ -27,7 +27,6 @@ const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptErrorKind {
-    /// Configured executable resolution failed.
     MissingExecutable,
     SpawnFailed,
     TimedOut,
@@ -72,7 +71,6 @@ pub struct ScriptOutcome {
     pub duration: Duration,
 }
 
-/// Runs one configured script action.
 pub fn run_script(
     script: &CommandScriptConfiguration,
     path_env: Option<&OsStr>,
@@ -164,14 +162,12 @@ pub fn run_script(
 
 type BoundedReader = Receiver<(String, bool)>;
 
-/// Ends the whole process group and reaps its leader.
 fn terminate(child: &mut Child, group: libc::pid_t) {
     kill_group(group);
     let _ = child.kill();
     let _ = child.wait();
 }
 
-/// Sends `SIGKILL` to every member of a process group.
 fn kill_group(group: libc::pid_t) {
     // SAFETY: The negative ID targets this run's process group; `ESRCH` is harmless.
     unsafe {
@@ -293,17 +289,14 @@ pub fn search_roots(
     matches.into_iter().map(|(_, path)| path).collect()
 }
 
-/// Returns the process `PATH` used for script runs.
 pub fn process_path() -> Option<std::ffi::OsString> {
     env::var_os("PATH")
 }
 
-/// Whether a configured root is an existing directory.
 pub fn root_is_usable(root: &Path) -> bool {
     root.is_dir() && root.metadata().map(|m| m.is_dir()).unwrap_or(false)
 }
 
-/// Whether this user can execute a path.
 pub fn is_executable(path: &Path) -> bool {
     path.metadata()
         .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -436,7 +429,6 @@ mod tests {
         assert_eq!(error.kind, ScriptErrorKind::TimedOut);
     }
 
-    /// Whether a process has exited; zombies awaiting reaping count as gone.
     fn process_is_gone(pid: i32) -> bool {
         match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Err(_) => true,

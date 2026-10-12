@@ -13,10 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ConfigurationWarning, private_file::write_private_atomic};
 
-/// Snippet file schema version.
 pub const CURRENT_SNIPPET_SCHEMA_VERSION: u32 = 1;
 
-/// On-disk snippet file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnippetFile {
     pub schema_version: u32,
@@ -33,21 +31,16 @@ impl Default for SnippetFile {
     }
 }
 
-/// Loaded library and rejected-entry diagnostics.
 #[derive(Debug, Clone, Default)]
 pub struct LoadedSnippets {
     pub library: SnippetLibrary,
     pub warnings: Vec<ConfigurationWarning>,
 }
 
-/// Unrecoverable snippet-file failure.
 #[derive(Debug)]
 pub enum SnippetStoreError {
-    /// Document parsing failed.
     InvalidDocument(String),
-    /// File I/O failed.
     Io(String),
-    /// Library validation rejected a write.
     InvalidLibrary(String),
 }
 
@@ -67,8 +60,6 @@ impl std::fmt::Display for SnippetStoreError {
 
 impl std::error::Error for SnippetStoreError {}
 
-/// `$XDG_DATA_HOME/kestrel` (`kestrel-devel` in debug builds), falling back to
-/// `~/.local/share`.
 pub fn kestrel_data_directory() -> Option<PathBuf> {
     let data_home = std::env::var_os("XDG_DATA_HOME")
         .filter(|value| !value.is_empty())
@@ -81,7 +72,6 @@ pub fn kestrel_data_directory() -> Option<PathBuf> {
     Some(data_home.join(kestrel_core::DATA_DIRECTORY_NAME))
 }
 
-/// XDG data path for snippets.
 pub fn snippet_path() -> Option<PathBuf> {
     kestrel_data_directory().map(|directory| directory.join("snippets.toml"))
 }

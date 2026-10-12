@@ -24,7 +24,7 @@ use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "camera.preview";
 
-/// Most cameras listed.
+/// Maximum cameras listed.
 pub const MAX_CAMERAS: usize = 16;
 /// Requested preview size; drivers may pick the nearest they support.
 pub const PREVIEW_WIDTH: u32 = 640;
@@ -33,7 +33,6 @@ pub const PREVIEW_HEIGHT: u32 = 480;
 pub const MAX_FRAME_DIMENSION: u32 = 4096;
 const MAX_NAME_CHARS: usize = 128;
 
-/// One video capture node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CameraInfo {
     /// `/dev/videoN`.
@@ -76,7 +75,6 @@ pub fn list_cameras(sysfs: &Path, dev: &Path) -> Vec<CameraInfo> {
     cameras
 }
 
-/// The cameras on this system.
 pub fn system_cameras() -> Vec<CameraInfo> {
     list_cameras(Path::new("/sys/class/video4linux"), Path::new("/dev"))
 }
@@ -221,7 +219,6 @@ pub trait CameraStream: Send {
     fn next_frame(&mut self, timeout: Duration) -> Result<Option<CameraFrame>, CameraError>;
 }
 
-/// Opens cameras when a preview starts.
 pub trait CameraBackend: Send {
     fn open(&self, path: &Path) -> Result<Box<dyn CameraStream>, CameraError>;
 }
@@ -341,7 +338,6 @@ impl CameraStream for V4l2Stream {
     }
 }
 
-/// Decodes one buffer; corrupt frames are skipped.
 fn decode(
     data: &[u8],
     width: u32,

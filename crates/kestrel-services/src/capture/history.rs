@@ -15,7 +15,6 @@ use kestrel_platform::capture::{
 
 use super::image::decode_png;
 
-/// Retention bounds for stored captures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapturePolicy {
     pub max_entries: u32,
@@ -24,7 +23,7 @@ pub struct CapturePolicy {
 }
 
 impl CapturePolicy {
-    /// Retention bounds from the user's capture configuration.
+    /// Builds retention limits from capture configuration.
     pub fn from_configuration(configuration: &CaptureConfiguration) -> Self {
         Self {
             max_entries: configuration.max_entries,
@@ -34,18 +33,16 @@ impl CapturePolicy {
     }
 }
 
-/// Stable identifier of one stored capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CaptureId(u64);
 
 impl CaptureId {
-    /// The numeric value used in the file name.
+    /// Numeric value used in the file name.
     pub fn get(self) -> u64 {
         self.0
     }
 }
 
-/// Metadata of one stored capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaptureEntry {
     pub id: CaptureId,
@@ -69,7 +66,6 @@ pub struct NewCapture {
     pub height: u32,
 }
 
-/// Capture storage failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryError {
     Io {
@@ -101,9 +97,9 @@ impl fmt::Display for HistoryError {
 
 impl std::error::Error for HistoryError {}
 
-/// Capture PNGs in one private directory, listed newest first.
+/// Capture PNGs in a private directory, listed newest first.
 ///
-/// Files are named `<created-ms>-<id>-<mode>[-edited].png`; other files are left alone.
+/// Files use `<created-ms>-<id>-<mode>[-edited].png`; other files are left alone.
 pub struct CaptureHistory {
     dir: PathBuf,
     policy: CapturePolicy,
@@ -165,7 +161,6 @@ impl CaptureHistory {
         &self.records
     }
 
-    /// Sum of stored PNG sizes.
     pub fn total_bytes(&self) -> u64 {
         self.records.iter().map(|entry| entry.bytes).sum()
     }
@@ -218,7 +213,7 @@ impl CaptureHistory {
         let max_age = self.policy.max_age;
         let mut kept = Vec::with_capacity(before);
         for entry in self.records.drain(..) {
-            // Timestamps in the future count as fresh.
+            // Future timestamps count as fresh.
             let fresh = now
                 .duration_since(entry.created_at)
                 .map_or(true, |age| age <= max_age);
@@ -238,7 +233,6 @@ impl CaptureHistory {
         self.enforce_policy(now);
     }
 
-    /// The stored PNG bytes of `id`.
     pub fn read(&self, id: CaptureId) -> Result<Vec<u8>, HistoryError> {
         let path = self.paths.get(&id).ok_or(HistoryError::UnknownCapture)?;
         let data = fs::read(path).map_err(|error| io_error("read capture", error))?;
@@ -348,7 +342,6 @@ impl CaptureHistory {
     }
 }
 
-/// Parsed capture file name.
 #[derive(Debug, Clone, Copy)]
 struct CaptureName {
     created_ms: u128,
@@ -422,7 +415,7 @@ fn sort_newest_first(records: &mut [CaptureEntry]) {
     });
 }
 
-/// Entry for a capture file whose size, PNG header, and timestamp are valid.
+/// Entry for a capture file with valid size, PNG header, and timestamp.
 fn load_entry(path: &Path, name: CaptureName) -> Option<CaptureEntry> {
     let bytes = fs::metadata(path).ok()?.len();
     if bytes > MAX_CAPTURE_PNG_BYTES as u64 {

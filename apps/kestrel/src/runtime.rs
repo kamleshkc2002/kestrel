@@ -166,7 +166,6 @@ const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
 
 use std::time::Duration;
 
-/// Runs one provider detection per probe and keeps it for capture requests.
 struct SharedCaptureProbe(Arc<Mutex<Option<CaptureDetection>>>);
 
 impl CapabilityProbe for SharedCaptureProbe {
@@ -195,7 +194,6 @@ impl CapabilityProbe for SharedRecordingProbe {
     }
 }
 
-/// Reports one screen tool from the capture probe's latest detection.
 struct ScreenToolProbe {
     tool: ScreenTool,
     detection: Arc<Mutex<Option<CaptureDetection>>>,
@@ -225,7 +223,6 @@ fn ocr_recognizer(settings: &kestrel_core::ScreenToolsConfiguration) -> Arc<dyn 
     })
 }
 
-/// Private capture storage under the Kestrel data directory.
 fn capture_directory() -> Option<PathBuf> {
     crate::snippets::kestrel_data_directory().map(|directory| directory.join("captures"))
 }
@@ -258,7 +255,6 @@ impl CapabilityProbe for CommandBarProbe {
         let launcher = ExternalLauncher::discover();
         let roots = self.configuration.file_roots.len();
         let scripts = self.configuration.scripts.len();
-        // GIO launches terminal entries; report their count.
         let terminal_entries = applications
             .iter()
             .filter(|application| application.terminal)
@@ -329,21 +325,20 @@ pub struct ApplicationRuntime {
     microphone: MicrophoneService<PulseAudioBackend>,
     speed_test: SpeedTestService<CurlSpeedTestBackend>,
     capture: CaptureService,
-    /// Latest provider detection, shared with the capability probe.
+    /// Detection shared with capability probes.
     capture_detection: Arc<Mutex<Option<CaptureDetection>>>,
     capture_limits: kestrel_core::CaptureConfiguration,
-    /// False when neither XDG_DATA_HOME nor HOME names a data directory.
+    /// Whether capture storage is available.
     capture_storage: bool,
     global_shortcuts: GlobalShortcutService,
-    /// Configured bindings with a known command; registered while the feature runs.
+    /// Known configured bindings.
     shortcut_requests: Vec<ShortcutRequest>,
     shortcut_bindings: Vec<kestrel_core::ShortcutBinding>,
-    /// Configured commands this build does not know.
+    /// Unknown configured commands.
     shortcut_skipped: Vec<String>,
-    /// One registration attempt per running period, so a declined portal
-    /// dialog does not reappear on every refresh.
+    /// One registration attempt per running period.
     shortcut_attempted: bool,
-    /// Activations become application commands on this channel.
+    /// Activations are sent as application commands.
     command_sender: Option<async_channel::Sender<ApplicationCommand>>,
     clipboard_history: ClipboardHistoryService,
     snippet_library: SnippetLibrary,
@@ -353,7 +348,7 @@ pub struct ApplicationRuntime {
     snippet_provider_preference: kestrel_core::SnippetProviderPreference,
     snippet_path: Option<std::path::PathBuf>,
     snippet_warnings: Vec<ConfigurationWarning>,
-    /// Read-only clipboard access for snippet expansion and command copying.
+    /// Read-only clipboard backend.
     session_clipboard: Option<ArboardClipboardBackend>,
     command_index: CommandIndex,
     command_ranking: CommandRanking,
@@ -370,15 +365,15 @@ pub struct ApplicationRuntime {
     process_inventory: ProcessInventoryService,
     listeners: ListenerService,
     process_limits: kestrel_core::ProcessConfiguration,
-    /// `pidfd_open` works; checked once since the kernel cannot change.
+    /// Checked once because the kernel cannot change.
     process_signalling: bool,
     screen_tools: ScreenToolsService,
     camera: CameraPreviewService,
     recording: RecordingService,
-    /// Latest recording detection, shared with the capability probe.
+    /// Detection shared with capability probes.
     recording_detection: Arc<Mutex<Option<RecordingDetection>>>,
     recording_settings: kestrel_core::RecordingConfiguration,
-    /// Reads takes for the trim preview.
+    /// Take editor for trim previews.
     recording_editor: Arc<dyn TakeEditor>,
     screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
     alerts: AlertEngine,
@@ -386,7 +381,7 @@ pub struct ApplicationRuntime {
     scratchpad_path: Option<PathBuf>,
     scratchpad_warning: Option<String>,
     scratchpad_policy: kestrel_core::ScratchpadConfiguration,
-    /// Battery alerts can only be narrowed by the quick toggle.
+    /// Quick toggle may narrow battery alerts.
     battery_alert_configured: bool,
     quick_toggles: QuickToggleService,
 }
@@ -843,7 +838,6 @@ impl ApplicationRuntime {
                     &configuration.clipboard,
                 ));
         }
-        // Re-derive snippet policy after configuration changes.
         self.snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
         self.snippet_expansion_timing = configuration.snippets.expansion_timing;
         self.snippet_provider_preference = configuration.snippets.preferred_provider;
@@ -925,12 +919,10 @@ impl ApplicationRuntime {
         configuration.restore_feature_snapshot(snapshot);
         self.apply_configuration(configuration)
     }
-    /// Returns registration snapshots for the active session.
     pub fn registrations(&self) -> impl Iterator<Item = &ServiceRegistration> {
         self.registry.registrations()
     }
 
-    /// Extracts owned presentation state.
     pub fn view_model(
         &self,
         warnings: &[ConfigurationWarning],
@@ -947,7 +939,6 @@ impl ApplicationRuntime {
         )
     }
 
-    /// Builds presentation state with panel queries.
     pub fn view_model_with_panels(
         &self,
         warnings: &[ConfigurationWarning],
@@ -1106,7 +1097,6 @@ impl ApplicationRuntime {
         self.audio_mixer.latest() != &before
     }
 
-    /// Device rankings and pinned applications from configuration.
     fn configure_audio_preferences(&mut self, audio: &kestrel_core::AudioConfiguration) {
         self.audio_mixer.set_priority(DevicePriority {
             ranked: audio.output_priority.clone(),
@@ -1283,7 +1273,6 @@ impl ApplicationRuntime {
         Ok(())
     }
 
-    /// Provider and modes from the latest probe.
     fn capture_provider(&self) -> (Option<CaptureProvider>, Vec<CaptureMode>) {
         self.capture_detection
             .lock()
@@ -1916,7 +1905,6 @@ impl ApplicationRuntime {
         })
     }
 
-    /// Resolves configured bindings against the command list.
     fn shortcut_requests(
         configuration: &kestrel_core::ShortcutConfiguration,
     ) -> (Vec<ShortcutRequest>, Vec<String>) {

@@ -161,9 +161,7 @@ impl Ineligible {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessSignal {
-    /// SIGTERM.
     Terminate,
-    /// SIGKILL.
     Kill,
 }
 

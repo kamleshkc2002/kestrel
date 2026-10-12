@@ -274,7 +274,6 @@ pub fn parse_exec(exec: &str) -> Option<Vec<String>> {
     Some(argv)
 }
 
-/// Resolves an executable on `PATH` for direct launching.
 pub fn resolve_executable(name: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
     if name.starts_with('/') {
         return is_executable(Path::new(name)).then(|| PathBuf::from(name));
@@ -306,7 +305,6 @@ pub struct ExternalLauncher {
 }
 
 impl ExternalLauncher {
-    /// Finds `xdg-open` on `PATH`.
     pub fn discover() -> Result<Self, DesktopError> {
         let path_env = env::var_os("PATH");
         Self::discover_with(path_env.as_deref())
@@ -360,7 +358,6 @@ impl ExternalLauncher {
             })
     }
 
-    /// Opens a target through the desktop handler.
     pub fn open(&self, target: &str) -> Result<(), DesktopError> {
         if target.is_empty() {
             return Err(DesktopError::new(

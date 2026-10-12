@@ -12,9 +12,7 @@ use kestrel::{
     RecordingSetting, RecordingSource, RecordingViewModel,
 };
 
-/// Framerates offered in the setup.
 const FRAMERATES: [u32; 4] = [15, 24, 30, 60];
-/// How often the running time is redrawn.
 const CLOCK_TICK: Duration = Duration::from_millis(500);
 
 fn send(commands: &Sender<ApplicationCommand>, request: RecordingRequest) {
@@ -305,7 +303,6 @@ fn takes_group(
     group
 }
 
-/// The running or last export, with Cancel, Play, or Dismiss.
 fn export_row(
     export: &RecordingExportViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -346,7 +343,6 @@ fn export_row(
     row
 }
 
-/// Asks before a destructive recording request.
 fn confirm(
     anchor: &gtk::Button,
     heading: &str,

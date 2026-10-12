@@ -18,7 +18,6 @@ pub const APPLICATION_ID: &str = if DEVELOPMENT_BUILD {
     "io.github.kamleshkc2002.Kestrel"
 };
 
-/// User-visible application name.
 pub const APPLICATION_NAME: &str = if DEVELOPMENT_BUILD {
     "Kestrel (Development)"
 } else {
@@ -76,7 +75,6 @@ impl CapabilityEvidence {
 /// The current version of Kestrel's non-sensitive configuration schema.
 pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 3;
 
-// Canonical bounds shared by validation and services.
 pub const MIN_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 250;
 pub const MAX_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 60_000;
 pub const DEFAULT_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 1_000;
@@ -129,7 +127,6 @@ pub const MIN_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 250;
 pub const DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 2_000;
 pub const MAX_SNIPPET_INSERT_TIMEOUT_MILLIS: u64 = 10_000;
 
-// Bounded, keyboard-first command-bar data.
 pub const MIN_COMMAND_RESULTS: u32 = 5;
 pub const DEFAULT_COMMAND_RESULTS: u32 = 12;
 pub const MAX_COMMAND_RESULTS: u32 = 50;
@@ -157,7 +154,6 @@ pub const DEFAULT_SPEED_TEST_TIMEOUT_SECONDS: u32 = 30;
 pub const MAX_SPEED_TEST_TIMEOUT_SECONDS: u32 = 120;
 pub const SPEED_TEST_BYTES_PER_MEGABYTE: u64 = 1_000_000;
 
-// Recent-capture bounds.
 pub const DEFAULT_CAPTURE_MAX_ENTRIES: u32 = 30;
 pub const MAX_CAPTURE_MAX_ENTRIES: u32 = 200;
 pub const DEFAULT_CAPTURE_MAX_TOTAL_MEGABYTES: u32 = 256;
@@ -165,7 +161,6 @@ pub const MAX_CAPTURE_MAX_TOTAL_MEGABYTES: u32 = 2048;
 pub const DEFAULT_CAPTURE_MAX_AGE_HOURS: u32 = 168;
 pub const MAX_CAPTURE_MAX_AGE_HOURS: u32 = 720;
 pub const CAPTURE_BYTES_PER_MEGABYTE: u64 = 1_048_576;
-// Scratchpad bounds.
 pub const MIN_SCRATCHPAD_MAX_NOTES: u32 = 1;
 pub const DEFAULT_SCRATCHPAD_MAX_NOTES: u32 = 20;
 pub const MAX_SCRATCHPAD_MAX_NOTES: u32 = 50;
@@ -174,7 +169,6 @@ pub const DEFAULT_SCRATCHPAD_NOTE_BYTES: u32 = 256 * 1024;
 pub const MAX_SCRATCHPAD_NOTE_BYTES: u32 = 1024 * 1024;
 pub const MAX_SCRATCHPAD_AGE_DAYS: u32 = 365;
 
-// Process inspector bounds.
 pub const MIN_PROCESS_REFRESH_MILLIS: u32 = 1_000;
 pub const DEFAULT_PROCESS_REFRESH_MILLIS: u32 = 2_000;
 pub const MAX_PROCESS_REFRESH_MILLIS: u32 = 10_000;
@@ -182,18 +176,15 @@ pub const MIN_PROCESS_ROWS: u32 = 10;
 pub const DEFAULT_PROCESS_ROWS: u32 = 100;
 pub const MAX_PROCESS_ROWS: u32 = 500;
 
-// Screen tool bounds.
 pub const DEFAULT_OCR_LANGUAGE: &str = "eng";
 pub const MIN_OCR_TIMEOUT_SECONDS: u32 = 5;
 pub const DEFAULT_OCR_TIMEOUT_SECONDS: u32 = 30;
 pub const MAX_OCR_TIMEOUT_SECONDS: u32 = 120;
 
-// Screen recording bounds.
 pub const MIN_RECORDING_FRAMERATE: u32 = 10;
 pub const DEFAULT_RECORDING_FRAMERATE: u32 = 30;
 pub const MAX_RECORDING_FRAMERATE: u32 = 60;
 
-// Global-shortcut bounds.
 pub const MAX_SHORTCUT_BINDINGS: usize = 32;
 pub const MAX_SHORTCUT_COMMAND_CHARS: usize = 64;
 
@@ -790,7 +781,7 @@ impl Default for AlertRuleConfiguration {
     }
 }
 
-// Manual Eq implementation accompanies validation that rejects non-finite values.
+// Validation rejects non-finite values.
 impl Eq for AlertRuleConfiguration {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2014,8 +2005,7 @@ pub enum ConfigurationError {
     InvalidCommandScriptOutput { name: String, bytes: u32 },
 }
 
-// Manual Eq implementation keeps error matching ergonomic; validation rejects
-// non-finite thresholds.
+// Validation rejects non-finite thresholds.
 impl Eq for ConfigurationError {}
 
 /// Validates a stable namespaced identifier independently of UI and platform.

@@ -126,7 +126,6 @@ fn portal_version() -> Option<u32> {
     u32::try_from(value).ok()
 }
 
-/// The capability report for a detection result.
 pub fn capability_for(detection: &ShortcutDetection) -> CapabilityReport {
     let evidence = [
         CapabilityEvidence::new("session_type", detection.session.label()),
@@ -168,7 +167,6 @@ pub fn capability_for(detection: &ShortcutDetection) -> CapabilityReport {
         .with_alternative("kestrel --command <id> in desktop shortcut settings")
 }
 
-/// Read-only probe for `global.shortcuts`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GlobalShortcutsProbe;
 

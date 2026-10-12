@@ -266,7 +266,6 @@ fn dimensions_in_bounds(width: u32, height: u32) -> Result<(), CaptureError> {
     Ok(())
 }
 
-/// Checks the PNG signature and IHDR dimensions.
 fn validate_png(png: Vec<u8>) -> Result<CapturedImage, CaptureError> {
     if png.len() > MAX_CAPTURE_PNG_BYTES {
         return Err(too_large());
@@ -286,7 +285,6 @@ fn validate_png(png: Vec<u8>) -> Result<CapturedImage, CaptureError> {
     Ok(CapturedImage { png, width, height })
 }
 
-/// Encodes 8-bit RGBA rows as a PNG.
 fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, CaptureError> {
     let failed = || CaptureError::new(CaptureErrorKind::Failed, "Encoding the screenshot failed.");
     let mut png = Vec::new();
@@ -299,7 +297,6 @@ fn encode_rgba_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, Capt
     Ok(png)
 }
 
-/// Decodes a PNG to RGBA for assertions.
 #[cfg(test)]
 fn decode_rgba(png: &[u8]) -> (u32, u32, Vec<u8>) {
     let mut reader = png::Decoder::new(std::io::Cursor::new(png))
@@ -315,7 +312,6 @@ fn decode_rgba(png: &[u8]) -> (u32, u32, Vec<u8>) {
     (frame.width, frame.height, buffer)
 }
 
-/// A solid-colour PNG for fakes.
 #[cfg(test)]
 fn solid_png(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
     let pixels: Vec<u8> = (0..width * height).flat_map(|_| rgba).collect();

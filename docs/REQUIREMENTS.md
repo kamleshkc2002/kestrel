@@ -14,20 +14,22 @@ Scope: Requirements and architecture for Kestrel, a generic Linux utility suite.
 
 ## 1. Summary
 
-Kestrel is a new Linux-native utility suite. It is not a port of an existing desktop
-application: it must be implemented against Linux, freedesktop, Wayland, X11, PipeWire,
-and hardware interfaces. No single Linux API covers every desktop capability, so Kestrel
-uses a common product layer with capability-driven platform backends.
+Kestrel is a new Linux-native utility suite. Its implementation targets Linux,
+freedesktop, Wayland, X11, PipeWire, and hardware interfaces; porting an
+existing desktop application is out of scope. No single Linux API covers every
+desktop capability, so Kestrel uses a common product layer with
+capability-driven platform backends.
 
-The reusable requirement is the product model: one local-first utility suite with
-independently enabled features, a unified command surface, transparent capability status,
-and explicit resource ownership. The implementation must be new and Linux-native.
+The reusable requirement is the product model: one local-first utility suite
+with independently enabled features, a unified command surface, transparent
+capability status, and explicit resource ownership. The implementation must be
+new and Linux-native.
 
-**Conclusion:** Kestrel is feasible as a new application. A large subset of the feature
-set has a clean Linux implementation; the remainder (window snapping, app switcher with
-previews, fan control, and some display/input features) is desktop-environment-,
-compositor-, or hardware-dependent. Feature support must be reported per capability
-rather than summarized as a single portability percentage.
+**Conclusion:** Kestrel is feasible as a new application. A large subset of the
+feature set has a clean Linux implementation; window snapping, an app switcher
+with previews, fan control, and some display/input features depend on the
+desktop environment, compositor, or hardware. Support uses per-capability
+reporting; a single portability percentage is not used.
 
 ---
 
@@ -42,13 +44,13 @@ rather than summarized as a single portability percentage.
   identity, repository, and release artifacts.
 ### 2.1 Positioning and differentiation
 
-Kestrel is a **human-facing, local-first utility host for Linux desktops**. It gives
-users a unified command surface and clear feature status while adapting to the
-portals, services, hardware, and compositor APIs available in their session.
+Kestrel is a **human-facing, local-first utility host for Linux desktops**. It
+provides a unified command surface and clear feature status while adapting to
+the portals, services, hardware, and compositor APIs available in the session.
 
-The comparison is about product boundaries, not feature-count parity. Kestrel will
-not attempt to replace the depth of every specialist tool or the shell owned by a
-desktop environment.
+The comparison concerns product boundaries; feature-count parity is out of
+scope. Kestrel will not replace every specialist tool's depth or the shell owned
+by a desktop environment.
 
 | Product category | Primary orientation | Typical desktop boundary | Kestrel distinction |
 |---|---|---|---|
@@ -134,9 +136,9 @@ varying fidelity — good for audio and sensors, limited for window management.
 
 ## 4. Linux platform landscape
 
-A Linux tray utility has to work across two display servers, several desktop
-environments, and multiple distros. This section captures the constraints that shape
-the architecture.
+A Linux tray utility must work across two display servers, several desktop
+environments, and multiple distros. This section captures the architectural
+constraints.
 
 ### 4.1 Display server: X11 vs Wayland
 
@@ -148,19 +150,19 @@ the architecture.
 | Screenshots / capture | X11 grab or `ffmpeg x11grab` | XDG `Screenshot` portal for stills; PipeWire + XDG `ScreenCast` portal for recording; `grim` on wlroots compositors |
 | Global shortcuts | X11 grab | Portal `GlobalShortcuts` (newer) or compositor config |
 
-**Implication:** a fully feature-equivalent app is simpler to build for X11, but Wayland
-is the present and future default (GNOME, KDE, Fedora, Ubuntu). The architecture must
-treat Wayland as the primary target and degrade gracefully (hide/disable features) where
-a compositor does not expose the needed protocol.
+**Implication:** a fully feature-equivalent app is simpler to build for X11, but
+Wayland is the present and future default (GNOME, KDE, Fedora, Ubuntu). The
+architecture must treat Wayland as the primary target and degrade gracefully
+(hide/disable features) where a compositor lacks the needed protocol.
 
-Wayland support must be capability-driven rather than inferred from the session type.
-For example, `xdg-desktop-portal` may provide screen capture or global shortcuts while
-the compositor still provides no window activation or movement API. The implementation
-should probe portal interfaces and compositor protocols at startup, record the result,
-and expose the reason for every unavailable feature. Potential window integrations
-include compositor-specific IPC, KDE/GNOME extensions, and protocols such as
-`wlr-foreign-toplevel-management` or `ext-foreign-toplevel-list`; none is a universal
-Wayland contract.
+Wayland support must derive from capabilities; session type alone is insufficient.
+For example, `xdg-desktop-portal` may provide screen capture or global shortcuts
+while the compositor lacks window activation or movement APIs. At startup,
+probe portal interfaces and compositor protocols, record results, and expose a
+reason for every unavailable feature. Potential window integrations include
+compositor-specific IPC, KDE/GNOME extensions, and protocols such as
+`wlr-foreign-toplevel-management` or `ext-foreign-toplevel-list`; none is a
+universal Wayland contract.
 
 ### 4.2 Desktop environments and the tray
 
@@ -305,8 +307,7 @@ window controls" feel hard to fully replicate on Wayland, and it should not bloc
 - X11 windowing (Phase 3): `x11rb`
 - Wayland (Phase 3): `smithay-client-toolkit` / compositor-specific IPC
 
-> Exact crate selection is a Phase 0 task; the above is a well-trodden path, not a
-> commitment.
+> Exact crate selection is a Phase 0 task; these candidates are not a commitment.
 
 ---
 
@@ -743,9 +744,8 @@ second explicit opt-in; memory-only history remains the default.
 
 ### Decisions and validation status
 
-Resolve the following as project decisions rather than leaving them as open-ended
-questions. Each decision has a proposed default, a validation experiment, and a
-condition for revisiting it.
+Resolve these as project decisions. Each has a proposed default, validation
+experiment, and condition for revisiting it.
 
 #### D-001 — Support contract
 

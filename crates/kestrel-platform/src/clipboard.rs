@@ -36,11 +36,8 @@ use crate::CapabilityProbe;
 
 pub const FEATURE_ID: &str = "clipboard.history";
 const PRIVACY_METHOD_TIMEOUT: Duration = Duration::from_millis(500);
-/// Canonical PNG MIME type for Wayland.
 pub const PNG_MIME: &str = "image/png";
-/// Canonical file-list MIME type for Wayland.
 pub const URI_LIST_MIME: &str = "text/uri-list";
-/// Plain-text MIME types offered for owned selections.
 const TEXT_MIMES: [&str; 4] = [
     "text/plain;charset=utf-8",
     "text/plain",
@@ -66,7 +63,6 @@ impl ClipboardProvider {
     }
 }
 
-/// Clipboard entry kinds Kestrel can read, own, and restore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardEntryKind {
     Text,
@@ -226,9 +222,7 @@ pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
-/// Parses bounded local paths from a `text/uri-list`.
-///
-/// Comments, blanks, non-file entries, and duplicates are skipped.
+/// Parses bounded local paths; skips comments, blanks, non-file entries, and duplicates.
 pub fn parse_uri_list(payload: &str, max_entries: usize) -> Vec<String> {
     let mut paths: Vec<String> = Vec::new();
     for line in payload.lines() {
@@ -341,7 +335,6 @@ pub trait ClipboardBackend: Send + 'static {
     fn clear_if_matches(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError>;
 }
 
-/// A Wayland selection Kestrel serves, with its serving thread.
 struct ServedSelection {
     owned: OwnedSelection,
     handle: Option<JoinHandle<()>>,
@@ -349,7 +342,6 @@ struct ServedSelection {
 }
 
 impl ServedSelection {
-    /// Whether Kestrel still owns the selection.
     fn is_alive(&self) -> bool {
         self.handle
             .as_ref()
@@ -857,7 +849,6 @@ pub fn discover_provider() -> Result<ClipboardProvider, ClipboardError> {
     Ok(ClipboardProvider::X11)
 }
 
-/// Returns entry-kind support for a provider.
 pub fn kind_support_for(provider: ClipboardProvider) -> ClipboardKindSupport {
     match provider {
         ClipboardProvider::WaylandDataControl => ClipboardKindSupport::ALL,

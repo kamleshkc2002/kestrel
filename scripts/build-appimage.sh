@@ -38,8 +38,7 @@ curl --fail --location --retry 3 \
   "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/${plugin_revision}/linuxdeploy-plugin-gtk.sh"
 chmod +x "$linuxdeploy" "$gtk_plugin"
 
-# GStreamer stays the host's: its plugins must match the core library, and
-# screen recording reports missing plugins from the host registry.
+# Keep GStreamer host plugins matched to the core library; report missing plugins from the host registry.
 env DEPLOY_GTK_VERSION=4 \
   "$linuxdeploy" --appimage-extract-and-run \
   --appdir "$appdir" \
@@ -49,14 +48,12 @@ env DEPLOY_GTK_VERSION=4 \
   --exclude-library 'libgst*' \
   --plugin gtk
 
-# The GTK plugin carries GTK3-era overrides. Libadwaita must own its stylesheet,
-# and GTK should select Wayland or X11 from the user's current session.
+# Libadwaita owns its stylesheet; GTK selects the user's Wayland or X11 session.
 sed -i '/^export GTK_THEME=/d; /^export GDK_BACKEND=/d' \
   "$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
 cat >>"$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh" <<'EOF'
 
-# Do not force a host-selected input method that is absent from the bundle.
-# GTK will select its built-in fallback instead of warning and disabling input.
+# Use GTK's built-in input-method fallback when the bundled module is absent.
 if [ -n "${GTK_IM_MODULE:-}" ] &&
   ! find "$APPDIR/usr/lib/gtk-4.0" -type f -name "libim-${GTK_IM_MODULE}.so" -print -quit |
     grep -q .; then

@@ -8,7 +8,6 @@ use kestrel::{
     AlertKind, ApplicationCommand, ApplicationViewModel, PanelMoveDirection, PanelSection,
 };
 
-/// Adds panel visibility and order controls.
 pub(super) fn add_panel_sections_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -85,7 +84,6 @@ pub(super) fn add_panel_sections_group(
     group.add(&panel_group);
 }
 
-/// Adds monitoring readout visibility and order controls.
 pub(super) fn add_monitoring_readouts_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -168,7 +166,6 @@ pub(super) fn add_monitoring_readouts_group(
     group.add(&readout_group);
 }
 
-/// Adds monitoring alert switches and thresholds.
 pub(super) fn add_monitoring_alerts_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -252,7 +249,6 @@ fn panel_title(section: PanelSection) -> &'static str {
     }
 }
 
-/// Adds the process inspector cadence and row bound.
 pub(super) fn add_process_limits_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,

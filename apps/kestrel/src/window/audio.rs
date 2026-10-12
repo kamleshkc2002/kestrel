@@ -10,7 +10,6 @@ use kestrel::{
     MicrophoneCommand, MicrophoneViewModel, PanelMoveDirection,
 };
 
-/// Target of a volume or mute control.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AudioLevelTarget {
     Output(u32),
@@ -63,7 +62,6 @@ impl AudioLevelTarget {
     }
 }
 
-/// Builds mute and volume controls.
 fn build_audio_level_controls(
     target: AudioLevelTarget,
     label: &str,
@@ -165,7 +163,6 @@ fn build_audio_route_row(
     row
 }
 
-/// The audio mixer: master output, per-device grouping, cycling, and streams.
 pub(super) fn build_audio_controls(
     audio: &AudioViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -421,7 +418,6 @@ fn send_on_click(
     });
 }
 
-/// Pin toggle and, once pinned, reorder buttons keyed by application identity.
 fn build_pin_controls(
     stream: &AudioStreamViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -473,7 +469,6 @@ fn build_pin_controls(
     Some(controls)
 }
 
-/// Ranked devices with reorder and removal, then connected devices to add.
 fn build_priority_group(
     direction: AudioDirection,
     priority: &DevicePriorityViewModel,

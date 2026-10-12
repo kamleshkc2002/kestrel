@@ -20,7 +20,6 @@ pub mod snippets;
 pub mod speed_test;
 pub mod system_monitor;
 
-/// The current lifecycle stage of a registered feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceLifecycle {
     Registered,

@@ -6,7 +6,6 @@ use async_channel::Sender;
 use gtk::{Orientation, PolicyType, accessible::Property};
 use kestrel::ApplicationCommand;
 
-/// Reusable snippet widgets.
 pub(super) struct SnippetPanel {
     pub(super) container: gtk::Box,
     pub(super) status: gtk::Label,
@@ -16,7 +15,6 @@ pub(super) struct SnippetPanel {
     pub(super) results: gtk::Box,
 }
 
-/// Builds the retained snippet group.
 pub(super) fn build_snippet_panel(
     snippets: &kestrel::SnippetsViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -115,7 +113,7 @@ pub(super) fn build_snippet_panel(
         guard.set(false);
     }
     group.add(&search_row);
-    // Keep widgets between updates; request the initial listing once.
+    // Retain widgets across updates.
     let results = gtk::Box::new(Orientation::Vertical, 6);
 
     if snippets.running
@@ -140,7 +138,6 @@ pub(super) fn build_snippet_panel(
     panel
 }
 
-/// Fills the snippet editor and results.
 pub(super) fn fill_snippet_panel(
     panel: &SnippetPanel,
     snippets: &kestrel::SnippetsViewModel,
@@ -162,7 +159,6 @@ pub(super) fn fill_snippet_panel(
         "Editing a stored snippet"
     });
 
-    // Editing is available only while the feature runs.
     let editable = snippets.running;
     let name = entry_row(panel, commands, "Name", &draft.name, editable);
     let folder = entry_row(panel, commands, "Folder", &draft.folder, editable);
@@ -285,7 +281,6 @@ pub(super) fn fill_snippet_panel(
     }
 }
 
-/// One single-line editor.
 fn entry_row(
     panel: &SnippetPanel,
     _commands: &Sender<ApplicationCommand>,
@@ -306,7 +301,6 @@ fn entry_row(
     entry
 }
 
-/// Multi-line snippet editor.
 fn text_view_row(
     panel: &SnippetPanel,
     _commands: &Sender<ApplicationCommand>,

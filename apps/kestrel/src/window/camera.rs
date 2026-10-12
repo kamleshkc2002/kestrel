@@ -84,7 +84,6 @@ pub(super) fn build_camera_group(
     group
 }
 
-/// Copies new frames into `picture` until the widget is gone.
 fn show_frames(picture: &gtk::Picture, frames: CameraFrameSlot) {
     let picture = picture.downgrade();
     let shown = Rc::new(Cell::new(0u64));

@@ -156,7 +156,6 @@ fn send(commands: &Sender<ApplicationCommand>, command: ScratchpadCommand) {
     let _ = commands.try_send(ApplicationCommand::Scratchpad(command));
 }
 
-/// Asks before a destructive scratchpad command.
 fn confirm(
     window: &adw::ApplicationWindow,
     heading: &str,
@@ -292,7 +291,6 @@ impl ScratchpadPanel {
         });
     }
 
-    /// Applies a full model; tabs, title, and text follow the active note.
     pub(super) fn set_model(&self, model: &ScratchpadViewModel) {
         self.updating.set(true);
         self.active_id.set(model.active_id);
@@ -324,7 +322,6 @@ impl ScratchpadPanel {
             let active = tab.active;
             button.connect_clicked(move |button| {
                 if active {
-                    // The active tab stays pressed.
                     button.set_active(true);
                 } else {
                     send(&commands, ScratchpadCommand::Switch(id));
@@ -342,7 +339,6 @@ impl ScratchpadPanel {
         self.updating.set(false);
     }
 
-    /// Applies the result of typing: preview and status only.
     pub(super) fn set_preview(&self, model: &ScratchpadViewModel) {
         self.preview.set_markup(&model.preview_markup);
         self.set_status(model);

@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Builds Kestrel from this checkout in release mode and installs it for the
-# current user: the binary, desktop entry, and icon under ~/.local.
+# Build and install Kestrel for the current user.
 #
 #   bash scripts/install-local.sh              install or update
-#   bash scripts/install-local.sh --restart    also (re)start Kestrel; output goes
-#                                              to ~/.local/state/kestrel/launch.log
-#   bash scripts/install-local.sh --uninstall  remove the installed files
+#   bash scripts/install-local.sh --restart    also (re)start Kestrel; log:
+#                                              ~/.local/state/kestrel/launch.log
+#   bash scripts/install-local.sh --uninstall  remove installed files
 #
-# Settings and data in ~/.config/kestrel and ~/.local/share/kestrel are kept.
-# Debug builds (cargo run) use their own ID and kestrel-devel folders, so they
-# run next to this copy without touching it.
+# Settings and data in ~/.config/kestrel and ~/.local/share/kestrel stay.
+# Debug builds use their own ID and kestrel-devel folders alongside this copy.
 
 set -euo pipefail
 
@@ -55,12 +53,11 @@ esac
 
 cargo build --release --locked -p kestrel --manifest-path "$repository/Cargo.toml"
 
-# A new file replaces the old one, so a running copy keeps its own binary.
+# Replacing the file lets a running copy keep its binary.
 install -Dm755 "$repository/target/release/kestrel" "$binary"
 install -Dm644 "$repository/data/icons/$app_id.svg" "$icon_file"
 mkdir -p "$(dirname -- "$desktop_file")"
-# An absolute Exec works even when ~/.local/bin is missing from the
-# launcher's PATH.
+# An absolute Exec works when ~/.local/bin is absent from the launcher's PATH.
 sed "s|^Exec=kestrel\$|Exec=$binary|" "$repository/data/$app_id.desktop" >"$desktop_file"
 chmod 644 "$desktop_file"
 refresh_caches
