@@ -55,14 +55,17 @@ and running state separately.
 ### Audio mixer — `audio.mixer`
 
 - **Default:** disabled; Essentials enables it.
-- **Configuration:** `[audio] boost_percent` (100–150; default 130), `output_switch` (`default_output` or `all_streams`), `disconnect_policy` (`preserve_volume` or `reset_volume`), `disconnect_volume_percent` (0–100; default 100), and `include_inactive_streams` (default false).
+- **Configuration:** `[audio] boost_percent` (100–150; default 130), `output_switch` (`default_output` or `all_streams`), `disconnect_policy` (`preserve_volume` or `reset_volume`), `disconnect_volume_percent` (0–100; default 100), `include_inactive_streams` (default false), `output_priority` (up to 16 device names), `follow_output_priority` (default false), and `mixer_favorites` (up to 32 application identities). The ranking and pins are edited in the panel.
 - Amplification is bounded by the configured ceiling and a 150% hard cap; process IDs and the Pulse authentication cookie stay private.
+- Output priority: while followed, the highest-ranked connected output becomes the default when outputs connect or disconnect, or when the ranking changes. A manual choice stands until then. Disconnected devices keep their rank. Only server device names are stored.
+- Pinned applications are listed first in their pinned order, keyed by `application.id`, else the process binary, else the application name. Unpinned streams keep the server's order, and a pin applies again when the application returns.
 
 ### Microphone — `audio.microphone`
 
 - **Default:** disabled; Essentials enables it.
-- **Configuration:** no feature-specific keys.
-- Lists capture inputs (sink monitors excluded); mute state is re-read from the server, and capability evidence carries counts only.
+- **Configuration:** `[audio] input_priority` (up to 16 device names) and `follow_input_priority` (default false), following the output ranking's rules.
+- Lists capture inputs (sink monitors excluded); mute state and the default input's level (0–150%) are re-read from the server, and capability evidence carries counts only.
+- Recording applications lists each capture stream with its level and mute; a stream reading a sink monitor is labelled as recording system audio. Only the application name and identity are kept.
 - Mute toggle: the window switch, `Ctrl+Shift+M`, the command bar, or the tray menu.
 
 ### Network speed test — `network.speed_test`

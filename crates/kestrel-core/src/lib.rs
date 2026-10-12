@@ -94,6 +94,10 @@ pub const UNAMPLIFIED_AUDIO_VOLUME_PERCENT: u8 = 100;
 pub const MAX_AUDIO_BOOST_PERCENT: u8 = 150;
 pub const DEFAULT_AUDIO_BOOST_PERCENT: u8 = 130;
 pub const DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT: u8 = 100;
+/// Ranked devices kept per direction.
+pub const MAX_AUDIO_PRIORITY_DEVICES: usize = 16;
+pub const MAX_MIXER_FAVORITES: usize = 32;
+pub const MAX_AUDIO_IDENTITY_BYTES: usize = 256;
 
 pub const DEFAULT_CLIPBOARD_MAX_ITEMS: u32 = 100;
 pub const MAX_CLIPBOARD_MAX_ITEMS: u32 = 1000;
@@ -900,7 +904,7 @@ impl AudioDisconnectPolicy {
 }
 
 /// User intent for the PulseAudio-compatible mixer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioConfiguration {
     #[serde(default = "default_audio_boost_percent")]
     pub boost_percent: u8,
@@ -912,6 +916,20 @@ pub struct AudioConfiguration {
     pub disconnect_volume_percent: u8,
     #[serde(default)]
     pub include_inactive_streams: bool,
+    /// Output device names, most preferred first.
+    #[serde(default)]
+    pub output_priority: Vec<String>,
+    /// Select the highest-ranked connected output as devices come and go.
+    #[serde(default)]
+    pub follow_output_priority: bool,
+    /// Input device names, most preferred first.
+    #[serde(default)]
+    pub input_priority: Vec<String>,
+    #[serde(default)]
+    pub follow_input_priority: bool,
+    /// Pinned mixer applications by stable identity, in display order.
+    #[serde(default)]
+    pub mixer_favorites: Vec<String>,
 }
 
 fn default_audio_boost_percent() -> u8 {
@@ -930,6 +948,11 @@ impl Default for AudioConfiguration {
             disconnect_policy: AudioDisconnectPolicy::default(),
             disconnect_volume_percent: DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT,
             include_inactive_streams: false,
+            output_priority: Vec::new(),
+            follow_output_priority: false,
+            input_priority: Vec::new(),
+            follow_input_priority: false,
+            mixer_favorites: Vec::new(),
         }
     }
 }
@@ -948,8 +971,40 @@ impl AudioConfiguration {
                 percent: self.disconnect_volume_percent,
             });
         }
+        for (field, list, limit) in [
+            (
+                "output_priority",
+                &self.output_priority,
+                MAX_AUDIO_PRIORITY_DEVICES,
+            ),
+            (
+                "input_priority",
+                &self.input_priority,
+                MAX_AUDIO_PRIORITY_DEVICES,
+            ),
+            (
+                "mixer_favorites",
+                &self.mixer_favorites,
+                MAX_MIXER_FAVORITES,
+            ),
+        ] {
+            if !valid_audio_identity_list(list, limit) {
+                return Err(ConfigurationError::InvalidAudioList { field });
+            }
+        }
         Ok(())
     }
+}
+
+/// Device names or application identities: at most `limit` unique entries of
+/// 1–256 bytes without control characters.
+pub fn valid_audio_identity_list(list: &[String], limit: usize) -> bool {
+    list.len() <= limit
+        && list.iter().enumerate().all(|(index, entry)| {
+            (1..=MAX_AUDIO_IDENTITY_BYTES).contains(&entry.len())
+                && !entry.chars().any(char::is_control)
+                && !list[..index].contains(entry)
+        })
 }
 
 /// User intent for the on-demand, bounded network speed test.
@@ -1915,6 +1970,7 @@ pub enum ConfigurationError {
     InvalidAlertCooldown { kind: AlertKind, seconds: u64 },
     InvalidAudioBoostPercent { percent: u8 },
     InvalidAudioDisconnectVolumePercent { percent: u8 },
+    InvalidAudioList { field: &'static str },
     InvalidSpeedTestDownloadMegabytes { megabytes: u32 },
     InvalidSpeedTestUploadMegabytes { megabytes: u32 },
     InvalidSpeedTestTimeoutSeconds { seconds: u32 },
@@ -2343,6 +2399,36 @@ mod tests {
             configuration.validate(),
             Err(ConfigurationError::InvalidAudioDisconnectVolumePercent { percent: 101 })
         );
+    }
+
+    #[test]
+    fn audio_identity_lists_reject_duplicates_blanks_controls_and_overflow() {
+        use crate::{MAX_AUDIO_IDENTITY_BYTES, MAX_AUDIO_PRIORITY_DEVICES, MAX_MIXER_FAVORITES};
+        let names = |count: usize| -> Vec<String> {
+            (0..count).map(|index| format!("device-{index}")).collect()
+        };
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.audio.output_priority = names(MAX_AUDIO_PRIORITY_DEVICES);
+        configuration.audio.mixer_favorites = names(MAX_MIXER_FAVORITES);
+        assert_eq!(configuration.validate(), Ok(()));
+
+        for (field, list) in [
+            ("output_priority", names(MAX_AUDIO_PRIORITY_DEVICES + 1)),
+            ("output_priority", vec!["a".to_owned(), "a".to_owned()]),
+            ("output_priority", vec![String::new()]),
+            ("output_priority", vec!["a\nb".to_owned()]),
+            (
+                "output_priority",
+                vec!["x".repeat(MAX_AUDIO_IDENTITY_BYTES + 1)],
+            ),
+        ] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.audio.output_priority = list;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidAudioList { field })
+            );
+        }
     }
 
     #[test]

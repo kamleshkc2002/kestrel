@@ -42,18 +42,40 @@ pub struct InputDevice {
     pub is_default: bool,
 }
 
+/// An application reading from a source (a Pulse source output). Only the
+/// bounded application name and identity are kept; media titles are dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureStream {
+    pub id: u32,
+    pub application_name: Option<String>,
+    /// Stable identity across restarts; see [`PlaybackStream::application_id`].
+    pub application_id: Option<String>,
+    pub input_id: u32,
+    /// Reads a sink monitor (system audio), not a microphone.
+    pub from_monitor: bool,
+    pub volume_percent: Option<u8>,
+    pub volume_writable: bool,
+    pub muted: bool,
+    pub corked: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputDiscovery {
     pub default_input_name: Option<String>,
     pub inputs: Vec<InputDevice>,
+    pub streams: Vec<CaptureStream>,
 }
 
 /// Capture-source operations for the microphone service.
 pub trait MicrophoneBackend {
     fn discover_inputs(&mut self) -> Result<InputDiscovery, AudioError>;
     fn set_input_mute(&mut self, input_id: u32, muted: bool) -> Result<(), AudioError>;
+    /// Sets an input's level, within the shared amplification cap.
+    fn set_input_volume(&mut self, input_id: u32, volume_percent: u8) -> Result<(), AudioError>;
     /// Sets the named source as the server-wide default.
     fn set_default_input(&mut self, input_name: &str) -> Result<(), AudioError>;
+    fn set_capture_volume(&mut self, stream_id: u32, volume_percent: u8) -> Result<(), AudioError>;
+    fn set_capture_mute(&mut self, stream_id: u32, muted: bool) -> Result<(), AudioError>;
 }
 
 /// Read-only `audio.microphone` probe.
@@ -100,6 +122,9 @@ pub struct PlaybackStream {
     pub id: u32,
     pub name: String,
     pub application_name: Option<String>,
+    /// Stable identity across restarts: `application.id`, else the process
+    /// binary, else the application name. Never a title or PID.
+    pub application_id: Option<String>,
     pub media_name: Option<String>,
     pub media_role: Option<String>,
     pub output_id: u32,
@@ -395,10 +420,63 @@ impl MicrophoneBackend for PulseAudioBackend {
     fn discover_inputs(&mut self) -> Result<InputDiscovery, AudioError> {
         let mut session = PulseSession::connect()?;
         let default_input_name = session.default_source_name()?;
-        let inputs = session.sources(default_input_name.as_deref())?;
+        let (inputs, monitors) = session.sources(default_input_name.as_deref())?;
+        let streams = session.capture_streams(&monitors)?;
         Ok(InputDiscovery {
             default_input_name,
             inputs,
+            streams,
+        })
+    }
+
+    fn set_input_volume(&mut self, input_id: u32, volume_percent: u8) -> Result<(), AudioError> {
+        Self::check_volume_bound(volume_percent)?;
+        let mut session = PulseSession::connect()?;
+        let channels = session.channel_count(ChannelTarget::Input(input_id))?;
+        let volumes = channel_volumes(channels, volume_percent);
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let operation = session.context.introspect().set_source_volume_by_index(
+            input_id,
+            &volumes,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected the level for input {input_id}")
+        })
+    }
+
+    fn set_capture_volume(&mut self, stream_id: u32, volume_percent: u8) -> Result<(), AudioError> {
+        Self::check_volume_bound(volume_percent)?;
+        let mut session = PulseSession::connect()?;
+        let channels = session.channel_count(ChannelTarget::Capture(stream_id))?;
+        let volumes = channel_volumes(channels, volume_percent);
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let operation = session.context.introspect().set_source_output_volume(
+            stream_id,
+            &volumes,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected the level for capture stream {stream_id}")
+        })
+    }
+
+    fn set_capture_mute(&mut self, stream_id: u32, muted: bool) -> Result<(), AudioError> {
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.introspect().set_source_output_mute(
+            stream_id,
+            muted,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected mute for capture stream {stream_id}")
         })
     }
 
@@ -755,6 +833,7 @@ impl PulseSession {
                                 .map(str::to_owned)
                                 .unwrap_or_else(|| format!("Stream {}", info.index)),
                             application_name: info.proplist.get_str(properties::APPLICATION_NAME),
+                            application_id: application_identity(&info.proplist),
                             media_name: info.proplist.get_str(properties::MEDIA_NAME),
                             media_role: info.proplist.get_str(properties::MEDIA_ROLE),
                             output_id: info.sink,
@@ -796,13 +875,16 @@ impl PulseSession {
         })
     }
 
+    /// Inputs (monitors excluded) and the monitor source IDs.
     fn sources(
         &mut self,
         default_input_name: Option<&str>,
-    ) -> Result<Vec<InputDevice>, AudioError> {
+    ) -> Result<(Vec<InputDevice>, Vec<u32>), AudioError> {
         let result = Rc::new(RefCell::new(Vec::new()));
+        let monitors = Rc::new(RefCell::new(Vec::new()));
         let failed = Rc::new(Cell::new(false));
         let callback_result = Rc::clone(&result);
+        let callback_monitors = Rc::clone(&monitors);
         let callback_failed = Rc::clone(&failed);
         let callback_default = default_input_name.map(str::to_owned);
         let operation = self
@@ -828,20 +910,155 @@ impl PulseSession {
                         is_default: callback_default.as_deref() == Some(name.as_str()),
                     });
                 }
-                ListResult::Item(_) => {}
+                ListResult::Item(info) => callback_monitors.borrow_mut().push(info.index),
                 ListResult::Error => callback_failed.set(true),
                 ListResult::End => {}
             });
         self.drive_operation(&operation)?;
         if failed.get() {
-            Err(AudioError::new(
+            return Err(AudioError::new(
                 AudioErrorKind::Protocol,
                 "PulseAudio input discovery failed",
+            ));
+        }
+        let inputs = result.borrow_mut().drain(..).collect();
+        let monitors = monitors.borrow_mut().drain(..).collect();
+        Ok((inputs, monitors))
+    }
+
+    /// Applications reading from sources; `monitors` marks system-audio capture.
+    fn capture_streams(&mut self, monitors: &[u32]) -> Result<Vec<CaptureStream>, AudioError> {
+        let result = Rc::new(RefCell::new(Vec::new()));
+        let failed = Rc::new(Cell::new(false));
+        let callback_result = Rc::clone(&result);
+        let callback_failed = Rc::clone(&failed);
+        let monitors = monitors.to_vec();
+        let operation =
+            self.context
+                .introspect()
+                .get_source_output_info_list(move |item| match item {
+                    ListResult::Item(info) => {
+                        callback_result.borrow_mut().push(CaptureStream {
+                            id: info.index,
+                            application_name: info
+                                .proplist
+                                .get_str(properties::APPLICATION_NAME)
+                                .map(bounded_label),
+                            application_id: application_identity(&info.proplist),
+                            input_id: info.source,
+                            from_monitor: monitors.contains(&info.source),
+                            volume_percent: info
+                                .has_volume
+                                .then(|| volume_percent(info.volume.avg())),
+                            volume_writable: info.has_volume && info.volume_writable,
+                            muted: info.mute,
+                            corked: info.corked,
+                        });
+                    }
+                    ListResult::Error => callback_failed.set(true),
+                    ListResult::End => {}
+                });
+        self.drive_operation(&operation)?;
+        if failed.get() {
+            Err(AudioError::new(
+                AudioErrorKind::Protocol,
+                "PulseAudio capture stream discovery failed",
             ))
         } else {
             Ok(result.borrow_mut().drain(..).collect())
         }
     }
+
+    /// Volume channels of an input or a capture stream.
+    fn channel_count(&mut self, target: ChannelTarget) -> Result<u8, AudioError> {
+        let channels = Rc::new(Cell::new(None));
+        let failed = Rc::new(Cell::new(false));
+        let (found, list_failed) = (Rc::clone(&channels), Rc::clone(&failed));
+        match target {
+            ChannelTarget::Input(id) => {
+                let operation =
+                    self.context
+                        .introspect()
+                        .get_source_info_by_index(id, move |result| match result {
+                            ListResult::Item(info) => found.set(Some(info.volume.len())),
+                            ListResult::Error => list_failed.set(true),
+                            ListResult::End => {}
+                        });
+                self.drive_operation(&operation)?;
+            }
+            ChannelTarget::Capture(id) => {
+                let operation = self.context.introspect().get_source_output_info(
+                    id,
+                    move |result| match result {
+                        ListResult::Item(info) => found.set(Some(info.volume.len())),
+                        ListResult::Error => list_failed.set(true),
+                        ListResult::End => {}
+                    },
+                );
+                self.drive_operation(&operation)?;
+            }
+        }
+        if failed.get() {
+            return Err(AudioError::new(
+                AudioErrorKind::Protocol,
+                format!("failed to inspect {target}"),
+            ));
+        }
+        channels.get().filter(|count| *count > 0).ok_or_else(|| {
+            AudioError::new(
+                AudioErrorKind::Rejected,
+                format!("{target} has no writable volume channels"),
+            )
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ChannelTarget {
+    Input(u32),
+    Capture(u32),
+}
+
+impl fmt::Display for ChannelTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input(id) => write!(formatter, "input {id}"),
+            Self::Capture(id) => write!(formatter, "capture stream {id}"),
+        }
+    }
+}
+
+/// A callback's success flag as a result.
+fn accepted(success: Option<bool>, message: impl FnOnce() -> String) -> Result<(), AudioError> {
+    if success == Some(true) {
+        Ok(())
+    } else {
+        Err(AudioError::new(AudioErrorKind::Rejected, message()))
+    }
+}
+
+/// `application.id`, else the process binary, else the application name; the
+/// first value valid as a pinned-application key.
+fn application_identity(proplist: &pulse::proplist::Proplist) -> Option<String> {
+    [
+        properties::APPLICATION_ID,
+        properties::APPLICATION_PROCESS_BINARY,
+        properties::APPLICATION_NAME,
+    ]
+    .into_iter()
+    .filter_map(|key| proplist.get_str(key))
+    .map(|value| value.trim().to_owned())
+    .find(|value| kestrel_core::valid_audio_identity_list(std::slice::from_ref(value), 1))
+}
+
+/// Truncates a display label to the identity bound at a character boundary.
+fn bounded_label(mut label: String) -> String {
+    let mut end = label.len().min(kestrel_core::MAX_AUDIO_IDENTITY_BYTES);
+    while !label.is_char_boundary(end) {
+        end -= 1;
+    }
+    label.truncate(end);
+    label
 }
 
 impl Drop for PulseSession {
@@ -1043,6 +1260,7 @@ mod tests {
         let report = microphone_capability_for(&InputDiscovery {
             default_input_name: Some("private-source-1".to_string()),
             inputs: vec![input(1, true), input(2, false)],
+            streams: Vec::new(),
         });
         assert!(matches!(report.status, CapabilityStatus::Supported));
         assert_eq!(report.evidence[0].key, "input_count");
@@ -1063,6 +1281,7 @@ mod tests {
         let report = microphone_capability_for(&InputDiscovery {
             default_input_name: None,
             inputs: Vec::new(),
+            streams: Vec::new(),
         });
         assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
         assert!(report.remediation.is_some());

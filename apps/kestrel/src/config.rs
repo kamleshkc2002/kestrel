@@ -589,6 +589,48 @@ fn parse_audio(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
             )),
         }
     }
+
+    for (key, limit) in [
+        ("output_priority", kestrel_core::MAX_AUDIO_PRIORITY_DEVICES),
+        ("input_priority", kestrel_core::MAX_AUDIO_PRIORITY_DEVICES),
+        ("mixer_favorites", kestrel_core::MAX_MIXER_FAVORITES),
+    ] {
+        let Some(value) = audio.get(key) else {
+            continue;
+        };
+        match Vec::<String>::deserialize(value.clone()) {
+            Ok(list) if kestrel_core::valid_audio_identity_list(&list, limit) => {
+                let audio = &mut loaded.configuration.audio;
+                match key {
+                    "output_priority" => audio.output_priority = list,
+                    "input_priority" => audio.input_priority = list,
+                    _ => audio.mixer_favorites = list,
+                }
+            }
+            _ => loaded.warnings.push(warning(
+                &format!("audio.{key}"),
+                format!(
+                    "Must be a list of at most {limit} different names; the saved list was ignored."
+                ),
+            )),
+        }
+    }
+
+    for key in ["follow_output_priority", "follow_input_priority"] {
+        let Some(value) = audio.get(key) else {
+            continue;
+        };
+        match value.as_bool() {
+            Some(follow) if key == "follow_output_priority" => {
+                loaded.configuration.audio.follow_output_priority = follow;
+            }
+            Some(follow) => loaded.configuration.audio.follow_input_priority = follow,
+            None => loaded.warnings.push(warning(
+                &format!("audio.{key}"),
+                "Must be true or false; the default was retained.",
+            )),
+        }
+    }
 }
 
 fn parse_shortcuts(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -1676,6 +1718,10 @@ output_switch = "surround"
 disconnect_policy = "forget"
 disconnect_volume_percent = 160
 include_inactive_streams = "sometimes"
+output_priority = ["headset", "headset"]
+input_priority = "usb-mic"
+mixer_favorites = [""]
+follow_output_priority = "yes"
 "#,
         )
         .expect("document itself is valid TOML");
@@ -1690,6 +1736,10 @@ include_inactive_streams = "sometimes"
             "audio.disconnect_policy",
             "audio.disconnect_volume_percent",
             "audio.include_inactive_streams",
+            "audio.output_priority",
+            "audio.input_priority",
+            "audio.mixer_favorites",
+            "audio.follow_output_priority",
         ] {
             assert!(
                 loaded
@@ -1709,6 +1759,11 @@ include_inactive_streams = "sometimes"
         configuration.audio.disconnect_policy = AudioDisconnectPolicy::ResetVolume;
         configuration.audio.disconnect_volume_percent = 40;
         configuration.audio.include_inactive_streams = true;
+        configuration.audio.output_priority = vec!["bluez_output.headset".into(), "hdmi".into()];
+        configuration.audio.follow_output_priority = true;
+        configuration.audio.input_priority = vec!["usb-mic".into()];
+        configuration.audio.follow_input_priority = true;
+        configuration.audio.mixer_favorites = vec!["firefox".into(), "spotify".into()];
 
         let exported = export_string(&configuration).expect("configuration exports");
         assert!(exported.contains("[audio]"));

@@ -18,7 +18,7 @@ mod widgets;
 
 use adw::prelude::*;
 use async_channel::Sender;
-use audio::{build_audio_controls, build_microphone_group};
+use audio::{build_audio_controls, build_microphone_controls};
 use camera::build_camera_group;
 use capture::build_capture_group;
 use clipboard::{
@@ -31,8 +31,9 @@ use features::{
 };
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
-    ApplicationCommand, ApplicationViewModel, CameraFrameSlot, CaptureViewModel, FocusTarget,
-    MicrophoneViewModel, MonitorViewModel, PanelSection, ShortcutsViewModel, SpeedTestViewModel,
+    ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureViewModel,
+    FocusTarget, MicrophoneViewModel, MonitorViewModel, PanelSection, ShortcutsViewModel,
+    SpeedTestViewModel,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
@@ -55,6 +56,7 @@ pub struct WindowView {
     toasts: adw::ToastOverlay,
     commands: Sender<ApplicationCommand>,
     monitor_container: std::cell::RefCell<Option<gtk::Box>>,
+    audio_container: std::cell::RefCell<Option<gtk::Box>>,
     microphone_container: std::cell::RefCell<Option<gtk::Box>>,
     speed_test_container: std::cell::RefCell<Option<gtk::Box>>,
     capture_container: std::cell::RefCell<Option<gtk::Box>>,
@@ -128,6 +130,7 @@ impl WindowView {
             toasts,
             commands,
             monitor_container: std::cell::RefCell::new(page.monitor_container),
+            audio_container: std::cell::RefCell::new(page.audio_container),
             microphone_container: std::cell::RefCell::new(page.microphone_container),
             speed_test_container: std::cell::RefCell::new(page.speed_test_container),
             capture_container: std::cell::RefCell::new(page.capture_container),
@@ -153,6 +156,7 @@ impl WindowView {
         );
         self.content.set_child(Some(&page.clamp));
         *self.monitor_container.borrow_mut() = page.monitor_container;
+        *self.audio_container.borrow_mut() = page.audio_container;
         *self.microphone_container.borrow_mut() = page.microphone_container;
         *self.speed_test_container.borrow_mut() = page.speed_test_container;
         *self.capture_container.borrow_mut() = page.capture_container;
@@ -260,6 +264,17 @@ impl WindowView {
         container.append(&build_monitor_group(monitor));
     }
 
+    /// Replaces the mixer controls.
+    pub fn set_audio(&self, audio: &AudioViewModel) {
+        let Some(container) = self.audio_container.borrow().as_ref().cloned() else {
+            return;
+        };
+        while let Some(child) = container.first_child() {
+            child.unparent();
+        }
+        container.append(&build_audio_controls(audio, &self.commands));
+    }
+
     /// Replaces the microphone group.
     pub fn set_microphone(&self, microphone: &MicrophoneViewModel) {
         let Some(container) = self.microphone_container.borrow().as_ref().cloned() else {
@@ -268,7 +283,7 @@ impl WindowView {
         while let Some(child) = container.first_child() {
             child.unparent();
         }
-        container.append(&build_microphone_group(microphone, &self.commands));
+        container.append(&build_microphone_controls(microphone, &self.commands));
     }
 
     /// Replaces the speed-test group.
@@ -383,6 +398,7 @@ impl WindowView {
 struct PageBuild {
     clamp: adw::Clamp,
     monitor_container: Option<gtk::Box>,
+    audio_container: Option<gtk::Box>,
     microphone_container: Option<gtk::Box>,
     speed_test_container: Option<gtk::Box>,
     capture_container: Option<gtk::Box>,
@@ -435,6 +451,7 @@ fn build_page(
         page.append(&build_warning_group(view_model));
     }
     let mut monitor_container = None;
+    let mut audio_container = None;
     let mut microphone_container = None;
     let mut speed_test_container = None;
     let mut capture_container = None;
@@ -462,9 +479,12 @@ fn build_page(
                         commands,
                     ));
                 }
-                page.append(&build_audio_controls(&view_model.audio, commands));
+                let audio = gtk::Box::new(Orientation::Vertical, 0);
+                audio.append(&build_audio_controls(&view_model.audio, commands));
+                page.append(&audio);
+                audio_container = Some(audio);
                 let microphone = gtk::Box::new(Orientation::Vertical, 0);
-                microphone.append(&build_microphone_group(&view_model.microphone, commands));
+                microphone.append(&build_microphone_controls(&view_model.microphone, commands));
                 page.append(&microphone);
                 microphone_container = Some(microphone);
                 let capture = gtk::Box::new(Orientation::Vertical, 0);
@@ -533,6 +553,7 @@ fn build_page(
     PageBuild {
         clamp,
         monitor_container,
+        audio_container,
         microphone_container,
         speed_test_container,
         capture_container,
