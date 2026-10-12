@@ -331,6 +331,9 @@ mod tests {
             observed_at: Duration::from_secs(at),
             cpu_usage_percent: None,
             logical_cpus: None,
+            cores: Vec::new(),
+            network_session: None,
+            peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
             disk_activity: Vec::new(),
@@ -421,6 +424,7 @@ mod tests {
             energy_full_microwatt_hours: None,
             power_microwatts: None,
             remaining_seconds: None,
+            online: None,
         });
         assert!(engine.evaluate(&value).is_empty());
     }
@@ -440,6 +444,7 @@ mod tests {
             energy_full_microwatt_hours: None,
             power_microwatts: None,
             remaining_seconds: None,
+            online: None,
         });
         assert_eq!(engine.evaluate(&value).len(), 1);
         value.observed_at = Duration::from_secs(2);
@@ -462,6 +467,7 @@ mod tests {
             energy_full_microwatt_hours: None,
             power_microwatts: None,
             remaining_seconds: None,
+            online: None,
         });
         assert!(engine.evaluate(&value)[0].is_raised());
         value.power_supplies[0].status = Some("Charging".into());

@@ -258,7 +258,7 @@ impl WindowView {
         while let Some(child) = container.first_child() {
             child.unparent();
         }
-        container.append(&build_monitor_group(monitor));
+        container.append(&build_monitor_group(monitor, &self.commands));
     }
 
     pub fn set_audio(&self, audio: &AudioViewModel) {
@@ -517,7 +517,7 @@ fn build_page(
             }
             PanelSection::Monitoring => {
                 let container = gtk::Box::new(Orientation::Vertical, 0);
-                container.append(&build_monitor_group(&view_model.monitor));
+                container.append(&build_monitor_group(&view_model.monitor, commands));
                 let speed_test = gtk::Box::new(Orientation::Vertical, 0);
                 speed_test.set_margin_top(24);
                 speed_test.append(&build_speed_test_group(&view_model.speed_test, commands));

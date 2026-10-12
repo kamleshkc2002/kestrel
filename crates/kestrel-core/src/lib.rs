@@ -80,6 +80,8 @@ pub const MAX_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 60_000;
 pub const DEFAULT_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 1_000;
 pub const MAX_MONITOR_HISTORY_SAMPLES: u32 = 600;
 pub const DEFAULT_MONITOR_HISTORY_SAMPLES: u32 = 120;
+/// Tray titles stay short enough for panel hosts.
+pub const MAX_TRAY_READOUTS: usize = 3;
 pub const MIN_ALERT_SUSTAIN_SAMPLES: u32 = 1;
 pub const MAX_ALERT_SUSTAIN_SAMPLES: u32 = 600;
 pub const MAX_ALERT_COOLDOWN_SECONDS: u64 = 86_400;
@@ -611,6 +613,16 @@ impl ApplicationConfiguration {
         {
             return Err(ConfigurationError::DuplicateMonitorReadout);
         }
+        let mut tray = BTreeSet::new();
+        if self.monitoring.tray_readouts.len() > MAX_TRAY_READOUTS
+            || self
+                .monitoring
+                .tray_readouts
+                .iter()
+                .any(|readout| !tray.insert(*readout))
+        {
+            return Err(ConfigurationError::InvalidTrayReadouts);
+        }
 
         for kind in AlertKind::ALL {
             let rule = self.monitoring.alerts.rule(kind);
@@ -829,12 +841,40 @@ impl Default for MonitorAlertConfiguration {
 
 impl Eq for MonitorAlertConfiguration {}
 
+/// Unit for network rates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkRateUnit {
+    /// Binary byte multiples per second (KiB/s).
+    #[default]
+    Bytes,
+    /// Decimal bit multiples per second (Mbit/s).
+    Bits,
+}
+
+impl NetworkRateUnit {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Bytes => "Bytes per second",
+            Self::Bits => "Bits per second",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonitorConfiguration {
     pub refresh_interval_millis: u64,
     pub history_samples: u32,
     pub readouts: Vec<MonitorReadout>,
     pub alerts: MonitorAlertConfiguration,
+    #[serde(default)]
+    pub network_rate_unit: NetworkRateUnit,
+    /// Lists each logical CPU's load under the CPU readout.
+    #[serde(default)]
+    pub per_core_cpu: bool,
+    /// Readouts shown in the tray title and tooltip, at most [`MAX_TRAY_READOUTS`].
+    #[serde(default)]
+    pub tray_readouts: Vec<MonitorReadout>,
 }
 
 impl Default for MonitorConfiguration {
@@ -844,6 +884,9 @@ impl Default for MonitorConfiguration {
             history_samples: DEFAULT_MONITOR_HISTORY_SAMPLES,
             readouts: MonitorReadout::ALL.to_vec(),
             alerts: MonitorAlertConfiguration::default(),
+            network_rate_unit: NetworkRateUnit::default(),
+            per_core_cpu: false,
+            tray_readouts: Vec::new(),
         }
     }
 }
@@ -1956,6 +1999,7 @@ pub enum ConfigurationError {
     InvalidMonitorRefreshInterval { millis: u64 },
     InvalidMonitorHistorySamples { samples: u32 },
     DuplicateMonitorReadout,
+    InvalidTrayReadouts,
     InvalidAlertThreshold { kind: AlertKind, threshold: f64 },
     InvalidAlertSustainSamples { kind: AlertKind, samples: u32 },
     InvalidAlertCooldown { kind: AlertKind, seconds: u64 },
@@ -2388,6 +2432,30 @@ mod tests {
         assert_eq!(
             configuration.validate(),
             Err(ConfigurationError::InvalidAudioDisconnectVolumePercent { percent: 101 })
+        );
+    }
+
+    #[test]
+    fn tray_readouts_are_bounded_and_unique() {
+        let mut configuration = ApplicationConfiguration::default();
+        configuration.monitoring.tray_readouts = vec![
+            MonitorReadout::Cpu,
+            MonitorReadout::Memory,
+            MonitorReadout::Gpu,
+        ];
+        assert_eq!(configuration.validate(), Ok(()));
+        configuration
+            .monitoring
+            .tray_readouts
+            .push(MonitorReadout::Disk);
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidTrayReadouts)
+        );
+        configuration.monitoring.tray_readouts = vec![MonitorReadout::Cpu, MonitorReadout::Cpu];
+        assert_eq!(
+            configuration.validate(),
+            Err(ConfigurationError::InvalidTrayReadouts)
         );
     }
 

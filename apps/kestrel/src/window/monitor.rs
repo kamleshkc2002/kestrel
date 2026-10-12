@@ -3,10 +3,13 @@
 use super::widgets::plain_row;
 use adw::prelude::*;
 use async_channel::Sender;
-use gtk::{Align, accessible::Property};
-use kestrel::{ApplicationCommand, MonitorViewModel, SpeedTestViewModel};
+use gtk::{Align, Orientation, accessible::Property};
+use kestrel::{ApplicationCommand, CoreGroupViewModel, MonitorViewModel, SpeedTestViewModel};
 
-pub(super) fn build_monitor_group(monitor: &MonitorViewModel) -> adw::PreferencesGroup {
+pub(super) fn build_monitor_group(
+    monitor: &MonitorViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Monitoring")
         .description(gtk::glib::markup_escape_text(&monitor.status).as_str())
@@ -39,8 +42,42 @@ pub(super) fn build_monitor_group(monitor: &MonitorViewModel) -> adw::Preference
                 readout.value.as_deref().unwrap_or("Unavailable")
             ))]);
             group.add(&row);
+            if readout.readout == kestrel::MonitorReadout::Cpu {
+                for cores in monitor.cores.iter().flatten() {
+                    group.add(&build_core_row(cores));
+                }
+            }
         }
     }
+    for accessory in &monitor.accessories.rows {
+        let row = plain_row()
+            .title(&accessory.title)
+            .subtitle(&accessory.detail)
+            .build();
+        let value = accessory
+            .percent
+            .map_or_else(|| "–".to_owned(), |percent| format!("{percent}%"));
+        let value_label = gtk::Label::new(Some(&value));
+        value_label.add_css_class("numeric");
+        value_label.set_valign(Align::Center);
+        row.add_suffix(&value_label);
+        row.update_property(&[Property::Label(&format!(
+            "{}: {value}, {}",
+            accessory.title, accessory.detail
+        ))]);
+        group.add(&row);
+    }
+    if let Some(reason) = &monitor.accessories.unavailable {
+        group.add(
+            &plain_row()
+                .title("Accessory batteries unavailable")
+                .subtitle(reason)
+                .subtitle_lines(0)
+                .sensitive(false)
+                .build(),
+        );
+    }
+    group.add(&build_addresses_row(monitor, commands));
     if !monitor.alerts.is_empty() || !monitor.delivery_failures.is_empty() {
         let heading = plain_row()
             .title("Active alerts")
@@ -78,6 +115,96 @@ pub(super) fn build_monitor_group(monitor: &MonitorViewModel) -> adw::Preference
     }
 
     group
+}
+
+/// One row per core type with a level bar for each logical CPU.
+fn build_core_row(group: &CoreGroupViewModel) -> adw::PreferencesRow {
+    let flow = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .max_children_per_line(8)
+        .min_children_per_line(4)
+        .column_spacing(12)
+        .row_spacing(6)
+        .homogeneous(true)
+        .build();
+    for (index, usage) in &group.cores {
+        let cell = gtk::Box::new(Orientation::Horizontal, 6);
+        let name = gtk::Label::new(Some(&format!("CPU {index}")));
+        name.add_css_class("caption");
+        name.set_width_chars(6);
+        name.set_xalign(0.0);
+        let bar = gtk::LevelBar::builder()
+            .min_value(0.0)
+            .max_value(100.0)
+            .value(usage.unwrap_or(0.0))
+            .hexpand(true)
+            .width_request(40)
+            .valign(Align::Center)
+            .build();
+        let value = usage.map_or_else(|| "–".to_owned(), |usage| format!("{usage:.0}%"));
+        let percent = gtk::Label::new(Some(&value));
+        percent.add_css_class("caption");
+        percent.add_css_class("numeric");
+        percent.set_width_chars(4);
+        percent.set_xalign(1.0);
+        cell.append(&name);
+        cell.append(&bar);
+        cell.append(&percent);
+        cell.update_property(&[Property::Label(&format!("CPU {index}: {value}"))]);
+        flow.append(&cell);
+    }
+    let content = gtk::Box::new(Orientation::Vertical, 6);
+    content.set_margin_top(10);
+    content.set_margin_bottom(10);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    let title = gtk::Label::new(Some(group.label));
+    title.set_xalign(0.0);
+    title.add_css_class("dim-label");
+    content.append(&title);
+    content.append(&flow);
+    let row = adw::PreferencesRow::new();
+    row.set_activatable(false);
+    row.set_child(Some(&content));
+    row.update_property(&[Property::Label(group.label)]);
+    row
+}
+
+/// Addresses appear only after the user asks and leave when hidden.
+fn build_addresses_row(
+    monitor: &MonitorViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::ActionRow {
+    let (subtitle, shown) = match &monitor.local_addresses {
+        None => (
+            "Shown on request; never saved or exported.".to_owned(),
+            false,
+        ),
+        Some(Ok(addresses)) if addresses.is_empty() => {
+            ("No interface has an address.".to_owned(), true)
+        }
+        Some(Ok(addresses)) => (addresses.join("\n"), true),
+        Some(Err(error)) => (error.clone(), true),
+    };
+    let row = plain_row()
+        .title("Local addresses")
+        .subtitle(&subtitle)
+        .subtitle_lines(0)
+        .build();
+    row.set_subtitle_selectable(shown);
+    let button = gtk::Button::with_label(if shown { "Hide" } else { "Show" });
+    button.set_valign(Align::Center);
+    button.update_property(&[Property::Label(if shown {
+        "Hide local addresses"
+    } else {
+        "Show local addresses"
+    })]);
+    let sender = commands.clone();
+    button.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::ShowLocalAddresses(!shown));
+    });
+    row.add_suffix(&button);
+    row
 }
 
 pub(super) fn build_speed_test_group(

@@ -10,8 +10,9 @@ pub mod capture;
 pub mod clipboard;
 pub mod global_shortcuts;
 pub mod launcher;
-
+pub mod network_addresses;
 pub mod notifications;
+pub mod nvml;
 pub mod processes;
 pub mod quick_toggles;
 pub mod recording;
@@ -21,6 +22,7 @@ pub mod speed_test;
 pub mod system_monitor;
 #[cfg(test)]
 mod test_bus;
+pub mod upower;
 
 /// Number of retries while an executable is momentarily busy.
 const SPAWN_ATTEMPTS: usize = 5;

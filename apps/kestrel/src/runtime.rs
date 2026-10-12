@@ -368,6 +368,8 @@ pub struct ApplicationRuntime {
     process_limits: kestrel_core::ProcessConfiguration,
     /// `pidfd_open` works; checked once because the kernel cannot change.
     process_signalling: bool,
+    /// Addresses fetched on request; dropped when hidden.
+    local_addresses: Option<Result<Vec<kestrel_platform::network_addresses::LocalAddress>, String>>,
     screen_tools: ScreenToolsService,
     camera: CameraPreviewService,
     recording: RecordingService,
@@ -727,6 +729,7 @@ impl ApplicationRuntime {
             listeners: ListenerService::new(),
             process_limits: configuration.processes,
             process_signalling: PidfdSignaller::available(),
+            local_addresses: None,
             screen_tools: ScreenToolsService::new(ocr_recognizer(&configuration.screen_tools)),
             camera: CameraPreviewService::new(Arc::new(V4l2Camera)),
             screen_tool_settings: configuration.screen_tools.clone(),
@@ -1017,6 +1020,9 @@ impl ApplicationRuntime {
             configuration,
             can_undo,
         );
+        model.monitor = model
+            .monitor
+            .with_local_addresses(self.local_addresses.as_ref());
         model.scratchpad = self.scratchpad_view_model();
         model.processes = self.processes_view_model("");
         model.screen_tools = self.screen_tools_view_model();
@@ -1076,6 +1082,15 @@ impl ApplicationRuntime {
                 policy: Some(self.alerts.policy()),
             },
         )
+        .with_local_addresses(self.local_addresses.as_ref())
+    }
+
+    /// Reads local addresses on an explicit request, or forgets them.
+    pub fn set_local_addresses_shown(&mut self, shown: bool) {
+        self.local_addresses = shown.then(|| {
+            kestrel_platform::network_addresses::local_addresses()
+                .map_err(|error| format!("Local addresses could not be read: {error}"))
+        });
     }
 
     pub fn system_monitor_snapshot(&self) -> Option<&SystemSnapshot> {

@@ -165,6 +165,38 @@ pub struct MonitorViewModel {
     pub alerts: Vec<ActiveAlertViewModel>,
     pub delivery_failures: Vec<(AlertKind, String)>,
     pub alert_rules: Vec<AlertRuleViewModel>,
+    /// Present when per-core load is enabled and the CPU readout is shown.
+    pub cores: Option<Vec<CoreGroupViewModel>>,
+    pub accessories: AccessoriesViewModel,
+    /// Present only after an explicit request; never stored or exported.
+    pub local_addresses: Option<Result<Vec<String>, String>>,
+    pub network_rate_unit: kestrel_core::NetworkRateUnit,
+    pub per_core_cpu: bool,
+    /// Tray title text for the configured tray readouts.
+    pub tray_summary: Option<String>,
+    /// The first tray readout that is a percentage, for the tray meter icon.
+    pub tray_meter_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreGroupViewModel {
+    pub label: &'static str,
+    /// Logical CPU number and load, `None` until a rate exists.
+    pub cores: Vec<(u32, Option<f64>)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AccessoriesViewModel {
+    pub rows: Vec<AccessoryViewModel>,
+    /// Why accessory batteries cannot be read, when they cannot.
+    pub unavailable: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessoryViewModel {
+    pub title: String,
+    pub detail: String,
+    pub percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +214,9 @@ pub struct MonitorReadoutSettingViewModel {
     pub visible: bool,
     pub can_move_up: bool,
     pub can_move_down: bool,
+    pub in_tray: bool,
+    /// False once the tray holds its maximum and this readout is not in it.
+    pub can_toggle_tray: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,7 +246,7 @@ impl MonitorViewModel {
             .readouts
             .iter()
             .copied()
-            .map(|readout| monitor_readout(snapshot, readout))
+            .map(|readout| monitor_readout(snapshot, readout, configuration))
             .collect();
         // Configured readouts come first; hidden ones follow.
         let visible_count = configuration.readouts.len();
@@ -228,12 +263,16 @@ impl MonitorViewModel {
                     .readouts
                     .iter()
                     .position(|entry| *entry == readout);
+                let in_tray = configuration.tray_readouts.contains(&readout);
                 MonitorReadoutSettingViewModel {
                     readout,
                     label: readout.label(),
                     visible: position.is_some(),
                     can_move_up: position.is_some_and(|position| position > 0),
                     can_move_down: position.is_some_and(|position| position + 1 < visible_count),
+                    in_tray,
+                    can_toggle_tray: in_tray
+                        || configuration.tray_readouts.len() < kestrel_core::MAX_TRAY_READOUTS,
                 }
             })
             .collect();
@@ -290,6 +329,27 @@ impl MonitorViewModel {
             snapshot,
             presentation.history.as_ref(),
         );
+        let cores = (configuration.per_core_cpu
+            && configuration.readouts.contains(&MonitorReadout::Cpu))
+        .then(|| snapshot.map(core_groups))
+        .flatten()
+        .filter(|groups| !groups.is_empty());
+        let tray_views = configuration
+            .tray_readouts
+            .iter()
+            .map(|readout| monitor_readout(snapshot, *readout, configuration))
+            .collect::<Vec<_>>();
+        let tray_summary = (!tray_views.is_empty()).then(|| {
+            tray_views
+                .iter()
+                .map(|view| format!("{} {}", view.label, view.value.as_deref().unwrap_or("–")))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        });
+        // `percentage` renders whole percents as "<n>%".
+        let tray_meter_percent = tray_views
+            .iter()
+            .find_map(|view| view.value.as_deref()?.strip_suffix('%')?.parse::<u8>().ok());
         Self {
             running: presentation.running,
             status,
@@ -298,7 +358,85 @@ impl MonitorViewModel {
             alerts,
             delivery_failures,
             alert_rules,
+            cores,
+            accessories: snapshot.map(accessories).unwrap_or_default(),
+            local_addresses: None,
+            network_rate_unit: configuration.network_rate_unit,
+            per_core_cpu: configuration.per_core_cpu,
+            tray_summary,
+            tray_meter_percent,
         }
+    }
+
+    /// Adds addresses fetched on an explicit request.
+    pub(crate) fn with_local_addresses(
+        mut self,
+        addresses: Option<&Result<Vec<kestrel_platform::network_addresses::LocalAddress>, String>>,
+    ) -> Self {
+        self.local_addresses = addresses.map(|result| {
+            result.as_ref().map_err(Clone::clone).map(|addresses| {
+                addresses
+                    .iter()
+                    .map(|entry| {
+                        format!(
+                            "{} · {}/{}",
+                            entry.interface, entry.address, entry.prefix_length
+                        )
+                    })
+                    .collect()
+            })
+        });
+        self
+    }
+}
+
+fn core_groups(snapshot: &SystemSnapshot) -> Vec<CoreGroupViewModel> {
+    use kestrel_platform::system_monitor::CoreKind;
+    let group = |label, kind: Option<CoreKind>| CoreGroupViewModel {
+        label,
+        cores: snapshot
+            .cores
+            .iter()
+            .filter(|core| core.kind == kind)
+            .map(|core| (core.index, core.usage_percent))
+            .collect(),
+    };
+    [
+        group("Performance cores", Some(CoreKind::Performance)),
+        group("Efficiency cores", Some(CoreKind::Efficiency)),
+        group("Cores", None),
+    ]
+    .into_iter()
+    .filter(|group| !group.cores.is_empty())
+    .collect()
+}
+
+fn accessories(snapshot: &SystemSnapshot) -> AccessoriesViewModel {
+    use kestrel_platform::upower::PeripheralCharge;
+    AccessoriesViewModel {
+        rows: snapshot
+            .peripherals
+            .iter()
+            .map(|peripheral| AccessoryViewModel {
+                title: match &peripheral.model {
+                    Some(model) => format!("{} · {model}", peripheral.kind.label()),
+                    None => peripheral.kind.label().to_owned(),
+                },
+                detail: match peripheral.charge {
+                    PeripheralCharge::Charging => "Charging",
+                    PeripheralCharge::Discharging => "On battery",
+                    PeripheralCharge::Full => "Fully charged",
+                    PeripheralCharge::Unknown => "Charge state unknown",
+                }
+                .to_owned(),
+                percent: peripheral.percentage,
+            })
+            .collect(),
+        unavailable: snapshot
+            .issues
+            .iter()
+            .find(|issue| issue.source == "UPower")
+            .map(|issue| issue.reason.clone()),
     }
 }
 
@@ -356,20 +494,43 @@ fn active_alert(alert: &ActiveAlert) -> ActiveAlertViewModel {
     }
 }
 fn format_bytes(bytes: f64) -> String {
-    if !bytes.is_finite() || bytes < 0.0 {
+    scaled(bytes, 1024.0, &["B", "KiB", "MiB", "GiB", "TiB"])
+}
+
+/// A network rate in the configured unit.
+fn format_rate(bytes_per_second: f64, unit: kestrel_core::NetworkRateUnit) -> String {
+    match unit {
+        kestrel_core::NetworkRateUnit::Bytes => format!("{}/s", format_bytes(bytes_per_second)),
+        kestrel_core::NetworkRateUnit::Bits => scaled(
+            bytes_per_second * 8.0,
+            1000.0,
+            &["bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"],
+        ),
+    }
+}
+
+/// Scales into the largest unit whose rounded value stays below `base`.
+fn scaled(value: f64, base: f64, units: &[&str]) -> String {
+    if !value.is_finite() || value < 0.0 {
         return "Unavailable".to_owned();
     }
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes;
+    let rounded = |value: f64, unit: usize| {
+        if unit == 0 {
+            value.round()
+        } else {
+            (value * 10.0).round() / 10.0
+        }
+    };
+    let mut value = value;
     let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
+    while rounded(value, unit) >= base && unit + 1 < units.len() {
+        value /= base;
         unit += 1;
     }
     if unit == 0 {
-        format!("{value:.0} {}", UNITS[unit])
+        format!("{value:.0} {}", units[unit])
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        format!("{value:.1} {}", units[unit])
     }
 }
 
@@ -420,6 +581,7 @@ fn unavailable(
 fn monitor_readout(
     snapshot: Option<&SystemSnapshot>,
     readout: MonitorReadout,
+    configuration: &MonitorConfiguration,
 ) -> MonitorReadoutViewModel {
     let Some(snapshot) = snapshot else {
         return unavailable(None, readout, "No system snapshot is available yet.");
@@ -507,11 +669,19 @@ fn monitor_readout(
                 .collect::<Vec<_>>();
             let rate = rates.iter().copied().fold(0.0, f64::max);
             if !rates.is_empty() {
+                let mut detail = format!("{} interfaces", snapshot.network.len());
+                if let Some(session) = snapshot.network_session {
+                    detail.push_str(&format!(
+                        " · {} down, {} up since monitoring started",
+                        format_bytes(session.received_bytes as f64),
+                        format_bytes(session.transmitted_bytes as f64)
+                    ));
+                }
                 MonitorReadoutViewModel {
                     readout,
                     label: readout.label(),
-                    value: Some(format!("{}/s", format_bytes(rate))),
-                    detail: format!("{} interfaces", snapshot.network.len()),
+                    value: Some(format_rate(rate, configuration.network_rate_unit)),
+                    detail,
                 }
             } else {
                 unavailable(Some(snapshot), readout, "Network rate is unavailable.")
@@ -542,6 +712,10 @@ fn monitor_readout(
                     .kind
                     .as_deref()
                     .is_some_and(|kind| kind.eq_ignore_ascii_case("battery"))
+                    && !supply
+                        .scope
+                        .as_deref()
+                        .is_some_and(|scope| scope.eq_ignore_ascii_case("device"))
             })
             .filter_map(|supply| supply.capacity_percent.map(|capacity| (supply, capacity)))
             .min_by_key(|(_, capacity)| *capacity)
@@ -549,7 +723,10 @@ fn monitor_readout(
                 readout,
                 label: readout.label(),
                 value: Some(percentage(capacity as f64)),
-                detail: supply.name.clone(),
+                detail: match power_source(snapshot, supply.status.as_deref()) {
+                    Some(state) => format!("{} · {state}", supply.name),
+                    None => supply.name.clone(),
+                },
             })
             .unwrap_or_else(|| {
                 unavailable(Some(snapshot), readout, "Battery capacity is unavailable.")
@@ -557,18 +734,54 @@ fn monitor_readout(
         MonitorReadout::Gpu => snapshot
             .gpu
             .iter()
-            .filter_map(|gpu| gpu.busy_percent)
-            .max()
-            .map(|value| MonitorReadoutViewModel {
+            .filter_map(|gpu| gpu.busy_percent.map(|busy| (gpu, busy)))
+            .max_by_key(|(_, busy)| *busy)
+            .map(|(gpu, value)| MonitorReadoutViewModel {
                 readout,
                 label: readout.label(),
                 value: Some(percentage(value as f64)),
-                detail: "GPU activity".to_owned(),
+                detail: {
+                    let name = gpu
+                        .label
+                        .clone()
+                        .unwrap_or_else(|| "GPU activity".to_owned());
+                    match (gpu.memory_used_bytes, gpu.memory_total_bytes) {
+                        (Some(used), Some(total)) if total > 0 => format!(
+                            "{name} · {} of {} memory",
+                            format_bytes(used as f64),
+                            format_bytes(total as f64)
+                        ),
+                        _ => name,
+                    }
+                },
             })
             .unwrap_or_else(|| {
                 unavailable(Some(snapshot), readout, "GPU activity is unavailable.")
             }),
     }
+}
+
+/// Charging state with the adapter's role; a connected adapter with charging
+/// paused counts as external power.
+fn power_source(snapshot: &SystemSnapshot, status: Option<&str>) -> Option<&'static str> {
+    let adapter_online = snapshot.power_supplies.iter().any(|supply| {
+        supply
+            .kind
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("mains"))
+            && supply.online == Some(true)
+    });
+    let status = status?.to_ascii_lowercase();
+    Some(match status.as_str() {
+        "charging" => "Charging",
+        "discharging" => "On battery",
+        "full" if adapter_online => "Fully charged, on external power",
+        "full" => "Fully charged",
+        "not charging" if adapter_online => "On external power, charging paused",
+        "not charging" => "Not charging",
+        _ if adapter_online => "On external power",
+        _ => return None,
+    })
 }
 
 pub(crate) struct AudioPresentation<'a> {
@@ -3868,6 +4081,132 @@ mod tests {
     }
 
     #[test]
+    fn units_switch_at_the_rounded_boundary() {
+        assert_eq!(super::format_bytes(1023.6), "1.0 KiB");
+        assert_eq!(super::format_bytes(1023.97 * 1024.0), "1.0 MiB");
+        assert_eq!(super::format_bytes(1000.0 * 1024.0), "1000.0 KiB");
+        assert_eq!(
+            super::format_rate(125_000.0, kestrel_core::NetworkRateUnit::Bits),
+            "1.0 Mbit/s"
+        );
+        assert_eq!(
+            super::format_rate(124.9, kestrel_core::NetworkRateUnit::Bits),
+            "999 bit/s"
+        );
+        assert_eq!(
+            super::format_rate(2048.0, kestrel_core::NetworkRateUnit::Bytes),
+            "2.0 KiB/s"
+        );
+    }
+
+    #[test]
+    fn monitor_depth_reads_power_source_session_totals_cores_and_tray() {
+        use kestrel_platform::system_monitor::CoreKind;
+        use kestrel_services::system_monitor::{
+            CoreUsage, NetworkSessionTotals, NetworkSnapshot, PowerSupplySnapshot, SystemSnapshot,
+        };
+        use std::time::Duration;
+
+        let supply = |name: &str, kind: &str, status: Option<&str>, online| PowerSupplySnapshot {
+            name: name.to_owned(),
+            kind: Some(kind.to_owned()),
+            scope: None,
+            capacity_percent: (kind == "Battery").then_some(80),
+            status: status.map(str::to_owned),
+            health: None,
+            cycle_count: None,
+            energy_now_microwatt_hours: None,
+            energy_full_microwatt_hours: None,
+            power_microwatts: None,
+            remaining_seconds: None,
+            online,
+        };
+        let core = |index, kind| CoreUsage {
+            index,
+            kind,
+            usage_percent: Some(f64::from(index) * 10.0),
+        };
+        let snapshot = SystemSnapshot {
+            observed_at: Duration::from_secs(5),
+            cpu_usage_percent: Some(12.0),
+            logical_cpus: Some(3),
+            cores: vec![
+                core(0, Some(CoreKind::Performance)),
+                core(1, Some(CoreKind::Efficiency)),
+                core(2, Some(CoreKind::Efficiency)),
+            ],
+            network_session: Some(NetworkSessionTotals {
+                received_bytes: 3 * 1024 * 1024,
+                transmitted_bytes: 512,
+                since: Duration::ZERO,
+            }),
+            peripherals: Vec::new(),
+            memory: None,
+            disk_usage: Vec::new(),
+            disk_activity: Vec::new(),
+            network: vec![NetworkSnapshot {
+                interface: "eth0".to_owned(),
+                received_bytes: 0,
+                transmitted_bytes: 0,
+                receive_bytes_per_second: Some(125_000.0),
+                transmit_bytes_per_second: Some(10.0),
+            }],
+            temperatures: Vec::new(),
+            power_supplies: vec![
+                supply("ADP0", "Mains", None, Some(true)),
+                supply("BAT0", "Battery", Some("Not charging"), None),
+            ],
+            gpu: Vec::new(),
+            issues: Vec::new(),
+        };
+        let configuration = MonitorConfiguration {
+            readouts: vec![
+                MonitorReadout::Cpu,
+                MonitorReadout::Network,
+                MonitorReadout::Battery,
+            ],
+            network_rate_unit: kestrel_core::NetworkRateUnit::Bits,
+            per_core_cpu: true,
+            tray_readouts: vec![MonitorReadout::Network, MonitorReadout::Battery],
+            ..MonitorConfiguration::default()
+        };
+        let monitor = MonitorViewModel::from_configuration(
+            &configuration,
+            MonitorPresentation {
+                snapshot: Some(&snapshot),
+                history: None,
+                alerts: Default::default(),
+                running: true,
+                policy: None,
+            },
+        );
+
+        assert_eq!(monitor.readouts[1].value.as_deref(), Some("1.0 Mbit/s"));
+        assert!(
+            monitor.readouts[1]
+                .detail
+                .contains("3.0 MiB down, 512 B up since monitoring started")
+        );
+        assert_eq!(
+            monitor.readouts[2].detail,
+            "BAT0 · On external power, charging paused"
+        );
+        let groups = monitor
+            .cores
+            .expect("per-core load is enabled")
+            .iter()
+            .map(|group| (group.label, group.cores.len()))
+            .collect::<Vec<_>>();
+        assert_eq!(groups, [("Performance cores", 1), ("Efficiency cores", 2)]);
+        assert_eq!(
+            monitor.tray_summary.as_deref(),
+            Some("Network 1.0 Mbit/s · Battery 80%")
+        );
+        assert_eq!(monitor.tray_meter_percent, Some(80), "the first percentage");
+        assert_eq!(monitor.local_addresses, None, "addresses need a request");
+    }
+
+    #[test]
     fn unavailable_readout_never_borrows_another_family_reason() {
         use kestrel_platform::system_monitor::SourceIssue;
         use kestrel_services::system_monitor::SystemSnapshot;
@@ -3878,6 +4217,9 @@ mod tests {
             observed_at: Duration::from_secs(1),
             cpu_usage_percent: None,
             logical_cpus: None,
+            cores: Vec::new(),
+            network_session: None,
+            peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
             disk_activity: Vec::new(),
@@ -3923,6 +4265,9 @@ mod tests {
             observed_at: Duration::from_secs(1),
             cpu_usage_percent: None,
             logical_cpus: None,
+            cores: Vec::new(),
+            network_session: None,
+            peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
             disk_activity: Vec::new(),
