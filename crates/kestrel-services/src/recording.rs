@@ -30,7 +30,7 @@ const TAKE_EXTENSION: &str = "webm";
 const PARTIAL_SUFFIX: &str = ".partial";
 /// Maximum listed takes, newest first.
 pub const MAX_LISTED_TAKES: usize = 10;
-/// Minimum free space in bytes before recording stops.
+/// Recording does not start, and stops, below this many free bytes.
 pub const MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
 const POLL: Duration = Duration::from_millis(100);
 const SPACE_CHECK: Duration = Duration::from_secs(1);

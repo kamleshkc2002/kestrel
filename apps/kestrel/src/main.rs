@@ -190,6 +190,7 @@ impl ControllerState {
             },
         };
 
+        // Record only attempted IDs and counts.
         let _ = self.runtime.record_command_use(id);
         self.refresh_command_results();
         outcome
