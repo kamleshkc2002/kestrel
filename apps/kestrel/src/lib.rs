@@ -50,15 +50,16 @@ pub use view_model::{
     ActiveAlertViewModel, AlertRuleViewModel, ApplicationViewModel, AudioOutputGroupViewModel,
     AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel, AudioViewModel,
     CameraChoiceViewModel, CameraViewModel, CapabilityKindViewModel, CapabilityStatusViewModel,
-    CapabilityViewModel, CaptureEntryViewModel, CaptureModeViewModel, CaptureViewModel,
-    ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
+    CapabilityViewModel, CaptureEntryViewModel, CaptureModeViewModel, CaptureStreamViewModel,
+    CaptureViewModel, ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
     ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
     CommandProviderViewModel, CommandRankingViewModel, CommandResultViewModel,
-    ConfigurationWarningViewModel, ConfirmationViewModel, FeatureLifecycleViewModel,
-    FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
-    MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
-    PanelSectionViewModel, ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel,
-    QrRowViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
+    ConfigurationWarningViewModel, ConfirmationViewModel, DevicePriorityViewModel,
+    FeatureLifecycleViewModel, FeatureViewModel, ListenerRowViewModel, ListenersViewModel,
+    MicrophoneInputViewModel, MicrophoneViewModel, MonitorReadoutSettingViewModel,
+    MonitorReadoutViewModel, MonitorViewModel, PanelSectionViewModel, PriorityDeviceViewModel,
+    ProcessActionViewModel, ProcessRowViewModel, ProcessesViewModel, QrRowViewModel,
+    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
     RecordingControls, RecordingExportViewModel, RecordingTakeViewModel,
     RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel,
     RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
@@ -220,6 +221,116 @@ pub enum PanelMoveDirection {
     Down,
 }
 
+/// The server side a device ranking applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioDirection {
+    Output,
+    Input,
+}
+
+/// Edit to saved device rankings or pinned mixer applications.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioPreferenceEdit {
+    /// Appends a device name to the ranking.
+    Rank {
+        direction: AudioDirection,
+        name: String,
+    },
+    Unrank {
+        direction: AudioDirection,
+        name: String,
+    },
+    MoveDevice {
+        direction: AudioDirection,
+        name: String,
+        toward: PanelMoveDirection,
+    },
+    Follow {
+        direction: AudioDirection,
+        follow: bool,
+    },
+    /// Appends an application identity to the pinned list.
+    Pin(String),
+    Unpin(String),
+    MovePinned {
+        application_id: String,
+        toward: PanelMoveDirection,
+    },
+}
+
+impl AudioPreferenceEdit {
+    /// Applies the edit within the configured bounds; false when nothing changed.
+    pub fn apply(&self, audio: &mut kestrel_core::AudioConfiguration) -> bool {
+        fn ranking(
+            audio: &mut kestrel_core::AudioConfiguration,
+            direction: AudioDirection,
+        ) -> &mut Vec<String> {
+            match direction {
+                AudioDirection::Output => &mut audio.output_priority,
+                AudioDirection::Input => &mut audio.input_priority,
+            }
+        }
+        match self {
+            Self::Rank { direction, name } => append_bounded(
+                ranking(audio, *direction),
+                name,
+                kestrel_core::MAX_AUDIO_PRIORITY_DEVICES,
+            ),
+            Self::Unrank { direction, name } => remove_entry(ranking(audio, *direction), name),
+            Self::MoveDevice {
+                direction,
+                name,
+                toward,
+            } => move_entry(ranking(audio, *direction), name, *toward),
+            Self::Follow { direction, follow } => {
+                let current = match direction {
+                    AudioDirection::Output => &mut audio.follow_output_priority,
+                    AudioDirection::Input => &mut audio.follow_input_priority,
+                };
+                *current != std::mem::replace(current, *follow)
+            }
+            Self::Pin(application_id) => append_bounded(
+                &mut audio.mixer_favorites,
+                application_id,
+                kestrel_core::MAX_MIXER_FAVORITES,
+            ),
+            Self::Unpin(application_id) => remove_entry(&mut audio.mixer_favorites, application_id),
+            Self::MovePinned {
+                application_id,
+                toward,
+            } => move_entry(&mut audio.mixer_favorites, application_id, *toward),
+        }
+    }
+}
+
+fn append_bounded(list: &mut Vec<String>, entry: &str, limit: usize) -> bool {
+    list.push(entry.to_owned());
+    let valid = kestrel_core::valid_audio_identity_list(list, limit);
+    if !valid {
+        list.pop();
+    }
+    valid
+}
+
+fn remove_entry(list: &mut Vec<String>, entry: &str) -> bool {
+    let before = list.len();
+    list.retain(|existing| existing != entry);
+    list.len() != before
+}
+
+fn move_entry(list: &mut [String], entry: &str, toward: PanelMoveDirection) -> bool {
+    let Some(index) = list.iter().position(|existing| existing == entry) else {
+        return false;
+    };
+    let target = match toward {
+        PanelMoveDirection::Up => index.checked_sub(1),
+        PanelMoveDirection::Down => (index + 1 < list.len()).then_some(index + 1),
+    };
+    let Some(target) = target else { return false };
+    list.swap(index, target);
+    true
+}
+
 /// A window control a command can focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
@@ -333,6 +444,8 @@ pub enum ApplicationCommand {
     SetAudioDisconnectPolicy(AudioDisconnectPolicy),
     SetAudioDisconnectVolumePercent(u8),
     SetAudioIncludeInactiveStreams(bool),
+    /// Device rankings and pinned mixer applications.
+    AudioPreference(AudioPreferenceEdit),
     /// Clipboard history mutation.
     Clipboard(ClipboardCommand),
     /// Bounded clipboard search.
@@ -401,4 +514,51 @@ pub enum CaptureRequest {
     },
     Delete(CaptureId),
     Clear,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AudioDirection, AudioPreferenceEdit, PanelMoveDirection};
+    use kestrel_core::{AudioConfiguration, MAX_MIXER_FAVORITES};
+
+    #[test]
+    fn rankings_reorder_within_bounds_and_report_no_ops() {
+        let mut audio = AudioConfiguration::default();
+        let rank = |name: &str| AudioPreferenceEdit::Rank {
+            direction: AudioDirection::Output,
+            name: name.to_owned(),
+        };
+        assert!(rank("speakers").apply(&mut audio));
+        assert!(rank("headset").apply(&mut audio));
+        assert!(!rank("headset").apply(&mut audio), "already ranked");
+        assert!(!rank("").apply(&mut audio), "blank name");
+        let up = AudioPreferenceEdit::MoveDevice {
+            direction: AudioDirection::Output,
+            name: "headset".to_owned(),
+            toward: PanelMoveDirection::Up,
+        };
+        assert!(up.apply(&mut audio));
+        assert!(!up.apply(&mut audio), "already first");
+        assert_eq!(audio.output_priority, ["headset", "speakers"]);
+        assert!(audio.input_priority.is_empty(), "directions are separate");
+        assert!(
+            AudioPreferenceEdit::Unrank {
+                direction: AudioDirection::Output,
+                name: "headset".to_owned(),
+            }
+            .apply(&mut audio)
+        );
+        assert_eq!(audio.output_priority, ["speakers"]);
+    }
+
+    #[test]
+    fn pinning_stops_at_the_limit() {
+        let mut audio = AudioConfiguration::default();
+        for index in 0..MAX_MIXER_FAVORITES {
+            assert!(AudioPreferenceEdit::Pin(format!("app-{index}")).apply(&mut audio));
+        }
+        assert!(!AudioPreferenceEdit::Pin("one-more".to_owned()).apply(&mut audio));
+        assert_eq!(audio.mixer_favorites.len(), MAX_MIXER_FAVORITES);
+        assert!(audio.validate().is_ok());
+    }
 }

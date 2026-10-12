@@ -600,6 +600,62 @@ pub struct AudioViewModel {
     pub default_output_id: Option<u32>,
     pub inactive_streams: usize,
     pub policy: AudioPolicyViewModel,
+    pub output_priority: DevicePriorityViewModel,
+}
+
+/// A device in a priority list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorityDeviceViewModel {
+    /// Server device name, the stored identity.
+    pub name: String,
+    /// Description when connected, else the name.
+    pub label: String,
+    pub connected: bool,
+}
+
+/// Ranked devices first, then connected devices not yet ranked.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DevicePriorityViewModel {
+    pub follow: bool,
+    pub ranked: Vec<PriorityDeviceViewModel>,
+    pub unranked: Vec<PriorityDeviceViewModel>,
+    /// The ranking is at its size limit.
+    pub full: bool,
+}
+
+impl DevicePriorityViewModel {
+    fn new<'a>(
+        ranked: &[String],
+        follow: bool,
+        connected: impl Iterator<Item = (&'a str, &'a str)> + Clone,
+    ) -> Self {
+        let label = |name: &str| {
+            connected
+                .clone()
+                .find(|(device, _)| *device == name)
+                .map(|(_, description)| description.to_owned())
+        };
+        Self {
+            follow,
+            ranked: ranked
+                .iter()
+                .map(|name| PriorityDeviceViewModel {
+                    name: name.clone(),
+                    connected: label(name).is_some(),
+                    label: label(name).unwrap_or_else(|| name.clone()),
+                })
+                .collect(),
+            unranked: connected
+                .filter(|(name, _)| !ranked.iter().any(|ranked| ranked == name))
+                .map(|(name, description)| PriorityDeviceViewModel {
+                    name: name.to_owned(),
+                    label: description.to_owned(),
+                    connected: true,
+                })
+                .collect(),
+            full: ranked.len() >= kestrel_core::MAX_AUDIO_PRIORITY_DEVICES,
+        }
+    }
 }
 
 /// Outputs sharing a hardware card.
@@ -631,6 +687,10 @@ pub struct AudioStreamViewModel {
     pub muted: bool,
     pub output_id: u32,
     pub inactive: bool,
+    /// Stable application identity, when the stream reports one.
+    pub application_id: Option<String>,
+    /// Position among pinned applications and how many are pinned.
+    pub pinned: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -662,6 +722,17 @@ impl AudioViewModel {
             disconnect_volume_percent: policy.disconnect_volume_percent,
             include_inactive_streams: policy.include_inactive_streams,
         };
+        let output_priority = DevicePriorityViewModel::new(
+            &configuration.output_priority,
+            configuration.follow_output_priority,
+            presentation
+                .snapshot
+                .filter(|_| presentation.running)
+                .map(|snapshot| snapshot.outputs.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .map(|output| (output.name.as_str(), output.description.as_str())),
+        );
         let Some(snapshot) = presentation.snapshot.filter(|_| presentation.running) else {
             return Self {
                 running: presentation.running,
@@ -681,6 +752,7 @@ impl AudioViewModel {
                 default_output_id: None,
                 inactive_streams: 0,
                 policy: policy_view,
+                output_priority,
             };
         };
 
@@ -716,6 +788,7 @@ impl AudioViewModel {
                     .collect(),
             })
             .collect();
+        let favorites = &configuration.mixer_favorites;
         let streams = snapshot
             .streams
             .iter()
@@ -732,6 +805,12 @@ impl AudioViewModel {
                 muted: stream.muted,
                 output_id: stream.output_id,
                 inactive: stream.corked,
+                application_id: stream.application_id.clone(),
+                pinned: stream
+                    .application_id
+                    .as_ref()
+                    .and_then(|id| favorites.iter().position(|favorite| favorite == id))
+                    .map(|index| (index, favorites.len())),
             })
             .collect();
 
@@ -747,6 +826,7 @@ impl AudioViewModel {
             default_output_id: snapshot.default_output().map(|output| output.id),
             inactive_streams: snapshot.inactive_streams,
             policy: policy_view,
+            output_priority,
         }
     }
 }
@@ -754,6 +834,17 @@ impl AudioViewModel {
 pub(crate) struct MicrophonePresentation<'a> {
     pub snapshot: &'a MicrophoneSnapshot,
     pub running: bool,
+}
+
+/// An application recording from an input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureStreamViewModel {
+    pub id: u32,
+    pub title: String,
+    pub detail: String,
+    pub volume_percent: Option<u8>,
+    pub volume_writable: bool,
+    pub muted: bool,
 }
 
 /// One capture input as the window lists it.
@@ -777,12 +868,19 @@ pub struct MicrophoneViewModel {
     pub mixed: bool,
     pub inputs: Vec<MicrophoneInputViewModel>,
     pub default_input_id: Option<u32>,
-    /// Device-loss notice from the last refresh.
+    /// The default input's level, as the server reports it.
+    pub default_input_volume: Option<u8>,
+    pub capture_streams: Vec<CaptureStreamViewModel>,
+    pub input_priority: DevicePriorityViewModel,
+    /// Device-loss or priority notice from the last refresh.
     pub message: Option<String>,
 }
 
 impl MicrophoneViewModel {
-    pub(crate) fn from_presentation(presentation: MicrophonePresentation<'_>) -> Self {
+    pub(crate) fn from_presentation(
+        configuration: &kestrel_core::AudioConfiguration,
+        presentation: MicrophonePresentation<'_>,
+    ) -> Self {
         if !presentation.running {
             return Self {
                 running: false,
@@ -794,6 +892,13 @@ impl MicrophoneViewModel {
                 mixed: false,
                 inputs: Vec::new(),
                 default_input_id: None,
+                default_input_volume: None,
+                capture_streams: Vec::new(),
+                input_priority: DevicePriorityViewModel::new(
+                    &configuration.input_priority,
+                    configuration.follow_input_priority,
+                    std::iter::empty(),
+                ),
                 message: None,
             };
         }
@@ -831,7 +936,17 @@ impl MicrophoneViewModel {
                 count => format!("{count} inputs disconnected."),
             })
         } else {
-            None
+            snapshot
+                .priority_switch
+                .as_ref()
+                .map(|input| format!("Switched to {input}, the highest-ranked input."))
+        };
+        let input_label = |input_id: u32| {
+            snapshot
+                .inputs
+                .iter()
+                .find(|input| input.id == input_id)
+                .map(|input| input.description.clone())
         };
         Self {
             running: true,
@@ -850,6 +965,41 @@ impl MicrophoneViewModel {
                 })
                 .collect(),
             default_input_id: snapshot.default_input_id,
+            default_input_volume: snapshot
+                .inputs
+                .iter()
+                .find(|input| input.is_default)
+                .map(|input| input.volume_percent),
+            capture_streams: snapshot
+                .capture_streams
+                .iter()
+                .map(|stream| CaptureStreamViewModel {
+                    id: stream.id,
+                    title: stream
+                        .application_name
+                        .clone()
+                        .unwrap_or_else(|| format!("Stream {}", stream.id)),
+                    detail: if stream.from_monitor {
+                        "Recording system audio".to_owned()
+                    } else {
+                        match input_label(stream.input_id) {
+                            Some(input) => format!("Recording from {input}"),
+                            None => "Recording".to_owned(),
+                        }
+                    },
+                    volume_percent: stream.volume_percent,
+                    volume_writable: stream.volume_writable,
+                    muted: stream.muted,
+                })
+                .collect(),
+            input_priority: DevicePriorityViewModel::new(
+                &configuration.input_priority,
+                configuration.follow_input_priority,
+                snapshot
+                    .inputs
+                    .iter()
+                    .map(|input| (input.name.as_str(), input.description.as_str())),
+            ),
             message,
         }
     }
@@ -2019,7 +2169,21 @@ fn audio_status(snapshot: &AudioSnapshot) -> String {
 fn audio_message(snapshot: &AudioSnapshot) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(switch) = &snapshot.last_switch {
-        let mut text = format!("Switched the default output to {}.", switch.output_name);
+        let label = snapshot
+            .outputs
+            .iter()
+            .find(|output| output.id == switch.output_id)
+            .map_or(switch.output_name.as_str(), |output| {
+                output.description.as_str()
+            });
+        let mut text = match switch.reason {
+            kestrel_services::audio::AudioSwitchReason::Manual => {
+                format!("Switched the default output to {label}.")
+            }
+            kestrel_services::audio::AudioSwitchReason::Priority => {
+                format!("Switched to {label}, the highest-ranked connected output.")
+            }
+        };
         if switch.moved_streams > 0 {
             text.push_str(&format!(" Moved {} streams.", switch.moved_streams));
         }
@@ -2917,7 +3081,7 @@ impl ApplicationViewModel {
                 })
                 .collect(),
             audio: AudioViewModel::from_presentation(&configuration.audio, audio),
-            microphone: MicrophoneViewModel::from_presentation(microphone),
+            microphone: MicrophoneViewModel::from_presentation(&configuration.audio, microphone),
             speed_test: SpeedTestViewModel::from_presentation(speed_test),
             shortcuts: ShortcutsViewModel::from_presentation(shortcuts),
             capture: CaptureViewModel::from_presentation(capture),
@@ -3927,6 +4091,7 @@ mod tests {
             id,
             name: format!("Stream {id}"),
             application_name: Some(format!("Application {id}")),
+            application_id: Some(format!("application-{id}")),
             media_name: Some("A track".to_string()),
             media_role: Some("music".to_string()),
             output_id,
@@ -4685,15 +4850,79 @@ mod tests {
             mute,
             lost_inputs: 0,
             default_input_lost: false,
+            capture_streams: Vec::new(),
+            priority_switch: None,
         }
     }
 
     #[test]
+    fn absent_ranked_inputs_keep_their_rank_and_monitor_capture_reads_as_system_audio() {
+        let mut snapshot = microphone_snapshot(
+            vec![
+                microphone_input(1, false, true),
+                microphone_input(2, false, false),
+            ],
+            MicrophoneMuteState::Live,
+        );
+        let capture = |id, from_monitor| kestrel_platform::audio::CaptureStream {
+            id,
+            application_name: Some("Recorder".into()),
+            application_id: Some("recorder".into()),
+            input_id: 1,
+            from_monitor,
+            volume_percent: Some(100),
+            volume_writable: true,
+            muted: false,
+            corked: false,
+        };
+        snapshot.capture_streams = vec![capture(7, false), capture(8, true)];
+        let configuration = kestrel_core::AudioConfiguration {
+            input_priority: vec!["usb-mic".into(), "source-2".into()],
+            follow_input_priority: true,
+            ..Default::default()
+        };
+        let view = MicrophoneViewModel::from_presentation(
+            &configuration,
+            MicrophonePresentation {
+                snapshot: &snapshot,
+                running: true,
+            },
+        );
+
+        let ranked: Vec<_> = view
+            .input_priority
+            .ranked
+            .iter()
+            .map(|device| (device.label.as_str(), device.connected))
+            .collect();
+        assert_eq!(ranked, [("usb-mic", false), ("Input 2", true)]);
+        let unranked: Vec<_> = view
+            .input_priority
+            .unranked
+            .iter()
+            .map(|device| device.name.as_str())
+            .collect();
+        assert_eq!(unranked, ["source-1"]);
+        let details: Vec<_> = view
+            .capture_streams
+            .iter()
+            .map(|stream| stream.detail.as_str())
+            .collect();
+        assert_eq!(
+            details,
+            ["Recording from Input 1", "Recording system audio"]
+        );
+    }
+
+    #[test]
     fn microphone_mute_is_claimed_only_from_an_agreeing_backend_reading() {
-        let unknown = MicrophoneViewModel::from_presentation(MicrophonePresentation {
-            snapshot: &MicrophoneSnapshot::unavailable(),
-            running: true,
-        });
+        let unknown = MicrophoneViewModel::from_presentation(
+            &Default::default(),
+            MicrophonePresentation {
+                snapshot: &MicrophoneSnapshot::unavailable(),
+                running: true,
+            },
+        );
         assert_eq!(unknown.muted, None, "no reading, no claim");
         assert!(!unknown.mixed);
         assert!(unknown.mute_label.contains("unknown"));
@@ -4705,10 +4934,13 @@ mod tests {
             ],
             MicrophoneMuteState::Muted,
         );
-        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
-            snapshot: &muted,
-            running: true,
-        });
+        let view = MicrophoneViewModel::from_presentation(
+            &Default::default(),
+            MicrophonePresentation {
+                snapshot: &muted,
+                running: true,
+            },
+        );
         assert_eq!(view.muted, Some(true));
         assert_eq!(view.default_input_id, Some(1));
         assert_eq!(view.inputs.len(), 2);
@@ -4720,10 +4952,13 @@ mod tests {
             ],
             MicrophoneMuteState::Mixed { muted: 1, total: 2 },
         );
-        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
-            snapshot: &mixed,
-            running: true,
-        });
+        let view = MicrophoneViewModel::from_presentation(
+            &Default::default(),
+            MicrophonePresentation {
+                snapshot: &mixed,
+                running: true,
+            },
+        );
         assert_eq!(
             view.muted, None,
             "a mixed reading is not reported as muted or live"
@@ -4739,10 +4974,13 @@ mod tests {
             MicrophoneMuteState::Muted,
         );
 
-        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
-            snapshot: &snapshot,
-            running: false,
-        });
+        let view = MicrophoneViewModel::from_presentation(
+            &Default::default(),
+            MicrophonePresentation {
+                snapshot: &snapshot,
+                running: false,
+            },
+        );
 
         assert!(!view.running);
         assert_eq!(view.muted, None, "a stale reading is never presented");
@@ -4761,10 +4999,13 @@ mod tests {
             )
         };
 
-        let view = MicrophoneViewModel::from_presentation(MicrophonePresentation {
-            snapshot: &snapshot,
-            running: true,
-        });
+        let view = MicrophoneViewModel::from_presentation(
+            &Default::default(),
+            MicrophonePresentation {
+                snapshot: &snapshot,
+                running: true,
+            },
+        );
 
         assert_eq!(view.default_input_id, None);
         assert!(

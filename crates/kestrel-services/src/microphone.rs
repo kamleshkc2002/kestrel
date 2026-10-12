@@ -2,11 +2,13 @@
 
 use std::fmt;
 
-use kestrel_core::{CapabilityReport, CapabilityStatus};
+use kestrel_core::{CapabilityReport, CapabilityStatus, MAX_AUDIO_BOOST_PERCENT};
 use kestrel_platform::audio::{
-    AudioError, InputDevice, InputDiscovery, MICROPHONE_FEATURE_ID, MicrophoneBackend,
-    microphone_capability_for, microphone_capability_for_error,
+    AudioError, CaptureStream, InputDevice, InputDiscovery, MICROPHONE_FEATURE_ID,
+    MicrophoneBackend, microphone_capability_for, microphone_capability_for_error,
 };
+
+use crate::audio::{DevicePriority, device_set_changed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MicrophoneMuteState {
@@ -32,6 +34,10 @@ pub struct MicrophoneSnapshot {
     pub mute: MicrophoneMuteState,
     pub lost_inputs: usize,
     pub default_input_lost: bool,
+    /// Applications recording from an input, including system-audio capture.
+    pub capture_streams: Vec<CaptureStream>,
+    /// The input the ranking last selected, by description.
+    pub priority_switch: Option<String>,
 }
 
 impl MicrophoneSnapshot {
@@ -43,6 +49,8 @@ impl MicrophoneSnapshot {
             mute: MicrophoneMuteState::Unknown,
             lost_inputs: 0,
             default_input_lost: false,
+            capture_streams: Vec::new(),
+            priority_switch: None,
         }
     }
 }
@@ -53,12 +61,18 @@ pub enum MicrophoneCommand {
     ToggleMute,
     SetInputMute { input_id: u32, muted: bool },
     SetDefaultInput { input_id: u32 },
+    SetInputVolume { input_id: u32, volume_percent: u8 },
+    SetCaptureVolume { stream_id: u32, volume_percent: u8 },
+    SetCaptureMute { stream_id: u32, muted: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MicrophoneCommandError {
     NoInputs,
     UnknownInput { input_id: u32 },
+    UnknownStream { stream_id: u32 },
+    ReadOnlyStream { stream_id: u32 },
+    VolumeOutOfRange { requested: u8 },
     Partial { failed: usize, total: usize },
     Backend(AudioError),
     Refresh(AudioError),
@@ -73,6 +87,19 @@ impl fmt::Display for MicrophoneCommandError {
             Self::UnknownInput { input_id } => {
                 write!(formatter, "input {input_id} is no longer available")
             }
+            Self::UnknownStream { stream_id } => {
+                write!(formatter, "capture stream {stream_id} has ended")
+            }
+            Self::ReadOnlyStream { stream_id } => {
+                write!(
+                    formatter,
+                    "capture stream {stream_id} has no adjustable level"
+                )
+            }
+            Self::VolumeOutOfRange { requested } => write!(
+                formatter,
+                "level {requested}% is above the {MAX_AUDIO_BOOST_PERCENT}% amplification cap"
+            ),
             Self::Partial { failed, total } => {
                 write!(
                     formatter,
@@ -97,6 +124,10 @@ pub type MicrophoneCommandResult = Result<MicrophoneSnapshot, Box<MicrophoneComm
 
 pub struct MicrophoneService<B> {
     backend: B,
+    priority: DevicePriority,
+    /// The ranking changed; apply it on the next refresh.
+    priority_pending: bool,
+    priority_switch: Option<String>,
     discovered: Option<InputDiscovery>,
     latest: MicrophoneSnapshot,
     capability: CapabilityReport,
@@ -106,6 +137,9 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
     pub fn new(backend: B) -> Self {
         Self {
             backend,
+            priority: DevicePriority::default(),
+            priority_pending: false,
+            priority_switch: None,
             discovered: None,
             latest: MicrophoneSnapshot::unavailable(),
             capability: CapabilityReport::new(
@@ -126,6 +160,15 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
         &self.capability
     }
 
+    /// Replaces the input ranking; a changed, followed ranking applies on the
+    /// next refresh.
+    pub fn set_priority(&mut self, priority: DevicePriority) {
+        if priority != self.priority {
+            self.priority_pending = priority.follow;
+            self.priority = priority;
+        }
+    }
+
     pub fn refresh(&mut self) -> Result<&MicrophoneSnapshot, AudioError> {
         let previous = self.discovered.as_ref();
         let previous_ids = previous.map(|discovery| {
@@ -144,7 +187,7 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
                 .map(|input| input.id)
         });
 
-        let discovery = match self.backend.discover_inputs() {
+        let mut discovery = match self.backend.discover_inputs() {
             Ok(discovery) => discovery,
             Err(error) => {
                 self.discovered = None;
@@ -153,6 +196,26 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
                 return Err(error);
             }
         };
+
+        let devices_changed = device_set_changed(
+            previous.map(|discovery| discovery.inputs.iter().map(|input| input.name.as_str())),
+            discovery.inputs.iter().map(|input| input.name.as_str()),
+        );
+        if self.priority.follow && (devices_changed || self.priority_pending) {
+            self.priority_pending = false;
+            let target = self
+                .priority
+                .preferred(&discovery.inputs, |input| input.name.as_str())
+                .filter(|input| !input.is_default)
+                .map(|input| (input.name.clone(), input.description.clone()));
+            let switched = target.filter(|(name, _)| self.backend.set_default_input(name).is_ok());
+            if let Some((_, description)) = switched {
+                self.priority_switch = Some(description);
+                if let Ok(rediscovered) = self.backend.discover_inputs() {
+                    discovery = rediscovered;
+                }
+            }
+        }
 
         let current_ids = discovery
             .inputs
@@ -167,6 +230,7 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
             .map(|id| !current_ids.contains(&id))
             .unwrap_or(false);
         self.latest = snapshot_for_discovery(&discovery, lost_inputs, default_input_lost);
+        self.latest.priority_switch = self.priority_switch.clone();
         self.capability = microphone_capability_for(&discovery);
         self.discovered = Some(discovery);
         Ok(&self.latest)
@@ -202,18 +266,45 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
     }
 
     fn validate(&self, command: MicrophoneCommand) -> Result<(), MicrophoneCommandError> {
-        let inputs = self
+        let (inputs, streams) = self
             .discovered
             .as_ref()
-            .map(|discovery| discovery.inputs.as_slice())
-            .unwrap_or(&[]);
+            .map(|discovery| (discovery.inputs.as_slice(), discovery.streams.as_slice()))
+            .unwrap_or((&[], &[]));
+        let stream = |stream_id| {
+            streams
+                .iter()
+                .find(|stream| stream.id == stream_id)
+                .ok_or(MicrophoneCommandError::UnknownStream { stream_id })
+        };
+        let level = |volume_percent| {
+            if volume_percent > MAX_AUDIO_BOOST_PERCENT {
+                Err(MicrophoneCommandError::VolumeOutOfRange {
+                    requested: volume_percent,
+                })
+            } else {
+                Ok(())
+            }
+        };
         match command {
             MicrophoneCommand::SetInputMute { input_id, .. }
             | MicrophoneCommand::SetDefaultInput { input_id }
+            | MicrophoneCommand::SetInputVolume { input_id, .. }
                 if !inputs.iter().any(|input| input.id == input_id) =>
             {
                 Err(MicrophoneCommandError::UnknownInput { input_id })
             }
+            MicrophoneCommand::SetInputVolume { volume_percent, .. } => level(volume_percent),
+            MicrophoneCommand::SetCaptureVolume {
+                stream_id,
+                volume_percent,
+            } => {
+                if !stream(stream_id)?.volume_writable {
+                    return Err(MicrophoneCommandError::ReadOnlyStream { stream_id });
+                }
+                level(volume_percent)
+            }
+            MicrophoneCommand::SetCaptureMute { stream_id, .. } => stream(stream_id).map(|_| ()),
             MicrophoneCommand::SetMuted(_) | MicrophoneCommand::ToggleMute if inputs.is_empty() => {
                 Err(MicrophoneCommandError::NoInputs)
             }
@@ -245,6 +336,24 @@ impl<B: MicrophoneBackend> MicrophoneService<B> {
                     .set_default_input(&input_name)
                     .map_err(MicrophoneCommandError::Backend)
             }
+            MicrophoneCommand::SetInputVolume {
+                input_id,
+                volume_percent,
+            } => self
+                .backend
+                .set_input_volume(input_id, volume_percent)
+                .map_err(MicrophoneCommandError::Backend),
+            MicrophoneCommand::SetCaptureVolume {
+                stream_id,
+                volume_percent,
+            } => self
+                .backend
+                .set_capture_volume(stream_id, volume_percent)
+                .map_err(MicrophoneCommandError::Backend),
+            MicrophoneCommand::SetCaptureMute { stream_id, muted } => self
+                .backend
+                .set_capture_mute(stream_id, muted)
+                .map_err(MicrophoneCommandError::Backend),
         }
     }
 
@@ -311,6 +420,8 @@ fn snapshot_for_discovery(
         mute,
         lost_inputs,
         default_input_lost,
+        capture_streams: discovery.streams.clone(),
+        priority_switch: None,
     }
 }
 
@@ -325,6 +436,9 @@ mod tests {
         mute_failures: Vec<u32>,
         mutes: Vec<(u32, bool)>,
         defaults: Vec<String>,
+        input_volumes: Vec<(u32, u8)>,
+        capture_volumes: Vec<(u32, u8)>,
+        capture_mutes: Vec<(u32, bool)>,
     }
 
     impl MicrophoneBackend for FakeBackend {
@@ -333,6 +447,7 @@ mod tests {
                 Ok(InputDiscovery {
                     default_input_name: None,
                     inputs: Vec::new(),
+                    streams: Vec::new(),
                 })
             })
         }
@@ -347,8 +462,20 @@ mod tests {
                 Ok(())
             }
         }
+        fn set_input_volume(&mut self, id: u32, volume_percent: u8) -> Result<(), AudioError> {
+            self.input_volumes.push((id, volume_percent));
+            Ok(())
+        }
         fn set_default_input(&mut self, name: &str) -> Result<(), AudioError> {
             self.defaults.push(name.to_string());
+            Ok(())
+        }
+        fn set_capture_volume(&mut self, id: u32, volume_percent: u8) -> Result<(), AudioError> {
+            self.capture_volumes.push((id, volume_percent));
+            Ok(())
+        }
+        fn set_capture_mute(&mut self, id: u32, muted: bool) -> Result<(), AudioError> {
+            self.capture_mutes.push((id, muted));
             Ok(())
         }
     }
@@ -370,6 +497,7 @@ mod tests {
                 .find(|input| input.is_default)
                 .map(|input| input.name.clone()),
             inputs,
+            streams: Vec::new(),
         }
     }
 
@@ -518,5 +646,127 @@ mod tests {
             service.capability().status,
             CapabilityStatus::Unsupported { .. }
         ));
+    }
+
+    fn capture(id: u32, input_id: u32, writable: bool) -> CaptureStream {
+        CaptureStream {
+            id,
+            application_name: Some("Recorder".into()),
+            application_id: Some("recorder".into()),
+            input_id,
+            from_monitor: false,
+            volume_percent: writable.then_some(100),
+            volume_writable: writable,
+            muted: false,
+            corked: false,
+        }
+    }
+
+    fn queued<const N: usize>(discoveries: [InputDiscovery; N]) -> FakeBackend {
+        FakeBackend {
+            discoveries: discoveries.into_iter().map(Ok).collect(),
+            ..FakeBackend::default()
+        }
+    }
+
+    #[test]
+    fn followed_input_priority_switches_on_arrival() {
+        let backend = queued([
+            discovery(vec![input(1, false, true)]),
+            discovery(vec![input(1, false, true), input(2, false, false)]),
+            discovery(vec![input(1, false, false), input(2, false, true)]),
+        ]);
+        let mut service = MicrophoneService::new(backend);
+        service.set_priority(DevicePriority {
+            ranked: vec!["source-2".into(), "source-1".into()],
+            follow: true,
+        });
+        service.refresh().expect("start");
+        let snapshot = service.refresh().expect("arrival").clone();
+        assert_eq!(service.backend.defaults, ["source-2"]);
+        assert_eq!(snapshot.default_input_id, Some(2));
+        assert_eq!(snapshot.priority_switch.as_deref(), Some("Source 2"));
+    }
+
+    #[test]
+    fn input_levels_are_bounded_written_and_read_back() {
+        let quiet = InputDevice {
+            volume_percent: 40,
+            ..input(1, false, true)
+        };
+        let backend = queued([
+            discovery(vec![input(1, false, true)]),
+            discovery(vec![quiet]),
+            discovery(vec![input(1, false, true)]),
+            discovery(vec![input(1, false, true)]),
+        ]);
+        let mut service = MicrophoneService::new(backend);
+        let snapshot = service
+            .execute(MicrophoneCommand::SetInputVolume {
+                input_id: 1,
+                volume_percent: 40,
+            })
+            .expect("level set");
+        assert_eq!(
+            snapshot.inputs[0].volume_percent, 40,
+            "the server's value is shown"
+        );
+        assert_eq!(service.backend.input_volumes, [(1, 40)]);
+        let error = service
+            .execute(MicrophoneCommand::SetInputVolume {
+                input_id: 1,
+                volume_percent: 200,
+            })
+            .expect_err("above the cap");
+        assert_eq!(
+            error.error,
+            MicrophoneCommandError::VolumeOutOfRange { requested: 200 }
+        );
+        assert_eq!(service.backend.input_volumes.len(), 1, "nothing written");
+    }
+
+    #[test]
+    fn capture_streams_are_listed_and_controlled() {
+        let with_streams = |streams| InputDiscovery {
+            streams,
+            ..discovery(vec![input(1, false, true)])
+        };
+        let both = || with_streams(vec![capture(7, 1, true), capture(8, 1, false)]);
+        let backend = queued([
+            both(),
+            both(),
+            both(),
+            // The read-only stream has ended by the last command.
+            with_streams(vec![capture(7, 1, true)]),
+        ]);
+        let mut service = MicrophoneService::new(backend);
+        let snapshot = service
+            .execute(MicrophoneCommand::SetCaptureMute {
+                stream_id: 7,
+                muted: true,
+            })
+            .expect("mute");
+        assert_eq!(snapshot.capture_streams.len(), 2);
+        assert_eq!(service.backend.capture_mutes, [(7, true)]);
+        let error = service
+            .execute(MicrophoneCommand::SetCaptureVolume {
+                stream_id: 8,
+                volume_percent: 50,
+            })
+            .expect_err("read-only stream");
+        assert_eq!(
+            error.error,
+            MicrophoneCommandError::ReadOnlyStream { stream_id: 8 }
+        );
+        let error = service
+            .execute(MicrophoneCommand::SetCaptureMute {
+                stream_id: 8,
+                muted: true,
+            })
+            .expect_err("stream ended");
+        assert_eq!(
+            error.error,
+            MicrophoneCommandError::UnknownStream { stream_id: 8 }
+        );
     }
 }

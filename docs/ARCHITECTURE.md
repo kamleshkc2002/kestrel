@@ -295,18 +295,31 @@ as owned diagnostics (`last_reconcile`, `last_switch`) and surfaced in the
 window, so device loss produces a reported repair rather than stale routing or a
 feature failure.
 
+Device priority is a ranked list of server device names plus a follow flag,
+one per direction. The service applies it only when the set of connected
+devices changes or the ranking itself changes, so a manual default choice stands
+until the next arrival or loss. Ranked names that are not connected keep their
+place. Pinned mixer applications are keyed by a stable identity
+(`application.id`, else the process binary, else the application name); the
+service sorts pinned streams first in pinned order and leaves the rest in server
+order. Both lists are bounded and validated in `kestrel-core`, and a malformed
+list is ignored with a warning without affecting other `[audio]` keys.
+
 `audio.microphone` is a separate feature on the same adapter, so microphone
 policy never widens the mixer's responsibilities. The platform layer exposes a
-`MicrophoneBackend` over capture sources (sink monitors excluded); the service
+`MicrophoneBackend` over capture sources (sink monitors excluded) and capture
+streams (source outputs, marked when they read a sink monitor); the service
 derives the mute state from the inputs the server reports — `Muted`, `Live`,
 `Mixed`, `NoInputs`, or `Unknown` when nothing trustworthy was read. Commands
 re-read the server before validating and after mutating, global mute applies to
-every input, and a partial failure is reported while the snapshot shows the
-real result. A failed read or a stopped feature resets the snapshot to
-`Unknown`, and a vanished default input clears the default claim, so no stale
-mute or preferred-device state can be presented. The running control is polled
-on a bounded two-second cadence because PulseAudio subscriptions would require a
-long-lived connection the mixer does not hold yet. Evidence carries counts only.
+every input, input and capture levels share the mixer's hard cap, and a partial
+failure is reported while the snapshot shows the real result. A failed read or a
+stopped feature resets the snapshot to `Unknown`, and a vanished default input
+clears the default claim, so no stale mute or preferred-device state can be
+presented. The running mixer and microphone are polled on a bounded two-second
+cadence, which is also when device arrival and loss are noticed, because
+PulseAudio subscriptions would require a long-lived connection neither holds
+yet. Evidence carries counts only.
 
 ### 5.7 Clipboard retention, ownership, and queries
 

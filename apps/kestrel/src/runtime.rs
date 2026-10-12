@@ -10,14 +10,14 @@ use crate::{
     snippets::{save_snippets, snippet_path},
     status_notifier::{FEATURE_ID as STATUS_NOTIFIER_ID, unavailable_capability},
     view_model::{
-        AudioPresentation, CameraPresentation, CameraViewModel, CapturePresentation,
-        CaptureViewModel, ClipboardPresentation, ClipboardQuery, ClipboardViewModel,
-        CommandBarPresentation, CommandBarQuery, ListenersViewModel, MicrophonePresentation,
-        MicrophoneViewModel, MonitorPresentation, MonitorViewModel, ProcessesViewModel,
-        RecordingPresentation, RecordingViewModel, ScratchpadPresentation, ScratchpadViewModel,
-        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
-        ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
-        SpeedTestViewModel,
+        AudioPresentation, AudioViewModel, CameraPresentation, CameraViewModel,
+        CapturePresentation, CaptureViewModel, ClipboardPresentation, ClipboardQuery,
+        ClipboardViewModel, CommandBarPresentation, CommandBarQuery, ListenersViewModel,
+        MicrophonePresentation, MicrophoneViewModel, MonitorPresentation, MonitorViewModel,
+        ProcessesViewModel, RecordingPresentation, RecordingViewModel, ScratchpadPresentation,
+        ScratchpadViewModel, ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel,
+        ShortcutsPresentation, ShortcutsViewModel, SnippetQuery, SnippetsPresentation,
+        SpeedTestPresentation, SpeedTestViewModel,
     },
 };
 use kestrel_core::{
@@ -74,7 +74,10 @@ use kestrel_platform::{
 use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
     alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
-    audio::{AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot},
+    audio::{
+        AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot,
+        DevicePriority,
+    },
     camera::{CameraFrameSlot, CameraPreviewService},
     capture::{CaptureId, CapturePolicy, CaptureService, CaptureSnapshot, image::EditPlan},
     clipboard::{
@@ -741,6 +744,7 @@ impl ApplicationRuntime {
             battery_alert_configured: configuration.monitoring.alerts.battery.enabled,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
         };
+        runtime.configure_audio_preferences(&configuration.audio);
         runtime.sync_battery_alert_rule();
         Ok(runtime)
     }
@@ -803,8 +807,12 @@ impl ApplicationRuntime {
         self.audio_mixer
             .set_policy(AudioPolicy::from_configuration(&configuration.audio))
             .expect("the validated audio policy is valid");
+        self.configure_audio_preferences(&configuration.audio);
         if self.audio_mixer_is_running() {
             let _ = self.audio_mixer.refresh();
+        }
+        if self.microphone_is_running() {
+            let _ = self.microphone.refresh();
         }
         self.speed_test
             .set_policy(SpeedTestPolicy::from_configuration(
@@ -1086,6 +1094,32 @@ impl ApplicationRuntime {
     pub fn audio_snapshot(&self) -> &AudioSnapshot {
         self.audio_mixer.latest()
     }
+
+    /// Re-reads the mixer, applying the output ranking to arrivals and
+    /// losses; true when anything changed.
+    pub fn refresh_audio_mixer(&mut self) -> bool {
+        if !self.audio_mixer_is_running() {
+            return false;
+        }
+        let before = self.audio_mixer.latest().clone();
+        let _ = self.audio_mixer.refresh();
+        self.audio_mixer.latest() != &before
+    }
+
+    /// Device rankings and pinned applications from configuration.
+    fn configure_audio_preferences(&mut self, audio: &kestrel_core::AudioConfiguration) {
+        self.audio_mixer.set_priority(DevicePriority {
+            ranked: audio.output_priority.clone(),
+            follow: audio.follow_output_priority,
+        });
+        self.audio_mixer
+            .set_favorites(audio.mixer_favorites.clone());
+        self.microphone.set_priority(DevicePriority {
+            ranked: audio.input_priority.clone(),
+            follow: audio.follow_input_priority,
+        });
+    }
+
     pub fn clipboard_is_running(&self) -> bool {
         self.clipboard_history_is_running()
     }
@@ -1139,11 +1173,28 @@ impl ApplicationRuntime {
         self.microphone.latest() != &before
     }
 
-    pub fn microphone_view_model(&self) -> MicrophoneViewModel {
-        MicrophoneViewModel::from_presentation(MicrophonePresentation {
-            snapshot: self.microphone.latest(),
-            running: self.microphone_is_running(),
-        })
+    pub fn microphone_view_model(
+        &self,
+        audio: &kestrel_core::AudioConfiguration,
+    ) -> MicrophoneViewModel {
+        MicrophoneViewModel::from_presentation(
+            audio,
+            MicrophonePresentation {
+                snapshot: self.microphone.latest(),
+                running: self.microphone_is_running(),
+            },
+        )
+    }
+
+    pub fn audio_view_model(&self, audio: &kestrel_core::AudioConfiguration) -> AudioViewModel {
+        AudioViewModel::from_presentation(
+            audio,
+            AudioPresentation {
+                snapshot: Some(self.audio_mixer.latest()),
+                running: self.audio_mixer_is_running(),
+                policy: self.audio_mixer.policy(),
+            },
+        )
     }
 
     /// A running registration only makes a test startable.
@@ -2500,7 +2551,7 @@ impl ApplicationRuntime {
         )
     }
 
-    fn audio_mixer_is_running(&self) -> bool {
+    pub fn audio_mixer_is_running(&self) -> bool {
         self.registry
             .registrations()
             .any(|registration| registration.feature.id == AUDIO_MIXER_ID && registration.running)

@@ -5,8 +5,9 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
 use kestrel::{
-    ApplicationCommand, AudioCycleDirection, AudioOutputViewModel, AudioStreamViewModel,
-    AudioViewModel, MicrophoneViewModel,
+    ApplicationCommand, AudioCycleDirection, AudioDirection, AudioOutputViewModel,
+    AudioPreferenceEdit, AudioStreamViewModel, AudioViewModel, DevicePriorityViewModel,
+    MicrophoneCommand, MicrophoneViewModel, PanelMoveDirection,
 };
 
 /// Target of a volume or mute control.
@@ -14,6 +15,8 @@ use kestrel::{
 enum AudioLevelTarget {
     Output(u32),
     Stream(u32),
+    Input(u32),
+    Capture(u32),
 }
 
 impl AudioLevelTarget {
@@ -35,6 +38,23 @@ impl AudioLevelTarget {
                     volume_percent,
                 }),
                 ApplicationCommand::Audio(kestrel::AudioCommand::SetStreamMute {
+                    stream_id,
+                    muted,
+                }),
+            ),
+            Self::Input(input_id) => (
+                ApplicationCommand::Microphone(MicrophoneCommand::SetInputVolume {
+                    input_id,
+                    volume_percent,
+                }),
+                ApplicationCommand::Microphone(MicrophoneCommand::SetInputMute { input_id, muted }),
+            ),
+            Self::Capture(stream_id) => (
+                ApplicationCommand::Microphone(MicrophoneCommand::SetCaptureVolume {
+                    stream_id,
+                    volume_percent,
+                }),
+                ApplicationCommand::Microphone(MicrophoneCommand::SetCaptureMute {
                     stream_id,
                     muted,
                 }),
@@ -261,6 +281,11 @@ pub(super) fn build_audio_controls(
     container.append(&group);
 
     if audio.outputs.is_empty() {
+        container.append(&build_priority_group(
+            AudioDirection::Output,
+            &audio.output_priority,
+            commands,
+        ));
         return container;
     }
 
@@ -355,25 +380,234 @@ pub(super) fn build_audio_controls(
             audio.boost_ceiling_percent,
             commands,
         ));
+        if let Some(pin) = build_pin_controls(stream, commands) {
+            row.add_suffix(&pin);
+        }
         streams.add(&row);
         if routable {
             streams.add(&build_audio_route_row(stream, &audio.outputs, commands));
         }
     }
     container.append(&streams);
+    container.append(&build_priority_group(
+        AudioDirection::Output,
+        &audio.output_priority,
+        commands,
+    ));
 
     container
 }
 
-/// Builds microphone controls; mixed mute state leaves the switch usable.
-pub(super) fn build_microphone_group(
-    microphone: &MicrophoneViewModel,
+fn icon_button(icon: &str, label: &str, sensitive: bool) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .icon_name(icon)
+        .valign(Align::Center)
+        .sensitive(sensitive)
+        .tooltip_text(label)
+        .build();
+    button.add_css_class("flat");
+    button.update_property(&[Property::Label(label)]);
+    button
+}
+
+fn send_on_click(
+    button: &gtk::Button,
+    commands: &Sender<ApplicationCommand>,
+    edit: AudioPreferenceEdit,
+) {
+    let sender = commands.clone();
+    button.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::AudioPreference(edit.clone()));
+    });
+}
+
+/// Pin toggle and, once pinned, reorder buttons keyed by application identity.
+fn build_pin_controls(
+    stream: &AudioStreamViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> Option<gtk::Box> {
+    let application_id = stream.application_id.clone()?;
+    let controls = gtk::Box::new(Orientation::Horizontal, 0);
+    if let Some((index, total)) = stream.pinned {
+        for (icon, label, toward, sensitive) in [
+            (
+                "go-up-symbolic",
+                "earlier",
+                PanelMoveDirection::Up,
+                index > 0,
+            ),
+            (
+                "go-down-symbolic",
+                "later",
+                PanelMoveDirection::Down,
+                index + 1 < total,
+            ),
+        ] {
+            let button = icon_button(icon, &format!("Show {} {label}", stream.title), sensitive);
+            send_on_click(
+                &button,
+                commands,
+                AudioPreferenceEdit::MovePinned {
+                    application_id: application_id.clone(),
+                    toward,
+                },
+            );
+            controls.append(&button);
+        }
+    }
+    let (icon, label, edit) = match stream.pinned {
+        Some(_) => (
+            "starred-symbolic",
+            format!("Unpin {}", stream.title),
+            AudioPreferenceEdit::Unpin(application_id),
+        ),
+        None => (
+            "non-starred-symbolic",
+            format!("Pin {} to the top of the mixer", stream.title),
+            AudioPreferenceEdit::Pin(application_id),
+        ),
+    };
+    let pin = icon_button(icon, &label, true);
+    send_on_click(&pin, commands, edit);
+    controls.append(&pin);
+    Some(controls)
+}
+
+/// Ranked devices with reorder and removal, then connected devices to add.
+fn build_priority_group(
+    direction: AudioDirection,
+    priority: &DevicePriorityViewModel,
     commands: &Sender<ApplicationCommand>,
 ) -> adw::PreferencesGroup {
+    let kind = match direction {
+        AudioDirection::Output => "output",
+        AudioDirection::Input => "input",
+    };
+    let group = adw::PreferencesGroup::builder()
+        .title(format!(
+            "{}{} priority",
+            kind[..1].to_uppercase(),
+            &kind[1..]
+        ))
+        .description(format!(
+            "When {kind}s connect or disconnect, Kestrel selects the highest-ranked connected \
+             {kind}. Disconnected devices keep their rank."
+        ))
+        .build();
+
+    let follow_row = plain_row()
+        .title("Follow the ranking")
+        .subtitle(format!("Switch the default {kind} automatically"))
+        .build();
+    let follow = gtk::Switch::builder()
+        .active(priority.follow)
+        .valign(Align::Center)
+        .build();
+    follow.update_property(&[Property::Label(&format!("Follow the {kind} ranking"))]);
+    let sender = commands.clone();
+    follow.connect_state_set(move |_, follow| {
+        let _ = sender.try_send(ApplicationCommand::AudioPreference(
+            AudioPreferenceEdit::Follow { direction, follow },
+        ));
+        gtk::glib::Propagation::Proceed
+    });
+    follow_row.add_suffix(&follow);
+    follow_row.set_activatable_widget(Some(&follow));
+    group.add(&follow_row);
+
+    let total = priority.ranked.len();
+    for (index, device) in priority.ranked.iter().enumerate() {
+        let row = plain_row()
+            .title(&device.label)
+            .subtitle(format!(
+                "Rank {} · {}",
+                index + 1,
+                if device.connected {
+                    "connected"
+                } else {
+                    "not connected"
+                }
+            ))
+            .subtitle_lines(0)
+            .build();
+        for (icon, label, toward, sensitive) in [
+            (
+                "go-up-symbolic",
+                "Rank higher",
+                PanelMoveDirection::Up,
+                index > 0,
+            ),
+            (
+                "go-down-symbolic",
+                "Rank lower",
+                PanelMoveDirection::Down,
+                index + 1 < total,
+            ),
+        ] {
+            let button = icon_button(icon, &format!("{label}: {}", device.label), sensitive);
+            send_on_click(
+                &button,
+                commands,
+                AudioPreferenceEdit::MoveDevice {
+                    direction,
+                    name: device.name.clone(),
+                    toward,
+                },
+            );
+            row.add_suffix(&button);
+        }
+        let remove = icon_button(
+            "list-remove-symbolic",
+            &format!("Remove {} from the ranking", device.label),
+            true,
+        );
+        send_on_click(
+            &remove,
+            commands,
+            AudioPreferenceEdit::Unrank {
+                direction,
+                name: device.name.clone(),
+            },
+        );
+        row.add_suffix(&remove);
+        group.add(&row);
+    }
+
+    for device in &priority.unranked {
+        let row = plain_row()
+            .title(&device.label)
+            .subtitle("Not ranked")
+            .build();
+        let add = icon_button(
+            "list-add-symbolic",
+            &format!("Rank {} last", device.label),
+            !priority.full,
+        );
+        send_on_click(
+            &add,
+            commands,
+            AudioPreferenceEdit::Rank {
+                direction,
+                name: device.name.clone(),
+            },
+        );
+        row.add_suffix(&add);
+        group.add(&row);
+    }
+    group
+}
+
+/// Builds microphone controls; mixed mute state leaves the switch usable.
+pub(super) fn build_microphone_controls(
+    microphone: &MicrophoneViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> gtk::Box {
+    let container = gtk::Box::new(Orientation::Vertical, 12);
     let group = adw::PreferencesGroup::builder()
         .title("Microphone")
         .description(gtk::glib::markup_escape_text(&microphone.status).as_str())
         .build();
+    container.append(&group);
     if !microphone.running {
         let row = plain_row()
             .title("Microphone control is not running")
@@ -382,7 +616,7 @@ pub(super) fn build_microphone_group(
             .sensitive(false)
             .build();
         group.add(&row);
-        return group;
+        return container;
     }
 
     let controllable = microphone.muted.is_some() || microphone.mixed;
@@ -453,13 +687,73 @@ pub(super) fn build_microphone_group(
         });
         group.add(&combo);
     }
+    let default_input = microphone
+        .default_input_id
+        .and_then(|id| microphone.inputs.iter().find(|input| input.id == id));
+    if let (Some(input), Some(volume_percent)) = (default_input, microphone.default_input_volume) {
+        let row = plain_row()
+            .title("Input level")
+            .subtitle(format!("{} · as the audio server reports it", input.label))
+            .subtitle_lines(0)
+            .build();
+        row.add_suffix(&build_audio_level_controls(
+            AudioLevelTarget::Input(input.id),
+            &input.label,
+            volume_percent,
+            input.muted,
+            true,
+            kestrel_core::MAX_AUDIO_BOOST_PERCENT,
+            commands,
+        ));
+        group.add(&row);
+    }
     if let Some(message) = &microphone.message {
         let notice = plain_row()
-            .title("Input disconnected")
+            .title("Input change")
             .subtitle(message)
             .subtitle_lines(0)
             .build();
         group.add(&notice);
     }
-    group
+
+    let recording = adw::PreferencesGroup::builder()
+        .title("Recording applications")
+        .description("Applications reading from an input or capturing system audio.")
+        .build();
+    if microphone.capture_streams.is_empty() {
+        recording.add(
+            &plain_row()
+                .title("No application is recording")
+                .sensitive(false)
+                .build(),
+        );
+    }
+    for stream in &microphone.capture_streams {
+        let row = plain_row()
+            .title(&stream.title)
+            .subtitle(&stream.detail)
+            .subtitle_lines(0)
+            .build();
+        row.update_property(&[Property::Label(&format!(
+            "{}: {}",
+            stream.title, stream.detail
+        ))]);
+        row.add_suffix(&build_audio_level_controls(
+            AudioLevelTarget::Capture(stream.id),
+            &stream.title,
+            stream.volume_percent.unwrap_or(0),
+            stream.muted,
+            stream.volume_writable,
+            kestrel_core::MAX_AUDIO_BOOST_PERCENT,
+            commands,
+        ));
+        recording.add(&row);
+    }
+    container.append(&recording);
+    container.append(&build_priority_group(
+        AudioDirection::Input,
+        &microphone.input_priority,
+        commands,
+    ));
+    container
 }

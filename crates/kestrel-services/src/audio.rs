@@ -110,12 +110,55 @@ pub enum AudioAvailability {
     Ready,
 }
 
+/// Why the default output changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSwitchReason {
+    /// The user picked or cycled to it.
+    Manual,
+    /// It is the highest-ranked connected output.
+    Priority,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSwitchOutcome {
     pub output_id: u32,
     pub output_name: String,
     pub moved_streams: usize,
     pub failed_moves: usize,
+    pub reason: AudioSwitchReason,
+}
+
+/// Ranked device names. While followed, the highest-ranked connected device
+/// becomes the default whenever devices arrive or leave, or the ranking
+/// changes; a manual choice stands until then.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DevicePriority {
+    pub ranked: Vec<String>,
+    pub follow: bool,
+}
+
+impl DevicePriority {
+    /// The highest-ranked device present in `devices`.
+    pub fn preferred<'a, T>(&self, devices: &'a [T], name: impl Fn(&T) -> &str) -> Option<&'a T> {
+        self.ranked
+            .iter()
+            .find_map(|wanted| devices.iter().find(|device| name(device) == wanted))
+    }
+}
+
+/// Whether the set of device names differs between two discoveries.
+pub(crate) fn device_set_changed<'a>(
+    previous: Option<impl Iterator<Item = &'a str>>,
+    current: impl Iterator<Item = &'a str>,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    let mut previous: Vec<&str> = previous.collect();
+    let mut current: Vec<&str> = current.collect();
+    previous.sort_unstable();
+    current.sort_unstable();
+    previous != current
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +278,11 @@ pub type AudioCommandResult = Result<AudioSnapshot, Box<AudioCommandFailure>>;
 pub struct AudioMixerService<B> {
     backend: B,
     policy: AudioPolicy,
+    priority: DevicePriority,
+    /// The ranking changed; apply it on the next refresh.
+    priority_pending: bool,
+    /// Pinned application identities, in display order.
+    favorites: Vec<String>,
     /// Unfiltered discovery used for validation and reconciliation.
     discovered: Option<AudioDiscovery>,
     last_switch: Option<AudioSwitchOutcome>,
@@ -254,6 +302,9 @@ impl<B: AudioBackend> AudioMixerService<B> {
         Ok(Self {
             backend,
             policy,
+            priority: DevicePriority::default(),
+            priority_pending: false,
+            favorites: Vec::new(),
             discovered: None,
             last_switch: None,
             last_reconcile: None,
@@ -292,6 +343,24 @@ impl<B: AudioBackend> AudioMixerService<B> {
         Ok(())
     }
 
+    /// Replaces the output ranking; a changed, followed ranking applies on
+    /// the next refresh.
+    pub fn set_priority(&mut self, priority: DevicePriority) {
+        if priority != self.priority {
+            self.priority_pending = priority.follow;
+            self.priority = priority;
+        }
+    }
+
+    /// Replaces the pinned applications, listed first in this order.
+    pub fn set_favorites(&mut self, favorites: Vec<String>) {
+        self.favorites = favorites;
+        if let Some(discovery) = self.discovered.as_ref() {
+            let latest = self.present(discovery);
+            self.latest = latest;
+        }
+    }
+
     pub fn refresh(&mut self) -> Result<&AudioSnapshot, AudioError> {
         let mut discovery = match self.backend.discover() {
             Ok(discovery) => discovery,
@@ -314,6 +383,29 @@ impl<B: AudioBackend> AudioMixerService<B> {
             } else {
                 if let Some(reconcile) = self.last_reconcile.as_mut() {
                     reconcile.failures += 1;
+                }
+            }
+        }
+
+        let devices_changed = device_set_changed(
+            self.discovered
+                .as_ref()
+                .map(|previous| previous.outputs.iter().map(|output| output.name.as_str())),
+            discovery.outputs.iter().map(|output| output.name.as_str()),
+        );
+        if self.priority.follow && (devices_changed || self.priority_pending) {
+            self.priority_pending = false;
+            let target = self
+                .priority
+                .preferred(&discovery.outputs, |output| output.name.as_str())
+                .filter(|output| !output.is_default)
+                .map(|output| output.id);
+            if let Some(target) = target {
+                // Switching reads the current discovery for names and streams.
+                self.discovered = Some(discovery.clone());
+                self.switch_default_output(target, AudioSwitchReason::Priority);
+                if let Ok(rediscovered) = self.backend.discover() {
+                    discovery = rediscovered;
                 }
             }
         }
@@ -367,18 +459,18 @@ impl<B: AudioBackend> AudioMixerService<B> {
                 .set_output_mute(output_id, muted)
                 .map_err(AudioCommandError::Backend),
             AudioCommand::SetDefaultOutput { output_id } => {
-                self.switch_default_output(output_id);
+                self.switch_default_output(output_id, AudioSwitchReason::Manual);
                 Ok(())
             }
             AudioCommand::CycleOutput { direction } => {
                 let target = self.cycle_target(direction)?;
-                self.switch_default_output(target);
+                self.switch_default_output(target, AudioSwitchReason::Manual);
                 Ok(())
             }
         }
     }
 
-    fn switch_default_output(&mut self, output_id: u32) {
+    fn switch_default_output(&mut self, output_id: u32, reason: AudioSwitchReason) {
         let Some(output_name) = self.discovered.as_ref().and_then(|discovery| {
             discovery
                 .outputs
@@ -398,6 +490,7 @@ impl<B: AudioBackend> AudioMixerService<B> {
             output_name,
             moved_streams: 0,
             failed_moves: 0,
+            reason,
         };
         if self.policy.output_switch == AudioOutputSwitch::AllStreams {
             let stream_ids = self
@@ -588,7 +681,7 @@ impl<B: AudioBackend> AudioMixerService<B> {
             .iter()
             .filter(|stream| !stream.corked)
             .count();
-        let streams = if self.policy.include_inactive_streams {
+        let mut streams = if self.policy.include_inactive_streams {
             discovery.streams.clone()
         } else {
             discovery
@@ -598,6 +691,14 @@ impl<B: AudioBackend> AudioMixerService<B> {
                 .cloned()
                 .collect()
         };
+        // Pinned applications first, in their order; the rest keep server order.
+        streams.sort_by_key(|stream| {
+            stream
+                .application_id
+                .as_ref()
+                .and_then(|id| self.favorites.iter().position(|favorite| favorite == id))
+                .unwrap_or(usize::MAX)
+        });
         let availability = if discovery.outputs.is_empty() {
             AudioAvailability::NoOutputDevices
         } else if active_count == 0 {
@@ -752,6 +853,7 @@ mod tests {
             id,
             name: "Playback".to_string(),
             application_name: Some("Player".to_string()),
+            application_id: Some("player".to_string()),
             media_name: None,
             media_role: Some("music".to_string()),
             output_id,
@@ -1197,6 +1299,7 @@ mod tests {
                 output_name: "output-3".to_string(),
                 moved_streams: 2,
                 failed_moves: 0,
+                reason: super::AudioSwitchReason::Manual,
             })
         );
         assert_eq!(
@@ -1254,6 +1357,7 @@ mod tests {
                 output_name: "output-3".to_string(),
                 moved_streams: 0,
                 failed_moves: 0,
+                reason: super::AudioSwitchReason::Manual,
             })
         );
         assert!(log.borrow().move_calls.is_empty());
@@ -1375,5 +1479,101 @@ mod tests {
         assert_eq!(groups[1].0, None);
         assert_eq!(groups[1].1.len(), 1);
         assert_eq!(snapshot.default_output().map(|output| output.id), Some(3));
+    }
+
+    fn ranked(names: &[&str]) -> super::DevicePriority {
+        super::DevicePriority {
+            ranked: names.iter().map(|name| (*name).to_owned()).collect(),
+            follow: true,
+        }
+    }
+
+    #[test]
+    fn followed_priority_selects_the_best_connected_output_on_arrival_and_loss() {
+        let (backend, log) = fake([
+            // Start: only the built-in output, already default.
+            discovery(vec![output(1, true, 50)], vec![]),
+            // The ranked headset arrives; the switch rediscovers once.
+            discovery(vec![output(1, true, 50), output(2, false, 50)], vec![]),
+            discovery(vec![output(1, false, 50), output(2, true, 50)], vec![]),
+            // The headset leaves and the server falls back to an unranked HDMI
+            // output; rehoming rediscovers, then the switch rediscovers.
+            discovery(vec![output(1, false, 50), output(3, true, 50)], vec![]),
+            discovery(vec![output(1, false, 50), output(3, true, 50)], vec![]),
+            discovery(vec![output(1, true, 50), output(3, false, 50)], vec![]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.set_priority(ranked(&["output-2", "output-1"]));
+        service.refresh().expect("start");
+        assert!(log.borrow().default_calls.is_empty(), "already the best");
+        service.refresh().expect("arrival");
+        assert_eq!(log.borrow().default_calls, ["output-2"]);
+        let snapshot = service.refresh().expect("loss").clone();
+        assert_eq!(log.borrow().default_calls, ["output-2", "output-1"]);
+        assert_eq!(snapshot.default_output().map(|output| output.id), Some(1));
+        assert_eq!(
+            snapshot.last_switch.map(|switch| switch.reason),
+            Some(super::AudioSwitchReason::Priority)
+        );
+    }
+
+    #[test]
+    fn a_manual_choice_stands_until_devices_change_and_unfollowed_rankings_do_nothing() {
+        let (backend, log) = fake([
+            discovery(vec![output(1, true, 50), output(2, false, 50)], vec![]),
+            discovery(vec![output(1, false, 50), output(2, true, 50)], vec![]),
+            // The user picks output 1 by hand.
+            discovery(vec![output(1, false, 50), output(2, true, 50)], vec![]),
+            discovery(vec![output(1, true, 50), output(2, false, 50)], vec![]),
+            // Same devices again: the ranking does not override the choice.
+            discovery(vec![output(1, true, 50), output(2, false, 50)], vec![]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.set_priority(ranked(&["output-2"]));
+        service.refresh().expect("start");
+        service
+            .execute(AudioCommand::SetDefaultOutput { output_id: 1 })
+            .expect("manual switch");
+        service.refresh().expect("unchanged devices");
+        assert_eq!(log.borrow().default_calls, ["output-2", "output-1"]);
+
+        let (backend, log) = fake([discovery(
+            vec![output(1, true, 50), output(2, false, 50)],
+            vec![],
+        )]);
+        let mut unfollowed = AudioMixerService::new(backend);
+        unfollowed.set_priority(super::DevicePriority {
+            follow: false,
+            ..ranked(&["output-2"])
+        });
+        unfollowed.refresh().expect("refresh");
+        assert!(log.borrow().default_calls.is_empty());
+    }
+
+    #[test]
+    fn pinned_applications_lead_in_their_order() {
+        let app = |id: u32, app: &str| PlaybackStream {
+            application_id: Some(app.to_owned()),
+            ..stream(id, 1, 50)
+        };
+        let (backend, _) = fake([discovery(
+            vec![output(1, true, 50)],
+            vec![
+                app(1, "browser"),
+                app(2, "chat"),
+                app(3, "music"),
+                app(4, "game"),
+            ],
+        )]);
+        let mut service = AudioMixerService::new(backend);
+        service.set_favorites(vec!["music".into(), "browser".into(), "absent".into()]);
+        let order: Vec<u32> = service
+            .refresh()
+            .expect("refresh")
+            .streams
+            .iter()
+            .map(|stream| stream.id)
+            .collect();
+        assert_eq!(order, [3, 1, 2, 4]);
     }
 }

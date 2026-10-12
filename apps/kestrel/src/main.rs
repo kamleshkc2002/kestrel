@@ -39,14 +39,16 @@ use kestrel_services::alerts::notification_text;
 use window::WindowView;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
-/// Poll interval for the microphone control.
-const MICROPHONE_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// Poll interval for mixer and microphone state, which other mixers and
+/// hardware keys change externally.
+const AUDIO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 /// Fields are `None` when unchanged.
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
     clipboard: Option<ClipboardViewModel>,
+    audio: Option<kestrel::AudioViewModel>,
     microphone: Option<MicrophoneViewModel>,
     speed_test: Option<SpeedTestViewModel>,
     shortcuts: Option<ShortcutsViewModel>,
@@ -297,12 +299,13 @@ fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
     observed_at: Duration,
-    microphone_due: bool,
+    audio_due: bool,
     listeners_due: bool,
 ) -> TickUpdate {
     let (
         updated,
         alerts,
+        audio,
         microphone,
         speed_test,
         shortcuts,
@@ -317,8 +320,17 @@ fn run_tick(
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tick = guard.runtime.sample_monitor(observed_at);
-        let microphone = (microphone_due && guard.runtime.refresh_microphone())
-            .then(|| guard.runtime.microphone_view_model());
+        let controller = &mut *guard;
+        let audio = (audio_due && controller.runtime.refresh_audio_mixer()).then(|| {
+            controller
+                .runtime
+                .audio_view_model(&controller.configuration.audio)
+        });
+        let microphone = (audio_due && controller.runtime.refresh_microphone()).then(|| {
+            controller
+                .runtime
+                .microphone_view_model(&controller.configuration.audio)
+        });
         // Publish only on generation changes.
         let generation = guard.runtime.speed_test_snapshot().generation;
         let speed_test = (generation != guard.speed_test_generation).then(|| {
@@ -370,6 +382,7 @@ fn run_tick(
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
+            audio,
             microphone,
             speed_test,
             shortcuts,
@@ -386,6 +399,7 @@ fn run_tick(
     TickUpdate {
         monitor,
         clipboard,
+        audio,
         microphone,
         speed_test,
         shortcuts,
@@ -470,6 +484,8 @@ enum TargetedPanel {
     Commands,
     /// Keeps mute updates from resetting scroll.
     Microphone,
+    /// Mixer and microphone panels after preference edits.
+    Audio,
     SpeedTest,
     Capture,
     Processes,
@@ -569,6 +585,7 @@ enum ControllerOperation {
     SetAudioDisconnectPolicy(kestrel::AudioDisconnectPolicy),
     SetAudioDisconnectVolumePercent(u8),
     SetAudioIncludeInactiveStreams(bool),
+    AudioPreference(kestrel::AudioPreferenceEdit),
     Clipboard(kestrel::ClipboardCommand),
     ClipboardSearch(String),
     ClipboardPreview(u64),
@@ -617,6 +634,7 @@ struct ApplicationController {
     monitor_running: Cell<bool>,
     clipboard_running: Cell<bool>,
     microphone_running: Cell<bool>,
+    audio_mixer_running: Cell<bool>,
     speed_test_running: Cell<bool>,
     shortcuts_running: Cell<bool>,
     capture_running: Cell<bool>,
@@ -633,8 +651,8 @@ struct ApplicationController {
     recording_area_open: Cell<bool>,
     listener_last_refresh: Cell<Instant>,
     monitor_started_at: Instant,
-    /// Bounds backend polling to the two-second interval.
-    microphone_last_refresh: Cell<Instant>,
+    /// Bounds audio backend polling to its interval.
+    audio_last_refresh: Cell<Instant>,
     /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
@@ -659,6 +677,7 @@ impl ApplicationController {
         let monitor_running = runtime.monitor_is_running();
         let clipboard_running = runtime.clipboard_is_running();
         let microphone_running = runtime.microphone_is_running();
+        let audio_mixer_running = runtime.audio_mixer_is_running();
         let speed_test_running = runtime.speed_test_is_running();
         let shortcuts_running = runtime.global_shortcuts_is_running();
         let processes_running = runtime.processes_is_running();
@@ -704,6 +723,7 @@ impl ApplicationController {
             monitor_running: Cell::new(monitor_running),
             clipboard_running: Cell::new(clipboard_running),
             microphone_running: Cell::new(microphone_running),
+            audio_mixer_running: Cell::new(audio_mixer_running),
             speed_test_running: Cell::new(speed_test_running),
             shortcuts_running: Cell::new(shortcuts_running),
             capture_running: Cell::new(capture_running),
@@ -717,7 +737,7 @@ impl ApplicationController {
             recording_area_open: Cell::new(false),
             listener_last_refresh: Cell::new(Instant::now()),
             monitor_started_at: Instant::now(),
-            microphone_last_refresh: Cell::new(Instant::now()),
+            audio_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
             refresh_results,
@@ -949,6 +969,7 @@ impl ApplicationController {
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
                 self.microphone_running.set(view_model.microphone.running);
+                self.audio_mixer_running.set(view_model.audio.running);
                 self.speed_test_running.set(view_model.speed_test.running);
                 self.shortcuts_running.set(view_model.shortcuts.running);
                 self.capture_running.set(view_model.capture.running);
@@ -968,6 +989,7 @@ impl ApplicationController {
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
                 self.microphone_running.set(view_model.microphone.running);
+                self.audio_mixer_running.set(view_model.audio.running);
                 self.speed_test_running.set(view_model.speed_test.running);
                 self.shortcuts_running.set(view_model.shortcuts.running);
                 self.capture_running.set(view_model.capture.running);
@@ -987,13 +1009,12 @@ impl ApplicationController {
         if self.refreshing.get() || self.monitoring.replace(true) {
             return;
         }
-        // Hardware keys and other mixers can change mute state externally.
-        let microphone_due = self.microphone_running.get() && {
+        // Hardware keys, other mixers, and device hotplug change audio externally.
+        let audio_due = (self.microphone_running.get() || self.audio_mixer_running.get()) && {
             let now = Instant::now();
-            let due = now.duration_since(self.microphone_last_refresh.get())
-                >= MICROPHONE_REFRESH_INTERVAL;
+            let due = now.duration_since(self.audio_last_refresh.get()) >= AUDIO_REFRESH_INTERVAL;
             if due {
-                self.microphone_last_refresh.set(now);
+                self.audio_last_refresh.set(now);
             }
             due
         };
@@ -1016,7 +1037,7 @@ impl ApplicationController {
             && !self.screen_tools_running.get()
             && !self.camera_running.get()
             && !self.recording_running.get()
-            && !microphone_due
+            && !audio_due
         {
             self.monitoring.set(false);
             return;
@@ -1032,7 +1053,7 @@ impl ApplicationController {
                     &state,
                     notifier.as_ref(),
                     observed_at,
-                    microphone_due,
+                    audio_due,
                     listeners_due,
                 );
                 let _ = results.send_blocking(update);
@@ -1047,6 +1068,7 @@ impl ApplicationController {
         let TickUpdate {
             monitor,
             clipboard,
+            audio,
             microphone,
             speed_test,
             shortcuts,
@@ -1098,6 +1120,9 @@ impl ApplicationController {
         if let Some(clipboard) = clipboard {
             self.clipboard_running.set(clipboard.running);
             view.set_clipboard(&clipboard);
+        }
+        if let Some(audio) = audio {
+            view.set_audio(&audio);
         }
         if let Some(microphone) = microphone {
             view.set_microphone(&microphone);
@@ -1778,6 +1803,17 @@ impl ControllerState {
                     ),
                 )?
             }
+            ControllerOperation::AudioPreference(edit) => {
+                let mut candidate = self.configuration.clone();
+                if !edit.apply(&mut candidate.audio) {
+                    return Ok((self.view_model(), "Audio preferences unchanged".to_owned()));
+                }
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    "Audio preferences updated".to_owned(),
+                )?
+            }
             ControllerOperation::Clipboard(command) => {
                 let summary = clipboard_command_summary(&command);
                 match self.runtime.execute_clipboard_command(command) {
@@ -2380,6 +2416,10 @@ fn apply_targeted_panel(
         TargetedPanel::Snippets => view.set_snippets(&view_model.snippets),
         TargetedPanel::Commands => view.set_command_bar(&view_model.command_bar),
         TargetedPanel::Microphone => view.set_microphone(&view_model.microphone),
+        TargetedPanel::Audio => {
+            view.set_audio(&view_model.audio);
+            view.set_microphone(&view_model.microphone);
+        }
         TargetedPanel::SpeedTest => view.set_speed_test(&view_model.speed_test),
         TargetedPanel::Capture => view.set_capture(&view_model.capture),
         TargetedPanel::Processes => {
@@ -2752,6 +2792,11 @@ fn dispatch_commands(
                         ControllerOperation::SetAudioIncludeInactiveStreams(include),
                         "kestrel-audio-inactive",
                     ),
+                ApplicationCommand::AudioPreference(edit) => controller.request_targeted_operation(
+                    ControllerOperation::AudioPreference(edit),
+                    "kestrel-audio-preference",
+                    TargetedPanel::Audio,
+                ),
                 ApplicationCommand::Microphone(command) => controller.request_targeted_operation(
                     ControllerOperation::Microphone(command),
                     "kestrel-microphone",
