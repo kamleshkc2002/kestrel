@@ -2851,6 +2851,7 @@ pub struct ApplicationViewModel {
     pub monitor: MonitorViewModel,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub appearance: AppearancePreference,
+    pub close_action: kestrel_core::CloseAction,
     pub autostart: bool,
     pub panel_sections: Vec<PanelSectionViewModel>,
     pub can_undo: bool,
@@ -2940,6 +2941,7 @@ impl ApplicationViewModel {
                 .map(ConfigurationWarningViewModel::from)
                 .collect(),
             appearance: configuration.ui.appearance,
+            close_action: configuration.ui.close_action,
             autostart: configuration.startup.autostart,
             panel_sections: configuration
                 .ui

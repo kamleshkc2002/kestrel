@@ -9,7 +9,7 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation};
 use kestrel::{ApplicationCommand, ApplicationViewModel};
-use kestrel_core::AppearancePreference;
+use kestrel_core::{AppearancePreference, CloseAction};
 
 pub(super) fn build_settings_group(
     view_model: &ApplicationViewModel,
@@ -86,6 +86,41 @@ fn add_general_rows(
         "appearance color scheme system light dark".to_owned(),
     ));
     group.add(&appearance);
+
+    let close_button = adw::ComboRow::builder()
+        .title("Close button")
+        .subtitle("Minimizing keeps Kestrel running in the taskbar. Ctrl+Q always quits.")
+        .model(&gtk::StringList::new(&[
+            "Minimize to the taskbar",
+            "Quit Kestrel",
+        ]))
+        .selected(match view_model.close_action {
+            CloseAction::Minimize => 0,
+            CloseAction::Quit => 1,
+        })
+        .build();
+    let sender = commands.clone();
+    close_button.connect_selected_notify(move |row| {
+        let action = if row.selected() == 1 {
+            CloseAction::Quit
+        } else {
+            CloseAction::Minimize
+        };
+        let _ = sender.try_send(ApplicationCommand::SetCloseAction(action));
+    });
+    let quit = gtk::Button::with_label("Quit");
+    quit.set_valign(Align::Center);
+    quit.set_tooltip_text(Some("Quit Kestrel now (Ctrl+Q)"));
+    let sender = commands.clone();
+    quit.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::Quit);
+    });
+    close_button.add_suffix(&quit);
+    filter_rows.push((
+        close_button.clone().upcast(),
+        "close button minimize taskbar quit exit window".to_owned(),
+    ));
+    group.add(&close_button);
 
     let autostart = plain_row()
         .title("Start automatically")

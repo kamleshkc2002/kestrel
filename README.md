@@ -147,6 +147,7 @@ and running state separately.
 ### Desktop integration
 
 - The normal window is always available; the tray is optional.
+- The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make it quit instead. Ctrl+Q, the Quit button beside that setting, and the tray's Quit always quit. Minimizing turns off a running camera preview.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, and SNI-capable bars provide one; GNOME needs the AppIndicator extension.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 

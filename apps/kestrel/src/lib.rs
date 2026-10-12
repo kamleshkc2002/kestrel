@@ -20,8 +20,8 @@ pub use config::{
     export_file, export_string, import_file, import_string, load, save,
 };
 pub use kestrel_core::{
-    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, MonitorReadout,
-    PanelSection,
+    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, CloseAction,
+    MonitorReadout, PanelSection,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -293,6 +293,7 @@ pub enum ApplicationCommand {
     ApplyPreset(FeaturePreset),
     UndoPreset,
     SetAppearance(AppearancePreference),
+    SetCloseAction(CloseAction),
     SetAutostart(bool),
     SetPanelVisibility {
         section: PanelSection,
