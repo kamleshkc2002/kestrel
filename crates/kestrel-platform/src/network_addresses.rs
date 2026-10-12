@@ -18,16 +18,18 @@ pub struct LocalAddress {
 /// Addresses of interfaces that are up, without loopback, at most
 /// [`MAX_LOCAL_ADDRESSES`], sorted by interface then address.
 pub fn local_addresses() -> io::Result<Vec<LocalAddress>> {
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: `list` is a valid out-pointer; success hands ownership to `freeifaddrs` below.
-    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+    let mut out = std::mem::MaybeUninit::<*mut libc::ifaddrs>::uninit();
+    // SAFETY: `out` is a valid out-pointer that `getifaddrs` writes on success.
+    if unsafe { libc::getifaddrs(out.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: a successful `getifaddrs` initialized the list head; it is freed below.
+    let list = unsafe { out.assume_init() };
     let mut addresses = Vec::new();
     let mut entry = list;
-    while !entry.is_null() {
-        // SAFETY: `entry` is a node of the list returned by `getifaddrs`, valid until it is freed.
-        let current = unsafe { &*entry };
+    // SAFETY: each non-null `entry` is a node of the list `getifaddrs` returned, valid
+    // until `freeifaddrs`.
+    while let Some(current) = unsafe { entry.as_ref() } {
         entry = current.ifa_next;
         if let Some(address) = convert(current) {
             addresses.push(address);
