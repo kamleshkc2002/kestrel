@@ -207,8 +207,6 @@ impl UPowerPeripherals {
                 };
             if let Some(peripheral) = peripheral_from_properties(path.as_str(), &properties) {
                 peripherals.push(peripheral);
-                peripherals.sort_by(peripheral_order);
-                peripherals.truncate(MAX_PERIPHERALS);
             }
         }
 

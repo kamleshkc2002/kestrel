@@ -14,13 +14,11 @@ pub const MAX_NVML_GPUS: usize = 8;
 
 const NAME_BUFFER_SIZE: usize = 96;
 const NVML_SUCCESS: i32 = 0;
-const NVML_ERROR_INVALID_ARGUMENT: i32 = 2;
 const NVML_ERROR_NOT_SUPPORTED: i32 = 3;
 const NVML_ERROR_NO_PERMISSION: i32 = 4;
 const NVML_ERROR_DRIVER_NOT_LOADED: i32 = 9;
 const NVML_ERROR_LIBRARY_NOT_FOUND: i32 = 12;
 const NVML_ERROR_LIB_RM_VERSION_MISMATCH: i32 = 18;
-const NVML_ERROR_NO_DEVICE: i32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NvmlGpu {
@@ -310,7 +308,6 @@ fn map_init_code(code: i32) -> NvmlUnavailable {
         NVML_ERROR_NO_PERMISSION => NvmlUnavailable::NoPermission,
         NVML_ERROR_NOT_SUPPORTED => NvmlUnavailable::NotSupported,
         NVML_ERROR_LIBRARY_NOT_FOUND => NvmlUnavailable::LibraryMissing,
-        NVML_ERROR_NO_DEVICE => NvmlUnavailable::NoDevices,
         code => NvmlUnavailable::Failed {
             function: "nvmlInit_v2",
             code,
@@ -325,8 +322,6 @@ fn map_api_code(function: &'static str, code: i32) -> NvmlUnavailable {
         NVML_ERROR_NO_PERMISSION => NvmlUnavailable::NoPermission,
         NVML_ERROR_NOT_SUPPORTED => NvmlUnavailable::NotSupported,
         NVML_ERROR_LIBRARY_NOT_FOUND => NvmlUnavailable::LibraryMissing,
-        NVML_ERROR_NO_DEVICE => NvmlUnavailable::NoDevices,
-        NVML_ERROR_INVALID_ARGUMENT => NvmlUnavailable::Failed { function, code },
         code => NvmlUnavailable::Failed { function, code },
     }
 }
