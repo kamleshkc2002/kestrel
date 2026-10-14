@@ -82,6 +82,7 @@ and running states separately.
 - **Default:** disabled.
 - **Configuration:** `[snippets] max_content_bytes` (1 B–1 MiB; default 64 KiB), `clipboard_variable_bytes` (64 B–64 KiB; default 4 KiB), `insert_timeout_millis` (250–10,000; default 2,000), `preferred_provider` (`auto`, `wtype`, `ydotool`, or `xdotool`; default `auto`), and `expansion_timing` (`manual` or `delimiter`; default `manual`).
 - Snippets are stored atomically in a mode-0600 file in a mode-0700 directory; files keep the literal `{{...}}` variables.
+- Alt+Up and Alt+Down move the current line or selected lines in the snippet editor; Ctrl+Z undoes a move.
 
 ### Command bar — `commands.bar`
 
@@ -92,8 +93,12 @@ and running states separately.
 ### Clipboard history — `clipboard.history`
 
 - **Default:** disabled and requires explicit opt-in.
-- **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), and `paste_plain_text` (default true).
+- **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), `paste_plain_text` (default true), and `history_layout` (`list` or `cards`; default `list`, also under Settings → Clipboard).
 - History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only.
+- Copying an entry again moves it to the top; pinned entries keep their place. Wipe history and Clear unpinned ask first and state how many entries go; anything copied while the prompt is open is kept.
+- Search highlights matches. Ctrl+N and Ctrl+P move through results and Return copies the selected entry, or the first one when none is selected.
+- Previews lay JSON out one value per line. Image previews offer Copy text, which reads the image with the local `tesseract` executable; the text goes to the clipboard only and is neither retained nor logged. Without Tesseract the preview says what to install.
+- Cards name the source app only when the clipboard backend reports a reliable owner; none does today, so cards say "Source app unknown".
 
 ### Screenshots — `capture.screenshot`
 
@@ -126,6 +131,7 @@ and running states separately.
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command scratchpad.open`.
 - **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable under Settings → Scratchpad.
 - Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`.
+- Alt+Up and Alt+Down move the current line or selected lines; Ctrl+Z undoes a move and restores the selection.
 - Preview renders the note's Markdown. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
 
 ### Camera preview — `camera.preview`

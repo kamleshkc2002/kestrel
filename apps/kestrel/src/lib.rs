@@ -8,6 +8,7 @@ mod private_file;
 mod runtime;
 mod snippets;
 mod status_notifier;
+pub mod text_lines;
 mod tray_icon;
 pub mod view_model;
 
@@ -21,8 +22,8 @@ pub use config::{
     export_file, export_string, import_file, import_string, load, save,
 };
 pub use kestrel_core::{
-    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, CloseAction,
-    MonitorReadout, NetworkRateUnit, PanelSection,
+    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
+    CloseAction, MonitorReadout, NetworkRateUnit, PanelSection,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -499,6 +500,9 @@ pub enum ApplicationCommand {
     ClipboardSearch(String),
     /// Bounded entry preview.
     ClipboardPreview(u64),
+    /// Reads the text in an image entry and copies it without retaining it.
+    ClipboardCopyImageText(u64),
+    SetClipboardLayout(ClipboardLayout),
     SetClipboardLimit(ClipboardLimit),
     SetCaptureLimit(CaptureLimit),
     SetProcessLimit(ProcessLimit),

@@ -363,15 +363,43 @@ pub struct ClipboardMatch {
     pub preview: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewFormat {
+    Plain,
+    /// A JSON object or array laid out one value per line.
+    Json,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardPreview {
     pub id: u64,
     pub kind: ClipboardEntryKind,
     pub text: String,
     pub truncated: bool,
+    pub format: PreviewFormat,
     pub size_bytes: usize,
     pub image_dimensions: Option<(u32, u32)>,
     pub file_count: Option<usize>,
+}
+
+/// Content handed out for one action; `Debug` never shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Unlogged<T: zeroize::Zeroize>(Zeroizing<T>);
+
+impl<T: zeroize::Zeroize> Unlogged<T> {
+    pub fn new(value: T) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    pub fn expose(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: zeroize::Zeroize> fmt::Debug for Unlogged<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Unlogged(..)")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,6 +425,15 @@ pub enum ClipboardCommand {
     ClearSelection,
     /// Clears the live selection and all retained entries.
     Wipe,
+    /// Removes entries up to `through_id`, so entries captured after a
+    /// confirmation prompt opened survive; `keep_pinned` keeps pinned ones.
+    /// A full clear also releases the live selection when it holds a removed entry.
+    ClearEntries {
+        through_id: u64,
+        keep_pinned: bool,
+    },
+    /// Puts text on the clipboard without retaining it, such as text read from an image.
+    CopyUnstoredText(Unlogged<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,14 +483,25 @@ enum WorkerCommand {
 /// An explicit, bounded content request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardQuery {
-    Search { query: String, limit: usize },
-    Preview { item_id: u64, max_bytes: usize },
+    Search {
+        query: String,
+        limit: usize,
+    },
+    Preview {
+        item_id: u64,
+        max_bytes: usize,
+    },
+    /// The PNG of an image entry, for local text recognition.
+    ImagePng {
+        item_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardQueryResult {
     Matches(Vec<ClipboardMatch>),
     Preview(ClipboardPreview),
+    ImagePng(Unlogged<Vec<u8>>),
 }
 
 pub struct ClipboardHistoryService {
@@ -537,7 +585,7 @@ impl ClipboardHistoryService {
             limit,
         })? {
             ClipboardQueryResult::Matches(matches) => Ok(matches),
-            ClipboardQueryResult::Preview(_) => Err(ClipboardServiceError::WorkerStopped),
+            _ => Err(ClipboardServiceError::WorkerStopped),
         }
     }
 
@@ -549,7 +597,15 @@ impl ClipboardHistoryService {
     ) -> Result<ClipboardPreview, ClipboardServiceError> {
         match self.query(ClipboardQuery::Preview { item_id, max_bytes })? {
             ClipboardQueryResult::Preview(preview) => Ok(preview),
-            ClipboardQueryResult::Matches(_) => Err(ClipboardServiceError::WorkerStopped),
+            _ => Err(ClipboardServiceError::WorkerStopped),
+        }
+    }
+
+    /// The PNG of an image entry, for one recognition request.
+    pub fn image_png(&self, item_id: u64) -> Result<Unlogged<Vec<u8>>, ClipboardServiceError> {
+        match self.query(ClipboardQuery::ImagePng { item_id })? {
+            ClipboardQueryResult::ImagePng(png) => Ok(png),
+            _ => Err(ClipboardServiceError::WorkerStopped),
         }
     }
 
@@ -840,6 +896,36 @@ impl HistoryStore {
         before - self.items.len()
     }
 
+    /// Moves a reused unpinned entry to the top; pinned entries keep their place.
+    fn promote(&mut self, item_id: u64, now: Instant) {
+        let Some(index) = self
+            .items
+            .iter()
+            .position(|item| item.id == item_id && !item.pinned)
+        else {
+            return;
+        };
+        if let Some(mut item) = self.items.remove(index) {
+            item.captured_at = now;
+            self.items.push_back(item);
+        }
+    }
+
+    /// Removes entries with IDs up to `through_id`; returns the removed contents.
+    fn clear_through(&mut self, through_id: u64, keep_pinned: bool) -> Vec<StoredItem> {
+        let mut removed = Vec::new();
+        let mut kept = VecDeque::with_capacity(self.items.len());
+        for item in self.items.drain(..) {
+            if item.id <= through_id && !(keep_pinned && item.pinned) {
+                removed.push(item);
+            } else {
+                kept.push_back(item);
+            }
+        }
+        self.items = kept;
+        removed
+    }
+
     fn set_pinned(&mut self, item_id: u64, pinned: bool) -> Result<(), ClipboardServiceError> {
         let item = self
             .items
@@ -889,16 +975,14 @@ impl HistoryStore {
             .filter_map(|item| {
                 let preview = match &item.content {
                     ClipboardEntryContent::Text(text) => {
-                        let lowered = text.to_lowercase();
-                        if needle.is_empty() || lowered.contains(&needle) {
+                        if contains_folded(text, &needle) {
                             match_preview(text)
                         } else {
                             return None;
                         }
                     }
                     ClipboardEntryContent::Files(paths) => {
-                        let lowered = paths.join("\n").to_lowercase();
-                        if needle.is_empty() || lowered.contains(&needle) {
+                        if paths.iter().any(|path| contains_folded(path, &needle)) {
                             match_preview(&paths.join(", "))
                         } else {
                             return None;
@@ -938,20 +1022,46 @@ impl HistoryStore {
             .ok_or(ClipboardServiceError::UnknownItem { item_id })?;
         let max_bytes = max_bytes.clamp(1, MAX_PREVIEW_BYTES);
         let size_bytes = content.size_bytes();
-        let (text, truncated) = match content {
-            ClipboardEntryContent::Text(value) => bounded_text(value, max_bytes),
-            ClipboardEntryContent::Files(paths) => bounded_text(&paths.join("\n"), max_bytes),
-            ClipboardEntryContent::ImagePng { .. } => (String::new(), false),
+        let (text, truncated, format) = match content {
+            ClipboardEntryContent::Text(value) => match json_layout(value) {
+                Some(pretty) => {
+                    let (text, truncated) = bounded_text(&pretty, max_bytes);
+                    (text, truncated, PreviewFormat::Json)
+                }
+                None => {
+                    let (text, truncated) = bounded_text(value, max_bytes);
+                    (text, truncated, PreviewFormat::Plain)
+                }
+            },
+            ClipboardEntryContent::Files(paths) => {
+                let (text, truncated) = bounded_text(&paths.join("\n"), max_bytes);
+                (text, truncated, PreviewFormat::Plain)
+            }
+            ClipboardEntryContent::ImagePng { .. } => (String::new(), false, PreviewFormat::Plain),
         };
         Ok(ClipboardPreview {
             id: item_id,
             kind: content.kind(),
             text,
             truncated,
+            format,
             size_bytes,
             image_dimensions: content.image_dimensions(),
             file_count: content.file_count(),
         })
+    }
+
+    fn image_png(&self, item_id: u64) -> Result<Unlogged<Vec<u8>>, ClipboardServiceError> {
+        match self
+            .content(item_id)
+            .ok_or(ClipboardServiceError::UnknownItem { item_id })?
+        {
+            ClipboardEntryContent::ImagePng { bytes, .. } => Ok(Unlogged::new(bytes.to_vec())),
+            other => Err(ClipboardServiceError::WrongKind {
+                item_id,
+                kind: other.kind(),
+            }),
+        }
     }
 
     fn wipe(&mut self) {
@@ -1009,6 +1119,32 @@ enum CaptureOutcome {
     Filtered(&'static str),
     Oversize,
     Empty,
+}
+
+/// Case-insensitive containment; ASCII needles match without allocating.
+fn contains_folded(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if needle_lower.is_ascii() {
+        // ASCII bytes never occur inside multi-byte UTF-8 sequences.
+        let needle = needle_lower.as_bytes();
+        return haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle));
+    }
+    haystack.to_lowercase().contains(needle_lower)
+}
+
+/// An object or array laid out one value per line; other text yields `None`.
+fn json_layout(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    serde_json::to_string_pretty(&value).ok()
 }
 
 fn bounded_text(text: &str, max_bytes: usize) -> (String, bool) {
@@ -1275,6 +1411,10 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 .history
                 .preview(item_id, max_bytes)
                 .map(ClipboardQueryResult::Preview),
+            ClipboardQuery::ImagePng { item_id } => self
+                .history
+                .image_png(item_id)
+                .map(ClipboardQueryResult::ImagePng),
         }
     }
 
@@ -1404,6 +1544,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 self.owned = Some(owned);
                 self.owned_since = Some(now);
                 self.last_error = None;
+                self.history.promote(item_id, now);
             }
             ClipboardCommand::DeleteItems { item_ids } => {
                 let ids = item_ids.to_vec();
@@ -1429,6 +1570,38 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 }
             }
             ClipboardCommand::Wipe => self.wipe_owned(),
+            ClipboardCommand::ClearEntries {
+                through_id,
+                keep_pinned,
+            } => {
+                let removed = self.history.clear_through(through_id, keep_pinned);
+                if !keep_pinned {
+                    let holds_removed = self.owned.as_ref().is_some_and(|owned| {
+                        let observed = ObservedSelection::from_owned(owned);
+                        removed
+                            .iter()
+                            .any(|item| observed.matches_content(&item.content))
+                    });
+                    if holds_removed {
+                        self.clear_owned().map_err(ClipboardServiceError::Backend)?;
+                    }
+                    self.history.wipe_count = self.history.wipe_count.saturating_add(1);
+                }
+                // Removed contents are zeroized as they drop.
+                drop(removed);
+            }
+            ClipboardCommand::CopyUnstoredText(text) => {
+                self.backend
+                    .write_text(text.expose())
+                    .map_err(ClipboardServiceError::Backend)?;
+                // Observing the text keeps the next poll from retaining it.
+                self.observed = Some(ObservedSelection::Text(Zeroizing::new(
+                    text.expose().clone(),
+                )));
+                self.owned = Some(OwnedSelection::Text(text.expose().clone()));
+                self.owned_since = Some(now);
+                self.last_error = None;
+            }
         }
         self.history.prune(now);
         self.history.enforce_bounds();
@@ -2332,6 +2505,7 @@ mod tests {
             clear_seconds: 30,
             filter_sensitive: true,
             paste_plain_text: false,
+            history_layout: kestrel_core::ClipboardLayout::Cards,
         };
 
         let policy = ClipboardPolicy::from_configuration(&configuration);
@@ -2407,5 +2581,147 @@ mod tests {
         ));
 
         assert!(policy().validate().is_ok());
+    }
+
+    fn ids(store: &HistoryStore) -> Vec<u64> {
+        store.items.iter().map(|item| item.id).collect()
+    }
+
+    #[test]
+    fn reused_entries_rise_to_the_top_and_pinned_entries_stay_put() {
+        let now = Instant::now();
+        let mut store = new_store();
+        for value in ["first", "second", "third"] {
+            store.capture(text(value), now);
+        }
+        store.promote(1, now);
+        assert_eq!(ids(&store), [2, 3, 1], "the reused entry is newest");
+        assert_eq!(store.search("", 10)[0].id, 1, "search lists it first");
+
+        store.set_pinned(2, true).expect("entry exists");
+        store.promote(2, now);
+        assert_eq!(ids(&store), [2, 3, 1], "a pinned entry keeps its place");
+    }
+
+    #[test]
+    fn clearing_through_an_id_keeps_newer_and_optionally_pinned_entries() {
+        let now = Instant::now();
+        let mut store = new_store();
+        for value in ["one", "two", "three"] {
+            store.capture(text(value), now);
+        }
+        store.set_pinned(1, true).expect("entry exists");
+        let removed = store.clear_through(2, true);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(ids(&store), [1, 3], "pinned and newer entries remain");
+        store.clear_through(3, false);
+        assert!(store.items.is_empty());
+    }
+
+    #[test]
+    fn previews_lay_out_json_and_leave_other_text_alone() {
+        let now = Instant::now();
+        let mut store = HistoryStore::new(ClipboardPolicy {
+            max_item_bytes: 256,
+            ..policy()
+        });
+        store.capture(text(r#"{"name":"kestrel","tags":[1,true]}"#), now);
+        store.capture(text("[1, 2"), now);
+        store.capture(text("42"), now);
+        let json = store.preview(1, 4096).expect("entry exists");
+        assert_eq!(json.format, super::PreviewFormat::Json);
+        assert_eq!(
+            json.text,
+            "{\n  \"name\": \"kestrel\",\n  \"tags\": [\n    1,\n    true\n  ]\n}"
+        );
+        for id in [2, 3] {
+            let plain = store.preview(id, 4096).expect("entry exists");
+            assert_eq!(plain.format, super::PreviewFormat::Plain, "entry {id}");
+        }
+        let bounded = store.preview(1, 10).expect("entry exists");
+        assert!(bounded.truncated && bounded.text.len() <= 10);
+    }
+
+    #[test]
+    fn case_insensitive_search_handles_non_ascii_text() {
+        assert!(super::contains_folded("Größe der DATEI", "datei"));
+        assert!(super::contains_folded("GRÖßE", "größe"));
+        assert!(!super::contains_folded("Größe", "datei"));
+        assert!(super::contains_folded("anything", ""));
+    }
+
+    fn long_lived() -> ClipboardPolicy {
+        ClipboardPolicy {
+            max_age: Duration::from_secs(60),
+            ..policy()
+        }
+    }
+
+    #[test]
+    fn a_confirmed_clear_spares_entries_copied_while_the_prompt_was_open() {
+        let (mut service, state, _) = start_fake(
+            long_lived(),
+            Some(FakeSelection::Text("before".to_string())),
+        );
+        wait_for_items(&service, 1);
+        let through_id = service.latest().items[0].id;
+        state.lock().expect("fake state").current = Some(FakeSelection::Text("during".into()));
+        wait_for_items(&service, 2);
+
+        let snapshot = service
+            .execute(ClipboardCommand::ClearEntries {
+                through_id,
+                keep_pinned: false,
+            })
+            .expect("clear succeeds");
+        assert_eq!(snapshot.items.len(), 1, "the newer entry survives");
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text("during".into())),
+            "the live clipboard keeps the newer copy"
+        );
+
+        let newest = snapshot.items[0].id;
+        service
+            .execute(ClipboardCommand::ClearEntries {
+                through_id: newest,
+                keep_pinned: false,
+            })
+            .expect("clear succeeds");
+        assert!(
+            state.lock().expect("fake state").current.is_none(),
+            "a cleared entry does not stay on the live clipboard"
+        );
+        service.stop();
+    }
+
+    #[test]
+    fn copying_back_promotes_and_unstored_text_is_never_retained() {
+        let (mut service, state, _) =
+            start_fake(long_lived(), Some(FakeSelection::Text("older".to_string())));
+        wait_for_items(&service, 1);
+        state.lock().expect("fake state").current = Some(FakeSelection::Text("newer".into()));
+        wait_for_items(&service, 2);
+        let older = service.latest().items[0].id;
+        let snapshot = service
+            .execute(ClipboardCommand::CopyItem {
+                item_id: older,
+                plain_text: false,
+            })
+            .expect("copy succeeds");
+        assert_eq!(snapshot.items.last().map(|item| item.id), Some(older));
+
+        let command = ClipboardCommand::CopyUnstoredText(super::Unlogged::new(
+            "recognized words".to_string(),
+        ));
+        assert!(!format!("{command:?}").contains("recognized"));
+        service.execute(command).expect("copy succeeds");
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text("recognized words".into()))
+        );
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(service.latest().items.len(), 2, "the text is not retained");
+        service.stop();
     }
 }

@@ -1521,6 +1521,30 @@ pub struct ClipboardConfiguration {
     pub filter_sensitive: bool,
     #[serde(default = "default_true")]
     pub paste_plain_text: bool,
+    #[serde(default)]
+    pub history_layout: ClipboardLayout,
+}
+
+/// How the clipboard history panel lays out entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardLayout {
+    /// A resizable list with room for previews.
+    #[default]
+    List,
+    /// A horizontal row of cards.
+    Cards,
+}
+
+impl ClipboardLayout {
+    pub const ALL: [ClipboardLayout; 2] = [ClipboardLayout::List, ClipboardLayout::Cards];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::List => "List",
+            Self::Cards => "Cards",
+        }
+    }
 }
 
 fn default_clipboard_max_items() -> u32 {
@@ -1563,6 +1587,7 @@ impl Default for ClipboardConfiguration {
             clear_seconds: 0,
             filter_sensitive: false,
             paste_plain_text: true,
+            history_layout: ClipboardLayout::List,
         }
     }
 }

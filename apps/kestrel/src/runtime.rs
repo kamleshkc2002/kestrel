@@ -215,6 +215,16 @@ impl CapabilityProbe for ScreenToolProbe {
     }
 }
 
+/// Why text cannot be read from clipboard images, when Tesseract is missing.
+fn clipboard_ocr_unavailable() -> Option<String> {
+    TesseractAdapter::discover()
+        .executable()
+        .is_none()
+        .then(|| {
+            "Install Tesseract (the tesseract-ocr package) to copy text from images.".to_owned()
+        })
+}
+
 fn ocr_recognizer(settings: &kestrel_core::ScreenToolsConfiguration) -> Arc<dyn TextRecognizer> {
     Arc::new(TesseractRecognizer {
         adapter: TesseractAdapter::discover(),
@@ -371,6 +381,8 @@ pub struct ApplicationRuntime {
     /// Addresses fetched on request; dropped when hidden.
     local_addresses: Option<Result<Vec<kestrel_platform::network_addresses::LocalAddress>, String>>,
     screen_tools: ScreenToolsService,
+    /// Reads text from clipboard images with the screen-tools OCR settings.
+    clipboard_ocr: Arc<dyn TextRecognizer>,
     camera: CameraPreviewService,
     recording: RecordingService,
     /// Detection shared with capability probes.
@@ -731,6 +743,7 @@ impl ApplicationRuntime {
             process_signalling: PidfdSignaller::available(),
             local_addresses: None,
             screen_tools: ScreenToolsService::new(ocr_recognizer(&configuration.screen_tools)),
+            clipboard_ocr: ocr_recognizer(&configuration.screen_tools),
             camera: CameraPreviewService::new(Arc::new(V4l2Camera)),
             screen_tool_settings: configuration.screen_tools.clone(),
             alerts: AlertEngine::new(AlertPolicy::from_configuration(
@@ -793,6 +806,7 @@ impl ApplicationRuntime {
         self.recording_settings = configuration.recording;
         self.screen_tools
             .set_recognizer(ocr_recognizer(&configuration.screen_tools));
+        self.clipboard_ocr = ocr_recognizer(&configuration.screen_tools);
         self.system_monitor
             .reconfigure(
                 Duration::from_millis(configuration.monitoring.refresh_interval_millis),
@@ -981,6 +995,7 @@ impl ApplicationRuntime {
                 search_query: clipboard.query,
                 matches: clipboard.matches,
                 preview: clipboard.preview,
+                ocr_unavailable: clipboard_ocr_unavailable(),
             },
             SnippetsPresentation {
                 library: &self.snippet_library,
@@ -1146,8 +1161,42 @@ impl ApplicationRuntime {
                 search_query: query,
                 matches,
                 preview,
+                ocr_unavailable: clipboard_ocr_unavailable(),
             },
         )
+    }
+
+    /// Reads the text in an image entry and puts it on the clipboard without
+    /// retaining it; returns the number of characters copied.
+    pub fn copy_clipboard_image_text(&self, item_id: u64) -> Result<usize, String> {
+        if !self.clipboard_history_is_running() {
+            return Err("Clipboard history is not running".to_owned());
+        }
+        if let Some(reason) = clipboard_ocr_unavailable() {
+            return Err(reason);
+        }
+        let png = self
+            .clipboard_history
+            .image_png(item_id)
+            .map_err(|error| format!("The image could not be read: {error}"))?;
+        let text = self
+            .clipboard_ocr
+            .recognize(
+                png.expose(),
+                &kestrel_platform::capture::CaptureCancel::new(),
+            )
+            .map_err(|error| format!("Text recognition failed: {}", error.message))?;
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            return Err("No text was found in the image".to_owned());
+        }
+        let characters = text.chars().count();
+        self.clipboard_history
+            .execute(ClipboardCommand::CopyUnstoredText(
+                kestrel_services::clipboard::Unlogged::new(text),
+            ))
+            .map_err(|error| format!("The text could not be copied: {error}"))?;
+        Ok(characters)
     }
 
     pub fn microphone_is_running(&self) -> bool {

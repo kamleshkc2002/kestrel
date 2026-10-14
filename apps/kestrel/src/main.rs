@@ -591,6 +591,8 @@ enum ControllerOperation {
     Clipboard(kestrel::ClipboardCommand),
     ClipboardSearch(String),
     ClipboardPreview(u64),
+    ClipboardCopyImageText(u64),
+    SetClipboardLayout(kestrel::ClipboardLayout),
     SetClipboardLimit(kestrel::ClipboardLimit),
     SetCaptureLimit(kestrel::CaptureLimit),
     SetProcessLimit(kestrel::ProcessLimit),
@@ -1888,6 +1890,26 @@ impl ControllerState {
                     }
                 }
             }
+            ControllerOperation::ClipboardCopyImageText(item_id) => {
+                match self.runtime.copy_clipboard_image_text(item_id) {
+                    Ok(characters) => {
+                        format!("Copied {characters} characters of text from the image")
+                    }
+                    Err(message) => message,
+                }
+            }
+            ControllerOperation::SetClipboardLayout(layout) => {
+                let mut candidate = self.configuration.clone();
+                candidate.clipboard.history_layout = layout;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "Clipboard history shown as {}",
+                        layout.label().to_lowercase()
+                    ),
+                )?
+            }
             ControllerOperation::ClipboardPreview(item_id) => {
                 self.clipboard_preview = None;
                 match self
@@ -2475,6 +2497,11 @@ fn clipboard_command_summary(command: &kestrel::ClipboardCommand) -> &'static st
         kestrel::ClipboardCommand::ReplaceText { .. } => "Clipboard edit",
         kestrel::ClipboardCommand::ClearSelection => "Clipboard selection clear",
         kestrel::ClipboardCommand::Wipe => "Clipboard wipe",
+        kestrel::ClipboardCommand::ClearEntries {
+            keep_pinned: true, ..
+        } => "Clipboard clear unpinned",
+        kestrel::ClipboardCommand::ClearEntries { .. } => "Clipboard wipe",
+        kestrel::ClipboardCommand::CopyUnstoredText(_) => "Image text copy",
     }
 }
 
@@ -2950,6 +2977,16 @@ fn dispatch_commands(
                         ControllerOperation::ClipboardPreview(item_id),
                         "kestrel-clipboard-preview",
                     ),
+                ApplicationCommand::ClipboardCopyImageText(item_id) => controller
+                    .request_targeted_operation(
+                        ControllerOperation::ClipboardCopyImageText(item_id),
+                        "kestrel-clipboard-image-text",
+                        TargetedPanel::Clipboard,
+                    ),
+                ApplicationCommand::SetClipboardLayout(layout) => controller.request_operation(
+                    ControllerOperation::SetClipboardLayout(layout),
+                    "kestrel-clipboard-layout",
+                ),
                 ApplicationCommand::SetClipboardLimit(limit) => controller.request_operation(
                     ControllerOperation::SetClipboardLimit(limit),
                     "kestrel-clipboard-limit",

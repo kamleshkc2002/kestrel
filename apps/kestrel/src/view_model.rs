@@ -2492,6 +2492,8 @@ pub(crate) struct ClipboardPresentation<'a> {
     pub search_query: &'a str,
     pub matches: &'a [ClipboardMatch],
     pub preview: Option<&'a ClipboardPreview>,
+    /// Why text cannot be read from images, when it cannot.
+    pub ocr_unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2512,6 +2514,10 @@ pub struct ClipboardViewModel {
     pub last_filtered_pattern: Option<&'static str>,
     pub preview: Option<ClipboardPreviewViewModel>,
     pub policy: ClipboardPolicyViewModel,
+    /// Newest retained entry; clears confirm up to it so later copies survive.
+    pub newest_id: Option<u64>,
+    pub layout: kestrel_core::ClipboardLayout,
+    pub ocr_unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2520,8 +2526,11 @@ pub struct ClipboardItemViewModel {
     pub kind: &'static str,
     pub detail: String,
     pub preview: String,
+    /// Byte ranges of `preview` that match the search.
+    pub highlights: Vec<(usize, usize)>,
     pub pinned: bool,
     pub text_editable: bool,
+    pub is_image: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2530,9 +2539,55 @@ pub struct ClipboardPreviewViewModel {
     pub kind: &'static str,
     pub text: String,
     pub truncated: bool,
+    /// The text is JSON laid out one value per line.
+    pub json: bool,
     pub editable: bool,
+    pub is_image: bool,
     pub image_dimensions: Option<(u32, u32)>,
     pub file_count: Option<usize>,
+}
+
+/// Byte ranges where `needle` occurs in `text`, ignoring case.
+pub(crate) fn match_ranges(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let folded: Vec<char> = needle.chars().flat_map(char::to_lowercase).collect();
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let mut wanted = folded.iter();
+        let mut end = None;
+        let mut pending = Vec::new();
+        for (offset, character) in text[start..].char_indices() {
+            pending.extend(character.to_lowercase());
+            let mut matched = true;
+            for folded_char in pending.drain(..) {
+                if wanted.next() != Some(&folded_char) {
+                    matched = false;
+                    break;
+                }
+            }
+            if !matched {
+                break;
+            }
+            if wanted.as_slice().is_empty() {
+                end = Some(start + offset + character.len_utf8());
+                break;
+            }
+        }
+        match end {
+            Some(end) => {
+                ranges.push((start, end));
+                start = end;
+            }
+            None => {
+                start += text[start..].chars().next().map_or(1, char::len_utf8);
+            }
+        }
+    }
+    ranges
 }
 
 /// Editable policy values plus the bounds the controls must enforce.
@@ -2616,6 +2671,9 @@ impl ClipboardViewModel {
                 last_filtered_pattern: None,
                 preview: presentation.preview.map(clipboard_preview),
                 policy,
+                newest_id: None,
+                layout: configuration.history_layout,
+                ocr_unavailable: presentation.ocr_unavailable,
             };
         };
 
@@ -2636,10 +2694,13 @@ impl ClipboardViewModel {
                         .as_ref()
                         .map(clipboard_item_detail)
                         .unwrap_or_else(|| "Retained entry".to_owned()),
+                    highlights: match_ranges(&matched.preview, presentation.search_query),
                     preview: matched.preview.clone(),
                     pinned: metadata.as_ref().is_some_and(|item| item.pinned),
                     text_editable: matched.kind
                         == kestrel_platform::clipboard::ClipboardEntryKind::Text,
+                    is_image: matched.kind
+                        == kestrel_platform::clipboard::ClipboardEntryKind::Image,
                 }
             })
             .collect::<Vec<_>>();
@@ -2660,6 +2721,9 @@ impl ClipboardViewModel {
             last_filtered_pattern: snapshot.last_filtered_pattern,
             preview: presentation.preview.map(clipboard_preview),
             policy,
+            newest_id: snapshot.items.iter().map(|item| item.id).max(),
+            layout: configuration.history_layout,
+            ocr_unavailable: presentation.ocr_unavailable,
         }
     }
 }
@@ -2723,7 +2787,11 @@ fn clipboard_preview(preview: &ClipboardPreview) -> ClipboardPreviewViewModel {
         kind: preview.kind.label(),
         text: preview.text.clone(),
         truncated: preview.truncated,
-        editable: preview.kind == kestrel_platform::clipboard::ClipboardEntryKind::Text,
+        json: preview.format == kestrel_services::clipboard::PreviewFormat::Json,
+        // Laid-out JSON is not the stored text, so it is shown read-only.
+        editable: preview.kind == kestrel_platform::clipboard::ClipboardEntryKind::Text
+            && preview.format == kestrel_services::clipboard::PreviewFormat::Plain,
+        is_image: preview.kind == kestrel_platform::clipboard::ClipboardEntryKind::Image,
         image_dimensions: preview.image_dimensions,
         file_count: preview.file_count,
     }
@@ -4258,6 +4326,27 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_are_found_case_insensitively_on_char_boundaries() {
+        assert_eq!(
+            super::match_ranges("Token and TOKEN", "token"),
+            [(0, 5), (10, 15)]
+        );
+        let text = "Größe der Größe";
+        let ranges = super::match_ranges(text, "GRÖSSE");
+        assert!(ranges.is_empty(), "ß does not fold to ss");
+        let ranges = super::match_ranges(text, "größe");
+        assert_eq!(ranges.len(), 2);
+        assert!(
+            ranges
+                .iter()
+                .all(|&(start, end)| text.is_char_boundary(start)
+                    && text.is_char_boundary(end)
+                    && text[start..end].to_lowercase() == "größe")
+        );
+        assert!(super::match_ranges("anything", "  ").is_empty());
+    }
+
+    #[test]
     fn tray_icon_readings_fit_a_square_icon() {
         for (reading, compact) in [
             ("12%", "12%"),
@@ -5100,6 +5189,7 @@ mod tests {
                 search_query: "match",
                 matches: &matches,
                 preview: None,
+                ocr_unavailable: None,
             },
         );
 
@@ -5138,6 +5228,7 @@ mod tests {
                 search_query: "",
                 matches: &[],
                 preview: None,
+                ocr_unavailable: None,
             },
         );
 
@@ -5159,6 +5250,7 @@ mod tests {
             kind: ClipboardEntryKind::Files,
             text: "/tmp/a\n/tmp/b".to_string(),
             truncated: true,
+            format: kestrel_services::clipboard::PreviewFormat::Plain,
             size_bytes: 24,
             image_dimensions: None,
             file_count: Some(2),
@@ -5171,6 +5263,7 @@ mod tests {
                 search_query: "",
                 matches: &[],
                 preview: Some(&preview),
+                ocr_unavailable: None,
             },
         );
 

@@ -1129,6 +1129,15 @@ fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>
             }
         }
     }
+    if let Some(value) = clipboard.get("history_layout") {
+        match kestrel_core::ClipboardLayout::deserialize(value.clone()) {
+            Ok(layout) => loaded.configuration.clipboard.history_layout = layout,
+            Err(_) => loaded.warnings.push(warning(
+                "clipboard.history_layout",
+                "History layout must be \"list\" or \"cards\"; the list was retained.",
+            )),
+        }
+    }
 
     // Total-byte bounds cap per-item limits when inconsistent.
     let total = loaded.configuration.clipboard.max_total_bytes;
@@ -1721,6 +1730,33 @@ sustain_samples = "bad"
                     .any(|warning| warning.feature_id == location)
             );
         }
+    }
+
+    #[test]
+    fn clipboard_history_layout_parses_and_a_bad_value_keeps_the_list() {
+        let loaded = parse("schema_version = 3\n[clipboard]\nhistory_layout = \"cards\"\n")
+            .expect("document itself is valid TOML");
+        assert_eq!(
+            loaded.configuration.clipboard.history_layout,
+            kestrel_core::ClipboardLayout::Cards
+        );
+        assert!(loaded.warnings.is_empty());
+
+        let loaded =
+            parse("schema_version = 3\n[clipboard]\nhistory_layout = \"grid\"\nmax_items = 50\n")
+                .expect("document itself is valid TOML");
+        let clipboard = &loaded.configuration.clipboard;
+        assert_eq!(
+            clipboard.history_layout,
+            kestrel_core::ClipboardLayout::List
+        );
+        assert_eq!(clipboard.max_items, 50, "other keys still apply");
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "clipboard.history_layout")
+        );
     }
 
     #[test]
