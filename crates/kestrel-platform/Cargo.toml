@@ -18,7 +18,7 @@ wl-clipboard-rs = "0.9.3"
 x11rb = "0.14"
 zbus = { version = "5.19.0", default-features = false, features = ["blocking-api", "async-io"] }
 linuxvideo = "0.3"
-zune-jpeg = "0.4"
+zune-jpeg = "0.5"
 zune-core = "0.5"
 gstreamer = "0.25"
 gstreamer-app = "0.25"
