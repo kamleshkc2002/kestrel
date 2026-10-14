@@ -16,6 +16,7 @@ use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus, Permi
 use linuxvideo::format::{PixFormat, PixelFormat};
 use linuxvideo::stream::ReadStream;
 use linuxvideo::{BufType, CapabilityFlags, Device};
+use zune_core::bytestream::ZCursor;
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;
 use zune_jpeg::JpegDecoder;
@@ -358,7 +359,7 @@ pub fn jpeg_to_rgba(data: &[u8]) -> Option<CameraFrame> {
         .jpeg_set_out_colorspace(ColorSpace::RGBA)
         .set_max_width(MAX_FRAME_DIMENSION as usize)
         .set_max_height(MAX_FRAME_DIMENSION as usize);
-    let mut decoder = JpegDecoder::new_with_options(data, options);
+    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(data), options);
     let rgba = decoder.decode().ok()?;
     let info = decoder.info()?;
     let (width, height) = (u32::from(info.width), u32::from(info.height));
