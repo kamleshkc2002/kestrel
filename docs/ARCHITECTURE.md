@@ -363,6 +363,15 @@ stop, shutdown, and wipe drop every retained entry (pinned entries included) and
 release the owned selection. The independent automatic clear only releases the
 live selection after a configured interval and never touches saved entries.
 
+Copying a retained entry promotes it to the top of the unpinned entries. A
+confirmed clear names the newest entry the prompt counted
+(`ClearEntries { through_id, keep_pinned }`), so entries captured while the
+prompt was open survive. Copy text on an image entry reads the PNG through an
+explicit query, runs the local Tesseract recognizer in the application runtime,
+and places the result with `CopyUnstoredText`; the service owns that selection
+without capturing it, and the `Unlogged` wrapper keeps the image bytes and the
+recognized text out of `Debug` output and diagnostics.
+
 The window learns about clipboard changes through the same periodic tick as
 monitoring: the tick compares a metadata fingerprint (lifecycle, counts, byte
 total, pin/filter/clear/wipe counters, error presence) and, when it differs,

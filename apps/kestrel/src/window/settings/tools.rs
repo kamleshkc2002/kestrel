@@ -207,6 +207,31 @@ pub(super) fn add_clipboard_limits_group(
     paste.set_activatable_widget(Some(&paste_switch));
     clipboard_group.add(&paste);
 
+    let layouts = kestrel::ClipboardLayout::ALL;
+    let layout = adw::ComboRow::builder()
+        .title("History layout")
+        .subtitle("A resizable list, or a row of cards.")
+        .model(&gtk::StringList::new(
+            &layouts
+                .iter()
+                .map(|layout| layout.label())
+                .collect::<Vec<_>>(),
+        ))
+        .selected(
+            layouts
+                .iter()
+                .position(|layout| *layout == clipboard.layout)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let sender = commands.clone();
+    layout.connect_selected_notify(move |row| {
+        if let Some(layout) = layouts.get(row.selected() as usize) {
+            let _ = sender.try_send(ApplicationCommand::SetClipboardLayout(*layout));
+        }
+    });
+    clipboard_group.add(&layout);
+
     for row in [
         items.upcast_ref::<gtk::Widget>().clone(),
         item_bytes.upcast_ref::<gtk::Widget>().clone(),
@@ -222,6 +247,10 @@ pub(super) fn add_clipboard_limits_group(
             "clipboard history retention bounds sensitive plain text".to_owned(),
         ));
     }
+    filter_rows.push((
+        layout.upcast(),
+        "clipboard history layout list cards".to_owned(),
+    ));
     group.add(&clipboard_group);
 }
 

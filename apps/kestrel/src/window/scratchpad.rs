@@ -5,12 +5,14 @@ use std::{
     rc::Rc,
 };
 
+use super::widgets::{choose_path, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
-use gtk::{Align, Orientation, accessible::Property};
-use kestrel::{ApplicationCommand, ScratchpadCommand, ScratchpadViewModel};
-
-use super::widgets::{choose_path, plain_row};
+use gtk::{Align, Orientation, accessible::Property, gdk};
+use kestrel::{
+    ApplicationCommand, ScratchpadCommand, ScratchpadViewModel,
+    text_lines::{LineDirection, move_lines},
+};
 
 /// Widgets kept across updates so typing never rebuilds the editor.
 pub(super) struct ScratchpadPanel {
@@ -183,6 +185,45 @@ fn confirm(
     dialog.present();
 }
 
+fn connect_line_movement(view: &gtk::TextView) {
+    let buffer = view.buffer();
+    buffer.set_enable_undo(true);
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let direction = match (key, state.contains(gdk::ModifierType::ALT_MASK)) {
+            (gdk::Key::Up, true) => LineDirection::Up,
+            (gdk::Key::Down, true) => LineDirection::Down,
+            _ => return gtk::glib::Propagation::Proceed,
+        };
+        let text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string();
+        let selection = buffer
+            .selection_bounds()
+            .map(|(start, end)| (start.offset() as usize, end.offset() as usize))
+            .unwrap_or_else(|| {
+                let cursor = buffer.cursor_position().max(0) as usize;
+                (cursor, cursor)
+            });
+        let Some(line_move) = move_lines(&text, selection, direction) else {
+            return gtk::glib::Propagation::Stop;
+        };
+
+        let mut range_start = buffer.iter_at_offset(line_move.range.0 as i32);
+        let mut range_end = buffer.iter_at_offset(line_move.range.1 as i32);
+        buffer.begin_user_action();
+        buffer.delete(&mut range_start, &mut range_end);
+        let mut insert_at = buffer.iter_at_offset(line_move.range.0 as i32);
+        buffer.insert(&mut insert_at, &line_move.replacement);
+        let new_start = buffer.iter_at_offset(line_move.selection.0 as i32);
+        let new_end = buffer.iter_at_offset(line_move.selection.1 as i32);
+        buffer.select_range(&new_start, &new_end);
+        buffer.end_user_action();
+        gtk::glib::Propagation::Stop
+    });
+    view.add_controller(keys);
+}
+
 impl ScratchpadPanel {
     fn connect_handlers(
         &self,
@@ -191,6 +232,7 @@ impl ScratchpadPanel {
         close_button: &gtk::Button,
         export_button: &gtk::Button,
     ) {
+        connect_line_movement(&self.editor);
         let commands = self.commands.clone();
         new_button.connect_clicked(move |_| {
             send(&commands, ScratchpadCommand::New("Untitled".to_owned()));

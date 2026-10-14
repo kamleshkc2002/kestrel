@@ -216,9 +216,6 @@ impl WindowView {
             return;
         };
         panel.status.set_text(&clipboard.status);
-        while let Some(child) = panel.results.first_child() {
-            child.unparent();
-        }
         fill_clipboard_results(panel, clipboard, &self.commands);
         // Background capture may create entries before the first search.
         request_initial_clipboard_listing(clipboard, &self.commands);
