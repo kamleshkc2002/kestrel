@@ -2625,14 +2625,14 @@ mod tests {
             max_item_bytes: 256,
             ..policy()
         });
-        store.capture(text(r#"{"name":"kestrel","tags":[1,true]}"#), now);
+        store.capture(text(r#"{"tags":[1,true],"name":"kestrel"}"#), now);
         store.capture(text("[1, 2"), now);
         store.capture(text("42"), now);
         let json = store.preview(1, 4096).expect("entry exists");
         assert_eq!(json.format, super::PreviewFormat::Json);
         assert_eq!(
-            json.text,
-            "{\n  \"name\": \"kestrel\",\n  \"tags\": [\n    1,\n    true\n  ]\n}"
+            json.text, "{\n  \"tags\": [\n    1,\n    true\n  ],\n  \"name\": \"kestrel\"\n}",
+            "keys keep their copied order"
         );
         for id in [2, 3] {
             let plain = store.preview(id, 4096).expect("entry exists");
