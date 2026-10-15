@@ -353,12 +353,37 @@ fn decode(
     }
 }
 
-/// Decodes an MJPEG frame; webcams often omit Huffman tables, which the decoder supplies.
+/// APP0 segment that makes the decoder fall back to the standard MJPEG Huffman tables.
+const AVI1_APP0: [u8; 9] = [0xFF, 0xE0, 0x00, 0x07, b'A', b'V', b'I', b'1', 0];
+
+/// Whether the header before the first scan defines Huffman tables or marks AVI1 MJPEG.
+fn declares_huffman_tables(data: &[u8]) -> bool {
+    let mut at = 2;
+    while at + 4 <= data.len() && data[at] == 0xFF {
+        match data[at + 1] {
+            0xDA => return false,
+            0xC4 => return true,
+            0xE0 if data.get(at + 4..at + 8) == Some(b"AVI1") => return true,
+            _ => at += 2 + usize::from(u16::from_be_bytes([data[at + 2], data[at + 3]])),
+        }
+    }
+    // Malformed headers go to the decoder unchanged so it reports them.
+    true
+}
+
+/// Decodes an MJPEG frame; webcams often omit Huffman tables, so those frames get the standard ones.
 pub fn jpeg_to_rgba(data: &[u8]) -> Option<CameraFrame> {
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGBA)
         .set_max_width(MAX_FRAME_DIMENSION as usize)
         .set_max_height(MAX_FRAME_DIMENSION as usize);
+    let patched;
+    let data = if data.starts_with(&[0xFF, 0xD8]) && !declares_huffman_tables(data) {
+        patched = [&data[..2], &AVI1_APP0[..], &data[2..]].concat();
+        &patched[..]
+    } else {
+        data
+    };
     let mut decoder = JpegDecoder::new_with_options(ZCursor::new(data), options);
     let rgba = decoder.decode().ok()?;
     let info = decoder.info()?;
@@ -484,6 +509,37 @@ mod tests {
     fn corrupt_jpeg_frames_are_skipped() {
         assert_eq!(jpeg_to_rgba(b"not a jpeg"), None);
         assert_eq!(jpeg_to_rgba(&[0xff, 0xd8, 0xff]), None);
+    }
+
+    /// Drops DHT segments, as webcams do in MJPEG streams.
+    fn without_huffman_tables(jpeg: &[u8]) -> Vec<u8> {
+        let mut out = jpeg[..2].to_vec();
+        let mut at = 2;
+        while at + 4 <= jpeg.len() && jpeg[at + 1] != 0xDA {
+            let end = at + 2 + usize::from(u16::from_be_bytes([jpeg[at + 2], jpeg[at + 3]]));
+            if jpeg[at + 1] != 0xC4 {
+                out.extend_from_slice(&jpeg[at..end]);
+            }
+            at = end;
+        }
+        out.extend_from_slice(&jpeg[at..]);
+        out
+    }
+
+    #[test]
+    fn mjpeg_frames_decode_with_or_without_huffman_tables() {
+        let full: &[u8] = include_bytes!("../testdata/red-16x8.jpg");
+        let stripped = without_huffman_tables(full);
+        assert!(stripped.len() < full.len(), "fixture carried DHT segments");
+        for jpeg in [full, &stripped] {
+            let frame = jpeg_to_rgba(jpeg).expect("frame decodes");
+            assert_eq!((frame.width, frame.height), (16, 8));
+            assert_eq!(frame.rgba.len(), 16 * 8 * 4);
+            for &[r, g, b, a] in frame.rgba.as_chunks::<4>().0 {
+                assert!(r.abs_diff(0xd0) <= 6 && g.abs_diff(0x20) <= 6 && b.abs_diff(0x20) <= 6);
+                assert_eq!(a, 255);
+            }
+        }
     }
 
     #[test]
