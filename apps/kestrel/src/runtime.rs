@@ -3066,6 +3066,7 @@ mod tests {
             comment: None,
             command: vec![name.to_lowercase()],
             terminal,
+            actions: Vec::new(),
             source: None,
         }
     }

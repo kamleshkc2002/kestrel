@@ -14,6 +14,9 @@ libpulse-binding = "2.30.1"
 libc = "0.2"
 png = "0.18"
 wayland-client = { version = "0.31", default-features = false }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+cosmic-protocols = { version = "0.2", default-features = false, features = ["client"] }
 wl-clipboard-rs = "0.9.3"
 x11rb = "0.14"
 zbus = { version = "5.19.0", default-features = false, features = ["blocking-api", "async-io"] }

@@ -23,6 +23,7 @@ pub mod system_monitor;
 #[cfg(test)]
 mod test_bus;
 pub mod upower;
+pub mod windows;
 
 /// Number of retries while an executable is momentarily busy.
 const SPAWN_ATTEMPTS: usize = 5;
