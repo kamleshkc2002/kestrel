@@ -901,7 +901,6 @@ impl ApplicationRuntime {
             .set_policy(ProcessPolicy::from_configuration(configuration.processes));
         let (requests, skipped) = Self::shortcut_requests(&configuration.shortcuts);
         if requests != self.shortcut_requests {
-            // New bindings take effect through a fresh registration.
             self.global_shortcuts.stop();
             self.shortcut_attempted = false;
         }
@@ -929,7 +928,10 @@ impl ApplicationRuntime {
             self.window_provider_unavailable = None;
         } else if self.window_provider.is_none() {
             match discover_window_provider() {
-                Ok(provider) => self.window_provider = Some(provider),
+                Ok(provider) => {
+                    self.window_provider_unavailable = None;
+                    self.window_provider = Some(provider);
+                }
                 Err(error) => self.window_provider_unavailable = Some(error),
             }
         }
