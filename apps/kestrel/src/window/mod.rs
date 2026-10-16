@@ -174,6 +174,7 @@ impl WindowView {
     /// Focuses a control; false when its panel is hidden.
     pub fn focus(&self, target: FocusTarget) -> bool {
         let entry: Option<gtk::Widget> = match target {
+            FocusTarget::QuickPanel => None,
             FocusTarget::CommandBar => self
                 .command_panel
                 .borrow()

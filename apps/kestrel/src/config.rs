@@ -12,15 +12,15 @@ use kestrel_core::{
     MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
     MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_COMMAND_FILE_ROOTS,
     MAX_COMMAND_RESULTS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
-    MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS,
-    MAX_SPEED_TEST_DOWNLOAD_MEGABYTES, MAX_SPEED_TEST_TIMEOUT_SECONDS,
-    MAX_SPEED_TEST_UPLOAD_MEGABYTES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
-    MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES, MIN_COMMAND_RESULTS,
-    MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES, MIN_SNIPPET_CONTENT_BYTES,
-    MIN_SNIPPET_INSERT_TIMEOUT_MILLIS, MIN_SPEED_TEST_DOWNLOAD_MEGABYTES,
-    MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout, PanelSection, PanelSectionConfiguration,
-    SnippetExpansionTiming, SnippetProviderPreference, StartupConfiguration,
-    UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
+    MAX_QUICK_PANEL_FAVORITES, MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES,
+    MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SPEED_TEST_DOWNLOAD_MEGABYTES,
+    MAX_SPEED_TEST_TIMEOUT_SECONDS, MAX_SPEED_TEST_UPLOAD_MEGABYTES,
+    MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES,
+    MIN_COMMAND_RESULTS, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
+    MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
+    MIN_SPEED_TEST_DOWNLOAD_MEGABYTES, MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout,
+    PanelSection, PanelSectionConfiguration, SnippetExpansionTiming, SnippetProviderPreference,
+    StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -244,6 +244,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_scratchpad(&mut loaded, document.get("scratchpad"));
     parse_recording(&mut loaded, document.get("recording"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
+    parse_quick_panel(&mut loaded, document.get("quick_panel"));
     Ok(loaded)
 }
 
@@ -1233,6 +1234,54 @@ fn parse_snippets(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>)
             )),
         }
     }
+}
+
+fn parse_quick_panel(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(section) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "quick_panel",
+            "The quick_panel value must be a TOML table.",
+        ));
+        return;
+    };
+    let Some(favorites) = section.get("favorites") else {
+        return;
+    };
+    let Ok(parsed) = Vec::<String>::deserialize(favorites.clone()) else {
+        loaded.warnings.push(warning(
+            "quick_panel.favorites",
+            "Favorites must be an array of command IDs; the default was retained.",
+        ));
+        return;
+    };
+    let mut accepted = Vec::new();
+    for (index, id) in parsed.into_iter().enumerate() {
+        let location = format!("quick_panel.favorites[{index}]");
+        if accepted.len() >= MAX_QUICK_PANEL_FAVORITES {
+            loaded.warnings.push(warning(
+                &location,
+                format!("The favorite limit is {MAX_QUICK_PANEL_FAVORITES}; entry ignored."),
+            ));
+            continue;
+        }
+        if crate::command_line::CommandLineAction::parse(&id).is_err() {
+            loaded.warnings.push(warning(
+                &location,
+                format!("Unknown command ID \"{id}\"; entry ignored."),
+            ));
+            continue;
+        }
+        if accepted.contains(&id) {
+            loaded.warnings.push(warning(
+                &location,
+                format!("Duplicate command ID \"{id}\"; entry ignored."),
+            ));
+            continue;
+        }
+        accepted.push(id);
+    }
+    loaded.configuration.quick_panel.favorites = accepted;
 }
 
 fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -2668,5 +2717,32 @@ enable_files = true
                 );
             }
         }
+    }
+    #[test]
+    fn quick_panel_favorites_drop_unknown_duplicates_and_excess() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[quick_panel]
+favorites = ["command-bar.open", "missing.action", "command-bar.open", "quick-panel.open"]
+"#,
+        )
+        .expect("quick panel parses");
+        assert_eq!(
+            loaded.configuration.quick_panel.favorites,
+            ["command-bar.open", "quick-panel.open"]
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "quick_panel.favorites[1]")
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "quick_panel.favorites[2]")
+        );
     }
 }
