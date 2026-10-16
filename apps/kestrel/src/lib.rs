@@ -43,7 +43,9 @@ pub use kestrel_services::microphone::MicrophoneCommand;
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
-pub use runtime::{ApplicationRuntime, FeaturePreset, run_process_action};
+pub use runtime::{
+    ApplicationRuntime, ApplicationWindowDecision, FeaturePreset, run_process_action,
+};
 pub use snippets::{
     CURRENT_SNIPPET_SCHEMA_VERSION, LoadedSnippets, SnippetFile, SnippetStoreError, load_snippets,
     save_snippets, snippet_path,

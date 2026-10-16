@@ -30,7 +30,10 @@ use kestrel::{
     SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
     disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
 };
-use kestrel::{CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch, FocusTarget};
+use kestrel::{
+    ApplicationWindowDecision, CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch,
+    FocusTarget,
+};
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
 };
@@ -48,6 +51,8 @@ type RefreshResult = Result<(ApplicationViewModel, String), String>;
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
     clipboard: Option<ClipboardViewModel>,
+    /// Command results re-run because clipboard entries in them changed.
+    command_bar: Option<kestrel::CommandBarViewModel>,
     audio: Option<kestrel::AudioViewModel>,
     microphone: Option<MicrophoneViewModel>,
     speed_test: Option<SpeedTestViewModel>,
@@ -168,7 +173,13 @@ impl ControllerState {
             },
             CommandAction::OpenApplication { index } => {
                 match self.runtime.launch_command_application(*index) {
-                    Ok(()) => format!("Opened {}", result.item.title),
+                    Ok(ApplicationWindowDecision::Hide(_)) => format!("Hid {}", result.item.title),
+                    Ok(ApplicationWindowDecision::Restore(_)) => {
+                        format!("Brought {} to the front", result.item.title)
+                    }
+                    Ok(ApplicationWindowDecision::Launch) => {
+                        format!("Opened {}", result.item.title)
+                    }
                     Err(error) => format!("The application was not opened: {error}"),
                 }
             }
@@ -295,7 +306,7 @@ impl ControllerState {
         }
 
         let command = match action {
-            "open_window" => return Some("The window is already open".to_string()),
+            "open_window" => ApplicationCommand::PresentWindow,
             "refresh" => ApplicationCommand::RefreshCapabilities,
             "preset_essentials" => {
                 ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Essentials)
@@ -447,10 +458,11 @@ fn run_tick(
     if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
         tray.publish(&monitor.tray);
     }
-    let clipboard = clipboard_tick_update(state);
+    let (clipboard, command_bar) = clipboard_tick_update(state);
     TickUpdate {
         monitor,
         clipboard,
+        command_bar,
         audio,
         microphone,
         speed_test,
@@ -490,14 +502,19 @@ fn deliver_alerts(
     guard.runtime.monitor_view_model(&guard.configuration)
 }
 
-fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
+fn clipboard_tick_update(
+    state: &SharedState,
+) -> (
+    Option<ClipboardViewModel>,
+    Option<kestrel::CommandBarViewModel>,
+) {
     let mut guard = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let snapshot = guard.runtime.clipboard_snapshot();
     let fingerprint = ClipboardFingerprint::of(&snapshot);
     if guard.clipboard_fingerprint == Some(fingerprint) {
-        return None;
+        return (None, None);
     }
     guard.clipboard_fingerprint = Some(fingerprint);
     // Refresh the explicit query so background captures appear in results.
@@ -519,12 +536,21 @@ fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
             guard.clipboard_preview = None;
         }
     }
-    Some(guard.runtime.clipboard_view_model(
+    // A wipe, lock, or sleep must not leave clipboard previews in command results.
+    let shows_clipboard = guard.command_results.iter().any(|result| {
+        result.item.source == kestrel_services::command_bar::CommandSource::Clipboard
+    });
+    let command_bar = shows_clipboard.then(|| {
+        guard.refresh_command_results();
+        guard.view_model().command_bar
+    });
+    let clipboard = guard.runtime.clipboard_view_model(
         &guard.configuration,
         &guard.clipboard_query,
         &guard.clipboard_matches,
         guard.clipboard_preview.as_ref(),
-    ))
+    );
+    (Some(clipboard), command_bar)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1253,6 +1279,7 @@ impl ApplicationController {
         let TickUpdate {
             monitor,
             clipboard,
+            command_bar,
             audio,
             microphone,
             speed_test,
@@ -1284,6 +1311,10 @@ impl ApplicationController {
             }
         }
         self.open_recording_area();
+        if let (Some(command_bar), Some(surface)) = (&command_bar, self.floating.borrow().as_ref())
+        {
+            surface.set_command_bar(command_bar);
+        }
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1305,6 +1336,9 @@ impl ApplicationController {
         if let Some(clipboard) = clipboard {
             self.clipboard_running.set(clipboard.running);
             view.set_clipboard(&clipboard);
+        }
+        if let Some(command_bar) = command_bar {
+            view.set_command_bar(&command_bar);
         }
         if let Some(audio) = audio {
             view.set_audio(&audio);

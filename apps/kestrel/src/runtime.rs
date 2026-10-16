@@ -332,11 +332,20 @@ impl CapabilityProbe for CommandBarProbe {
     }
 }
 
+/// What running an application result does, given its open windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationWindowDecision {
     Hide(WindowHandle),
     Restore(WindowHandle),
     Launch,
+}
+
+/// Kestrel's own windows never appear as results or count as the front window.
+fn is_kestrel_window(app_id: Option<&str>) -> bool {
+    app_id.is_some_and(|app_id| {
+        app_id.eq_ignore_ascii_case(kestrel_core::APPLICATION_ID)
+            || app_id.eq_ignore_ascii_case("kestrel")
+    })
 }
 
 fn normalized_window_id(value: &str) -> String {
@@ -2293,11 +2302,7 @@ impl ApplicationRuntime {
         };
         let mut items = Vec::new();
         for window in snapshot {
-            if window
-                .app_id
-                .as_deref()
-                .is_some_and(|id| id.to_ascii_lowercase().contains("kestrel"))
-            {
+            if is_kestrel_window(window.app_id.as_deref()) {
                 continue;
             }
             if window.active {
@@ -2472,58 +2477,60 @@ impl ApplicationRuntime {
         launch_desktop_action(application, action_id).map_err(|error| error.to_string())
     }
 
-    /// Hides a matching frontmost application and restores it on the next run.
-    pub fn launch_command_application(&mut self, index: usize) -> Result<(), String> {
+    /// Hides the application when it is in front, restores it when it has a
+    /// window, and launches it otherwise.
+    pub fn launch_command_application(
+        &mut self,
+        index: usize,
+    ) -> Result<ApplicationWindowDecision, String> {
         self.require_command_bar()?;
         let application = self
             .command_applications
             .get(index)
             .cloned()
             .ok_or_else(|| format!("application {index} is no longer available"))?;
-        let decision = if let Some(provider) = self.window_provider.as_mut() {
-            let snapshot = provider.windows().map_err(|error| error.to_string())?;
-            let mut external = Vec::new();
-            for window in snapshot {
-                if window
-                    .app_id
-                    .as_deref()
-                    .is_some_and(|id| id.to_ascii_lowercase().contains("kestrel"))
-                {
-                    continue;
-                }
-                if window.active {
-                    self.last_external_active = Some(window.handle);
-                }
-                external.push(window);
+        // Without a readable window list the application is simply launched.
+        let snapshot = self
+            .window_provider
+            .as_mut()
+            .and_then(|provider| provider.windows().ok())
+            .unwrap_or_default();
+        let mut external = Vec::with_capacity(snapshot.len());
+        for window in snapshot {
+            if is_kestrel_window(window.app_id.as_deref()) {
+                continue;
             }
-            decide_application_window_action(&external, self.last_external_active, &application)
-        } else {
-            ApplicationWindowDecision::Launch
-        };
-        match decision {
-            ApplicationWindowDecision::Hide(handle) => {
-                let provider = self
-                    .window_provider
-                    .as_mut()
-                    .expect("provider selected above");
+            if window.active {
+                self.last_external_active = Some(window.handle);
+            }
+            external.push(window);
+        }
+        let decision =
+            decide_application_window_action(&external, self.last_external_active, &application);
+        let provider = self.window_provider.as_mut();
+        match (decision, provider) {
+            (ApplicationWindowDecision::Hide(handle), Some(provider)) => {
                 if !provider.backend().can_minimize() {
                     return Err(format!(
                         "{} cannot minimize windows",
                         provider.backend().label()
                     ));
                 }
-                provider.minimize(handle).map_err(|error| error.to_string())
+                provider
+                    .minimize(handle)
+                    .map_err(|error| error.to_string())?;
             }
-            ApplicationWindowDecision::Restore(handle) => self
-                .window_provider
-                .as_mut()
-                .expect("provider selected above")
-                .activate(handle)
-                .map_err(|error| error.to_string()),
-            ApplicationWindowDecision::Launch => {
-                launch_desktop_entry(&application).map_err(|error| error.to_string())
+            (ApplicationWindowDecision::Restore(handle), Some(provider)) => {
+                provider
+                    .activate(handle)
+                    .map_err(|error| error.to_string())?;
+            }
+            _ => {
+                launch_desktop_entry(&application).map_err(|error| error.to_string())?;
+                return Ok(ApplicationWindowDecision::Launch);
             }
         }
+        Ok(decision)
     }
 
     pub fn open_command_target(&self, target: &str) -> Result<(), String> {
