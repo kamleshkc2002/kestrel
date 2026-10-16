@@ -1,4 +1,6 @@
 mod capture_editor;
+mod floating;
+mod layer_shell;
 mod screen_selection;
 mod window;
 
@@ -36,6 +38,7 @@ use kestrel_core::{
 use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
 use kestrel_services::alerts::notification_text;
 
+use floating::FloatingSurface;
 use window::WindowView;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
@@ -613,6 +616,7 @@ enum ControllerOperation {
     CommandBar(CommandBarCommand),
     ResetCommandRanking,
     SetCommandResultLimit(u32),
+    SetQuickPanelFavorites(Vec<String>),
     SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
@@ -632,6 +636,8 @@ struct ApplicationController {
     state: SharedState,
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
+    floating: RefCell<Option<FloatingSurface>>,
+    floating_kind: Cell<Option<FocusTarget>>,
     refreshing: Cell<bool>,
     targeted: Cell<TargetedPanel>,
     monitoring: Cell<bool>,
@@ -726,6 +732,8 @@ impl ApplicationController {
             })),
             config_path,
             window: RefCell::new(None),
+            floating: RefCell::new(None),
+            floating_kind: Cell::new(None),
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
             monitoring: Cell::new(false),
@@ -813,6 +821,70 @@ impl ApplicationController {
     }
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
+        if matches!(target, FocusTarget::CommandBar | FocusTarget::QuickPanel) {
+            if let Some(surface) = self.floating.borrow().as_ref() {
+                if self.floating_kind.get() == Some(target) {
+                    surface.window.present();
+                    surface.window.grab_focus();
+                    return;
+                }
+                surface.window.close();
+                self.floating.borrow_mut().take();
+                self.floating_kind.set(None);
+            }
+            let model = self.current_view_model();
+            let command_bar = model.command_bar;
+            let favorites = model.quick_panel_favorites;
+            let parent = self
+                .window
+                .borrow()
+                .as_ref()
+                .map(|view| view.window.clone().upcast::<gtk::Window>());
+            let gate = self
+                .command_gate(CommandLineAction::OpenCommandBar)
+                .map(|gate| gate.to_string());
+            let favorite_gates = favorites
+                .iter()
+                .map(|id| {
+                    kestrel::command_line::CommandLineAction::parse(id)
+                        .ok()
+                        .and_then(|action| self.command_gate(action))
+                        .map(|gate| gate.to_string())
+                })
+                .collect::<Vec<_>>();
+            let surface = if target == FocusTarget::QuickPanel {
+                FloatingSurface::open_quick_panel(
+                    application,
+                    parent.as_ref(),
+                    &self.commands,
+                    &favorites,
+                    &favorite_gates,
+                )
+            } else {
+                FloatingSurface::open(
+                    application,
+                    parent.as_ref(),
+                    &self.commands,
+                    &command_bar,
+                    gate.as_deref(),
+                    "kestrel-command-bar",
+                )
+            };
+            let weak_controller = Rc::downgrade(self);
+            surface.window.connect_close_request(move |_| {
+                if let Some(controller) = weak_controller.upgrade() {
+                    controller.floating.borrow_mut().take();
+                    controller.floating_kind.set(None);
+                    let _ = controller
+                        .commands
+                        .try_send(ApplicationCommand::CommandQuery(String::new()));
+                }
+                glib::Propagation::Proceed
+            });
+            self.floating.replace(Some(surface));
+            self.floating_kind.set(Some(target));
+            return;
+        }
         self.present(application);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -998,6 +1070,9 @@ impl ApplicationController {
                 self.camera_running.set(view_model.camera.running);
                 self.recording_running.set(view_model.recording.running);
                 apply_targeted_panel(view, &view_model, targeted);
+                if let Some(surface) = self.floating.borrow().as_ref() {
+                    surface.set_model(&view_model.command_bar, &self.commands);
+                }
                 if !message.is_empty() {
                     view.show_message(&message);
                 }
@@ -1018,6 +1093,9 @@ impl ApplicationController {
                 self.camera_running.set(view_model.camera.running);
                 self.recording_running.set(view_model.recording.running);
                 apply_targeted_panel(view, &view_model, targeted);
+                if let Some(surface) = self.floating.borrow().as_ref() {
+                    surface.status.set_text(&message);
+                }
                 view.show_message(&message);
             }
         }
@@ -2248,6 +2326,15 @@ impl ControllerState {
                     format!("The command bar shows at most {results} results"),
                 )?
             }
+            ControllerOperation::SetQuickPanelFavorites(favorites) => {
+                let mut candidate = self.configuration.clone();
+                candidate.quick_panel.favorites = favorites;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    "Quick panel favorites updated".to_owned(),
+                )?
+            }
             ControllerOperation::SetCommandProvider(switch) => {
                 let mut candidate = self.configuration.clone();
                 let message = match switch {
@@ -2686,12 +2773,17 @@ fn main() -> glib::ExitCode {
                     controller.present(application);
                 }
                 if let Some(gate) = controller.command_gate(action) {
-                    // The remote client reports the gate from the exit status.
                     let message = format!("{}: {gate}", action.id());
                     if !command_line.is_remote() {
                         eprintln!("kestrel: {message}");
                     }
                     controller.show_message(&message);
+                    if matches!(
+                        action,
+                        CommandLineAction::OpenCommandBar | CommandLineAction::OpenQuickPanel
+                    ) {
+                        let _ = command_line_commands.try_send(action.to_command());
+                    }
                     return glib::ExitCode::from(gate.exit_status());
                 }
                 let _ = command_line_commands.try_send(action.to_command());
@@ -3050,6 +3142,11 @@ fn dispatch_commands(
                     ControllerOperation::SetCommandResultLimit(results),
                     "kestrel-command-limit",
                 ),
+                ApplicationCommand::SetQuickPanelFavorites(favorites) => controller
+                    .request_operation(
+                        ControllerOperation::SetQuickPanelFavorites(favorites),
+                        "kestrel-quick-panel-settings",
+                    ),
                 ApplicationCommand::SetCommandProvider(switch) => controller.request_operation(
                     ControllerOperation::SetCommandProvider(switch),
                     "kestrel-command-provider",

@@ -28,7 +28,7 @@ rm -rf "$build_dir"
 mkdir -p "$appdir" "$tools_dir" "$dist_dir"
 rm -f "$artifact" "$artifact.sha256"
 
-cargo build --locked --release --package kestrel
+KESTREL_LAYER_SHELL=required cargo build --locked --release --package kestrel
 
 curl --fail --location --retry 3 \
   --output "$linuxdeploy" \
@@ -47,6 +47,10 @@ env DEPLOY_GTK_VERSION=4 \
   --icon-file "$icon_file" \
   --exclude-library 'libgst*' \
   --plugin gtk
+if ! find "$appdir/usr/lib" -name 'libgtk4-layer-shell.so.0*' -print -quit | grep -q .; then
+  printf 'linuxdeploy did not bundle libgtk4-layer-shell.so.0\n' >&2
+  exit 1
+fi
 
 # Libadwaita owns its stylesheet; GTK selects the user's Wayland or X11 session.
 sed -i '/^export GTK_THEME=/d; /^export GDK_BACKEND=/d' \

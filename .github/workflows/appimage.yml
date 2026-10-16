@@ -15,6 +15,8 @@ permissions:
 jobs:
   build:
     name: Build AppImage (x86_64)
+    env:
+      KESTREL_LAYER_SHELL: required
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -31,7 +33,17 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
             libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            meson ninja-build libwayland-dev wayland-protocols
+      - name: Build gtk4-layer-shell
+        run: |
+          git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
+          meson setup /tmp/gtk4-layer-shell-build /tmp/gtk4-layer-shell \
+            --prefix=/usr/local -Dintrospection=false -Dvapi=false -Ddocs=false \
+            -Dexamples=false -Dtests=false -Dsmoke-tests=false
+          meson compile -C /tmp/gtk4-layer-shell-build
+          sudo meson install -C /tmp/gtk4-layer-shell-build
+          sudo ldconfig
 
       - name: Validate desktop metadata
         run: desktop-file-validate data/io.github.kamleshkc2002.Kestrel.desktop
@@ -50,6 +62,8 @@ jobs:
           test -x "$appimage"
           file "$appimage" | grep -q 'ELF 64-bit'
           "$appimage" --appimage-extract >/dev/null
+          grep -q 'libgtk4-layer-shell.so.0' <(ldd squashfs-root/usr/bin/kestrel)
+          test -n "$(find squashfs-root/usr/lib -name 'libgtk4-layer-shell.so.0*' -print -quit)"
           test -x squashfs-root/usr/bin/kestrel
           test -f squashfs-root/io.github.kamleshkc2002.Kestrel.desktop
           test -f squashfs-root/io.github.kamleshkc2002.Kestrel.svg

@@ -3305,6 +3305,7 @@ pub struct ApplicationViewModel {
     pub snippets: SnippetsViewModel,
     pub scratchpad: ScratchpadViewModel,
     pub command_bar: CommandBarViewModel,
+    pub quick_panel_favorites: Vec<String>,
     pub monitor: MonitorViewModel,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub appearance: AppearancePreference,
@@ -3392,6 +3393,7 @@ impl ApplicationViewModel {
                 limits: configuration.scratchpad,
             }),
             command_bar: CommandBarViewModel::from_presentation(command_bar),
+            quick_panel_favorites: configuration.quick_panel.favorites.clone(),
             monitor: MonitorViewModel::from_configuration(&configuration.monitoring, monitor),
             warnings: warnings
                 .iter()

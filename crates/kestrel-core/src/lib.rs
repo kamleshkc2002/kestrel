@@ -145,6 +145,8 @@ pub const DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 64 * 1024;
 pub const MAX_COMMAND_SCRIPT_OUTPUT_BYTES: u32 = 1024 * 1024;
 pub const MAX_COMMAND_USAGE_ENTRIES: usize = 200;
 pub const MAX_COMMAND_ALIAS_CHARS: usize = 32;
+pub const MAX_QUICK_PANEL_FAVORITES: usize = 24;
+pub const MAX_QUICK_PANEL_FAVORITE_CHARS: usize = 64;
 /// Speed-test transfer bounds; the provider rejects downloads at 100 MB.
 pub const MIN_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 1;
 pub const DEFAULT_SPEED_TEST_DOWNLOAD_MEGABYTES: u32 = 25;
@@ -212,6 +214,41 @@ fn default_command_script_timeout() -> u64 {
 
 fn default_command_script_output() -> u32 {
     DEFAULT_COMMAND_SCRIPT_OUTPUT_BYTES
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QuickPanelConfiguration {
+    #[serde(default)]
+    pub favorites: Vec<String>,
+}
+
+impl QuickPanelConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if self.favorites.len() > MAX_QUICK_PANEL_FAVORITES {
+            return Err(ConfigurationError::TooManyQuickPanelFavorites {
+                favorites: self.favorites.len(),
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for favorite in &self.favorites {
+            let valid = !favorite.is_empty()
+                && favorite.chars().count() <= MAX_QUICK_PANEL_FAVORITE_CHARS
+                && favorite.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-_".contains(&byte)
+                });
+            if !valid {
+                return Err(ConfigurationError::InvalidQuickPanelFavorite {
+                    favorite: favorite.clone(),
+                });
+            }
+            if !seen.insert(favorite) {
+                return Err(ConfigurationError::DuplicateQuickPanelFavorite {
+                    favorite: favorite.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,6 +533,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub snippets: SnippetConfiguration,
     #[serde(default)]
+    pub quick_panel: QuickPanelConfiguration,
+    #[serde(default)]
     pub command_bar: CommandBarConfiguration,
     #[serde(default)]
     pub scratchpad: ScratchpadConfiguration,
@@ -519,6 +558,7 @@ impl Default for ApplicationConfiguration {
             shortcuts: ShortcutConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
             snippets: SnippetConfiguration::default(),
+            quick_panel: QuickPanelConfiguration::default(),
             command_bar: CommandBarConfiguration::default(),
             scratchpad: ScratchpadConfiguration::default(),
             recording: RecordingConfiguration::default(),
@@ -583,6 +623,7 @@ impl ApplicationConfiguration {
         self.shortcuts.validate()?;
         self.clipboard.validate()?;
         self.snippets.validate()?;
+        self.quick_panel.validate()?;
         self.scratchpad.validate()?;
         self.recording.validate()?;
         self.command_bar.validate()?;
@@ -2072,6 +2113,9 @@ pub enum ConfigurationError {
     InvalidCommandScriptArgs { name: String },
     InvalidCommandScriptTimeout { name: String, millis: u64 },
     InvalidCommandScriptOutput { name: String, bytes: u32 },
+    TooManyQuickPanelFavorites { favorites: usize },
+    InvalidQuickPanelFavorite { favorite: String },
+    DuplicateQuickPanelFavorite { favorite: String },
 }
 
 // Validation rejects non-finite thresholds.
@@ -3001,6 +3045,36 @@ mod tests {
         assert!(matches!(
             config(many).validate(),
             Err(ConfigurationError::TooManyShortcutBindings { .. })
+        ));
+    }
+    #[test]
+    fn quick_panel_favorites_are_bounded_shaped_and_unique() {
+        let valid = super::QuickPanelConfiguration {
+            favorites: vec!["command-bar.open".to_owned()],
+        };
+        assert_eq!(valid.validate(), Ok(()));
+        let duplicate = super::QuickPanelConfiguration {
+            favorites: vec!["command-bar.open".to_owned(), "command-bar.open".to_owned()],
+        };
+        assert!(matches!(
+            duplicate.validate(),
+            Err(super::ConfigurationError::DuplicateQuickPanelFavorite { .. })
+        ));
+        let malformed = super::QuickPanelConfiguration {
+            favorites: vec!["Window.Show".to_owned()],
+        };
+        assert!(matches!(
+            malformed.validate(),
+            Err(super::ConfigurationError::InvalidQuickPanelFavorite { .. })
+        ));
+        let too_many = super::QuickPanelConfiguration {
+            favorites: (0..=super::MAX_QUICK_PANEL_FAVORITES)
+                .map(|index| format!("tool-{index}"))
+                .collect(),
+        };
+        assert!(matches!(
+            too_many.validate(),
+            Err(super::ConfigurationError::TooManyQuickPanelFavorites { .. })
         ));
     }
 }

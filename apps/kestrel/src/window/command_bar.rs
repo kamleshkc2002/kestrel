@@ -59,6 +59,18 @@ pub(super) fn build_command_panel(
     status_row.set_title("State");
     status_row.add_suffix(&status);
     group.add(&status_row);
+    let placement = match crate::layer_shell::observed_placement() {
+        crate::layer_shell::SurfacePlacement::LayerShell { protocol_version } => {
+            format!("Layer-shell overlay (protocol {protocol_version})")
+        }
+        crate::layer_shell::SurfacePlacement::Transient { reason } => reason,
+    };
+    let placement_row = plain_row()
+        .title("Floating placement")
+        .subtitle(placement)
+        .subtitle_lines(0)
+        .build();
+    group.add(&placement_row);
 
     for provider in &command_bar.providers {
         let row = plain_row()

@@ -21,6 +21,7 @@ pub use config::{
     ConfigurationLoadError, ConfigurationWarning, LoadedConfiguration, configuration_path,
     export_file, export_string, import_file, import_string, load, save,
 };
+pub use kestrel_core::QuickPanelConfiguration;
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
     CloseAction, MonitorReadout, NetworkRateUnit, PanelSection,
@@ -377,6 +378,7 @@ fn move_entry(list: &mut [String], entry: &str, toward: PanelMoveDirection) -> b
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     CommandBar,
+    QuickPanel,
     Clipboard,
     Processes,
     Scratchpad,
@@ -537,6 +539,7 @@ pub enum ApplicationCommand {
     CommandBar(CommandBarCommand),
     ResetCommandRanking,
     SetCommandResultLimit(u32),
+    SetQuickPanelFavorites(Vec<String>),
     SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),

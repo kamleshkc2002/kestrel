@@ -35,6 +35,7 @@ pub(super) fn build_settings_group(
     tools::add_snippet_limits_group(&group, view_model, commands, &mut filter_rows);
     tools::add_scratchpad_limits_group(&group, view_model, commands, &mut filter_rows);
     tools::add_command_bar_group(&group, view_model, commands, &mut filter_rows);
+    add_quick_panel_group(&group, view_model, commands, &mut filter_rows);
 
     let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
     let filter_rows = std::rc::Rc::new(filter_rows);
@@ -46,6 +47,89 @@ pub(super) fn build_settings_group(
     });
     group.add(&io_row);
     group
+}
+fn add_quick_panel_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let row = plain_row()
+        .title("Quick panel")
+        .subtitle("Choose up to 24 favorite tools for the quick-panel.open surface.")
+        .subtitle_lines(0)
+        .build();
+    let controls = gtk::Box::new(Orientation::Vertical, 4);
+    let actions = kestrel::command_line::CommandLineAction::all();
+    let available = actions
+        .iter()
+        .filter(|action| !view_model.quick_panel_favorites.contains(&action.id()))
+        .map(|action| action.id())
+        .collect::<Vec<_>>();
+    let combo =
+        gtk::DropDown::from_strings(&available.iter().map(String::as_str).collect::<Vec<_>>());
+    let add = gtk::Button::with_label("Add");
+    let sender = commands.clone();
+    let current = view_model.quick_panel_favorites.clone();
+    let combo_for_add = combo.clone();
+    add.connect_clicked(move |_| {
+        let Some(id) = combo_for_add
+            .selected_item()
+            .and_then(|item| item.downcast::<gtk::StringObject>().ok())
+            .map(|item| item.string().to_string())
+        else {
+            return;
+        };
+        let mut favorites = current.clone();
+        if !favorites.contains(&id) && favorites.len() < 24 {
+            favorites.push(id);
+            let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(favorites));
+        }
+    });
+    let add_row = gtk::Box::new(Orientation::Horizontal, 4);
+    add_row.append(&combo);
+    add_row.append(&add);
+    controls.append(&add_row);
+    for (index, id) in view_model.quick_panel_favorites.iter().enumerate() {
+        let item = gtk::Box::new(Orientation::Horizontal, 4);
+        let label = gtk::Label::new(Some(id));
+        label.set_hexpand(true);
+        label.set_xalign(0.0);
+        item.append(&label);
+        for (text, delta) in [("↑", -1_i32), ("↓", 1_i32)] {
+            let button = gtk::Button::with_label(text);
+            let sender = commands.clone();
+            let favorites = view_model.quick_panel_favorites.clone();
+            button.set_sensitive(
+                (delta < 0 && index > 0) || (delta > 0 && index + 1 < favorites.len()),
+            );
+            button.connect_clicked(move |_| {
+                let target = index as i32 + delta;
+                if target >= 0 && (target as usize) < favorites.len() {
+                    let mut changed = favorites.clone();
+                    changed.swap(index, target as usize);
+                    let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(changed));
+                }
+            });
+            item.append(&button);
+        }
+        let remove = gtk::Button::with_label("Remove");
+        let sender = commands.clone();
+        let favorites = view_model.quick_panel_favorites.clone();
+        remove.connect_clicked(move |_| {
+            let mut changed = favorites.clone();
+            changed.remove(index);
+            let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(changed));
+        });
+        item.append(&remove);
+        controls.append(&item);
+    }
+    row.add_suffix(&controls);
+    filter_rows.push((
+        row.clone().upcast(),
+        "quick panel favorites quick-panel.open add remove reorder tools".to_owned(),
+    ));
+    group.add(&row);
 }
 
 fn add_general_rows(
