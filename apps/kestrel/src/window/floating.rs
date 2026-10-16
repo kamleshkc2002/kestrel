@@ -18,6 +18,8 @@ const COMMAND_BAR_WIDTH: i32 = 640;
 const QUICK_PANEL_WIDTH: i32 = 440;
 const MAX_RESULTS_HEIGHT: i32 = 360;
 const COMMAND_BAR_HINT: &str = "Up and Down select · Return runs · Escape closes";
+/// Focus may leave briefly when input devices change; dismissal waits this long.
+const DISMISS_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// One quick-panel tool, resolved by the controller.
 pub struct QuickPanelEntry {
@@ -67,6 +69,7 @@ impl FloatingSurface {
 
         if gate.is_some() {
             root.prepend(&surface.status);
+            surface.results.set_visible(false);
             surface.window.set_child(Some(&root));
             present(&surface.window, startup_id);
             return surface;
@@ -263,9 +266,17 @@ fn surface_window(
     window.add_controller(escape);
     // Activating another window dismisses the surface.
     window.connect_is_active_notify(|window| {
-        if !window.is_active() && window.is_visible() {
-            window.close();
+        if window.is_active() {
+            return;
         }
+        let weak_window = window.downgrade();
+        glib::timeout_add_local_once(DISMISS_DELAY, move || {
+            if let Some(window) = weak_window.upgrade() {
+                if !window.is_active() && window.is_visible() {
+                    window.close();
+                }
+            }
+        });
     });
     window
 }
