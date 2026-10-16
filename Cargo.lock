@@ -292,6 +292,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cosmic-protocols"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa7c156d3b5815830a795eb35d6bac833a72cede4861e9eda935d4ffa37415ff"
+dependencies = [
+ "bitflags 2.13.1",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1073,6 +1087,7 @@ name = "kestrel-platform"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "cosmic-protocols",
  "gio",
  "gio-unix",
  "gstreamer",
@@ -1084,6 +1099,8 @@ dependencies = [
  "png",
  "tempfile",
  "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "wl-clipboard-rs",
  "x11rb 0.14.0",
  "zbus",
