@@ -3115,6 +3115,7 @@ pub struct CommandResultViewModel {
     pub pinned: bool,
     pub uses: u32,
     pub action_label: &'static str,
+    pub swatch: Option<[u8; 3]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3210,6 +3211,7 @@ impl CommandBarViewModel {
                 pinned: result.pinned,
                 uses: result.usage,
                 action_label: command_action_label(&result.item.action),
+                swatch: result.item.swatch,
             })
             .collect::<Vec<_>>();
 

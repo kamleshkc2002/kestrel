@@ -177,6 +177,26 @@ pub(super) fn fill_command_panel(
             .subtitle(detail)
             .subtitle_lines(0)
             .build();
+        if let Some(rgb) = result.swatch {
+            let swatch = gtk::DrawingArea::new();
+            swatch.set_content_width(16);
+            swatch.set_content_height(16);
+            swatch.set_valign(Align::Center);
+            swatch.set_draw_func(move |_, context, width, height| {
+                context.set_source_rgb(
+                    f64::from(rgb[0]) / 255.0,
+                    f64::from(rgb[1]) / 255.0,
+                    f64::from(rgb[2]) / 255.0,
+                );
+                context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+                let _ = context.fill();
+            });
+            swatch.update_property(&[Property::Label(&format!(
+                "Color swatch #{:02x}{:02x}{:02x}",
+                rgb[0], rgb[1], rgb[2]
+            ))]);
+            row.add_prefix(&swatch);
+        }
         row.update_property(&[Property::Label(&format!(
             "{} result {}",
             result.source, result.title
