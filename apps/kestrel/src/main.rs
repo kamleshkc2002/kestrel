@@ -1,5 +1,4 @@
 mod capture_editor;
-mod floating;
 mod layer_shell;
 mod screen_selection;
 mod window;
@@ -38,8 +37,7 @@ use kestrel_core::{
 use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
 use kestrel_services::alerts::notification_text;
 
-use floating::FloatingSurface;
-use window::WindowView;
+use window::{FloatingSurface, QuickPanelEntry, WindowView};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// Poll interval for mixer and microphone state, which other mixers and
@@ -637,7 +635,6 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
     floating: RefCell<Option<FloatingSurface>>,
-    floating_kind: Cell<Option<FocusTarget>>,
     refreshing: Cell<bool>,
     targeted: Cell<TargetedPanel>,
     monitoring: Cell<bool>,
@@ -733,7 +730,6 @@ impl ApplicationController {
             config_path,
             window: RefCell::new(None),
             floating: RefCell::new(None),
-            floating_kind: Cell::new(None),
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
             monitoring: Cell::new(false),
@@ -822,67 +818,7 @@ impl ApplicationController {
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
         if matches!(target, FocusTarget::CommandBar | FocusTarget::QuickPanel) {
-            if let Some(surface) = self.floating.borrow().as_ref() {
-                if self.floating_kind.get() == Some(target) {
-                    surface.window.present();
-                    surface.window.grab_focus();
-                    return;
-                }
-                surface.window.close();
-                self.floating.borrow_mut().take();
-                self.floating_kind.set(None);
-            }
-            let model = self.current_view_model();
-            let command_bar = model.command_bar;
-            let favorites = model.quick_panel_favorites;
-            let parent = self
-                .window
-                .borrow()
-                .as_ref()
-                .map(|view| view.window.clone().upcast::<gtk::Window>());
-            let gate = self
-                .command_gate(CommandLineAction::OpenCommandBar)
-                .map(|gate| gate.to_string());
-            let favorite_gates = favorites
-                .iter()
-                .map(|id| {
-                    kestrel::command_line::CommandLineAction::parse(id)
-                        .ok()
-                        .and_then(|action| self.command_gate(action))
-                        .map(|gate| gate.to_string())
-                })
-                .collect::<Vec<_>>();
-            let surface = if target == FocusTarget::QuickPanel {
-                FloatingSurface::open_quick_panel(
-                    application,
-                    parent.as_ref(),
-                    &self.commands,
-                    &favorites,
-                    &favorite_gates,
-                )
-            } else {
-                FloatingSurface::open(
-                    application,
-                    parent.as_ref(),
-                    &self.commands,
-                    &command_bar,
-                    gate.as_deref(),
-                    "kestrel-command-bar",
-                )
-            };
-            let weak_controller = Rc::downgrade(self);
-            surface.window.connect_close_request(move |_| {
-                if let Some(controller) = weak_controller.upgrade() {
-                    controller.floating.borrow_mut().take();
-                    controller.floating_kind.set(None);
-                    let _ = controller
-                        .commands
-                        .try_send(ApplicationCommand::CommandQuery(String::new()));
-                }
-                glib::Propagation::Proceed
-            });
-            self.floating.replace(Some(surface));
-            self.floating_kind.set(Some(target));
+            self.open_floating(application, target);
             return;
         }
         self.present(application);
@@ -893,6 +829,99 @@ impl ApplicationController {
         if !view.focus(target) {
             view.show_message("Show Quick Controls in Panel sections to reach this control");
         }
+    }
+
+    /// Opens one floating surface without raising the main window.
+    fn open_floating(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
+        let startup_id = self.activation_token.take();
+        let existing = self
+            .floating
+            .borrow()
+            .as_ref()
+            .map(|surface| (surface.kind, surface.window.clone()));
+        if let Some((kind, window)) = existing {
+            if kind == target {
+                present_with(&window, startup_id.as_deref());
+                return;
+            }
+            // Release the slot before closing; the close handler borrows it.
+            self.floating.borrow_mut().take();
+            window.close();
+        }
+
+        let parent = self
+            .window
+            .borrow()
+            .as_ref()
+            .map(|view| view.window.clone().upcast::<gtk::Window>());
+        let surface = if target == FocusTarget::QuickPanel {
+            let entries = self.quick_panel_entries();
+            FloatingSurface::quick_panel(
+                application,
+                parent.as_ref(),
+                startup_id.as_deref(),
+                &self.commands,
+                entries,
+            )
+        } else {
+            let gate = self
+                .command_gate(CommandLineAction::OpenCommandBar)
+                .map(|gate| gate.to_string());
+            FloatingSurface::command_bar(
+                application,
+                parent.as_ref(),
+                startup_id.as_deref(),
+                &self.commands,
+                &self.current_view_model().command_bar,
+                gate.as_deref(),
+            )
+        };
+        let weak_controller = Rc::downgrade(self);
+        surface.window.connect_close_request(move |closing| {
+            let Some(controller) = weak_controller.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let owned = controller
+                .floating
+                .borrow()
+                .as_ref()
+                .is_some_and(|surface| &surface.window == closing);
+            if owned {
+                controller.floating.borrow_mut().take();
+            }
+            if target == FocusTarget::CommandBar {
+                // Transient search state ends with the surface.
+                let _ = controller
+                    .commands
+                    .try_send(ApplicationCommand::CommandQuery(String::new()));
+            }
+            glib::Propagation::Proceed
+        });
+        self.floating.replace(Some(surface));
+    }
+
+    /// Favorites in saved order, each with its current gate.
+    fn quick_panel_entries(&self) -> Vec<QuickPanelEntry> {
+        let favorites = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .configuration
+            .quick_panel
+            .favorites
+            .clone();
+        favorites
+            .into_iter()
+            .filter_map(|id| {
+                let action = CommandLineAction::parse(&id).ok()?;
+                Some(QuickPanelEntry {
+                    gate: self.command_gate(action).map(|gate| gate.to_string()),
+                    description: action.description(),
+                    command: action.to_command(),
+                    id,
+                })
+            })
+            .collect()
     }
 
     fn show_message(&self, message: &str) {
@@ -1047,12 +1076,24 @@ impl ApplicationController {
 
     fn apply_refresh_result(&self, result: RefreshResult) {
         self.refreshing.set(false);
+        let targeted = self.targeted.replace(TargetedPanel::Full);
+        // The floating surfaces work without the main window.
+        if let Some(surface) = self.floating.borrow().as_ref() {
+            match &result {
+                Ok((view_model, message)) => {
+                    surface.set_command_bar(&view_model.command_bar);
+                    if !message.is_empty() {
+                        surface.show_outcome(message);
+                    }
+                }
+                Err(message) => surface.show_outcome(message),
+            }
+        }
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
         };
         view.set_refreshing(false);
-        let targeted = self.targeted.replace(TargetedPanel::Full);
         match result {
             Ok((view_model, message)) => {
                 apply_color_scheme(view_model.appearance);
@@ -1070,9 +1111,6 @@ impl ApplicationController {
                 self.camera_running.set(view_model.camera.running);
                 self.recording_running.set(view_model.recording.running);
                 apply_targeted_panel(view, &view_model, targeted);
-                if let Some(surface) = self.floating.borrow().as_ref() {
-                    surface.set_model(&view_model.command_bar, &self.commands);
-                }
                 if !message.is_empty() {
                     view.show_message(&message);
                 }
@@ -1093,9 +1131,6 @@ impl ApplicationController {
                 self.camera_running.set(view_model.camera.running);
                 self.recording_running.set(view_model.recording.running);
                 apply_targeted_panel(view, &view_model, targeted);
-                if let Some(surface) = self.floating.borrow().as_ref() {
-                    surface.status.set_text(&message);
-                }
                 view.show_message(&message);
             }
         }
@@ -2600,6 +2635,14 @@ fn panel_label(section: PanelSection) -> &'static str {
     }
 }
 
+/// Presents `window`, applying a fresh activation token when one arrived.
+fn present_with(window: &gtk::Window, startup_id: Option<&str>) {
+    if let Some(startup_id) = startup_id {
+        window.set_startup_id(startup_id);
+    }
+    window.present();
+}
+
 fn apply_color_scheme(preference: AppearancePreference) {
     let scheme = match preference {
         AppearancePreference::System => adw::ColorScheme::Default,
@@ -2773,16 +2816,16 @@ fn main() -> glib::ExitCode {
                     controller.present(application);
                 }
                 if let Some(gate) = controller.command_gate(action) {
+                    // The remote client reports the gate from the exit status.
                     let message = format!("{}: {gate}", action.id());
                     if !command_line.is_remote() {
                         eprintln!("kestrel: {message}");
                     }
-                    controller.show_message(&message);
-                    if matches!(
-                        action,
-                        CommandLineAction::OpenCommandBar | CommandLineAction::OpenQuickPanel
-                    ) {
+                    if action == CommandLineAction::OpenCommandBar {
+                        // The surface opens in its remediation state.
                         let _ = command_line_commands.try_send(action.to_command());
+                    } else {
+                        controller.show_message(&message);
                     }
                     return glib::ExitCode::from(gate.exit_status());
                 }
