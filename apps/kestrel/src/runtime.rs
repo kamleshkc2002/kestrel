@@ -3357,12 +3357,9 @@ mod tests {
             active: true,
             minimized: false,
         };
+        let windows = [window.clone()];
         assert_eq!(
-            decide_application_window_action(
-                &[window.clone()],
-                Some(WindowHandle(9)),
-                &application
-            ),
+            decide_application_window_action(&windows, Some(WindowHandle(9)), &application),
             ApplicationWindowDecision::Hide(WindowHandle(9))
         );
         let mut restored = window;
