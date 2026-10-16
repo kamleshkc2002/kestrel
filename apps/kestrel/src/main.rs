@@ -167,9 +167,56 @@ impl ControllerState {
             },
             CommandAction::OpenApplication { index } => {
                 match self.runtime.launch_command_application(*index) {
-                    Ok(()) => format!("Launched {}", result.item.title),
-                    Err(error) => format!("The application was not launched: {error}"),
+                    Ok(()) => format!("Opened {}", result.item.title),
+                    Err(error) => format!("The application was not opened: {error}"),
                 }
+            }
+            CommandAction::OpenApplicationAction { index, action_id } => {
+                match self
+                    .runtime
+                    .launch_command_application_action(*index, action_id)
+                {
+                    Ok(()) => format!("Ran {}", result.item.title),
+                    Err(error) => format!("The application action was not run: {error}"),
+                }
+            }
+            CommandAction::ActivateWindow(handle) => {
+                match self.runtime.activate_command_window(*handle) {
+                    Ok(()) => "Window activated".to_owned(),
+                    Err(error) => format!("The window was not activated: {error}"),
+                }
+            }
+            CommandAction::CopyClipboardEntry { item_id } => {
+                match self.runtime.execute_clipboard_command(
+                    kestrel_services::clipboard::ClipboardCommand::CopyItem {
+                        item_id: *item_id,
+                        plain_text: true,
+                    },
+                ) {
+                    Some(Ok(_)) => format!("Copied clipboard entry {item_id}"),
+                    Some(Err(error)) => format!("Clipboard entry was not copied: {error}"),
+                    None => "Clipboard history is not running".to_owned(),
+                }
+            }
+            CommandAction::SetFeatureEnabled {
+                feature_id,
+                enabled,
+            } => {
+                let _ = self
+                    .commands
+                    .try_send(ApplicationCommand::SetFeatureEnabled {
+                        feature_id: feature_id.clone(),
+                        enabled: *enabled,
+                    });
+                format!(
+                    "{} {}",
+                    feature_id,
+                    if *enabled {
+                        "enable requested"
+                    } else {
+                        "disable requested"
+                    }
+                )
             }
             CommandAction::OpenFile(path) => {
                 match self
@@ -190,8 +237,13 @@ impl ControllerState {
             },
         };
 
-        // Record only attempted IDs and counts.
-        let _ = self.runtime.record_command_use(id);
+        if !matches!(
+            result.item.source,
+            kestrel_services::command_bar::CommandSource::Window
+                | kestrel_services::command_bar::CommandSource::Clipboard
+        ) {
+            let _ = self.runtime.record_command_use(id);
+        }
         self.refresh_command_results();
         outcome
     }
@@ -2270,6 +2322,14 @@ impl ControllerState {
                     CommandProviderSwitch::Emoji(enabled) => {
                         candidate.command_bar.enable_emoji = enabled;
                         format!("Emoji results {}", if enabled { "on" } else { "off" })
+                    }
+                    CommandProviderSwitch::Windows(enabled) => {
+                        candidate.command_bar.enable_windows = enabled;
+                        format!("Window results {}", if enabled { "on" } else { "off" })
+                    }
+                    CommandProviderSwitch::Clipboard(enabled) => {
+                        candidate.command_bar.enable_clipboard = enabled;
+                        format!("Clipboard results {}", if enabled { "on" } else { "off" })
                     }
                 };
                 self.commit_configuration(candidate, config_path, message)?

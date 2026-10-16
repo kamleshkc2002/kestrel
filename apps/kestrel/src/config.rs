@@ -1277,6 +1277,14 @@ fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Valu
             "enable_emoji",
             &mut loaded.configuration.command_bar.enable_emoji,
         ),
+        (
+            "enable_windows",
+            &mut loaded.configuration.command_bar.enable_windows,
+        ),
+        (
+            "enable_clipboard",
+            &mut loaded.configuration.command_bar.enable_clipboard,
+        ),
     ] {
         if let Some(value) = section.get(key) {
             match bool::deserialize(value.clone()) {
@@ -1347,6 +1355,8 @@ fn parse_command_bar(loaded: &mut LoadedConfiguration, value: Option<&toml::Valu
         loaded.configuration.command_bar = kestrel_core::CommandBarConfiguration {
             max_results: existing.max_results,
             enable_applications: existing.enable_applications,
+            enable_windows: existing.enable_windows,
+            enable_clipboard: existing.enable_clipboard,
             enable_files: false,
             enable_scripts: existing.enable_scripts,
             enable_emoji: existing.enable_emoji,

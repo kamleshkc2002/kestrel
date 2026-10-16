@@ -84,6 +84,12 @@ pub(super) fn build_command_panel(
                     kestrel::CommandProviderSwitch::Scripts(enabled)
                 }
                 kestrel::CommandProvider::Emoji => kestrel::CommandProviderSwitch::Emoji(enabled),
+                kestrel::CommandProvider::Windows => {
+                    kestrel::CommandProviderSwitch::Windows(enabled)
+                }
+                kestrel::CommandProvider::Clipboard => {
+                    kestrel::CommandProviderSwitch::Clipboard(enabled)
+                }
             };
             let _ = sender.try_send(ApplicationCommand::SetCommandProvider(switch));
             gtk::glib::Propagation::Proceed

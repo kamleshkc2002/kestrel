@@ -220,6 +220,10 @@ pub struct CommandBarConfiguration {
     pub max_results: u32,
     #[serde(default = "default_true")]
     pub enable_applications: bool,
+    #[serde(default = "default_true")]
+    pub enable_windows: bool,
+    #[serde(default = "default_true")]
+    pub enable_clipboard: bool,
     /// File search is limited to the configured roots.
     #[serde(default)]
     pub enable_files: bool,
@@ -244,6 +248,8 @@ impl Default for CommandBarConfiguration {
             enable_applications: true,
             enable_files: false,
             enable_scripts: true,
+            enable_windows: true,
+            enable_clipboard: true,
             enable_emoji: true,
             file_roots: Vec::new(),
             scripts: Vec::new(),
