@@ -19,6 +19,10 @@ pub enum CommandSource {
     Kestrel,
     Snippet,
     Application,
+    AppAction,
+    Window,
+    Clipboard,
+    Feature,
     File,
     Math,
     Units,
@@ -30,10 +34,14 @@ pub enum CommandSource {
 }
 
 impl CommandSource {
-    pub const ALL: [CommandSource; 11] = [
+    pub const ALL: [CommandSource; 15] = [
         CommandSource::Kestrel,
         CommandSource::Snippet,
         CommandSource::Application,
+        CommandSource::AppAction,
+        CommandSource::Window,
+        CommandSource::Clipboard,
+        CommandSource::Feature,
         CommandSource::File,
         CommandSource::Math,
         CommandSource::Units,
@@ -49,6 +57,10 @@ impl CommandSource {
             Self::Kestrel => "Kestrel",
             Self::Snippet => "Snippet",
             Self::Application => "Application",
+            Self::AppAction => "App action",
+            Self::Window => "Window",
+            Self::Clipboard => "Clipboard",
+            Self::Feature => "Feature",
             Self::File => "File",
             Self::Math => "Math",
             Self::Units => "Units",
@@ -59,8 +71,6 @@ impl CommandSource {
             Self::Color => "Color",
         }
     }
-
-    /// True when the provider needs no desktop integration.
     pub const fn portable(self) -> bool {
         matches!(
             self,
@@ -72,6 +82,7 @@ impl CommandSource {
                 | Self::Url
                 | Self::Emoji
                 | Self::Color
+                | Self::Feature
         )
     }
 }
@@ -82,6 +93,10 @@ pub enum CommandAction {
     InsertText(String),
     RunScript { index: usize },
     OpenApplication { index: usize },
+    OpenApplicationAction { index: usize, action_id: String },
+    ActivateWindow(u64),
+    CopyClipboardEntry { item_id: u64 },
+    SetFeatureEnabled { feature_id: String, enabled: bool },
     OpenFile(PathBuf),
     OpenUrl(String),
 }
@@ -999,6 +1014,8 @@ pub struct EnabledProviders {
     pub files: bool,
     pub scripts: bool,
     pub emoji: bool,
+    pub windows: bool,
+    pub clipboard: bool,
     /// Snippet results require the snippet feature.
     pub snippets: bool,
 }
@@ -1010,6 +1027,8 @@ impl Default for EnabledProviders {
             files: false,
             scripts: true,
             emoji: true,
+            windows: true,
+            clipboard: true,
             snippets: true,
         }
     }
@@ -1019,10 +1038,11 @@ pub struct SearchInput<'a> {
     pub query: &'a str,
     pub max_results: usize,
     pub providers: EnabledProviders,
-    /// Scanned desktop entries, in stable order.
     pub applications: &'a [CommandItem],
-    /// Bounded results from configured file roots.
     pub files: &'a [PathBuf],
+    pub windows: &'a [CommandItem],
+    pub clipboard: &'a [CommandItem],
+    pub features: &'a [CommandItem],
     pub now: Option<&'a LocalTime>,
     pub ranking: &'a CommandRanking,
     pub configured_scripts: &'a [CommandScriptConfiguration],
@@ -1104,6 +1124,20 @@ impl CommandIndex {
 
         for item in &self.builtins {
             consider(item, 20);
+        }
+        for item in input.features {
+            // Feature switches outrank commands and aliases for the same query.
+            consider(item, 40);
+        }
+        if input.providers.windows {
+            for item in input.windows {
+                consider(item, 5);
+            }
+        }
+        if input.providers.clipboard {
+            for item in input.clipboard {
+                consider(item, 5);
+            }
         }
         if input.providers.snippets {
             for item in &self.snippets {
@@ -1781,6 +1815,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1803,6 +1840,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1815,6 +1855,9 @@ mod tests {
             max_results: 10,
             providers: EnabledProviders::default(),
             applications: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             files: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
@@ -1829,6 +1872,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1841,6 +1887,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1863,6 +1912,9 @@ mod tests {
                 },
                 applications: &[],
                 files: &[],
+                windows: &[],
+                clipboard: &[],
+                features: &[],
                 now: Some(&NOW),
                 ranking: &ranking,
                 configured_scripts: &[],
@@ -1895,6 +1947,9 @@ mod tests {
             },
             applications: &[],
             files: &files,
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1915,6 +1970,9 @@ mod tests {
             },
             applications: &[],
             files: &files,
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1933,6 +1991,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1945,6 +2006,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1959,6 +2023,9 @@ mod tests {
                     providers: EnabledProviders::default(),
                     applications: &[],
                     files: &[],
+                    windows: &[],
+                    clipboard: &[],
+                    features: &[],
                     now: Some(&NOW),
                     ranking: &ranking,
                     configured_scripts: &[],
@@ -1990,6 +2057,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &applications,
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &scripts,
@@ -2006,6 +2076,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &applications,
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &scripts,
@@ -2026,6 +2099,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: None,
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -2044,6 +2120,9 @@ mod tests {
                 ..EnabledProviders::default()
             },
             applications: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             files: &[],
             now: None,
             ranking: &empty_ranking(),
@@ -2058,7 +2137,7 @@ mod tests {
 
     #[test]
     fn sources_declare_portability_and_labels() {
-        assert_eq!(CommandSource::ALL.len(), 11);
+        assert_eq!(CommandSource::ALL.len(), 15);
         for source in CommandSource::ALL {
             assert!(!source.label().is_empty());
         }
@@ -2066,6 +2145,36 @@ mod tests {
         assert!(CommandSource::Math.portable());
         assert!(!CommandSource::Application.portable());
         assert!(!CommandSource::File.portable());
+    }
+    #[test]
+    fn feature_toggle_outranks_commands_for_feature_search() {
+        let index = CommandIndex::new(Vec::new(), &[]);
+        let feature = CommandItem::new(
+            "feature:clipboard.history",
+            CommandSource::Feature,
+            "Turn off Clipboard history",
+            "Feature clipboard.history",
+            CommandAction::SetFeatureEnabled {
+                feature_id: "clipboard.history".to_owned(),
+                enabled: false,
+            },
+        )
+        .with_keywords(["clipboard.history", "clipboard", "history"]);
+        let results = index.search(SearchInput {
+            query: "clipboard",
+            max_results: 5,
+            providers: EnabledProviders::default(),
+            applications: &[],
+            files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[feature],
+            now: None,
+            ranking: &empty_ranking(),
+            configured_scripts: &[],
+        });
+        assert_eq!(results[0].item.source, CommandSource::Feature);
+        assert_eq!(results[0].item.id, "feature:clipboard.history");
     }
 
     #[test]
@@ -2087,6 +2196,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: None,
             ranking: &ranking,
             configured_scripts: &[],

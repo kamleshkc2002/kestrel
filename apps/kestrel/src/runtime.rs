@@ -27,8 +27,8 @@ use kestrel_core::{
 use kestrel_platform::{
     CapabilityProbe, StaticCapabilityProbe,
     applications::{
-        ApplicationEntry, ExternalLauncher, application_directories, launch_desktop_entry,
-        scan_applications,
+        ApplicationEntry, ExternalLauncher, application_directories, launch_desktop_action,
+        launch_desktop_entry, scan_applications,
     },
     audio::{
         FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID, MicrophoneProbe, PulseAudioBackend,
@@ -70,6 +70,9 @@ use kestrel_platform::{
     },
     speed_test::{CurlSpeedTestBackend, FEATURE_ID as SPEED_TEST_ID, SpeedTestProbe},
     system_monitor::{FEATURE_ID as SYSTEM_MONITOR_ID, ProcSysMonitor},
+    windows::{
+        WindowErrorKind, WindowHandle, WindowInfo, WindowProvider, discover_window_provider,
+    },
 };
 use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
@@ -329,6 +332,47 @@ impl CapabilityProbe for CommandBarProbe {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationWindowDecision {
+    Hide(WindowHandle),
+    Restore(WindowHandle),
+    Launch,
+}
+
+fn normalized_window_id(value: &str) -> String {
+    value
+        .strip_suffix(".desktop")
+        .unwrap_or(value)
+        .to_ascii_lowercase()
+}
+
+pub fn decide_application_window_action(
+    windows: &[WindowInfo],
+    last_external_active: Option<WindowHandle>,
+    application: &ApplicationEntry,
+) -> ApplicationWindowDecision {
+    let desktop_id = normalized_window_id(&application.id);
+    let startup_class = application
+        .startup_wm_class
+        .as_deref()
+        .map(normalized_window_id);
+    let matched = windows.iter().find(|window| {
+        window.app_id.as_deref().is_some_and(|app_id| {
+            let app_id = normalized_window_id(app_id);
+            app_id == desktop_id || startup_class.as_deref() == Some(app_id.as_str())
+        })
+    });
+    let Some(window) = matched else {
+        return ApplicationWindowDecision::Launch;
+    };
+    if window.minimized {
+        ApplicationWindowDecision::Restore(window.handle)
+    } else if last_external_active == Some(window.handle) || window.active {
+        ApplicationWindowDecision::Hide(window.handle)
+    } else {
+        ApplicationWindowDecision::Restore(window.handle)
+    }
+}
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
     audio_mixer: AudioMixerService<PulseAudioBackend>,
@@ -368,10 +412,14 @@ pub struct ApplicationRuntime {
     command_applications: Vec<ApplicationEntry>,
     command_application_items: Vec<CommandItem>,
     command_providers: EnabledProviders,
+    command_feature_items: Vec<CommandItem>,
     command_file_roots: Vec<std::path::PathBuf>,
     command_scripts: Vec<kestrel_core::CommandScriptConfiguration>,
     command_max_results: usize,
     command_launcher: Option<ExternalLauncher>,
+    window_provider: Option<Box<dyn WindowProvider>>,
+    window_provider_unavailable: Option<kestrel_platform::windows::WindowProviderUnavailable>,
+    last_external_active: Option<WindowHandle>,
     system_monitor: SystemMonitorService<ProcSysMonitor>,
     process_inventory: ProcessInventoryService,
     listeners: ListenerService,
@@ -643,6 +691,7 @@ impl ApplicationRuntime {
         let snippet_service = Self::build_snippet_service(configuration);
         let command_applications = Self::scan_command_applications(configuration);
         let command_application_items = Self::application_items(&command_applications);
+        let command_feature_items = Self::feature_items(&registry);
         let command_index = CommandIndex::new(
             Self::snippet_items(&loaded_snippets.library),
             &configuration.command_bar.scripts,
@@ -725,10 +774,14 @@ impl ApplicationRuntime {
             command_applications,
             command_application_items,
             command_providers,
+            command_feature_items,
             command_file_roots,
             command_scripts: configuration.command_bar.scripts.clone(),
             command_max_results,
             command_launcher,
+            window_provider: None,
+            window_provider_unavailable: None,
+            last_external_active: None,
             system_monitor: SystemMonitorService::new(
                 monitor_source,
                 Duration::from_millis(configuration.monitoring.refresh_interval_millis),
@@ -763,6 +816,15 @@ impl ApplicationRuntime {
 
     pub fn start(&mut self) {
         self.registry.start_enabled();
+        if self.command_providers.windows && self.window_provider.is_none() {
+            match discover_window_provider() {
+                Ok(provider) => {
+                    self.window_provider_unavailable = None;
+                    self.window_provider = Some(provider);
+                }
+                Err(error) => self.window_provider_unavailable = Some(error),
+            }
+        }
         self.reconcile_resources();
         if self.system_monitor_is_running() {
             self.system_monitor.refresh(Duration::ZERO);
@@ -839,7 +901,6 @@ impl ApplicationRuntime {
             .set_policy(ProcessPolicy::from_configuration(configuration.processes));
         let (requests, skipped) = Self::shortcut_requests(&configuration.shortcuts);
         if requests != self.shortcut_requests {
-            // New bindings take effect through a fresh registration.
             self.global_shortcuts.stop();
             self.shortcut_attempted = false;
         }
@@ -862,6 +923,18 @@ impl ApplicationRuntime {
         self.snippet_service = Self::build_snippet_service(configuration);
         self.command_scripts = configuration.command_bar.scripts.clone();
         self.command_providers = Self::providers_from_configuration(configuration);
+        if !self.command_providers.windows {
+            self.window_provider = None;
+            self.window_provider_unavailable = None;
+        } else if self.window_provider.is_none() {
+            match discover_window_provider() {
+                Ok(provider) => {
+                    self.window_provider_unavailable = None;
+                    self.window_provider = Some(provider);
+                }
+                Err(error) => self.window_provider_unavailable = Some(error),
+            }
+        }
         self.command_file_roots = configuration
             .command_bar
             .file_roots
@@ -1019,6 +1092,21 @@ impl ApplicationRuntime {
                 applications: self.command_applications.len(),
                 file_roots: self.command_file_roots.len(),
                 scripts: self.command_scripts.len(),
+                windows_status: self
+                    .window_provider
+                    .as_ref()
+                    .map(|provider| provider.backend().label().to_owned())
+                    .or_else(|| {
+                        self.window_provider_unavailable
+                            .as_ref()
+                            .map(ToString::to_string)
+                    })
+                    .unwrap_or_else(|| "Window provider unavailable".to_owned()),
+                clipboard_status: if self.clipboard_history_is_running() {
+                    "clipboard history running".to_owned()
+                } else {
+                    "clipboard history stopped".to_owned()
+                },
                 query: command_bar.query,
                 results: command_bar.results,
                 ranking: &self.command_ranking,
@@ -2047,24 +2135,58 @@ impl ApplicationRuntime {
     }
 
     fn application_items(applications: &[ApplicationEntry]) -> Vec<CommandItem> {
-        applications
-            .iter()
-            .enumerate()
-            .map(|(index, application)| {
+        let mut items = Vec::new();
+        for (index, application) in applications.iter().enumerate() {
+            items.push(CommandItem::new(
+                format!("application:{}", application.id),
+                CommandSource::Application,
+                application.name.clone(),
+                application
+                    .comment
+                    .clone()
+                    .unwrap_or_else(|| "Application".to_string()),
+                kestrel_services::command_bar::CommandAction::OpenApplication { index },
+            ));
+            for action in &application.actions {
+                items.push(CommandItem::new(
+                    format!("app-action:{}:{}", application.id, action.id),
+                    CommandSource::AppAction,
+                    format!("{}: {}", application.name, action.name),
+                    "Desktop application action",
+                    kestrel_services::command_bar::CommandAction::OpenApplicationAction {
+                        index,
+                        action_id: action.id.clone(),
+                    },
+                ));
+            }
+        }
+        items
+    }
+
+    fn feature_items(registry: &FeatureRegistry) -> Vec<CommandItem> {
+        registry
+            .registrations()
+            .map(|registration| {
+                let enabled = registration.enabled;
+                let label = registration.feature.label.to_string();
                 CommandItem::new(
-                    format!("application:{}", application.id),
-                    CommandSource::Application,
-                    application.name.clone(),
-                    application
-                        .comment
-                        .clone()
-                        .unwrap_or_else(|| "Application".to_string()),
-                    kestrel_services::command_bar::CommandAction::OpenApplication { index },
+                    format!("feature:{}", registration.feature.id),
+                    CommandSource::Feature,
+                    format!("Turn {} {label}", if enabled { "off" } else { "on" }),
+                    format!("Feature {}", registration.feature.id),
+                    kestrel_services::command_bar::CommandAction::SetFeatureEnabled {
+                        feature_id: registration.feature.id.to_owned(),
+                        enabled: !enabled,
+                    },
                 )
+                .with_keywords([
+                    "feature",
+                    registration.feature.id,
+                    registration.feature.label,
+                ])
             })
             .collect()
     }
-
     fn snippet_items(library: &SnippetLibrary) -> Vec<CommandItem> {
         library
             .snippets()
@@ -2096,6 +2218,8 @@ impl ApplicationRuntime {
                 && !configuration.command_bar.file_roots.is_empty(),
             scripts: configuration.command_bar.enable_scripts,
             emoji: configuration.command_bar.enable_emoji,
+            windows: configuration.command_bar.enable_windows,
+            clipboard: configuration.command_bar.enable_clipboard,
             // Snippets follow their own feature lifecycle.
             snippets: true,
         }
@@ -2107,6 +2231,7 @@ impl ApplicationRuntime {
             &self.command_scripts,
         );
         self.command_application_items = Self::application_items(&self.command_applications);
+        self.command_feature_items = Self::feature_items(&self.registry);
     }
 
     pub fn command_ranking(&self) -> &CommandRanking {
@@ -2150,11 +2275,82 @@ impl ApplicationRuntime {
         }
     }
 
+    fn window_items(&mut self) -> Vec<CommandItem> {
+        let Some(provider) = self.window_provider.as_mut() else {
+            return Vec::new();
+        };
+        let backend = provider.backend();
+        let snapshot = match provider.windows() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.window_provider_unavailable =
+                    Some(kestrel_platform::windows::WindowProviderUnavailable {
+                        summary: error.message.clone(),
+                        remediation: "Check the compositor window-list capability.".to_owned(),
+                    });
+                return Vec::new();
+            }
+        };
+        let mut items = Vec::new();
+        for window in snapshot {
+            if window
+                .app_id
+                .as_deref()
+                .is_some_and(|id| id.to_ascii_lowercase().contains("kestrel"))
+            {
+                continue;
+            }
+            if window.active {
+                self.last_external_active = Some(window.handle);
+            }
+            let app = window
+                .app_id
+                .clone()
+                .unwrap_or_else(|| "Unknown app".to_owned());
+            items.push(CommandItem::new(
+                format!("window:{}", window.handle.0),
+                CommandSource::Window,
+                window.title,
+                format!("{app} · {}", backend.label()),
+                kestrel_services::command_bar::CommandAction::ActivateWindow(window.handle.0),
+            ));
+        }
+        items
+    }
+
+    fn clipboard_items(&self, query: &str) -> Vec<CommandItem> {
+        let Some(Ok(matches)) = self.clipboard_search(query, 8) else {
+            return Vec::new();
+        };
+        matches
+            .into_iter()
+            .map(|entry| {
+                let preview = entry
+                    .preview
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(160)
+                    .collect::<String>();
+                CommandItem::new(
+                    format!("clipboard:{}", entry.id),
+                    CommandSource::Clipboard,
+                    preview,
+                    format!("Clipboard entry {}", entry.id),
+                    kestrel_services::command_bar::CommandAction::CopyClipboardEntry {
+                        item_id: entry.id,
+                    },
+                )
+            })
+            .collect()
+    }
+
     /// Returns no results when stopped; snippets follow their own lifecycle.
-    pub fn command_search<'a>(
-        &'a self,
+    pub fn command_search(
+        &mut self,
         query: &str,
-        now: &'a kestrel_platform::snippets::LocalTime,
+        now: &kestrel_platform::snippets::LocalTime,
     ) -> Vec<CommandResult> {
         if !self.command_bar_running() {
             return Vec::new();
@@ -2163,8 +2359,6 @@ impl ApplicationRuntime {
             snippets: self.snippets_running(),
             ..self.command_providers
         };
-        // File results are gathered only when the provider is on and roots are
-        // configured; the walk itself is bounded by depth and entry budget.
         let files = if self.command_providers.files {
             search_roots(
                 &self.command_file_roots,
@@ -2176,12 +2370,25 @@ impl ApplicationRuntime {
         } else {
             Vec::new()
         };
+        let windows = if providers.windows {
+            self.window_items()
+        } else {
+            Vec::new()
+        };
+        let clipboard = if providers.clipboard {
+            self.clipboard_items(query)
+        } else {
+            Vec::new()
+        };
         self.command_index.search(SearchInput {
             query,
             max_results: self.command_max_results,
             providers,
             applications: &self.command_application_items,
             files: &files,
+            windows: &windows,
+            clipboard: &clipboard,
+            features: &self.command_feature_items,
             now: Some(now),
             ranking: &self.command_ranking,
             configured_scripts: &self.command_scripts,
@@ -2235,14 +2442,88 @@ impl ApplicationRuntime {
         run_script(script, path_env.as_deref()).map_err(|error| error.to_string())
     }
 
-    /// GIO applies desktop-entry terminal, `TryExec`, and `Exec` rules.
-    pub fn launch_command_application(&self, index: usize) -> Result<(), String> {
+    pub fn activate_command_window(&mut self, handle: u64) -> Result<(), String> {
+        self.require_command_bar()?;
+        let provider = self
+            .window_provider
+            .as_mut()
+            .ok_or_else(|| "window provider is unavailable".to_owned())?;
+        let backend = provider.backend();
+        provider
+            .activate(WindowHandle(handle))
+            .map_err(|error| match error.kind {
+                WindowErrorKind::Unsupported => {
+                    format!("{} cannot activate windows", backend.label())
+                }
+                _ => error.to_string(),
+            })
+    }
+
+    pub fn launch_command_application_action(
+        &self,
+        index: usize,
+        action_id: &str,
+    ) -> Result<(), String> {
         self.require_command_bar()?;
         let application = self
             .command_applications
             .get(index)
             .ok_or_else(|| format!("application {index} is no longer available"))?;
-        launch_desktop_entry(application).map_err(|error| error.to_string())
+        launch_desktop_action(application, action_id).map_err(|error| error.to_string())
+    }
+
+    /// Hides a matching frontmost application and restores it on the next run.
+    pub fn launch_command_application(&mut self, index: usize) -> Result<(), String> {
+        self.require_command_bar()?;
+        let application = self
+            .command_applications
+            .get(index)
+            .cloned()
+            .ok_or_else(|| format!("application {index} is no longer available"))?;
+        let decision = if let Some(provider) = self.window_provider.as_mut() {
+            let snapshot = provider.windows().map_err(|error| error.to_string())?;
+            let mut external = Vec::new();
+            for window in snapshot {
+                if window
+                    .app_id
+                    .as_deref()
+                    .is_some_and(|id| id.to_ascii_lowercase().contains("kestrel"))
+                {
+                    continue;
+                }
+                if window.active {
+                    self.last_external_active = Some(window.handle);
+                }
+                external.push(window);
+            }
+            decide_application_window_action(&external, self.last_external_active, &application)
+        } else {
+            ApplicationWindowDecision::Launch
+        };
+        match decision {
+            ApplicationWindowDecision::Hide(handle) => {
+                let provider = self
+                    .window_provider
+                    .as_mut()
+                    .expect("provider selected above");
+                if !provider.backend().can_minimize() {
+                    return Err(format!(
+                        "{} cannot minimize windows",
+                        provider.backend().label()
+                    ));
+                }
+                provider.minimize(handle).map_err(|error| error.to_string())
+            }
+            ApplicationWindowDecision::Restore(handle) => self
+                .window_provider
+                .as_mut()
+                .expect("provider selected above")
+                .activate(handle)
+                .map_err(|error| error.to_string()),
+            ApplicationWindowDecision::Launch => {
+                launch_desktop_entry(&application).map_err(|error| error.to_string())
+            }
+        }
     }
 
     pub fn open_command_target(&self, target: &str) -> Result<(), String> {
@@ -2483,6 +2764,9 @@ impl ApplicationRuntime {
     }
 
     fn reconcile_resources(&mut self) {
+        if !self.command_bar_running() || !self.command_providers.windows {
+            self.window_provider = None;
+        }
         // Stop services to release claims and join workers.
         if !self.camera_is_running() {
             self.camera.stop();
@@ -2651,7 +2935,10 @@ impl ApplicationRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationRuntime, FeaturePreset};
+    use super::{
+        ApplicationRuntime, ApplicationWindowDecision, FeaturePreset,
+        decide_application_window_action,
+    };
     use crate::STATUS_NOTIFIER_ID;
     use kestrel_core::{AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
@@ -2675,6 +2962,7 @@ mod tests {
     use kestrel_platform::{
         applications::ApplicationEntry,
         snippets::{Clock, SystemClock},
+        windows::{WindowHandle, WindowInfo},
     };
     use kestrel_services::{
         command_bar::{CommandAction, CommandSource},
@@ -3059,11 +3347,40 @@ mod tests {
         assert_eq!(configuration.features, original_features);
     }
 
+    #[test]
+    fn application_window_decision_hides_restores_and_launches() {
+        let application = application("org.example.Editor.desktop", "Editor", false);
+        let window = WindowInfo {
+            handle: WindowHandle(9),
+            title: "Editor".to_owned(),
+            app_id: Some("org.example.editor".to_owned()),
+            active: true,
+            minimized: false,
+        };
+        let windows = [window.clone()];
+        assert_eq!(
+            decide_application_window_action(&windows, Some(WindowHandle(9)), &application),
+            ApplicationWindowDecision::Hide(WindowHandle(9))
+        );
+        let mut restored = window;
+        restored.active = false;
+        restored.minimized = true;
+        assert_eq!(
+            decide_application_window_action(&[restored], Some(WindowHandle(1)), &application),
+            ApplicationWindowDecision::Restore(WindowHandle(9))
+        );
+        assert_eq!(
+            decide_application_window_action(&[], None, &application),
+            ApplicationWindowDecision::Launch
+        );
+    }
+
     fn application(id: &str, name: &str, terminal: bool) -> ApplicationEntry {
         ApplicationEntry {
             id: id.to_owned(),
             name: name.to_owned(),
             comment: None,
+            startup_wm_class: None,
             command: vec![name.to_lowercase()],
             terminal,
             actions: Vec::new(),

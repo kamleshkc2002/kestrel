@@ -25,6 +25,7 @@ pub struct ApplicationEntry {
     pub id: String,
     pub name: String,
     pub comment: Option<String>,
+    pub startup_wm_class: Option<String>,
     /// The parsed command line contains the program and its arguments.
     pub command: Vec<String>,
     pub terminal: bool,
@@ -153,6 +154,7 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
     let mut in_group = false;
     let mut name: Option<String> = None;
     let mut comment: Option<String> = None;
+    let mut startup_wm_class: Option<String> = None;
     let mut exec: Option<String> = None;
     let mut entry_type: Option<String> = None;
     let mut hidden = false;
@@ -199,6 +201,7 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
         match key {
             "Name" => name = Some(value.to_string()),
             "Comment" => comment = Some(value.to_string()),
+            "StartupWMClass" => startup_wm_class = Some(value.to_string()),
             "Exec" => exec = Some(value.to_string()),
             "Type" => entry_type = Some(value.to_string()),
             "Actions" => {
@@ -237,6 +240,7 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
         id: id.to_string(),
         name,
         comment,
+        startup_wm_class,
         command,
         terminal,
         actions,
@@ -266,6 +270,32 @@ pub fn launch_desktop_entry(entry: &ApplicationEntry) -> Result<(), DesktopError
                 format!("{} could not be launched: {}", entry.name, error.message()),
             )
         })
+}
+/// Launches one desktop-exposed action through GIO.
+pub fn launch_desktop_action(
+    entry: &ApplicationEntry,
+    action_id: &str,
+) -> Result<(), DesktopError> {
+    if !entry.actions.iter().any(|action| action.id == action_id) {
+        return Err(DesktopError::new(
+            DesktopErrorKind::UnknownAction,
+            format!("{} does not expose action {action_id}", entry.name),
+        ));
+    }
+    let Some(source) = entry.source.as_deref() else {
+        return Err(DesktopError::new(
+            DesktopErrorKind::LaunchFailed,
+            format!("{} has no desktop file to launch", entry.name),
+        ));
+    };
+    let Some(info) = gio_unix::DesktopAppInfo::from_filename(source) else {
+        return Err(DesktopError::new(
+            DesktopErrorKind::NotAvailable,
+            format!("{} is not a launchable desktop entry", entry.name),
+        ));
+    };
+    info.launch_action(action_id, None::<&gio::AppLaunchContext>);
+    Ok(())
 }
 
 /// Splits an `Exec` value into argv, honoring quotes and dropping field codes.

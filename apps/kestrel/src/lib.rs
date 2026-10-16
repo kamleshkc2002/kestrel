@@ -92,6 +92,8 @@ pub enum CommandProviderSwitch {
     Files(bool),
     Scripts(bool),
     Emoji(bool),
+    Windows(bool),
+    Clipboard(bool),
 }
 
 /// Snippet-library action from the window.
