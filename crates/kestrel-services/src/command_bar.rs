@@ -397,15 +397,12 @@ fn normalize_numbers(expression: &str) -> Option<String> {
             if group_len == 0 {
                 return None;
             }
-            if separator == '\'' || (separator == ',' && group_len == 3) {
+            if separator == '\'' {
                 if first_len > 3 || group_len != 3 {
                     return None;
                 }
                 digits.extend(chars[group_start..position].iter());
                 continue;
-            }
-            if separator == '\'' {
-                return None;
             }
             digits.push('.');
             digits.extend(chars[group_start..position].iter());
@@ -722,6 +719,9 @@ fn civil_to_iso((year, month, day): (i32, u32, u32)) -> String {
 pub fn parse_color(query: &str) -> Option<[u8; 3]> {
     let query = query.trim();
     if let Some(hex) = query.strip_prefix('#') {
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
         return match hex.len() {
             3 => Some([
                 u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?,
@@ -883,11 +883,15 @@ fn parse_month_day(query: &str) -> Option<(u32, u32)> {
     if parts.len() != 2 {
         return None;
     }
-    if let (Ok(day), Some(month)) = (parts[0].parse(), month_number(parts[1])) {
-        return Some((month, day));
+    if let (Ok(day), Some(month)) = (parts[0].parse::<u32>(), month_number(parts[1])) {
+        if day > 0 {
+            return Some((month, day));
+        }
     }
-    if let (Some(month), Ok(day)) = (month_number(parts[0]), parts[1].parse()) {
-        return Some((month, day));
+    if let (Some(month), Ok(day)) = (month_number(parts[0]), parts[1].parse::<u32>()) {
+        if day > 0 {
+            return Some((month, day));
+        }
     }
     None
 }
@@ -1584,7 +1588,7 @@ mod tests {
         assert_eq!(evaluate_math("10/4"), Some(2.5));
         assert_eq!(evaluate_math("7 % 3"), Some(1.0));
         assert_eq!(evaluate_math("-4 + 1"), Some(-3.0));
-        assert_eq!(evaluate_math("1,000 + 24"), Some(1024.0));
+        assert_eq!(evaluate_math("1 000 + 24"), Some(1024.0));
 
         assert_eq!(
             evaluate_math("1/0"),
@@ -1686,6 +1690,8 @@ mod tests {
     fn colors_support_hex_rgb_hsl_and_reject_invalid_values() {
         assert_eq!(parse_color("#abc"), Some([170, 187, 204]));
         assert_eq!(parse_color("#12"), None);
+        assert_eq!(parse_color("#é1"), None);
+        assert_eq!(parse_color("#ééé"), None);
         assert_eq!(parse_color("rgb(32, 64, 128)"), Some([32, 64, 128]));
         assert_eq!(parse_color("rgb(100%, 0%, 50%)"), Some([255, 0, 128]));
         assert_eq!(parse_color("rgb(300, 0, 0)"), None);
@@ -1709,6 +1715,7 @@ mod tests {
             Some("2028-02-29")
         );
         assert_eq!(render_month_day_query("apr 31", &NOW), None);
+        assert_eq!(render_month_day_query("feb 0", &NOW), None);
         assert_eq!(
             render_month_day_query("25 december", &NOW).as_deref(),
             Some("2026-12-25")
@@ -1731,6 +1738,11 @@ mod tests {
         assert_eq!(evaluate_math("1'234.5"), Some(1_234.5));
         assert_eq!(evaluate_math("1 234,5"), Some(1_234.5));
         assert_eq!(evaluate_math("3,5 * 2"), Some(7.0));
+        assert_eq!(evaluate_math("1 234,567"), Some(1234.567));
+        assert_eq!(evaluate_math("1'234,567"), Some(1234.567));
+        assert_eq!(evaluate_math("1,234"), Some(1.234));
+        assert_eq!(evaluate_math("1234,567"), Some(1234.567));
+        assert_eq!(evaluate_math("1,234,567"), None);
         assert_eq!(evaluate_math("12 34"), None);
         assert_eq!(evaluate_math("1 2345"), None);
         assert_eq!(evaluate_math("1'23"), None);
