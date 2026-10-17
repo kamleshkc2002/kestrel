@@ -1125,9 +1125,18 @@ impl CommandIndex {
         for item in &self.builtins {
             consider(item, 20);
         }
+        let lowered_query = query.to_lowercase();
         for item in input.features {
-            // Feature switches outrank commands and aliases for the same query.
-            consider(item, 40);
+            // A switch leads only when the query names its feature; scattered
+            // letters across a label are no reason to outrank other results.
+            let names_feature = item.title.to_lowercase().contains(&lowered_query)
+                || item
+                    .keywords
+                    .iter()
+                    .any(|keyword| keyword.to_lowercase().contains(&lowered_query));
+            if names_feature {
+                consider(item, 40);
+            }
         }
         if input.providers.windows {
             for item in input.windows {
@@ -2146,35 +2155,54 @@ mod tests {
         assert!(!CommandSource::Application.portable());
         assert!(!CommandSource::File.portable());
     }
+
     #[test]
-    fn feature_toggle_outranks_commands_for_feature_search() {
+    fn feature_toggles_lead_only_when_the_query_names_the_feature() {
         let index = CommandIndex::new(Vec::new(), &[]);
-        let feature = CommandItem::new(
-            "feature:clipboard.history",
-            CommandSource::Feature,
-            "Turn off Clipboard history",
-            "Feature clipboard.history",
-            CommandAction::SetFeatureEnabled {
-                feature_id: "clipboard.history".to_owned(),
-                enabled: false,
-            },
-        )
-        .with_keywords(["clipboard.history", "clipboard", "history"]);
-        let results = index.search(SearchInput {
-            query: "clipboard",
-            max_results: 5,
-            providers: EnabledProviders::default(),
-            applications: &[],
-            files: &[],
-            windows: &[],
-            clipboard: &[],
-            features: &[feature],
-            now: None,
-            ranking: &empty_ranking(),
-            configured_scripts: &[],
-        });
-        assert_eq!(results[0].item.source, CommandSource::Feature);
+        let feature = |id: &str, title: &str, keywords: [&'static str; 2]| {
+            CommandItem::new(
+                format!("feature:{id}"),
+                CommandSource::Feature,
+                title,
+                format!("Feature {id}"),
+                CommandAction::SetFeatureEnabled {
+                    feature_id: id.to_owned(),
+                    enabled: false,
+                },
+            )
+            .with_keywords(keywords)
+        };
+        let features = [
+            feature(
+                "clipboard.history",
+                "Turn off Clipboard history",
+                ["clipboard", "history"],
+            ),
+            feature("session.lock", "Turn off Lock screen", ["lock", "screen"]),
+        ];
+        let search = |query| {
+            index.search(SearchInput {
+                query,
+                max_results: 5,
+                providers: EnabledProviders::default(),
+                applications: &[],
+                files: &[],
+                windows: &[],
+                clipboard: &[],
+                features: &features,
+                now: None,
+                ranking: &empty_ranking(),
+                configured_scripts: &[],
+            })
+        };
+        let results = search("clipboard");
         assert_eq!(results[0].item.id, "feature:clipboard.history");
+        assert!(
+            search("token")
+                .iter()
+                .all(|result| result.item.source != CommandSource::Feature),
+            "t-o-k-e-n is scattered through \"Turn off Lock screen\" but names no feature"
+        );
     }
 
     #[test]

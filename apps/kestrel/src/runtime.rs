@@ -825,15 +825,6 @@ impl ApplicationRuntime {
 
     pub fn start(&mut self) {
         self.registry.start_enabled();
-        if self.command_providers.windows && self.window_provider.is_none() {
-            match discover_window_provider() {
-                Ok(provider) => {
-                    self.window_provider_unavailable = None;
-                    self.window_provider = Some(provider);
-                }
-                Err(error) => self.window_provider_unavailable = Some(error),
-            }
-        }
         self.reconcile_resources();
         if self.system_monitor_is_running() {
             self.system_monitor.refresh(Duration::ZERO);
@@ -857,6 +848,8 @@ impl ApplicationRuntime {
             self.registry.refresh_capability(feature_id)?;
         }
         self.registry.start_enabled();
+        // A refresh retries a window list that was unavailable.
+        self.window_provider_unavailable = None;
         self.reconcile_resources();
         // Re-probe and resample after device loss.
         if self.audio_mixer_is_running() {
@@ -932,18 +925,6 @@ impl ApplicationRuntime {
         self.snippet_service = Self::build_snippet_service(configuration);
         self.command_scripts = configuration.command_bar.scripts.clone();
         self.command_providers = Self::providers_from_configuration(configuration);
-        if !self.command_providers.windows {
-            self.window_provider = None;
-            self.window_provider_unavailable = None;
-        } else if self.window_provider.is_none() {
-            match discover_window_provider() {
-                Ok(provider) => {
-                    self.window_provider_unavailable = None;
-                    self.window_provider = Some(provider);
-                }
-                Err(error) => self.window_provider_unavailable = Some(error),
-            }
-        }
         self.command_file_roots = configuration
             .command_bar
             .file_roots
@@ -2292,10 +2273,12 @@ impl ApplicationRuntime {
         let snapshot = match provider.windows() {
             Ok(snapshot) => snapshot,
             Err(error) => {
+                // The connection is not reused; a capability refresh reconnects.
+                self.window_provider = None;
                 self.window_provider_unavailable =
                     Some(kestrel_platform::windows::WindowProviderUnavailable {
-                        summary: error.message.clone(),
-                        remediation: "Check the compositor window-list capability.".to_owned(),
+                        summary: format!("The window list stopped responding: {error}"),
+                        remediation: "Refresh capabilities to reconnect.".to_owned(),
                     });
                 return Vec::new();
             }
@@ -2771,9 +2754,7 @@ impl ApplicationRuntime {
     }
 
     fn reconcile_resources(&mut self) {
-        if !self.command_bar_running() || !self.command_providers.windows {
-            self.window_provider = None;
-        }
+        self.reconcile_window_provider();
         // Stop services to release claims and join workers.
         if !self.camera_is_running() {
             self.camera.stop();
@@ -2856,6 +2837,24 @@ impl ApplicationRuntime {
             self.quick_toggles.stop(QuickToggleId::KeepAwake);
         }
     }
+
+    /// The window list lives while the command bar runs with window results on;
+    /// discovery is read-only and retried only after a capability refresh.
+    fn reconcile_window_provider(&mut self) {
+        if !self.command_bar_running() || !self.command_providers.windows {
+            self.window_provider = None;
+            self.window_provider_unavailable = None;
+            return;
+        }
+        if self.window_provider.is_some() || self.window_provider_unavailable.is_some() {
+            return;
+        }
+        match discover_window_provider() {
+            Ok(provider) => self.window_provider = Some(provider),
+            Err(unavailable) => self.window_provider_unavailable = Some(unavailable),
+        }
+    }
+
     /// Battery alerts can only narrow the user's configured preference.
     fn sync_battery_alert_rule(&mut self) {
         let toggle_enabled = self
