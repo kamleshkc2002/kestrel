@@ -50,6 +50,12 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Lint without gtk4-layer-shell
+        # Builds without the library place floating surfaces as normal windows.
+        env:
+          KESTREL_LAYER_SHELL: "off"
+        run: cargo clippy --package kestrel --all-targets -- -D warnings
+
       - name: Build
         run: cargo build --workspace --all-targets
 

@@ -180,7 +180,7 @@ impl ControllerState {
                     Ok(ApplicationWindowDecision::Launch) => {
                         format!("Opened {}", result.item.title)
                     }
-                    Err(error) => format!("The application was not opened: {error}"),
+                    Err(error) => format!("{}: {error}", result.item.title),
                 }
             }
             CommandAction::OpenApplicationAction { index, action_id } => {
@@ -945,6 +945,11 @@ impl ApplicationController {
             let gate = self
                 .command_gate(CommandLineAction::OpenCommandBar)
                 .map(|gate| gate.to_string());
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .runtime
+                .remember_front_window();
             FloatingSurface::command_bar(
                 application,
                 parent.as_ref(),

@@ -34,7 +34,7 @@ jobs:
             desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
             libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            meson ninja-build libwayland-dev wayland-protocols
+            meson ninja-build libwayland-dev wayland-protocols sway
       - name: Build gtk4-layer-shell
         run: |
           git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
@@ -74,6 +74,10 @@ jobs:
             cd dist
             sha256sum --check "$(basename "$appimage").sha256"
           )
+
+      - name: Smoke-test layer-shell placement
+        # The bundled gtk4-layer-shell must turn the command bar into an overlay.
+        run: bash scripts/layer-shell-smoke.sh squashfs-root/AppRun
 
       - name: Smoke-test application startup
         run: |

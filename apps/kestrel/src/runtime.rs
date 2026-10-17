@@ -2265,6 +2265,23 @@ impl ApplicationRuntime {
         }
     }
 
+    /// Records the front window before the bar takes focus; compositors may
+    /// stop reporting it as active while an overlay holds the keyboard.
+    pub fn remember_front_window(&mut self) {
+        let Some(provider) = self.window_provider.as_mut() else {
+            return;
+        };
+        let Ok(windows) = provider.windows() else {
+            return;
+        };
+        if let Some(front) = windows
+            .iter()
+            .find(|window| window.active && !is_kestrel_window(window.app_id.as_deref()))
+        {
+            self.last_external_active = Some(front.handle);
+        }
+    }
+
     fn window_items(&mut self) -> Vec<CommandItem> {
         let Some(provider) = self.window_provider.as_mut() else {
             return Vec::new();
