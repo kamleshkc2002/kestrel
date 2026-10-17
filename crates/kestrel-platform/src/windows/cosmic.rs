@@ -19,6 +19,13 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
 };
 
+const COSMIC_BACKEND_LABEL: &str = "COSMIC toplevel";
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PROTOCOL_STATE_BYTES: usize = 4;
+const ACTIVE_STATE: u32 = 2;
+const MINIMIZED_STATE: u32 = 1;
+
 struct Entry {
     foreign: Option<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1>,
     cosmic: Option<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1>,
@@ -29,6 +36,7 @@ struct Entry {
     minimized: bool,
     closed: bool,
 }
+
 struct State {
     list: Option<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
     info: Option<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>,
@@ -37,6 +45,7 @@ struct State {
     entries: Vec<Entry>,
     next: u64,
 }
+
 impl Default for State {
     fn default() -> Self {
         Self {
@@ -49,6 +58,7 @@ impl Default for State {
         }
     }
 }
+
 enum Request {
     Snapshot(mpsc::Sender<Result<Vec<WindowInfo>, WindowError>>),
     Activate(WindowHandle, mpsc::Sender<Result<(), WindowError>>),
@@ -56,11 +66,14 @@ enum Request {
     Stop,
 }
 
+/// COSMIC toplevel-management provider.
 pub struct CosmicProvider {
     requests: mpsc::Sender<Request>,
     thread: Option<JoinHandle<()>>,
 }
+
 impl CosmicProvider {
+    /// Connect to the compositor and start the Wayland worker.
     pub fn new() -> Result<Self, WindowError> {
         let connection = Connection::connect_to_env().map_err(|error| {
             WindowError::new(
@@ -70,7 +83,7 @@ impl CosmicProvider {
         })?;
         let (requests, receiver) = mpsc::channel();
         let (ready_sender, ready_receiver) = mpsc::channel();
-        let thread = thread::Builder::new()
+        let worker_thread = thread::Builder::new()
             .name("kestrel-windows".into())
             .spawn(move || {
                 let mut queue = connection.new_event_queue();
@@ -87,15 +100,35 @@ impl CosmicProvider {
                     if queue.roundtrip(&mut state).is_err() {
                         break;
                     }
-                    match receiver.recv_timeout(Duration::from_millis(10)) {
+                    match receiver.recv_timeout(WORKER_POLL_INTERVAL) {
                         Ok(Request::Snapshot(reply)) => {
                             let _ = reply.send(Ok(snapshot(&state)));
                         }
                         Ok(Request::Activate(handle, reply)) => {
-                            let _ = reply.send(request_action(&state, handle, true));
+                            let result = request_action(&state, handle, true);
+                            let _ = reply.send(result);
                         }
                         Ok(Request::Minimize(handle, reply)) => {
-                            let _ = reply.send(request_action(&state, handle, false));
+                            let mut result = request_action(&state, handle, false);
+                            if result.is_ok() {
+                                result = queue
+                                    .roundtrip(&mut state)
+                                    .map_err(|error| {
+                                        WindowError::new(
+                                            WindowErrorKind::Disconnected,
+                                            format!("Wayland roundtrip failed: {error}"),
+                                        )
+                                    })
+                                    .and_then(|_| {
+                                        minimize_outcome(
+                                            state
+                                                .entries
+                                                .iter()
+                                                .find(|entry| entry.handle == handle),
+                                        )
+                                    });
+                            }
+                            let _ = reply.send(result);
                         }
                         Ok(Request::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -104,33 +137,36 @@ impl CosmicProvider {
             })
             .map_err(|error| WindowError::new(WindowErrorKind::Disconnected, error.to_string()))?;
         if !ready_receiver
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(PROVIDER_READY_TIMEOUT)
             .unwrap_or(false)
         {
             let _ = requests.send(Request::Stop);
-            let _ = thread.join();
+            let _ = worker_thread.join();
             return Err(WindowError::unsupported(
                 "COSMIC toplevel info, management, and wl_seat globals were not usable",
             ));
         }
         Ok(Self {
             requests,
-            thread: Some(thread),
+            thread: Some(worker_thread),
         })
     }
 }
+
 impl Drop for CosmicProvider {
     fn drop(&mut self) {
         let _ = self.requests.send(Request::Stop);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        if let Some(worker_thread) = self.thread.take() {
+            let _ = worker_thread.join();
         }
     }
 }
+
 impl WindowProvider for CosmicProvider {
     fn backend(&self) -> WindowBackend {
         WindowBackend::CosmicToplevel
     }
+
     fn windows(&mut self) -> Result<Vec<WindowInfo>, WindowError> {
         let (sender, receiver) = mpsc::channel();
         self.requests
@@ -140,37 +176,28 @@ impl WindowProvider for CosmicProvider {
             .recv()
             .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?
     }
+
     fn activate(&mut self, handle: WindowHandle) -> Result<(), WindowError> {
-        self.action(Request::Activate(handle, mpsc::channel().0))
+        let (sender, receiver) = mpsc::channel();
+        self.requests
+            .send(Request::Activate(handle, sender))
+            .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?;
+        receiver
+            .recv()
+            .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?
     }
+
     fn minimize(&mut self, handle: WindowHandle) -> Result<(), WindowError> {
-        self.action(Request::Minimize(handle, mpsc::channel().0))
-    }
-}
-impl CosmicProvider {
-    fn action(&mut self, request: Request) -> Result<(), WindowError> {
-        let receiver = match request {
-            Request::Activate(handle, _) => {
-                let (sender, receiver) = mpsc::channel();
-                self.requests
-                    .send(Request::Activate(handle, sender))
-                    .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?;
-                receiver
-            }
-            Request::Minimize(handle, _) => {
-                let (sender, receiver) = mpsc::channel();
-                self.requests
-                    .send(Request::Minimize(handle, sender))
-                    .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?;
-                receiver
-            }
-            _ => unreachable!(),
-        };
+        let (sender, receiver) = mpsc::channel();
+        self.requests
+            .send(Request::Minimize(handle, sender))
+            .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?;
         receiver
             .recv()
             .map_err(|_| WindowError::disconnected("COSMIC window worker stopped"))?
     }
 }
+
 fn snapshot(state: &State) -> Vec<WindowInfo> {
     state
         .entries
@@ -186,6 +213,7 @@ fn snapshot(state: &State) -> Vec<WindowInfo> {
         })
         .collect()
 }
+
 fn request_action(state: &State, handle: WindowHandle, activate: bool) -> Result<(), WindowError> {
     let entry = state
         .entries
@@ -214,13 +242,27 @@ fn request_action(state: &State, handle: WindowHandle, activate: bool) -> Result
     Ok(())
 }
 
+/// Confirms the compositor applied a minimize request.
+fn minimize_outcome(entry: Option<&Entry>) -> Result<(), WindowError> {
+    let entry = entry.filter(|entry| !entry.closed).ok_or_else(|| {
+        WindowError::new(WindowErrorKind::NotFound, "window handle was not found")
+    })?;
+    if entry.minimized {
+        Ok(())
+    } else {
+        Err(WindowError::unsupported(format!(
+            "{COSMIC_BACKEND_LABEL} did not minimize the window; the compositor ignores minimize requests"
+        )))
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
     fn event(
         state: &mut Self,
         registry: &wl_registry::WlRegistry,
         event: wl_registry::Event,
-        _: &(),
-        _: &Connection,
+        _user_data: &(),
+        _connection: &Connection,
         queue: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
@@ -231,7 +273,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         {
             match interface.as_str() {
                 "ext_foreign_toplevel_list_v1" => {
-                    state.list = Some(registry.bind(name, version.min(1), queue, ()));
+                    state.list = Some(registry.bind(name, version.min(1), queue, ()))
                 }
                 "zcosmic_toplevel_info_v1" => {
                     state.info = Some(registry.bind(name, version.min(3), queue, ()))
@@ -247,43 +289,47 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         }
     }
 }
+
 impl Dispatch<wl_seat::WlSeat, ()> for State {
     fn event(
-        _: &mut Self,
-        _: &wl_seat::WlSeat,
-        _: wl_seat::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _state: &mut Self,
+        _seat: &wl_seat::WlSeat,
+        _event: wl_seat::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
     }
 }
+
 impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for State {
     fn event(
-        _: &mut Self,
-        _: &ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
-        _: ext_foreign_toplevel_list_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _state: &mut Self,
+        _list: &ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+        _event: ext_foreign_toplevel_list_v1::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
     }
+
     event_created_child!(State, ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, [ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ())]);
 }
+
 impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> for State {
     fn event(
         state: &mut Self,
         foreign: &ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
         event: ext_foreign_toplevel_handle_v1::Event,
-        _: &(),
-        _: &Connection,
+        _user_data: &(),
+        _connection: &Connection,
         queue: &QueueHandle<Self>,
     ) {
-        let index = state
+        let entry_index = state
             .entries
             .iter()
             .position(|entry| entry.foreign.as_ref() == Some(foreign));
-        let index = index.unwrap_or_else(|| {
+        let entry_index = entry_index.unwrap_or_else(|| {
             let handle = WindowHandle(state.next);
             state.next += 1;
             state.entries.push(Entry {
@@ -298,7 +344,7 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
             });
             state.entries.len() - 1
         });
-        let entry = &mut state.entries[index];
+        let entry = &mut state.entries[entry_index];
         match event {
             ext_foreign_toplevel_handle_v1::Event::Title { title } => {
                 entry.title = bounded_text(&title)
@@ -316,37 +362,41 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
         }
     }
 }
+
 impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, ()> for State {
     fn event(
-        _: &mut Self,
-        _: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
-        _: zcosmic_toplevel_info_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _state: &mut Self,
+        _info: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+        _event: zcosmic_toplevel_info_v1::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
     }
+
     event_created_child!(State, zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, [zcosmic_toplevel_info_v1::REQ_GET_COSMIC_TOPLEVEL_OPCODE => (zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ())]);
 }
+
 impl Dispatch<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, ()> for State {
     fn event(
-        _: &mut Self,
-        _: &zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
-        _: zcosmic_toplevel_manager_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _state: &mut Self,
+        _manager: &zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1,
+        _event: zcosmic_toplevel_manager_v1::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
     }
 }
+
 impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for State {
     fn event(
         state: &mut Self,
         cosmic: &zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
         event: zcosmic_toplevel_handle_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
         if let Some(entry) = state
             .entries
@@ -363,16 +413,55 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for State
             if let zcosmic_toplevel_handle_v1::Event::State { state: states } = event {
                 entry.active = false;
                 entry.minimized = false;
-                for value in states
-                    .as_chunks::<4>()
+                for state_value in states
+                    .as_chunks::<MAX_PROTOCOL_STATE_BYTES>()
                     .0
                     .iter()
-                    .map(|value| u32::from_ne_bytes(*value))
+                    .map(|bytes| u32::from_ne_bytes(*bytes))
                 {
-                    entry.active |= value == 2;
-                    entry.minimized |= value == 1;
+                    entry.active |= state_value == ACTIVE_STATE;
+                    entry.minimized |= state_value == MINIMIZED_STATE;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_entry(minimized: bool, closed: bool) -> Entry {
+        Entry {
+            foreign: None,
+            cosmic: None,
+            handle: WindowHandle(1),
+            title: String::new(),
+            app_id: None,
+            active: false,
+            minimized,
+            closed,
+        }
+    }
+
+    #[test]
+    fn minimize_outcome_accepts_honoured_request() {
+        assert!(minimize_outcome(Some(&test_entry(true, false))).is_ok());
+    }
+
+    #[test]
+    fn minimize_outcome_rejects_ignored_request() {
+        let error = minimize_outcome(Some(&test_entry(false, false))).unwrap_err();
+        assert_eq!(error.kind, WindowErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn minimize_outcome_reports_closed_window() {
+        let error = minimize_outcome(Some(&test_entry(false, true))).unwrap_err();
+        assert_eq!(error.kind, WindowErrorKind::NotFound);
+        assert_eq!(
+            minimize_outcome(None).unwrap_err().kind,
+            WindowErrorKind::NotFound
+        );
     }
 }

@@ -3,7 +3,7 @@ use super::{
     bounded_text,
 };
 use std::{
-    sync::{Arc, Mutex, mpsc},
+    sync::mpsc,
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -14,6 +14,14 @@ use wayland_client::{
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
 };
+
+const WLR_BACKEND_LABEL: &str = "wlroots foreign toplevel";
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PROTOCOL_STATE_BYTES: usize = 4;
+const ACTIVE_STATE: u32 = 2;
+const MINIMIZED_STATE: u32 = 1;
+
 struct Entry {
     proxy: Option<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1>,
     handle: WindowHandle,
@@ -23,12 +31,14 @@ struct Entry {
     minimized: bool,
     closed: bool,
 }
+
 struct Data {
     manager: Option<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1>,
     seat: Option<wl_seat::WlSeat>,
     entries: Vec<Entry>,
     next: u64,
 }
+
 impl Default for Data {
     fn default() -> Self {
         Self {
@@ -39,250 +49,340 @@ impl Default for Data {
         }
     }
 }
+
 enum Request {
     Snapshot(mpsc::Sender<Result<Vec<WindowInfo>, WindowError>>),
     Activate(WindowHandle, mpsc::Sender<Result<(), WindowError>>),
     Minimize(WindowHandle, mpsc::Sender<Result<(), WindowError>>),
     Stop,
 }
-#[allow(dead_code)]
+
+/// Wayland foreign-toplevel provider for wlroots compositors.
 pub struct WlrProvider {
-    tx: mpsc::Sender<Request>,
-    state: Arc<Mutex<Vec<WindowInfo>>>,
+    requests: mpsc::Sender<Request>,
     thread: Option<JoinHandle<()>>,
 }
+
 impl WlrProvider {
+    /// Connect to the compositor and start the Wayland worker.
     pub fn new() -> Result<Self, WindowError> {
-        let conn = Connection::connect_to_env().map_err(|e| {
+        let connection = Connection::connect_to_env().map_err(|error| {
             WindowError::new(
                 WindowErrorKind::Disconnected,
-                format!("Wayland connection failed: {e}"),
+                format!("Wayland connection failed: {error}"),
             )
         })?;
-        let (tx, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let state = Arc::new(Mutex::new(Vec::new()));
-        let shared = state.clone();
-        let thread = thread::Builder::new()
+        let (requests, receiver) = mpsc::channel();
+        let (ready_sender, ready_receiver) = mpsc::channel();
+        let worker_thread = thread::Builder::new()
             .name("kestrel-windows".into())
             .spawn(move || {
-                let mut queue = conn.new_event_queue();
-                let qh = queue.handle();
+                let mut queue = connection.new_event_queue();
+                let queue_handle = queue.handle();
                 let mut data = Data::default();
-                conn.display().get_registry(&qh, ());
+                connection.display().get_registry(&queue_handle, ());
                 let _ = queue.roundtrip(&mut data);
-                let ok = data.manager.is_some() && data.seat.is_some();
-                let _ = ready_tx.send(ok);
-                if !ok {
+                let ready = data.manager.is_some() && data.seat.is_some();
+                let _ = ready_sender.send(ready);
+                if !ready {
                     return;
                 }
                 loop {
                     let _ = queue.roundtrip(&mut data);
-                    if let Ok(mut s) = shared.lock() {
-                        *s = snapshot(&data);
-                    }
-                    match rx.recv_timeout(Duration::from_millis(10)) {
-                        Ok(Request::Snapshot(r)) => {
-                            let _ = r.send(Ok(snapshot(&data)));
+                    match receiver.recv_timeout(WORKER_POLL_INTERVAL) {
+                        Ok(Request::Snapshot(reply)) => {
+                            let _ = reply.send(Ok(snapshot(&data)));
                         }
-                        Ok(Request::Activate(h, r)) => {
-                            let result = command(&data, h, true);
-                            let _ = r.send(result);
+                        Ok(Request::Activate(handle, reply)) => {
+                            let result = request_action(&data, handle, true);
+                            let _ = reply.send(result);
                         }
-                        Ok(Request::Minimize(h, r)) => {
-                            let result = command(&data, h, false);
-                            let _ = r.send(result);
+                        Ok(Request::Minimize(handle, reply)) => {
+                            let mut result = request_action(&data, handle, false);
+                            if result.is_ok() {
+                                result = queue
+                                    .roundtrip(&mut data)
+                                    .map_err(|error| {
+                                        WindowError::new(
+                                            WindowErrorKind::Disconnected,
+                                            format!("Wayland roundtrip failed: {error}"),
+                                        )
+                                    })
+                                    .and_then(|_| {
+                                        minimize_outcome(
+                                            data.entries
+                                                .iter()
+                                                .find(|entry| entry.handle == handle),
+                                        )
+                                    });
+                            }
+                            let _ = reply.send(result);
                         }
                         Ok(Request::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
                 }
             })
-            .map_err(|e| WindowError::new(WindowErrorKind::Disconnected, e.to_string()))?;
-        if !ready_rx
-            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| WindowError::new(WindowErrorKind::Disconnected, error.to_string()))?;
+        if !ready_receiver
+            .recv_timeout(PROVIDER_READY_TIMEOUT)
             .unwrap_or(false)
         {
-            let _ = tx.send(Request::Stop);
-            let _ = thread.join();
+            let _ = requests.send(Request::Stop);
+            let _ = worker_thread.join();
             return Err(WindowError::new(
                 WindowErrorKind::Unsupported,
                 "wlr foreign toplevel manager or wl_seat was not advertised",
             ));
         }
         Ok(Self {
-            tx,
-            state,
-            thread: Some(thread),
+            requests,
+            thread: Some(worker_thread),
         })
     }
 }
-fn snapshot(d: &Data) -> Vec<WindowInfo> {
-    d.entries
+
+fn snapshot(data: &Data) -> Vec<WindowInfo> {
+    data.entries
         .iter()
-        .filter(|e| !e.closed)
-        .take(256)
-        .map(|e| WindowInfo {
-            handle: e.handle,
-            title: e.title.clone(),
-            app_id: e.app_id.clone(),
-            active: e.active,
-            minimized: e.minimized,
+        .filter(|entry| !entry.closed)
+        .take(super::MAX_WINDOWS)
+        .map(|entry| WindowInfo {
+            handle: entry.handle,
+            title: entry.title.clone(),
+            app_id: entry.app_id.clone(),
+            active: entry.active,
+            minimized: entry.minimized,
         })
         .collect()
 }
-fn command(d: &Data, h: WindowHandle, activate: bool) -> Result<(), WindowError> {
-    let e = d
+
+fn request_action(data: &Data, handle: WindowHandle, activate: bool) -> Result<(), WindowError> {
+    let entry = data
         .entries
         .iter()
-        .find(|e| e.handle == h && !e.closed)
+        .find(|entry| entry.handle == handle && !entry.closed)
         .ok_or_else(|| {
             WindowError::new(WindowErrorKind::NotFound, "window handle was not found")
         })?;
-    let seat = d
+    let seat = data
         .seat
         .as_ref()
         .ok_or_else(|| WindowError::unsupported("wlr activation requires wl_seat"))?;
+    let proxy = entry
+        .proxy
+        .as_ref()
+        .expect("live foreign toplevel entries have proxies");
     if activate {
-        e.proxy.as_ref().unwrap().activate(seat)
+        proxy.activate(seat);
     } else {
-        e.proxy.as_ref().unwrap().set_minimized();
+        proxy.set_minimized();
     }
-    e.proxy.as_ref().unwrap().version();
+    proxy.version();
     Ok(())
 }
+
+/// Confirms the compositor applied a minimize request.
+fn minimize_outcome(entry: Option<&Entry>) -> Result<(), WindowError> {
+    let entry = entry.filter(|entry| !entry.closed).ok_or_else(|| {
+        WindowError::new(WindowErrorKind::NotFound, "window handle was not found")
+    })?;
+    if entry.minimized {
+        Ok(())
+    } else {
+        Err(WindowError::unsupported(format!(
+            "{WLR_BACKEND_LABEL} did not minimize the window; the compositor ignores minimize requests"
+        )))
+    }
+}
+
 impl Drop for WlrProvider {
     fn drop(&mut self) {
-        let _ = self.tx.send(Request::Stop);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
+        let _ = self.requests.send(Request::Stop);
+        if let Some(worker_thread) = self.thread.take() {
+            let _ = worker_thread.join();
         }
     }
 }
+
 impl WindowProvider for WlrProvider {
     fn backend(&self) -> WindowBackend {
         WindowBackend::WlrForeignToplevel
     }
+
     fn windows(&mut self) -> Result<Vec<WindowInfo>, WindowError> {
-        let (a, b) = mpsc::channel();
-        self.tx
-            .send(Request::Snapshot(a))
+        let (sender, receiver) = mpsc::channel();
+        self.requests
+            .send(Request::Snapshot(sender))
             .map_err(|_| WindowError::disconnected("Wayland worker stopped"))?;
-        b.recv()
+        receiver
+            .recv()
             .map_err(|_| WindowError::disconnected("Wayland worker stopped"))?
     }
-    fn activate(&mut self, h: WindowHandle) -> Result<(), WindowError> {
-        let (a, b) = mpsc::channel();
-        self.tx
-            .send(Request::Activate(h, a))
+
+    fn activate(&mut self, handle: WindowHandle) -> Result<(), WindowError> {
+        let (sender, receiver) = mpsc::channel();
+        self.requests
+            .send(Request::Activate(handle, sender))
             .map_err(|_| WindowError::disconnected("Wayland worker stopped"))?;
-        b.recv()
+        receiver
+            .recv()
             .map_err(|_| WindowError::disconnected("Wayland worker stopped"))?
     }
-    fn minimize(&mut self, h: WindowHandle) -> Result<(), WindowError> {
-        let (a, b) = mpsc::channel();
-        self.tx
-            .send(Request::Minimize(h, a))
+
+    fn minimize(&mut self, handle: WindowHandle) -> Result<(), WindowError> {
+        let (sender, receiver) = mpsc::channel();
+        self.requests
+            .send(Request::Minimize(handle, sender))
             .map_err(|_| WindowError::disconnected("Wayland worker stopped"))?;
-        b.recv()
+        receiver
+            .recv()
             .map_err(|_| WindowError::disconnected("Wayland worker stopped"))?
     }
 }
+
 impl Dispatch<wl_registry::WlRegistry, ()> for Data {
     fn event(
-        d: &mut Self,
-        r: &wl_registry::WlRegistry,
-        e: wl_registry::Event,
-        _: &(),
-        _: &Connection,
-        q: &QueueHandle<Self>,
+        data: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        queue: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
             name,
             interface,
             version,
-        } = e
+        } = event
         {
             match interface.as_str() {
                 "zwlr_foreign_toplevel_manager_v1" => {
-                    d.manager = Some(r.bind(name, version.min(3), q, ()))
+                    data.manager = Some(registry.bind(name, version.min(3), queue, ()))
                 }
-                "wl_seat" if d.seat.is_none() => d.seat = Some(r.bind(name, version.min(9), q, ())),
+                "wl_seat" if data.seat.is_none() => {
+                    data.seat = Some(registry.bind(name, version.min(9), queue, ()))
+                }
                 _ => {}
             }
         }
     }
 }
+
 impl Dispatch<wl_seat::WlSeat, ()> for Data {
     fn event(
-        _: &mut Self,
-        _: &wl_seat::WlSeat,
-        _: wl_seat::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _data: &mut Self,
+        _seat: &wl_seat::WlSeat,
+        _event: wl_seat::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
     }
 }
+
 impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()> for Data {
     fn event(
-        _: &mut Self,
-        _: &zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
-        _: zwlr_foreign_toplevel_manager_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        _data: &mut Self,
+        _manager: &zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+        _event: zwlr_foreign_toplevel_manager_v1::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
     }
+
     event_created_child!(Data,zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,[zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE=>(zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,())]);
 }
+
 impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> for Data {
     fn event(
-        d: &mut Self,
-        p: &zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
-        e: zwlr_foreign_toplevel_handle_v1::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
+        data: &mut Self,
+        proxy: &zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _user_data: &(),
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
     ) {
-        let mut i = d.entries.iter().position(|x| x.proxy.as_ref() == Some(p));
-        if i.is_none() {
-            let h = WindowHandle(d.next);
-            d.next += 1;
-            d.entries.push(Entry {
-                proxy: Some(p.clone()),
-                handle: h,
+        let entry_index = data
+            .entries
+            .iter()
+            .position(|entry| entry.proxy.as_ref() == Some(proxy));
+        let entry_index = entry_index.unwrap_or_else(|| {
+            let handle = WindowHandle(data.next);
+            data.next += 1;
+            data.entries.push(Entry {
+                proxy: Some(proxy.clone()),
+                handle,
                 title: String::new(),
                 app_id: None,
                 active: false,
                 minimized: false,
                 closed: false,
             });
-            i = Some(d.entries.len() - 1);
-        }
-        let e0 = &mut d.entries[i.unwrap()];
-        match e {
+            data.entries.len() - 1
+        });
+        let entry = &mut data.entries[entry_index];
+        match event {
             zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
-                e0.title = bounded_text(&title)
+                entry.title = bounded_text(&title)
             }
             zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
-                e0.app_id = Some(bounded_text(&app_id))
+                entry.app_id = Some(bounded_text(&app_id))
             }
             zwlr_foreign_toplevel_handle_v1::Event::State { state } => {
-                e0.active = false;
-                e0.minimized = false;
-                for s in state
-                    .as_chunks::<4>()
+                entry.active = false;
+                entry.minimized = false;
+                for state_value in state
+                    .as_chunks::<MAX_PROTOCOL_STATE_BYTES>()
                     .0
                     .iter()
-                    .map(|x| u32::from_ne_bytes(*x))
+                    .map(|bytes| u32::from_ne_bytes(*bytes))
                 {
-                    e0.active |= s == 2;
-                    e0.minimized |= s == 1;
+                    entry.active |= state_value == ACTIVE_STATE;
+                    entry.minimized |= state_value == MINIMIZED_STATE;
                 }
             }
-            zwlr_foreign_toplevel_handle_v1::Event::Closed => e0.closed = true,
+            zwlr_foreign_toplevel_handle_v1::Event::Closed => entry.closed = true,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_entry(minimized: bool, closed: bool) -> Entry {
+        Entry {
+            proxy: None,
+            handle: WindowHandle(1),
+            title: String::new(),
+            app_id: None,
+            active: false,
+            minimized,
+            closed,
+        }
+    }
+
+    #[test]
+    fn minimize_outcome_accepts_honoured_request() {
+        assert!(minimize_outcome(Some(&test_entry(true, false))).is_ok());
+    }
+
+    #[test]
+    fn minimize_outcome_rejects_ignored_request() {
+        let error = minimize_outcome(Some(&test_entry(false, false))).unwrap_err();
+        assert_eq!(error.kind, WindowErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn minimize_outcome_reports_closed_window() {
+        let error = minimize_outcome(Some(&test_entry(false, true))).unwrap_err();
+        assert_eq!(error.kind, WindowErrorKind::NotFound);
+        assert_eq!(
+            minimize_outcome(None).unwrap_err().kind,
+            WindowErrorKind::NotFound
+        );
     }
 }
