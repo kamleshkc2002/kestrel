@@ -56,6 +56,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** `[monitoring] refresh_interval_millis` (250–60,000; default 1,000), `history_samples` (1–600; default 120), `readouts`, `network_rate_unit` (`bytes` or `bits`; default `bytes`), `per_core_cpu` (default false), `tray_readouts` (up to 3; default none), and `[monitoring.alerts]` rules (`threshold` >0 and ≤100% or ≤150 °C, `sustain_samples` 1–600, `cooldown_seconds` ≤86,400).
+- An alert fires only after its reading stays past the threshold for `sustain_samples` consecutive samples; the Monitoring page offers this as a duration ("Sustained for": immediately up to 10 minutes) at the refresh interval. Temperature defaults to one minute so brief spikes stay quiet.
 - Samples `/proc` and `/sys`; missing backends stay visible with their source reason. History is bounded and kept in memory; process IDs and command lines are excluded.
 - Per-core CPU load is grouped into performance and efficiency cores on hybrid processors. Network shows the transfer since monitoring started, and the battery shows its power source, including a paused charge on external power.
 - NVIDIA GPUs are read through NVML (`libnvidia-ml.so.1`) when the driver is loaded; a missing library or a driver/library mismatch is shown with its remedy. Accessory batteries (mice, keyboards, headsets, controllers) come from UPower; no serial numbers are read.
@@ -175,7 +176,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Desktop integration
 
 - The normal window is always available; the tray is optional.
-- The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make it quit instead. Ctrl+Q, the Quit button beside that setting, and the tray's Quit always quit. Minimizing turns off a running camera preview.
+- The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make it quit instead. Ctrl+Q, the Quit row on the Settings page, and the tray's Quit always quit. Minimizing turns off a running camera preview.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, COSMIC, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Each readout marked **Tray** in Settings (up to three) gets its own tray icon showing its label and current value; clicking it opens Kestrel, and its menu shows the full reading. Hosts that support tooltips also show the reading on hover; COSMIC shows no tray tooltips.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 

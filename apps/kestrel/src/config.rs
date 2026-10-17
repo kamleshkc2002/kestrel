@@ -1650,7 +1650,7 @@ sustain_samples = "bad"
                 .alerts
                 .temperature
                 .sustain_samples,
-            3
+            60
         );
         for location in [
             "monitoring.history_samples",

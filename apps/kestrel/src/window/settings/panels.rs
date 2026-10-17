@@ -5,6 +5,13 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
 use kestrel::{AlertKind, ApplicationCommand, ApplicationViewModel, PanelMoveDirection};
+use std::{cell::RefCell, time::Duration};
+
+thread_local! {
+    /// Alert rows the user opened; settings changes rebuild the page, and
+    /// these reopen so an edit does not snap the row shut.
+    static EXPANDED_ALERTS: RefCell<Vec<AlertKind>> = const { RefCell::new(Vec::new()) };
+}
 
 pub(super) fn add_monitoring_readouts_group(
     group: &adw::PreferencesGroup,
@@ -171,26 +178,32 @@ pub(super) fn add_monitoring_alerts_group(
 ) {
     let alert_group = adw::PreferencesGroup::builder()
         .title("Monitoring alerts")
-        .description("Enable sustained threshold alerts and choose each threshold.")
+        .description("An alert fires when a reading stays past its threshold for the chosen time.")
         .build();
     for rule in &view_model.monitor.alert_rules {
-        let row = plain_row()
+        let kind = rule.kind;
+        let row = adw::ExpanderRow::builder()
             .title(format!("{} alerts", rule.label))
             .subtitle(&rule.summary)
+            .use_markup(false)
+            .expanded(EXPANDED_ALERTS.with_borrow(|open| open.contains(&kind)))
             .build();
-        let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        row.connect_expanded_notify(move |row| {
+            EXPANDED_ALERTS.with_borrow_mut(|open| {
+                open.retain(|open_kind| *open_kind != kind);
+                if row.is_expanded() {
+                    open.push(kind);
+                }
+            });
+        });
         let enabled = gtk::Switch::builder()
             .active(rule.enabled)
             .valign(Align::Center)
             .build();
         let enabled_label = format!("Enable {} alerts", rule.label);
-        enabled.update_property(&[
-            Property::Label(&enabled_label),
-            Property::Description(&enabled_label),
-        ]);
+        enabled.update_property(&[Property::Label(&enabled_label)]);
         enabled.set_tooltip_text(Some(&enabled_label));
         let sender = commands.clone();
-        let kind = rule.kind;
         enabled.connect_state_set(move |_, value| {
             let _ = sender.try_send(ApplicationCommand::SetAlertEnabled {
                 kind,
@@ -198,44 +211,100 @@ pub(super) fn add_monitoring_alerts_group(
             });
             gtk::glib::Propagation::Proceed
         });
+        row.add_suffix(&enabled);
+
         let maximum = if kind == AlertKind::Temperature {
             150.0
         } else {
             100.0
         };
-        let spin = adw::SpinRow::with_range(1.0, maximum, 1.0);
-        spin.set_value(rule.threshold);
+        let threshold = adw::SpinRow::with_range(1.0, maximum, 1.0);
+        threshold.set_title("Threshold");
+        threshold.set_value(rule.threshold);
+        threshold.set_numeric(true);
         let unit_label = gtk::Label::new(Some(rule.unit));
         unit_label.set_valign(Align::Center);
-        spin.add_suffix(&unit_label);
-        spin.set_numeric(true);
-        spin.update_property(&[
-            Property::Label(&format!("{} alert threshold", rule.label)),
-            Property::Description(&rule.summary),
-        ]);
-        spin.set_tooltip_text(Some(&rule.summary));
+        threshold.add_suffix(&unit_label);
+        threshold.update_property(&[Property::Label(&format!("{} alert threshold", rule.label))]);
         let sender = commands.clone();
-        spin.connect_value_notify(move |spin| {
+        threshold.connect_value_notify(move |spin| {
             let _ = sender.try_send(ApplicationCommand::SetAlertThreshold {
                 kind,
                 threshold: spin.value(),
             });
         });
-        controls.append(&enabled);
-        row.add_suffix(&controls);
-        row.set_activatable_widget(Some(&enabled));
+        row.add_row(&threshold);
+
+        let choices = sustain_choices(rule.sustain);
+        let labels = choices
+            .iter()
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>();
+        let sustained = adw::ComboRow::builder()
+            .title("Sustained for")
+            .subtitle("Shorter spikes are ignored.")
+            .model(&gtk::StringList::new(&labels))
+            .selected(
+                choices
+                    .iter()
+                    .position(|(_, span)| *span == rule.sustain)
+                    .unwrap_or(0) as u32,
+            )
+            .build();
+        sustained.update_property(&[Property::Label(&format!(
+            "How long {} must stay past its threshold",
+            rule.label
+        ))]);
+        let sender = commands.clone();
+        let spans = choices.iter().map(|(_, span)| *span).collect::<Vec<_>>();
+        sustained.connect_selected_notify(move |combo| {
+            if let Some(duration) = spans.get(combo.selected() as usize) {
+                let _ = sender.try_send(ApplicationCommand::SetAlertSustain {
+                    kind,
+                    duration: *duration,
+                });
+            }
+        });
+        row.add_row(&sustained);
+
         alert_group.add(&row);
-        alert_group.add(&spin);
         filter_rows.push((
             row.clone().upcast(),
-            format!("monitoring alerts {} threshold", rule.label),
-        ));
-        filter_rows.push((
-            spin.clone().upcast(),
-            format!("monitoring alerts {} threshold", rule.label),
+            format!(
+                "monitoring alerts {} threshold sustained duration spikes",
+                rule.label
+            )
+            .to_lowercase(),
         ));
     }
     group.add(&alert_group);
+}
+
+/// Offered alert durations, plus the configured one when it is not a preset.
+fn sustain_choices(configured: Duration) -> Vec<(String, Duration)> {
+    let mut choices = [0, 5, 15, 30, 60, 120, 300, 600]
+        .map(|seconds| {
+            let span = Duration::from_secs(seconds);
+            (sustain_label(span), span)
+        })
+        .to_vec();
+    if !choices.iter().any(|(_, span)| *span == configured) {
+        choices.push((sustain_label(configured), configured));
+        choices.sort_by_key(|(_, span)| *span);
+    }
+    choices
+}
+
+fn sustain_label(span: Duration) -> String {
+    match span.as_secs() {
+        0 => "Immediately".to_owned(),
+        seconds if seconds.is_multiple_of(60) => {
+            let minutes = seconds / 60;
+            format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+        }
+        1 => "1 second".to_owned(),
+        seconds => format!("{seconds} seconds"),
+    }
 }
 
 pub(super) fn add_process_limits_group(

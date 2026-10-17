@@ -230,6 +230,8 @@ pub struct AlertRuleViewModel {
     pub label: &'static str,
     pub enabled: bool,
     pub threshold: f64,
+    /// How long a reading must stay past the threshold.
+    pub sustain: std::time::Duration,
     pub unit: &'static str,
     pub summary: String,
 }
@@ -295,10 +297,19 @@ impl MonitorViewModel {
                 let threshold = effective.map_or(configured.threshold, |rule| rule.threshold);
                 let sustain_samples =
                     effective.map_or(configured.sustain_samples, |rule| rule.sustain_samples);
+                // One sample means the first reading past the threshold alerts.
+                let sustain = if sustain_samples <= 1 {
+                    std::time::Duration::ZERO
+                } else {
+                    kestrel_core::sustain_duration(
+                        sustain_samples,
+                        configuration.refresh_interval_millis,
+                    )
+                };
                 let cooldown_seconds =
                     effective.map_or(configured.cooldown_seconds, |rule| rule.cooldown.as_secs());
                 let mut summary = format!(
-                    "Alert {} {}{} for {} samples; repeat at most every {} s",
+                    "Alerts when {} {}{} {}; repeats at most every {}",
                     if kind.alerts_above() {
                         "at or above"
                     } else {
@@ -306,8 +317,12 @@ impl MonitorViewModel {
                     },
                     format_threshold(threshold),
                     kind.unit(),
-                    sustain_samples,
-                    cooldown_seconds
+                    if sustain_samples <= 1 {
+                        "on the first reading".to_owned()
+                    } else {
+                        format!("for {}", format_span(sustain))
+                    },
+                    format_span(std::time::Duration::from_secs(cooldown_seconds))
                 );
                 if configured.enabled && !enabled {
                     summary.push_str("; currently paused by its quick toggle");
@@ -317,6 +332,7 @@ impl MonitorViewModel {
                     label: kind.label(),
                     enabled,
                     threshold,
+                    sustain,
                     unit: kind.unit(),
                     summary,
                 }
@@ -478,6 +494,20 @@ fn format_threshold(value: f64) -> String {
         format!("{value:.0}")
     } else {
         format!("{value:.1}")
+    }
+}
+
+/// A whole span in the largest unit that divides it: "45 s", "2 min", "1 h".
+fn format_span(span: std::time::Duration) -> String {
+    let seconds = span.as_secs();
+    if seconds >= 3_600 && seconds.is_multiple_of(3_600) {
+        format!("{} h", seconds / 3_600)
+    } else if seconds >= 60 && seconds.is_multiple_of(60) {
+        format!("{} min", seconds / 60)
+    } else if seconds > 0 {
+        format!("{seconds} s")
+    } else {
+        format!("{} ms", span.as_millis())
     }
 }
 
@@ -4457,10 +4487,14 @@ mod tests {
         use kestrel_services::alerts::{ActiveAlert, AlertSnapshot};
         use std::time::Duration;
 
-        let mut configuration = MonitorConfiguration::default();
+        let mut configuration = MonitorConfiguration {
+            refresh_interval_millis: 2_000,
+            ..MonitorConfiguration::default()
+        };
         configuration.alerts.temperature.threshold = 80.0;
-        configuration.alerts.temperature.sustain_samples = 3;
+        configuration.alerts.temperature.sustain_samples = 30;
         configuration.alerts.temperature.cooldown_seconds = 120;
+        configuration.alerts.battery.sustain_samples = 1;
         let monitor = MonitorViewModel::from_configuration(
             &configuration,
             MonitorPresentation {
@@ -4483,8 +4517,17 @@ mod tests {
         assert_eq!(monitor.alerts[0].label, "Temperature");
         assert_eq!(monitor.alert_rules[1].unit, "°C");
         assert!(monitor.alert_rules[1].summary.contains("80°C"));
-        assert!(monitor.alert_rules[1].summary.contains("3 samples"));
-        assert!(monitor.alert_rules[1].summary.contains("120 s"));
+        let temperature = &monitor.alert_rules[1];
+        assert_eq!(
+            temperature.sustain,
+            Duration::from_secs(60),
+            "30 samples at 2 s"
+        );
+        assert!(temperature.summary.contains("for 1 min"));
+        assert!(temperature.summary.contains("every 2 min"));
+        let battery = &monitor.alert_rules[4];
+        assert_eq!(battery.sustain, Duration::ZERO, "one sample alerts at once");
+        assert!(battery.summary.contains("on the first reading"));
     }
 
     #[test]

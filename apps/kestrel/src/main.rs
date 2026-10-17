@@ -646,6 +646,10 @@ enum ControllerOperation {
         kind: AlertKind,
         threshold: f64,
     },
+    SetAlertSustain {
+        kind: AlertKind,
+        duration: Duration,
+    },
     Audio(kestrel::AudioCommand),
     Microphone(MicrophoneCommand),
     StartSpeedTest,
@@ -1871,6 +1875,15 @@ impl ControllerState {
                     format!("{} alert threshold updated", kind.label()),
                 )?
             }
+            ControllerOperation::SetAlertSustain { kind, duration } => {
+                let mut candidate = self.configuration.clone();
+                candidate.monitoring.set_alert_sustain(kind, duration);
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("{} alert duration updated", kind.label()),
+                )?
+            }
             ControllerOperation::Audio(command) => {
                 let summary = audio_command_summary(command);
                 match self.runtime.execute_audio_command(command) {
@@ -2987,6 +3000,11 @@ fn dispatch_commands(
                     .request_operation(
                         ControllerOperation::SetAlertThreshold { kind, threshold },
                         "kestrel-alert-threshold",
+                    ),
+                ApplicationCommand::SetAlertSustain { kind, duration } => controller
+                    .request_operation(
+                        ControllerOperation::SetAlertSustain { kind, duration },
+                        "kestrel-alert-sustain",
                     ),
                 ApplicationCommand::Audio(command) => controller
                     .request_operation(ControllerOperation::Audio(command), "kestrel-audio"),
