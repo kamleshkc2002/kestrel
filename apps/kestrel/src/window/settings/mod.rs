@@ -78,27 +78,6 @@ pub(super) fn build_settings_group(
     (group, filter_rows)
 }
 
-/// Hides nested groups whose rows the search hid, and shows them again.
-pub(super) fn update_nested_group_visibility(group: &adw::PreferencesGroup) {
-    let mut child = group.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        let Ok(nested) = widget.clone().downcast::<adw::PreferencesGroup>() else {
-            continue;
-        };
-        let mut row = nested.first_child();
-        let mut any_visible = false;
-        while let Some(item) = row {
-            if item.is_visible() {
-                any_visible = true;
-                break;
-            }
-            row = item.next_sibling();
-        }
-        nested.set_visible(any_visible);
-    }
-}
-
 fn add_quick_panel_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,

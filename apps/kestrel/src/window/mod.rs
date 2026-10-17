@@ -40,7 +40,7 @@ use processes::{ProcessesPanel, build_processes_panel};
 use recording::build_recording_group;
 use scratchpad::{ScratchpadPanel, build_scratchpad_panel};
 use screen_tools::build_screen_tools_group;
-use settings::{SettingsPage, build_settings_group, update_nested_group_visibility};
+use settings::{SettingsPage, build_settings_group};
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use std::{
     cell::{Cell, RefCell},
@@ -345,11 +345,17 @@ impl WindowView {
                 &self.commands,
                 &self.camera_frames,
             );
+            // A stack child must leave through the stack, or its page lingers.
+            let mut offset = 0.0;
             if let Some(old) = self.content_stack.child_by_name(page.name()) {
-                old.unparent();
+                if let Ok(scrolled) = old.clone().downcast::<gtk::ScrolledWindow>() {
+                    offset = scrolled.vadjustment().value();
+                }
+                self.content_stack.remove(&old);
             }
             self.content_stack
                 .add_named(&built.scrolled, Some(page.name()));
+            restore_scroll(&built.scrolled, offset);
             filters.push(built.take_filter(page));
             self.replace_page_state(page, built);
         }
@@ -626,7 +632,6 @@ struct PageBuild {
     command_panel: Option<CommandPanel>,
     scratchpad_panel: Option<ScratchpadPanel>,
     filter_rows: FilterRows,
-    settings_groups: Vec<adw::PreferencesGroup>,
 }
 
 /// One page's searchable rows; `keywords` names the page itself.
@@ -634,7 +639,6 @@ struct PageFilter {
     page: SidebarPage,
     keywords: String,
     rows: FilterRows,
-    groups: Vec<adw::PreferencesGroup>,
 }
 
 /// The sidebar search over every page's rows.
@@ -668,13 +672,25 @@ impl SidebarSearch {
         for filter in self.filters.borrow().iter() {
             let page_named = query.is_empty() || filter.keywords.contains(query);
             let mut page_matches = page_named;
+            // A group shows while any of its searchable rows does.
+            let mut groups: Vec<(adw::PreferencesGroup, bool)> = Vec::new();
             for (row, keywords) in &filter.rows {
                 let visible = page_named || keywords.contains(query);
                 row.set_visible(visible);
                 page_matches |= visible;
+                let Some(group) = row
+                    .ancestor(adw::PreferencesGroup::static_type())
+                    .and_then(|group| group.downcast::<adw::PreferencesGroup>().ok())
+                else {
+                    continue;
+                };
+                match groups.iter_mut().find(|(known, _)| *known == group) {
+                    Some((_, any_visible)) => *any_visible |= visible,
+                    None => groups.push((group, visible)),
+                }
             }
-            for group in &filter.groups {
-                update_nested_group_visibility(group);
+            for (group, any_visible) in groups {
+                group.set_visible(any_visible);
             }
             if let Some(row) = self.row_of(filter.page) {
                 row.set_visible(page_matches);
@@ -711,7 +727,6 @@ impl Default for PageBuild {
             command_panel: None,
             scratchpad_panel: None,
             filter_rows: FilterRows::new(),
-            settings_groups: Vec::new(),
         }
     }
 }
@@ -723,7 +738,6 @@ impl PageBuild {
             page,
             keywords: page_keywords(page),
             rows: std::mem::take(&mut self.filter_rows),
-            groups: std::mem::take(&mut self.settings_groups),
         }
     }
 
@@ -952,16 +966,53 @@ fn build_page(
     clamp.set_maximum_size(CONTENT_MAXIMUM_WIDTH);
     clamp.set_tightening_threshold(MINIMUM_WINDOW_WIDTH);
     clamp.set_child(Some(&body));
+    // A rebuild moves focus to the page's first control; following it would
+    // undo the restored scroll position.
+    let viewport = gtk::Viewport::builder()
+        .scroll_to_focus(false)
+        .child(&clamp)
+        .build();
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .kinetic_scrolling(true)
         .propagate_natural_height(false)
         .vexpand(true)
-        .child(&clamp)
+        .child(&viewport)
         .build();
     build.scrolled = scrolled;
     build
+}
+
+/// Scrolls a rebuilt page back to `offset` once its height is known, so a
+/// settings change keeps the reader's place. The value is set from an idle
+/// callback because `changed` fires during the viewport's allocation, where a
+/// new scroll position would not move the content.
+fn restore_scroll(scrolled: &gtk::ScrolledWindow, offset: f64) {
+    if offset <= 0.0 {
+        return;
+    }
+    let adjustment = scrolled.vadjustment();
+    let handler: Rc<Cell<Option<gtk::glib::SignalHandlerId>>> = Rc::new(Cell::new(None));
+    let handler_for_change = Rc::clone(&handler);
+    let id = adjustment.connect_changed(move |adjustment| {
+        let reachable = adjustment.upper() - adjustment.page_size();
+        if reachable <= 0.0 {
+            return;
+        }
+        // Content can grow over several frames; stop once the offset fits.
+        if reachable >= offset {
+            if let Some(id) = handler_for_change.take() {
+                adjustment.disconnect(id);
+            }
+        }
+        let adjustment = adjustment.clone();
+        gtk::glib::idle_add_local_once(move || {
+            let reachable = adjustment.upper() - adjustment.page_size();
+            adjustment.set_value(offset.min(reachable));
+        });
+    });
+    handler.set(Some(id));
 }
 
 /// Appends a page's settings group and keeps its rows for the sidebar search.
@@ -976,7 +1027,6 @@ fn append_settings(
     let (group, rows) = build_settings_group(view_model, window, commands, page);
     body.append(&group);
     build.filter_rows.extend(rows);
-    build.settings_groups.push(group);
 }
 
 /// Names a query can use for the whole page; row keywords match single rows.

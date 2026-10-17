@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -800,7 +801,8 @@ impl Default for MonitorAlertConfiguration {
     fn default() -> Self {
         Self {
             cpu: AlertRuleConfiguration::new(true, 90.0, 5, 900),
-            temperature: AlertRuleConfiguration::new(true, 90.0, 3, 900),
+            // Brief spikes are normal for chips; only a minute of heat alerts.
+            temperature: AlertRuleConfiguration::new(true, 90.0, 60, 900),
             memory: AlertRuleConfiguration::new(true, 90.0, 5, 900),
             disk: AlertRuleConfiguration::new(true, 90.0, 3, 3_600),
             battery: AlertRuleConfiguration::new(true, 15.0, 1, 900),
@@ -858,6 +860,37 @@ impl Default for MonitorConfiguration {
             tray_readouts: Vec::new(),
         }
     }
+}
+
+impl MonitorConfiguration {
+    /// How long a reading must stay past `kind`'s threshold, at the sample rate.
+    pub fn alert_sustain(&self, kind: AlertKind) -> Duration {
+        sustain_duration(
+            self.alerts.rule(kind).sustain_samples,
+            self.refresh_interval_millis,
+        )
+    }
+
+    /// Stores `duration` as the nearest sample count within the sustain bounds.
+    pub fn set_alert_sustain(&mut self, kind: AlertKind, duration: Duration) {
+        self.alerts.rule_mut(kind).sustain_samples =
+            sustain_samples(duration, self.refresh_interval_millis);
+    }
+}
+
+/// The time `samples` consecutive readings span at `refresh_interval_millis`.
+pub fn sustain_duration(samples: u32, refresh_interval_millis: u64) -> Duration {
+    Duration::from_millis(u64::from(samples).saturating_mul(refresh_interval_millis))
+}
+
+/// Samples needed to cover `duration`, rounded up and kept within the sustain
+/// bounds; a zero duration alerts on the first reading.
+pub fn sustain_samples(duration: Duration, refresh_interval_millis: u64) -> u32 {
+    let interval = u128::from(refresh_interval_millis.max(1));
+    let samples = duration.as_millis().div_ceil(interval);
+    u32::try_from(samples)
+        .unwrap_or(u32::MAX)
+        .clamp(MIN_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_SUSTAIN_SAMPLES)
 }
 
 /// How a master output switch treats streams that are already playing.
@@ -2802,6 +2835,34 @@ mod tests {
                 kind: AlertKind::Battery,
                 seconds: MAX_ALERT_COOLDOWN_SECONDS + 1,
             })
+        );
+    }
+
+    #[test]
+    fn alert_sustain_durations_round_up_to_samples_within_bounds() {
+        use std::time::Duration;
+        assert_eq!(super::sustain_samples(Duration::from_secs(60), 1_000), 60);
+        assert_eq!(super::sustain_samples(Duration::from_secs(60), 2_500), 24);
+        assert_eq!(
+            super::sustain_samples(Duration::from_secs(5), 2_000),
+            3,
+            "rounds up"
+        );
+        assert_eq!(super::sustain_samples(Duration::ZERO, 1_000), 1);
+        assert_eq!(
+            super::sustain_samples(Duration::from_secs(3_600), 1_000),
+            MAX_ALERT_SUSTAIN_SAMPLES
+        );
+
+        let mut monitoring = super::MonitorConfiguration {
+            refresh_interval_millis: 500,
+            ..Default::default()
+        };
+        monitoring.set_alert_sustain(AlertKind::Temperature, Duration::from_secs(30));
+        assert_eq!(monitoring.alerts.temperature.sustain_samples, 60);
+        assert_eq!(
+            monitoring.alert_sustain(AlertKind::Temperature),
+            Duration::from_secs(30)
         );
     }
 

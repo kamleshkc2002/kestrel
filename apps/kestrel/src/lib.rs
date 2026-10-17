@@ -475,6 +475,11 @@ pub enum ApplicationCommand {
         kind: AlertKind,
         threshold: f64,
     },
+    /// How long a reading must stay past the threshold before alerting.
+    SetAlertSustain {
+        kind: AlertKind,
+        duration: std::time::Duration,
+    },
     /// Mixer mutation.
     Audio(AudioCommand),
     /// Microphone mutation.
