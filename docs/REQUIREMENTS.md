@@ -571,7 +571,7 @@ new reference commit so roadmap drift remains reviewable.
   watch, and companion modules.
 - **Product shell:** install/uninstall semantics for feature modules, first-run
   presets, honest idle/input/polling energy-cost labels, permission/capability
-  transparency, configurable panel sections and layout, settings search,
+  transparency, sidebar navigation with per-feature settings pages, settings search,
   import/export that excludes sensitive or machine-specific data, independent
   appearance, localization, autostart, and safe self-update/uninstall behavior.
 
@@ -645,7 +645,7 @@ second explicit opt-in; memory-only history remains the default.
   exclusions, hidden-file and desktop-icon visibility, screen lock, and battery
   alerts. Each action is independently capability-reported and confirmed when
   destructive.
-- Settings search, configurable panel visibility/order, config import/export
+- Settings search, sidebar navigation with per-feature settings, config import/export
   with sensitive fields excluded, appearance choice, and autostart.
 - **Exit criteria:** installable native package and AppImage preview; runs on GNOME and
   KDE Wayland plus one X11 environment; no root daemon required.

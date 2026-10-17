@@ -246,7 +246,7 @@ pub(super) fn add_process_limits_group(
 ) {
     let limits = view_model.processes.limits;
     let process_group = adw::PreferencesGroup::builder()
-        .title("Processes")
+        .title("Process inspector settings")
         .description("How often the process list refreshes and how many rows it keeps.")
         .build();
     for (title, subtitle, min, max, step, value, limit) in [

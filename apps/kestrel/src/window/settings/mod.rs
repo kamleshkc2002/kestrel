@@ -4,7 +4,7 @@ mod media;
 mod panels;
 mod tools;
 
-use crate::window::widgets::{choose_path, plain_row};
+use crate::window::widgets::{FilterRows, choose_path, plain_row, stacked_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation};
@@ -23,19 +23,20 @@ pub(super) enum SettingsPage {
     Settings,
 }
 
+/// Builds a page's settings group and returns its rows with their lowercase
+/// search keywords; the window's single search handler filters them.
 pub(super) fn build_settings_group(
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
-    search: &gtk::SearchEntry,
     page: SettingsPage,
-) -> adw::PreferencesGroup {
-    let title = if page == SettingsPage::Settings {
-        "Settings".to_owned()
-    } else {
-        format!("{} settings", page.title())
-    };
-    let group = adw::PreferencesGroup::builder().title(title).build();
+) -> (adw::PreferencesGroup, FilterRows) {
+    // Feature pages show their nested groups' own titles; the Settings page
+    // adds its app-wide rows directly.
+    let group = adw::PreferencesGroup::new();
+    if page == SettingsPage::Settings {
+        group.set_title("General");
+    }
     let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
 
     match page {
@@ -71,34 +72,14 @@ pub(super) fn build_settings_group(
         }
     }
 
-    let filter_rows = std::rc::Rc::new(filter_rows);
-    let group_for_search = group.clone();
-    search.connect_search_changed(move |entry| {
-        let query = entry.text().trim().to_lowercase();
-        for (row, content) in filter_rows.iter() {
-            row.set_visible(query.is_empty() || content.contains(&query));
-        }
-        update_nested_group_visibility(&group_for_search);
-    });
-    group
-}
-
-impl SettingsPage {
-    fn title(self) -> &'static str {
-        match self {
-            Self::Monitoring => "Monitoring",
-            Self::Audio => "Audio",
-            Self::Clipboard => "Clipboard",
-            Self::CommandBar => "Command bar",
-            Self::Capture => "Capture",
-            Self::Notes => "Notes",
-            Self::Processes => "Processes",
-            Self::Settings => "Settings",
-        }
+    for (_, keywords) in &mut filter_rows {
+        *keywords = keywords.to_lowercase();
     }
+    (group, filter_rows)
 }
 
-fn update_nested_group_visibility(group: &adw::PreferencesGroup) {
+/// Hides nested groups whose rows the search hid, and shows them again.
+pub(super) fn update_nested_group_visibility(group: &adw::PreferencesGroup) {
     let mut child = group.first_child();
     while let Some(widget) = child {
         child = widget.next_sibling();
@@ -117,88 +98,117 @@ fn update_nested_group_visibility(group: &adw::PreferencesGroup) {
         nested.set_visible(any_visible);
     }
 }
+
 fn add_quick_panel_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
     commands: &Sender<ApplicationCommand>,
-    filter_rows: &mut Vec<(gtk::Widget, String)>,
+    filter_rows: &mut FilterRows,
 ) {
-    let row = plain_row()
+    use kestrel::command_line::CommandLineAction;
+
+    let favorites = &view_model.quick_panel_favorites;
+    let panel_group = adw::PreferencesGroup::builder()
         .title("Quick panel")
-        .subtitle("Choose up to 24 favorite tools for the quick-panel.open surface.")
-        .subtitle_lines(0)
+        .description(format!(
+            "Up to {} tools for kestrel --command quick-panel.open, in this order.",
+            kestrel_core::MAX_QUICK_PANEL_FAVORITES
+        ))
         .build();
-    let controls = gtk::Box::new(Orientation::Vertical, 4);
-    let actions = kestrel::command_line::CommandLineAction::all();
-    let available = actions
+
+    let available = CommandLineAction::all()
+        .into_iter()
+        .filter(|action| !favorites.contains(&action.id()))
+        .collect::<Vec<_>>();
+    let descriptions = available
         .iter()
-        .filter(|action| !view_model.quick_panel_favorites.contains(&action.id()))
+        .map(|action| action.description())
+        .collect::<Vec<_>>();
+    let choices =
+        gtk::DropDown::from_strings(&descriptions.iter().map(String::as_str).collect::<Vec<_>>());
+    choices.set_valign(Align::Center);
+    let add = gtk::Button::with_label("Add");
+    add.set_valign(Align::Center);
+    add.set_sensitive(
+        !available.is_empty() && favorites.len() < kestrel_core::MAX_QUICK_PANEL_FAVORITES,
+    );
+    let sender = commands.clone();
+    let current = favorites.clone();
+    let ids = available
+        .iter()
         .map(|action| action.id())
         .collect::<Vec<_>>();
-    let combo =
-        gtk::DropDown::from_strings(&available.iter().map(String::as_str).collect::<Vec<_>>());
-    let add = gtk::Button::with_label("Add");
-    let sender = commands.clone();
-    let current = view_model.quick_panel_favorites.clone();
-    let combo_for_add = combo.clone();
+    let choices_for_add = choices.clone();
     add.connect_clicked(move |_| {
-        let Some(id) = combo_for_add
-            .selected_item()
-            .and_then(|item| item.downcast::<gtk::StringObject>().ok())
-            .map(|item| item.string().to_string())
-        else {
+        let Some(id) = ids.get(choices_for_add.selected() as usize) else {
             return;
         };
-        let mut favorites = current.clone();
-        if !favorites.contains(&id) && favorites.len() < 24 {
-            favorites.push(id);
-            let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(favorites));
-        }
+        let mut changed = current.clone();
+        changed.push(id.clone());
+        let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(changed));
     });
-    let add_row = gtk::Box::new(Orientation::Horizontal, 4);
-    add_row.append(&combo);
-    add_row.append(&add);
-    controls.append(&add_row);
-    for (index, id) in view_model.quick_panel_favorites.iter().enumerate() {
-        let item = gtk::Box::new(Orientation::Horizontal, 4);
-        let label = gtk::Label::new(Some(id));
-        label.set_hexpand(true);
-        label.set_xalign(0.0);
-        item.append(&label);
-        for (text, delta) in [("↑", -1_i32), ("↓", 1_i32)] {
-            let button = gtk::Button::with_label(text);
+    let add_row = plain_row().title("Add a tool").build();
+    add_row.add_suffix(&choices);
+    add_row.add_suffix(&add);
+    filter_rows.push((
+        add_row.clone().upcast(),
+        "quick panel favorites add tool".to_owned(),
+    ));
+    panel_group.add(&add_row);
+
+    for (index, id) in favorites.iter().enumerate() {
+        let description = CommandLineAction::parse(id)
+            .map(|action| action.description())
+            .unwrap_or_else(|_| id.clone());
+        let row = plain_row().title(&description).subtitle(id).build();
+        for (icon, label, target) in [
+            ("go-up-symbolic", "Move up", index.checked_sub(1)),
+            (
+                "go-down-symbolic",
+                "Move down",
+                Some(index + 1).filter(|next| *next < favorites.len()),
+            ),
+        ] {
+            let button = icon_button(icon, &format!("{label}: {description}"));
+            button.set_sensitive(target.is_some());
             let sender = commands.clone();
-            let favorites = view_model.quick_panel_favorites.clone();
-            button.set_sensitive(
-                (delta < 0 && index > 0) || (delta > 0 && index + 1 < favorites.len()),
-            );
+            let current = favorites.clone();
             button.connect_clicked(move |_| {
-                let target = index as i32 + delta;
-                if target >= 0 && (target as usize) < favorites.len() {
-                    let mut changed = favorites.clone();
-                    changed.swap(index, target as usize);
-                    let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(changed));
-                }
+                let Some(target) = target else {
+                    return;
+                };
+                let mut changed = current.clone();
+                changed.swap(index, target);
+                let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(changed));
             });
-            item.append(&button);
+            row.add_suffix(&button);
         }
-        let remove = gtk::Button::with_label("Remove");
+        let remove = icon_button("user-trash-symbolic", &format!("Remove {description}"));
         let sender = commands.clone();
-        let favorites = view_model.quick_panel_favorites.clone();
+        let current = favorites.clone();
         remove.connect_clicked(move |_| {
-            let mut changed = favorites.clone();
+            let mut changed = current.clone();
             changed.remove(index);
             let _ = sender.try_send(ApplicationCommand::SetQuickPanelFavorites(changed));
         });
-        item.append(&remove);
-        controls.append(&item);
+        row.add_suffix(&remove);
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("quick panel favorites {description} {id}"),
+        ));
+        panel_group.add(&row);
     }
-    row.add_suffix(&controls);
-    filter_rows.push((
-        row.clone().upcast(),
-        "quick panel favorites quick-panel.open add remove reorder tools".to_owned(),
-    ));
-    group.add(&row);
+    group.add(&panel_group);
+}
+
+/// A flat icon button with a tooltip and accessible label.
+fn icon_button(icon: &str, label: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(icon);
+    button.add_css_class("flat");
+    button.set_valign(Align::Center);
+    button.set_tooltip_text(Some(label));
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
+    button
 }
 
 fn add_general_rows(
@@ -253,6 +263,16 @@ fn add_general_rows(
         };
         let _ = sender.try_send(ApplicationCommand::SetCloseAction(action));
     });
+    filter_rows.push((
+        close_button.clone().upcast(),
+        "close button minimize taskbar quit exit window".to_owned(),
+    ));
+    group.add(&close_button);
+
+    let quit_row = plain_row()
+        .title("Quit Kestrel")
+        .subtitle("Ctrl+Q also quits from any Kestrel window.")
+        .build();
     let quit = gtk::Button::with_label("Quit");
     quit.set_valign(Align::Center);
     quit.set_tooltip_text(Some("Quit Kestrel now (Ctrl+Q)"));
@@ -260,12 +280,9 @@ fn add_general_rows(
     quit.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::Quit);
     });
-    close_button.add_suffix(&quit);
-    filter_rows.push((
-        close_button.clone().upcast(),
-        "close button minimize taskbar quit exit window".to_owned(),
-    ));
-    group.add(&close_button);
+    quit_row.add_suffix(&quit);
+    filter_rows.push((quit_row.clone().upcast(), "quit exit close".to_owned()));
+    group.add(&quit_row);
 
     let autostart = plain_row()
         .title("Start automatically")
@@ -288,11 +305,6 @@ fn add_general_rows(
     ));
     group.add(&autostart);
 
-    let preset_row = plain_row()
-        .title("Feature presets")
-        .subtitle("Change enablement as one reversible operation.")
-        .subtitle_lines(0)
-        .build();
     let presets = gtk::Box::new(Orientation::Horizontal, 6);
     for (label, preset) in [
         ("Essentials", kestrel::FeaturePreset::Essentials),
@@ -314,7 +326,11 @@ fn add_general_rows(
         let _ = sender.try_send(ApplicationCommand::UndoPreset);
     });
     presets.append(&undo);
-    preset_row.add_suffix(&presets);
+    let preset_row = stacked_row(
+        "Feature presets",
+        "Change enablement as one reversible operation.",
+        &presets,
+    );
     filter_rows.push((
         preset_row.clone().upcast(),
         "feature presets essentials balanced everything undo enablement".to_owned(),
@@ -326,12 +342,7 @@ fn build_configuration_files_row(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) -> adw::ActionRow {
-    let io_row = plain_row()
-        .title("Configuration files")
-        .subtitle("Import or export configuration. Kestrel only emits the selected path command.")
-        .subtitle_lines(0)
-        .build();
+) -> adw::PreferencesRow {
     let io_buttons = gtk::Box::new(Orientation::Horizontal, 6);
     let import = gtk::Button::with_label("Import");
     connect_file_chooser(&import, window, commands, false);
@@ -339,7 +350,11 @@ fn build_configuration_files_row(
     connect_file_chooser(&export, window, commands, true);
     io_buttons.append(&import);
     io_buttons.append(&export);
-    io_row.add_suffix(&io_buttons);
+    let io_row = stacked_row(
+        "Configuration files",
+        "Import or export configuration. Kestrel only emits the selected path command.",
+        &io_buttons,
+    );
     filter_rows.push((
         io_row.clone().upcast(),
         "configuration files import export".to_owned(),

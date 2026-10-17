@@ -40,16 +40,20 @@ use processes::{ProcessesPanel, build_processes_panel};
 use recording::build_recording_group;
 use scratchpad::{ScratchpadPanel, build_scratchpad_panel};
 use screen_tools::build_screen_tools_group;
-use settings::{SettingsPage, build_settings_group};
+use settings::{SettingsPage, build_settings_group, update_nested_group_visibility};
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
-use widgets::configure_wrapping_label;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
+use widgets::{FilterRows, configure_wrapping_label};
 
 pub use floating::{FloatingSurface, QuickPanelEntry};
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
-const DEFAULT_WINDOW_WIDTH: i32 = 760;
-const DEFAULT_WINDOW_HEIGHT: i32 = 640;
+const DEFAULT_WINDOW_WIDTH: i32 = 980;
+const DEFAULT_WINDOW_HEIGHT: i32 = 720;
 const CONTENT_MAXIMUM_WIDTH: i32 = 760;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,7 +105,7 @@ impl SidebarPage {
     fn icon(self) -> &'static str {
         match self {
             Self::Overview => "view-grid-symbolic",
-            Self::Monitoring => "utilities-system-monitor-symbolic",
+            Self::Monitoring => "power-profile-performance-symbolic",
             Self::Audio => "audio-volume-high-symbolic",
             Self::Clipboard => "edit-paste-symbolic",
             Self::CommandBar => "system-search-symbolic",
@@ -138,7 +142,7 @@ pub struct WindowView {
     content_page: adw::NavigationPage,
     header_title: adw::WindowTitle,
     sidebar_search: gtk::SearchEntry,
-    sidebar_rows: std::rc::Rc<Vec<(gtk::ListBoxRow, SidebarPage)>>,
+    search: Rc<SidebarSearch>,
     refresh_button: gtk::Button,
     toasts: adw::ToastOverlay,
     commands: Sender<ApplicationCommand>,
@@ -210,7 +214,7 @@ impl WindowView {
             .child(&sidebar_toolbar)
             .build();
 
-        let title = adw::WindowTitle::new("Overview", "Feature capabilities");
+        let title = adw::WindowTitle::new(SidebarPage::Overview.label(), "");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
@@ -225,38 +229,27 @@ impl WindowView {
         ]);
         header.pack_end(&refresh_button);
 
-        let search_for_pages = sidebar_search.clone();
-        let rows_for_pages = std::rc::Rc::new(sidebar_rows.clone());
-        let search_rows = rows_for_pages.clone();
-        sidebar_search.connect_search_changed(move |entry| {
-            let query = entry.text().trim().to_lowercase();
-            for (row, page) in search_rows.iter() {
-                let keywords = page_keywords(*page);
-                row.set_visible(query.is_empty() || keywords.contains(&query));
-            }
-            if query.is_empty() {
-                if let Some(row) = search_rows.first() {
-                    row.0.set_visible(true);
-                }
-            }
-        });
-
         let content_stack = gtk::Stack::new();
         content_stack.set_vexpand(true);
         content_stack.set_hexpand(true);
         let mut build = PageBuild::default();
+        let mut filters = Vec::with_capacity(SidebarPage::ALL.len());
         for page in SidebarPage::ALL {
-            let page_box = build_page(
-                page,
-                view_model,
-                &window,
-                &commands,
-                &camera_frames,
-                &sidebar_search,
-            );
+            let mut page_box = build_page(page, view_model, &window, &commands, &camera_frames);
             content_stack.add_named(&page_box.scrolled, Some(page.name()));
+            filters.push(page_box.take_filter(page));
             build.absorb(page_box);
         }
+        let search = Rc::new(SidebarSearch {
+            filters: RefCell::new(filters),
+            rows: sidebar_rows.clone(),
+            list: sidebar_list.clone(),
+            searching: Cell::new(false),
+        });
+        let search_for_entry = Rc::clone(&search);
+        sidebar_search.connect_search_changed(move |entry| {
+            search_for_entry.apply(&entry.text().trim().to_lowercase());
+        });
         content_stack.set_visible_child_name(SidebarPage::Overview.name());
 
         let toasts = adw::ToastOverlay::new();
@@ -281,20 +274,23 @@ impl WindowView {
         window.add_breakpoint(breakpoint);
         window.set_content(Some(&split_view));
 
-        let rows_for_selection = std::rc::Rc::new(sidebar_rows.clone());
         let split_for_selection = split_view.clone();
         let stack_for_selection = content_stack.clone();
         let page_for_selection = content_page.clone();
         let title_for_selection = title.clone();
+        let search_for_selection = Rc::downgrade(&search);
         sidebar_list.connect_row_selected(move |_, row| {
-            let Some(row) = row else { return };
-            let Some((_, page)) = rows_for_selection.iter().find(|(item, _)| item == row) else {
+            let (Some(row), Some(search)) = (row, search_for_selection.upgrade()) else {
+                return;
+            };
+            let Some(page) = search.page_of(row) else {
                 return;
             };
             stack_for_selection.set_visible_child_name(page.name());
             page_for_selection.set_title(page.label());
             title_for_selection.set_title(page.label());
-            if split_for_selection.is_collapsed() {
+            // A search moves the selection without leaving the sidebar.
+            if split_for_selection.is_collapsed() && !search.searching.get() {
                 split_for_selection.set_show_content(true);
             }
         });
@@ -306,8 +302,8 @@ impl WindowView {
             content_stack,
             content_page,
             header_title: title,
-            sidebar_search: search_for_pages,
-            sidebar_rows: rows_for_pages,
+            sidebar_search,
+            search,
             refresh_button,
             toasts,
             commands,
@@ -340,24 +336,27 @@ impl WindowView {
             })
             .copied()
             .unwrap_or(SidebarPage::Overview);
-        let build = SidebarPage::ALL.map(|page| {
-            build_page(
+        let mut filters = Vec::with_capacity(SidebarPage::ALL.len());
+        for page in SidebarPage::ALL {
+            let mut built = build_page(
                 page,
                 view_model,
                 &self.window,
                 &self.commands,
                 &self.camera_frames,
-                &self.sidebar_search,
-            )
-        });
-        for (page, built) in SidebarPage::ALL.into_iter().zip(build) {
+            );
             if let Some(old) = self.content_stack.child_by_name(page.name()) {
                 old.unparent();
             }
             self.content_stack
                 .add_named(&built.scrolled, Some(page.name()));
+            filters.push(built.take_filter(page));
             self.replace_page_state(page, built);
         }
+        // The rebuilt rows follow the search that is still typed.
+        *self.search.filters.borrow_mut() = filters;
+        self.search
+            .apply(&self.sidebar_search.text().trim().to_lowercase());
         self.select_page(selected);
     }
 
@@ -392,19 +391,19 @@ impl WindowView {
     }
 
     fn select_page(&self, page: SidebarPage) {
+        let Some(row) = self.search.row_of(page) else {
+            return;
+        };
+        // A page asked for by name must be reachable even mid-search.
+        if !row.is_visible() {
+            self.sidebar_search.set_text("");
+        }
+        self.search.list.select_row(Some(&row));
         self.content_stack.set_visible_child_name(page.name());
         self.content_page.set_title(page.label());
         self.header_title.set_title(page.label());
         if self.split_view.is_collapsed() {
             self.split_view.set_show_content(true);
-        }
-        if let Some((row, _)) = self.sidebar_rows.iter().find(|(_, item)| *item == page) {
-            if let Some(list) = row
-                .parent()
-                .and_then(|parent| parent.downcast::<gtk::ListBox>().ok())
-            {
-                list.select_row(Some(row));
-            }
         }
     }
 
@@ -626,6 +625,71 @@ struct PageBuild {
     processes_panel: Option<ProcessesPanel>,
     command_panel: Option<CommandPanel>,
     scratchpad_panel: Option<ScratchpadPanel>,
+    filter_rows: FilterRows,
+    settings_groups: Vec<adw::PreferencesGroup>,
+}
+
+/// One page's searchable rows; `keywords` names the page itself.
+struct PageFilter {
+    page: SidebarPage,
+    keywords: String,
+    rows: FilterRows,
+    groups: Vec<adw::PreferencesGroup>,
+}
+
+/// The sidebar search over every page's rows.
+struct SidebarSearch {
+    filters: RefCell<Vec<PageFilter>>,
+    rows: Vec<(gtk::ListBoxRow, SidebarPage)>,
+    list: gtk::ListBox,
+    /// Set while a search moves the selection.
+    searching: Cell<bool>,
+}
+
+impl SidebarSearch {
+    fn page_of(&self, row: &gtk::ListBoxRow) -> Option<SidebarPage> {
+        self.rows
+            .iter()
+            .find(|(item, _)| item == row)
+            .map(|(_, page)| *page)
+    }
+
+    fn row_of(&self, page: SidebarPage) -> Option<gtk::ListBoxRow> {
+        self.rows
+            .iter()
+            .find(|(_, item)| *item == page)
+            .map(|(row, _)| row.clone())
+    }
+
+    /// Shows every row on a page the query names and only matching rows
+    /// elsewhere, hides pages without a match, and keeps a visible page
+    /// selected.
+    fn apply(&self, query: &str) {
+        for filter in self.filters.borrow().iter() {
+            let page_named = query.is_empty() || filter.keywords.contains(query);
+            let mut page_matches = page_named;
+            for (row, keywords) in &filter.rows {
+                let visible = page_named || keywords.contains(query);
+                row.set_visible(visible);
+                page_matches |= visible;
+            }
+            for group in &filter.groups {
+                update_nested_group_visibility(group);
+            }
+            if let Some(row) = self.row_of(filter.page) {
+                row.set_visible(page_matches);
+            }
+        }
+        let selection_visible = self.list.selected_row().is_some_and(|row| row.is_visible());
+        if selection_visible {
+            return;
+        }
+        if let Some((row, _)) = self.rows.iter().find(|(row, _)| row.is_visible()) {
+            self.searching.set(true);
+            self.list.select_row(Some(row));
+            self.searching.set(false);
+        }
+    }
 }
 
 impl Default for PageBuild {
@@ -646,11 +710,23 @@ impl Default for PageBuild {
             processes_panel: None,
             command_panel: None,
             scratchpad_panel: None,
+            filter_rows: FilterRows::new(),
+            settings_groups: Vec::new(),
         }
     }
 }
 
 impl PageBuild {
+    /// Moves this page's searchable rows out, keyed by the page's own name.
+    fn take_filter(&mut self, page: SidebarPage) -> PageFilter {
+        PageFilter {
+            page,
+            keywords: page_keywords(page),
+            rows: std::mem::take(&mut self.filter_rows),
+            groups: std::mem::take(&mut self.settings_groups),
+        }
+    }
+
     fn absorb(&mut self, other: Self) {
         self.monitor_container = self.monitor_container.take().or(other.monitor_container);
         self.audio_container = self.audio_container.take().or(other.audio_container);
@@ -691,7 +767,6 @@ fn build_page(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     camera_frames: &CameraFrameSlot,
-    search: &gtk::SearchEntry,
 ) -> PageBuild {
     let body = gtk::Box::new(Orientation::Vertical, 24);
     body.set_margin_top(24);
@@ -734,14 +809,14 @@ fn build_page(
             body.append(&monitor);
             build.monitor_container = Some(monitor);
             build.speed_test_container = Some(speed);
-            let settings = build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::Monitoring,
             );
-            body.append(&settings);
         }
         SidebarPage::Audio => {
             let audio = gtk::Box::new(Orientation::Vertical, 0);
@@ -752,37 +827,40 @@ fn build_page(
             body.append(&microphone);
             build.audio_container = Some(audio);
             build.microphone_container = Some(microphone);
-            body.append(&build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::Audio,
-            ));
+            );
         }
         SidebarPage::Clipboard => {
             let panel = build_clipboard_panel(&view_model.clipboard, commands);
             body.append(&panel.container);
             build.clipboard_panel = Some(panel);
-            body.append(&build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::Clipboard,
-            ));
+            );
         }
         SidebarPage::CommandBar => {
             let panel = build_command_panel(&view_model.command_bar, commands);
             body.append(&panel.container);
             build.command_panel = Some(panel);
-            body.append(&build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::CommandBar,
-            ));
+            );
         }
         SidebarPage::Capture => {
             let capture = gtk::Box::new(Orientation::Vertical, 0);
@@ -808,13 +886,14 @@ fn build_page(
             build.screen_tools_container = Some(tools);
             build.recording_container = Some(recording);
             build.camera_container = Some(camera);
-            body.append(&build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::Capture,
-            ));
+            );
         }
         SidebarPage::Notes => {
             let snippets = build_snippet_panel(&view_model.snippets, commands);
@@ -823,26 +902,28 @@ fn build_page(
             let scratchpad = build_scratchpad_panel(&view_model.scratchpad, window, commands);
             body.append(&scratchpad.container);
             build.scratchpad_panel = Some(scratchpad);
-            body.append(&build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::Notes,
-            ));
+            );
         }
         SidebarPage::Processes => {
             let panel =
                 build_processes_panel(&view_model.processes, &view_model.listeners, commands);
             body.append(&panel.container);
             build.processes_panel = Some(panel);
-            body.append(&build_settings_group(
+            append_settings(
+                &body,
+                &mut build,
                 view_model,
                 window,
                 commands,
-                search,
                 SettingsPage::Processes,
-            ));
+            );
         }
         SidebarPage::Shortcuts => {
             let shortcuts = gtk::Box::new(Orientation::Vertical, 0);
@@ -850,18 +931,21 @@ fn build_page(
             body.append(&shortcuts);
             build.shortcuts_container = shortcuts;
         }
-        SidebarPage::FeatureHub => body.append(&build_feature_hub_group(
-            &view_model.features,
-            commands,
-            search,
-        )),
-        SidebarPage::Settings => body.append(&build_settings_group(
-            view_model,
-            window,
-            commands,
-            search,
-            SettingsPage::Settings,
-        )),
+        SidebarPage::FeatureHub => {
+            let (hub, rows) = build_feature_hub_group(&view_model.features, commands);
+            body.append(&hub);
+            build.filter_rows = rows;
+        }
+        SidebarPage::Settings => {
+            append_settings(
+                &body,
+                &mut build,
+                view_model,
+                window,
+                commands,
+                SettingsPage::Settings,
+            );
+        }
         SidebarPage::Overview => {}
     }
     let clamp = adw::Clamp::new();
@@ -880,26 +964,35 @@ fn build_page(
     build
 }
 
+/// Appends a page's settings group and keeps its rows for the sidebar search.
+fn append_settings(
+    body: &gtk::Box,
+    build: &mut PageBuild,
+    view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    page: SettingsPage,
+) {
+    let (group, rows) = build_settings_group(view_model, window, commands, page);
+    body.append(&group);
+    build.filter_rows.extend(rows);
+    build.settings_groups.push(group);
+}
+
+/// Names a query can use for the whole page; row keywords match single rows.
 fn page_keywords(page: SidebarPage) -> String {
-    match page {
-        SidebarPage::Overview => "overview status warning capability quick toggle".to_owned(),
-        SidebarPage::Monitoring => {
-            "monitor monitoring speed test readout alert network cpu temperature processes"
-                .to_owned()
-        }
-        SidebarPage::Audio => "audio mixer microphone policy volume".to_owned(),
-        SidebarPage::Clipboard => "clipboard history limits retention entries".to_owned(),
-        SidebarPage::CommandBar => "command bar quick panel favorites search".to_owned(),
-        SidebarPage::Capture => {
-            "capture screenshot screen tools recording camera limits".to_owned()
-        }
-        SidebarPage::Notes => "notes snippets scratchpad limits editor".to_owned(),
-        SidebarPage::Processes => "process processes listeners limits refresh rows".to_owned(),
-        SidebarPage::Shortcuts => "shortcuts keyboard global".to_owned(),
-        SidebarPage::FeatureHub => "feature hub capabilities enablement".to_owned(),
-        SidebarPage::Settings => {
-            "settings appearance close button autostart presets configuration import export"
-                .to_owned()
-        }
-    }
+    let names = match page {
+        SidebarPage::Overview => "overview quick toggles status",
+        SidebarPage::Monitoring => "monitoring monitor system speed test",
+        SidebarPage::Audio => "audio sound mixer microphone volume",
+        SidebarPage::Clipboard => "clipboard history",
+        SidebarPage::CommandBar => "command bar launcher quick panel",
+        SidebarPage::Capture => "capture screenshots screen tools recording camera",
+        SidebarPage::Notes => "notes snippets scratchpad",
+        SidebarPage::Processes => "processes listeners ports",
+        SidebarPage::Shortcuts => "shortcuts keyboard bindings",
+        SidebarPage::FeatureHub => "feature hub features",
+        SidebarPage::Settings => "settings preferences",
+    };
+    names.to_owned()
 }

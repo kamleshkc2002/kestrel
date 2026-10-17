@@ -44,6 +44,12 @@ Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub reports registered, enabled, available,
 and running states separately.
 
+The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
+Command bar, Capture, Notes, Processes, Shortcuts, Feature hub, and Settings)
+and shows one at a time. Each feature's settings sit on its own page, and the
+Settings page keeps app-wide choices. The sidebar search filters pages and
+settings together. On narrow windows the sidebar and the page take turns.
+
 ## Features
 
 ### System monitoring — `system.monitor`
@@ -97,13 +103,13 @@ and running states separately.
 
 ### Quick panel
 
-- **Configuration:** `[quick_panel] favorites`, up to 24 command IDs from `kestrel --list-commands`, also editable under Settings → Quick panel.
+- **Configuration:** `[quick_panel] favorites`, up to 24 command IDs from `kestrel --list-commands`, also editable on the Command bar page.
 - `kestrel --command quick-panel.open` opens a floating palette of your favorites in saved order. Tools whose feature is off or unavailable stay listed, greyed out, with the reason. Return runs the selected tool and closes the panel; Escape closes it.
 
 ### Clipboard history — `clipboard.history`
 
 - **Default:** disabled and requires explicit opt-in.
-- **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), `paste_plain_text` (default true), and `history_layout` (`list` or `cards`; default `list`, also under Settings → Clipboard).
+- **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), `paste_plain_text` (default true), and `history_layout` (`list` or `cards`; default `list`), also editable on the Clipboard page.
 - History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only.
 - Copying an entry again moves it to the top; pinned entries keep their place. Wipe history and Clear unpinned ask first and state how many entries go; anything copied while the prompt is open is kept.
 - Search highlights matches. Ctrl+N and Ctrl+P move through results and Return copies the selected entry, or the first one when none is selected.
@@ -114,15 +120,15 @@ and running states separately.
 
 - **Default:** disabled; Balanced and Everything enable it. Nothing is captured until you press a capture button or run `kestrel --command capture.screenshot` / `capture.screen`.
 - **Providers:** the Screenshot portal where the desktop exports it (GNOME, KDE Plasma, COSMIC): "Choose in dialog" opens the desktop's own capture UI, and "Screen" asks once for screenshot permission; `grim` with `slurp` for area selection on wlroots compositors such as Sway and Hyprland; core X11 for the focused window or the whole screen on real X11 sessions.
-- **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), also editable under Settings → Screenshots.
+- **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), also editable on the Capture page.
 - Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every file at once. Temporary files a portal leaves behind are deleted after import.
 - Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, and redacts regions; redaction overwrites the pixels with black in the saved copy, and the original capture stays until you delete it.
 
 ### Screen tools — `capture.text`, `capture.qr`, `capture.color`
 
 - **Default:** disabled; Balanced and Everything enable all three. Each tool is its own feature and fails on its own: reading text needs Tesseract (`sudo apt install tesseract-ocr tesseract-ocr-eng`), and all three need a screenshot provider (see Screenshots).
-- **Use:** the Screen tools buttons in Quick Controls, or `kestrel --command capture.text` / `capture.qr` / `capture.color`. Kestrel takes one frame through the screenshot provider and opens a selection view with a magnifier: drag an area to read (or read the whole frame), or click a pixel for its color. Arrow keys move the cursor and Enter confirms. Where the Screenshot portal offers its color picker, colors come from the desktop's picker.
-- **Configuration:** `[screen_tools] ocr_language` (Tesseract codes such as `eng` or `eng+deu`; default `eng`) and `ocr_timeout_seconds` (5–120; default 30), also editable under Settings → Screen tools.
+- **Use:** the Screen tools buttons on the Capture page, or `kestrel --command capture.text` / `capture.qr` / `capture.color`. Kestrel takes one frame through the screenshot provider and opens a selection view with a magnifier: drag an area to read (or read the whole frame), or click a pixel for its color. Arrow keys move the cursor and Enter confirms. Where the Screenshot portal offers its color picker, colors come from the desktop's picker.
+- **Configuration:** `[screen_tools] ocr_language` (Tesseract codes such as `eng` or `eng+deu`; default `eng`) and `ocr_timeout_seconds` (5–120; default 30), also editable on the Capture page.
 - Everything runs on this computer: text through the `tesseract` executable, QR codes in-process. The frame stays in memory only while you select and is dropped once reading starts or you cancel; results stay until cleared and are never saved. Text and QR results copy to the clipboard, web addresses in QR codes open in your browser, and colors copy as HEX, RGB, or HSL.
 
 ### Screen recording — `capture.recording`
@@ -139,7 +145,7 @@ and running states separately.
 ### Scratchpad — `notes.scratchpad`
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command scratchpad.open`.
-- **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable under Settings → Scratchpad.
+- **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable on the Notes page.
 - Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`.
 - Alt+Up and Alt+Down move the current line or selected lines; Ctrl+Z undoes a move and restores the selection.
 - Preview renders the note's Markdown. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
@@ -153,7 +159,7 @@ and running states separately.
 ### Processes — `system.processes`
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command processes.open`.
-- **Configuration:** `[processes] refresh_millis` (1,000–10,000; default 2,000) and `max_rows` (rows shown, 10–500; default 100), also editable under Settings → Processes.
+- **Configuration:** `[processes] refresh_millis` (1,000–10,000; default 2,000) and `max_rows` (rows shown, 10–500; default 100), also editable on the Processes page.
 - Rows show the executable, PID, start time in clock ticks since boot, owner, CPU, and resident memory, busiest first; search covers every process by name, executable, owner, or PID. Command lines and environments are never read.
 - End (SIGTERM, then a 3 s wait) and Kill (SIGKILL) apply only to your own processes. Kernel threads, other users' processes, PID 1, your systemd manager, and Kestrel itself show the reason instead. Each action asks for confirmation naming the executable, PID, owner, and signal.
 - Kestrel opens a pidfd and checks the start time again before every signal, so a PID reused by another process is refused. Without pidfd support (Linux 5.3+), the list still works, End, Kill, Restart, and Stop owner are hidden, and the panel says why.

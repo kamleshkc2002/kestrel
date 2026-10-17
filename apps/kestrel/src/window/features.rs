@@ -1,6 +1,6 @@
 //! Feature hub, quick toggles, shortcuts, and warnings.
 
-use super::widgets::plain_row;
+use super::widgets::{FilterRows, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
@@ -10,16 +10,16 @@ use kestrel::{
     ShortcutsViewModel,
 };
 
+/// Builds the feature hub and returns its rows for the sidebar search.
 pub(super) fn build_feature_hub_group(
     features: &[FeatureViewModel],
     commands: &Sender<ApplicationCommand>,
-    search: &gtk::SearchEntry,
-) -> adw::PreferencesGroup {
+) -> (adw::PreferencesGroup, FilterRows) {
     let group = adw::PreferencesGroup::builder()
         .title("Feature Hub")
         .description("Every registered feature exposes enablement, lifecycle, capability, and conservative resource costs.")
         .build();
-    let mut rows = Vec::<(adw::ActionRow, String)>::new();
+    let mut rows = FilterRows::new();
     for feature in features {
         let row = plain_row()
             .title(&feature.label)
@@ -57,24 +57,17 @@ pub(super) fn build_feature_hub_group(
         row.update_property(&[Property::Label(&accessible)]);
         group.add(&row);
         rows.push((
-            row,
+            row.upcast(),
             format!(
                 "{} {} {}",
                 feature.label,
                 feature.id,
                 feature_hub_subtitle(feature)
-            ),
+            )
+            .to_lowercase(),
         ));
     }
-    let rows = std::rc::Rc::new(rows);
-    let rows_for_search = rows.clone();
-    search.connect_search_changed(move |entry| {
-        let query = entry.text().trim().to_lowercase();
-        for (row, content) in rows_for_search.iter() {
-            row.set_visible(query.is_empty() || content.to_lowercase().contains(&query));
-        }
-    });
-    group
+    (group, rows)
 }
 
 fn feature_hub_subtitle(feature: &FeatureViewModel) -> String {
@@ -123,21 +116,13 @@ pub(super) fn build_quick_toggle_group(
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
         .title("Quick toggles")
-        .description(
-            "Each control uses an independent user-session adapter. Requirements and externally changed state remain visible.",
-        )
+        .description("Hover a toggle to see what it needs and where its state comes from.")
         .build();
 
     for toggle in toggles {
         let subtitle = match &toggle.error {
-            Some(error) => format!(
-                "{}\nRequirement: {}\nState source: {}\nLast error: {}",
-                toggle.detail, toggle.requirement, toggle.source, error
-            ),
-            None => format!(
-                "{}\nRequirement: {}\nState source: {}",
-                toggle.detail, toggle.requirement, toggle.source
-            ),
+            Some(error) => format!("{}\nLast error: {error}", toggle.detail),
+            None => toggle.detail.clone(),
         };
         let row = plain_row()
             .title(toggle.label)
@@ -145,6 +130,10 @@ pub(super) fn build_quick_toggle_group(
             .subtitle_lines(0)
             .sensitive(toggle.available)
             .build();
+        row.set_tooltip_text(Some(&format!(
+            "Requirement: {}\nState source: {}",
+            toggle.requirement, toggle.source
+        )));
 
         match &toggle.control {
             Some(QuickToggleControlViewModel::Switch {
