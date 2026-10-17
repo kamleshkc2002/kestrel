@@ -19,6 +19,10 @@ pub enum CommandSource {
     Kestrel,
     Snippet,
     Application,
+    AppAction,
+    Window,
+    Clipboard,
+    Feature,
     File,
     Math,
     Units,
@@ -26,13 +30,18 @@ pub enum CommandSource {
     Url,
     Emoji,
     Script,
+    Color,
 }
 
 impl CommandSource {
-    pub const ALL: [CommandSource; 10] = [
+    pub const ALL: [CommandSource; 15] = [
         CommandSource::Kestrel,
         CommandSource::Snippet,
         CommandSource::Application,
+        CommandSource::AppAction,
+        CommandSource::Window,
+        CommandSource::Clipboard,
+        CommandSource::Feature,
         CommandSource::File,
         CommandSource::Math,
         CommandSource::Units,
@@ -40,6 +49,7 @@ impl CommandSource {
         CommandSource::Url,
         CommandSource::Emoji,
         CommandSource::Script,
+        CommandSource::Color,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -47,6 +57,10 @@ impl CommandSource {
             Self::Kestrel => "Kestrel",
             Self::Snippet => "Snippet",
             Self::Application => "Application",
+            Self::AppAction => "App action",
+            Self::Window => "Window",
+            Self::Clipboard => "Clipboard",
+            Self::Feature => "Feature",
             Self::File => "File",
             Self::Math => "Math",
             Self::Units => "Units",
@@ -54,10 +68,9 @@ impl CommandSource {
             Self::Url => "Link",
             Self::Emoji => "Emoji",
             Self::Script => "Script",
+            Self::Color => "Color",
         }
     }
-
-    /// True when the provider needs no desktop integration.
     pub const fn portable(self) -> bool {
         matches!(
             self,
@@ -68,6 +81,8 @@ impl CommandSource {
                 | Self::Date
                 | Self::Url
                 | Self::Emoji
+                | Self::Color
+                | Self::Feature
         )
     }
 }
@@ -78,6 +93,10 @@ pub enum CommandAction {
     InsertText(String),
     RunScript { index: usize },
     OpenApplication { index: usize },
+    OpenApplicationAction { index: usize, action_id: String },
+    ActivateWindow(u64),
+    CopyClipboardEntry { item_id: u64 },
+    SetFeatureEnabled { feature_id: String, enabled: bool },
     OpenFile(PathBuf),
     OpenUrl(String),
 }
@@ -91,6 +110,7 @@ pub struct CommandItem {
     pub subtitle: String,
     pub keywords: Vec<String>,
     pub action: CommandAction,
+    pub swatch: Option<[u8; 3]>,
 }
 
 impl CommandItem {
@@ -108,7 +128,13 @@ impl CommandItem {
             subtitle: subtitle.into(),
             keywords: Vec::new(),
             action,
+            swatch: None,
         }
+    }
+
+    pub fn with_swatch(mut self, rgb: [u8; 3]) -> Self {
+        self.swatch = Some(rgb);
+        self
     }
 
     pub fn with_keywords(mut self, keywords: impl IntoIterator<Item = &'static str>) -> Self {
@@ -306,14 +332,15 @@ pub fn evaluate_math(expression: &str) -> Option<f64> {
     if expression.is_empty() || !expression.chars().any(|c| c.is_ascii_digit()) {
         return None;
     }
-    if !expression
+    let normalized = normalize_numbers(expression)?;
+    if !normalized
         .chars()
-        .all(|c| c.is_ascii_digit() || "+-*/%^()., ".contains(c))
+        .all(|c| c.is_ascii_digit() || "+-*/%^(). ".contains(c))
     {
         return None;
     }
     let mut parser = MathParser {
-        chars: expression.chars().collect(),
+        chars: normalized.chars().collect(),
         position: 0,
     };
     let value = parser.parse_expression()?;
@@ -322,6 +349,89 @@ pub fn evaluate_math(expression: &str) -> Option<f64> {
         return None;
     }
     Some(value)
+}
+
+fn normalize_numbers(expression: &str) -> Option<String> {
+    let chars: Vec<char> = expression.chars().collect();
+    let mut output = String::with_capacity(expression.len());
+    let mut position = 0;
+    while position < chars.len() {
+        if !chars[position].is_ascii_digit() {
+            output.push(chars[position]);
+            position += 1;
+            continue;
+        }
+        let start = position;
+        while position < chars.len() && chars[position].is_ascii_digit() {
+            position += 1;
+        }
+        let first_len = position - start;
+        let mut digits: String = chars[start..position].iter().collect();
+        loop {
+            if chars.get(position) == Some(&' ') {
+                let mut after_space = position;
+                while chars.get(after_space) == Some(&' ') {
+                    after_space += 1;
+                }
+                if !chars
+                    .get(after_space)
+                    .is_some_and(|character| character.is_ascii_digit())
+                {
+                    position = after_space;
+                    break;
+                }
+                let group_start = after_space;
+                while chars
+                    .get(after_space)
+                    .is_some_and(|character| character.is_ascii_digit())
+                {
+                    after_space += 1;
+                }
+                if first_len > 3 || after_space - group_start != 3 {
+                    return None;
+                }
+                digits.extend(chars[group_start..after_space].iter());
+                position = after_space;
+                continue;
+            }
+            let Some(separator) = chars.get(position).copied() else {
+                break;
+            };
+            if !matches!(separator, ',' | '.' | '\'') {
+                break;
+            }
+            position += 1;
+            let group_start = position;
+            while chars
+                .get(position)
+                .is_some_and(|character| character.is_ascii_digit())
+            {
+                position += 1;
+            }
+            let group_len = position - group_start;
+            if group_len == 0 {
+                return None;
+            }
+            if separator == '\'' {
+                if first_len > 3 || group_len != 3 {
+                    return None;
+                }
+                digits.extend(chars[group_start..position].iter());
+                continue;
+            }
+            digits.push('.');
+            digits.extend(chars[group_start..position].iter());
+            break;
+        }
+        output.push_str(&digits);
+        if chars
+            .get(position)
+            .is_some_and(|character| character.is_ascii_digit())
+        {
+            return None;
+        }
+    }
+    Some(output)
 }
 
 struct MathParser {
@@ -620,6 +730,217 @@ fn civil_to_iso((year, month, day): (i32, u32, u32)) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// Parses a CSS-style hexadecimal, RGB, or HSL color.
+pub fn parse_color(query: &str) -> Option<[u8; 3]> {
+    let query = query.trim();
+    if let Some(hex) = query.strip_prefix('#') {
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        return match hex.len() {
+            3 => Some([
+                u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?,
+                u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?,
+                u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?,
+            ]),
+            6 => Some([
+                u8::from_str_radix(&hex[0..2], 16).ok()?,
+                u8::from_str_radix(&hex[2..4], 16).ok()?,
+                u8::from_str_radix(&hex[4..6], 16).ok()?,
+            ]),
+            _ => None,
+        };
+    }
+    let lowered = query.to_ascii_lowercase();
+    if let Some(values) = lowered
+        .strip_prefix("rgb(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let parts: Vec<_> = values.split(',').map(str::trim).collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let mut rgb = [0; 3];
+        for (index, part) in parts.iter().enumerate() {
+            if let Some(percent) = part.strip_suffix('%') {
+                let value: f64 = percent.parse().ok()?;
+                if !(0.0..=100.0).contains(&value) {
+                    return None;
+                }
+                rgb[index] = (value * 255.0 / 100.0 + 0.5).floor() as u8;
+            } else {
+                rgb[index] = part.parse().ok()?;
+            }
+        }
+        return Some(rgb);
+    }
+    let values = lowered
+        .strip_prefix("hsl(")
+        .and_then(|value| value.strip_suffix(')'))?;
+    let parts: Vec<_> = values.split(',').map(str::trim).collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let hue: f64 = parts[0].parse().ok()?;
+    let saturation: f64 = parts[1].strip_suffix('%')?.parse().ok()?;
+    let lightness: f64 = parts[2].strip_suffix('%')?.parse().ok()?;
+    if !(0.0..=360.0).contains(&hue)
+        || !(0.0..=100.0).contains(&saturation)
+        || !(0.0..=100.0).contains(&lightness)
+    {
+        return None;
+    }
+    Some(hsl_to_rgb(hue, saturation / 100.0, lightness / 100.0))
+}
+
+fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> [u8; 3] {
+    if saturation == 0.0 {
+        let value = (lightness * 255.0).round() as u8;
+        return [value; 3];
+    }
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = (hue / 60.0) % 6.0;
+    let secondary = chroma * (1.0 - ((sector % 2.0) - 1.0).abs());
+    let (red, green, blue) = match sector {
+        value if value < 1.0 => (chroma, secondary, 0.0),
+        value if value < 2.0 => (secondary, chroma, 0.0),
+        value if value < 3.0 => (0.0, chroma, secondary),
+        value if value < 4.0 => (0.0, secondary, chroma),
+        value if value < 5.0 => (secondary, 0.0, chroma),
+        _ => (chroma, 0.0, secondary),
+    };
+    let match_value = lightness - chroma / 2.0;
+    [
+        ((red + match_value) * 255.0).round() as u8,
+        ((green + match_value) * 255.0).round() as u8,
+        ((blue + match_value) * 255.0).round() as u8,
+    ]
+}
+
+fn rgb_to_hsl(rgb: [u8; 3]) -> (u16, u8, u8) {
+    let red = f64::from(rgb[0]) / 255.0;
+    let green = f64::from(rgb[1]) / 255.0;
+    let blue = f64::from(rgb[2]) / 255.0;
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
+    let lightness = (max + min) / 2.0;
+    if (max - min).abs() < f64::EPSILON {
+        return (0, 0, (lightness * 100.0).round() as u8);
+    }
+    let delta = max - min;
+    let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs());
+    let mut hue = if (max - red).abs() < f64::EPSILON {
+        ((green - blue) / delta) % 6.0
+    } else if (max - green).abs() < f64::EPSILON {
+        (blue - red) / delta + 2.0
+    } else {
+        (red - green) / delta + 4.0
+    };
+    if hue < 0.0 {
+        hue += 6.0;
+    }
+    (
+        (hue * 60.0).round() as u16 % 360,
+        (saturation * 100.0).round() as u8,
+        (lightness * 100.0).round() as u8,
+    )
+}
+
+pub fn color_notations(rgb: [u8; 3]) -> [(String, String); 3] {
+    let (hue, saturation, lightness) = rgb_to_hsl(rgb);
+    [
+        (
+            format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+            "Hex color".to_string(),
+        ),
+        (
+            format!("rgb({}, {}, {})", rgb[0], rgb[1], rgb[2]),
+            "RGB color".to_string(),
+        ),
+        (
+            format!("hsl({hue}, {saturation}%, {lightness}%)"),
+            "HSL color".to_string(),
+        ),
+    ]
+}
+
+fn month_number(name: &str) -> Option<u32> {
+    [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ]
+    .iter()
+    .position(|month| month.starts_with(name))
+    .map(|month| month as u32 + 1)
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let next = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
+    (days_from_civil(next.0, next.1, 1) - days_from_civil(year, month, 1)) as u32
+}
+
+fn parse_month_day(query: &str) -> Option<(u32, u32)> {
+    let parts: Vec<_> = query.split_whitespace().collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    if let (Ok(day), Some(month)) = (parts[0].parse::<u32>(), month_number(parts[1])) {
+        if day > 0 {
+            return Some((month, day));
+        }
+    }
+    if let (Some(month), Ok(day)) = (month_number(parts[0]), parts[1].parse::<u32>()) {
+        if day > 0 {
+            return Some((month, day));
+        }
+    }
+    None
+}
+
+pub fn render_month_day_query(query: &str, now: &LocalTime) -> Option<String> {
+    let lowered = query.trim().to_ascii_lowercase();
+    let (month, day) = parse_month_day(&lowered)?;
+    for offset in 0..=8 {
+        let year = now.year + offset;
+        if day > days_in_month(year, month) {
+            continue;
+        }
+        if offset == 0
+            && days_from_civil(year, month, day) < days_from_civil(now.year, now.month, now.day)
+        {
+            continue;
+        }
+        return Some(civil_to_iso((year, month, day)));
+    }
+    None
+}
+
+pub fn render_days_until_query(query: &str, now: &LocalTime) -> Option<String> {
+    let lowered = query.trim().to_ascii_lowercase();
+    let date = lowered.strip_prefix("days until")?.trim();
+    let rendered = render_month_day_query(date, now)?;
+    let mut parts = rendered.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    let count = days_from_civil(year, month, day) - days_from_civil(now.year, now.month, now.day);
+    Some(format!("{count} days until {rendered}"))
+}
+
 pub const EMOJI_TABLE: [(&str, &str); 64] = [
     ("grinning", "😀"),
     ("smile", "😄"),
@@ -693,6 +1014,8 @@ pub struct EnabledProviders {
     pub files: bool,
     pub scripts: bool,
     pub emoji: bool,
+    pub windows: bool,
+    pub clipboard: bool,
     /// Snippet results require the snippet feature.
     pub snippets: bool,
 }
@@ -704,6 +1027,8 @@ impl Default for EnabledProviders {
             files: false,
             scripts: true,
             emoji: true,
+            windows: true,
+            clipboard: true,
             snippets: true,
         }
     }
@@ -713,10 +1038,11 @@ pub struct SearchInput<'a> {
     pub query: &'a str,
     pub max_results: usize,
     pub providers: EnabledProviders,
-    /// Scanned desktop entries, in stable order.
     pub applications: &'a [CommandItem],
-    /// Bounded results from configured file roots.
     pub files: &'a [PathBuf],
+    pub windows: &'a [CommandItem],
+    pub clipboard: &'a [CommandItem],
+    pub features: &'a [CommandItem],
     pub now: Option<&'a LocalTime>,
     pub ranking: &'a CommandRanking,
     pub configured_scripts: &'a [CommandScriptConfiguration],
@@ -799,6 +1125,29 @@ impl CommandIndex {
         for item in &self.builtins {
             consider(item, 20);
         }
+        let lowered_query = query.to_lowercase();
+        for item in input.features {
+            // A switch leads only when the query names its feature; scattered
+            // letters across a label are no reason to outrank other results.
+            let names_feature = item.title.to_lowercase().contains(&lowered_query)
+                || item
+                    .keywords
+                    .iter()
+                    .any(|keyword| keyword.to_lowercase().contains(&lowered_query));
+            if names_feature {
+                consider(item, 40);
+            }
+        }
+        if input.providers.windows {
+            for item in input.windows {
+                consider(item, 5);
+            }
+        }
+        if input.providers.clipboard {
+            for item in input.clipboard {
+                consider(item, 5);
+            }
+        }
         if input.providers.snippets {
             for item in &self.snippets {
                 consider(item, 15);
@@ -833,6 +1182,31 @@ impl CommandIndex {
                     CommandAction::OpenFile(path.clone()),
                 );
                 consider(&item, 0);
+            }
+        }
+        if let Some(rgb) = parse_color(query) {
+            for (notation, detail) in color_notations(rgb) {
+                let id = if notation.starts_with('#') {
+                    "color:hex"
+                } else if notation.starts_with("rgb") {
+                    "color:rgb"
+                } else {
+                    "color:hsl"
+                };
+                results.push(CommandResult {
+                    item: CommandItem::new(
+                        id,
+                        CommandSource::Color,
+                        notation.clone(),
+                        detail,
+                        CommandAction::InsertText(notation),
+                    )
+                    .with_swatch(rgb),
+                    score: 70,
+                    pinned: false,
+                    usage: 0,
+                    matched_on: "computed",
+                });
             }
         }
 
@@ -882,6 +1256,36 @@ impl CommandIndex {
                         CommandSource::Date,
                         rendered.clone(),
                         "Copy the value to the clipboard",
+                        CommandAction::InsertText(rendered),
+                    ),
+                    score: 50,
+                    pinned: false,
+                    usage: 0,
+                    matched_on: "computed",
+                });
+            }
+            if let Some(rendered) = render_month_day_query(query, now) {
+                results.push(CommandResult {
+                    item: CommandItem::new(
+                        "date:month-day",
+                        CommandSource::Date,
+                        rendered.clone(),
+                        "Copy the next occurrence",
+                        CommandAction::InsertText(rendered),
+                    ),
+                    score: 50,
+                    pinned: false,
+                    usage: 0,
+                    matched_on: "computed",
+                });
+            }
+            if let Some(rendered) = render_days_until_query(query, now) {
+                results.push(CommandResult {
+                    item: CommandItem::new(
+                        "date:days-until",
+                        CommandSource::Date,
+                        rendered.clone(),
+                        "Copy the number of days",
                         CommandAction::InsertText(rendered),
                     ),
                     score: 50,
@@ -1187,6 +1591,9 @@ mod tests {
                 "query text must never reach the learned state: {debug}"
             );
         }
+        let computed_query = "#d02020";
+        ranking.record_use("color:hex");
+        assert!(!format!("{ranking:?}").contains(computed_query));
 
         ranking.reset();
         assert_eq!(ranking.usage("kestrel:refresh"), 0);
@@ -1224,7 +1631,7 @@ mod tests {
         assert_eq!(evaluate_math("10/4"), Some(2.5));
         assert_eq!(evaluate_math("7 % 3"), Some(1.0));
         assert_eq!(evaluate_math("-4 + 1"), Some(-3.0));
-        assert_eq!(evaluate_math("1,000 + 24"), Some(1024.0));
+        assert_eq!(evaluate_math("1 000 + 24"), Some(1024.0));
 
         assert_eq!(
             evaluate_math("1/0"),
@@ -1323,6 +1730,68 @@ mod tests {
     }
 
     #[test]
+    fn colors_support_hex_rgb_hsl_and_reject_invalid_values() {
+        assert_eq!(parse_color("#abc"), Some([170, 187, 204]));
+        assert_eq!(parse_color("#12"), None);
+        assert_eq!(parse_color("#é1"), None);
+        assert_eq!(parse_color("#ééé"), None);
+        assert_eq!(parse_color("rgb(32, 64, 128)"), Some([32, 64, 128]));
+        assert_eq!(parse_color("rgb(100%, 0%, 50%)"), Some([255, 0, 128]));
+        assert_eq!(parse_color("rgb(300, 0, 0)"), None);
+        assert_eq!(parse_color("hsl(120, 50%, 50%)"), Some([64, 191, 64]));
+        assert_eq!(parse_color("hsl(400, 50%, 50%)"), None);
+        let rgb = parse_color("hsl(210, 40%, 60%)").expect("valid HSL");
+        let hsl = color_notations(rgb)[2].0.clone();
+        assert_eq!(parse_color(&hsl), Some(rgb));
+    }
+
+    #[test]
+    fn month_day_queries_find_next_valid_occurrence() {
+        let february = LocalTime {
+            year: 2027,
+            month: 3,
+            day: 1,
+            ..NOW
+        };
+        assert_eq!(
+            render_month_day_query("feb 29", &february).as_deref(),
+            Some("2028-02-29")
+        );
+        assert_eq!(render_month_day_query("apr 31", &NOW), None);
+        assert_eq!(render_month_day_query("feb 0", &NOW), None);
+        assert_eq!(
+            render_month_day_query("25 december", &NOW).as_deref(),
+            Some("2026-12-25")
+        );
+        let december = LocalTime {
+            year: 2026,
+            month: 12,
+            day: 31,
+            ..NOW
+        };
+        assert_eq!(
+            render_days_until_query("days until jan 1", &december).as_deref(),
+            Some("1 days until 2027-01-01")
+        );
+    }
+
+    #[test]
+    fn locale_number_grouping_is_strict() {
+        assert_eq!(evaluate_math("1 234 567"), Some(1_234_567.0));
+        assert_eq!(evaluate_math("1'234.5"), Some(1_234.5));
+        assert_eq!(evaluate_math("1 234,5"), Some(1_234.5));
+        assert_eq!(evaluate_math("3,5 * 2"), Some(7.0));
+        assert_eq!(evaluate_math("1 234,567"), Some(1234.567));
+        assert_eq!(evaluate_math("1'234,567"), Some(1234.567));
+        assert_eq!(evaluate_math("1,234"), Some(1.234));
+        assert_eq!(evaluate_math("1234,567"), Some(1234.567));
+        assert_eq!(evaluate_math("1,234,567"), None);
+        assert_eq!(evaluate_math("12 34"), None);
+        assert_eq!(evaluate_math("1 2345"), None);
+        assert_eq!(evaluate_math("1'23"), None);
+    }
+
+    #[test]
     fn urls_are_accepted_only_when_they_look_like_links() {
         assert_eq!(
             normalize_url("https://example.com/path").as_deref(),
@@ -1355,6 +1824,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1377,6 +1849,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1389,6 +1864,9 @@ mod tests {
             max_results: 10,
             providers: EnabledProviders::default(),
             applications: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             files: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
@@ -1403,6 +1881,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1415,6 +1896,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1437,6 +1921,9 @@ mod tests {
                 },
                 applications: &[],
                 files: &[],
+                windows: &[],
+                clipboard: &[],
+                features: &[],
                 now: Some(&NOW),
                 ranking: &ranking,
                 configured_scripts: &[],
@@ -1469,6 +1956,9 @@ mod tests {
             },
             applications: &[],
             files: &files,
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1489,6 +1979,9 @@ mod tests {
             },
             applications: &[],
             files: &files,
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1507,6 +2000,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1519,6 +2015,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &ranking,
             configured_scripts: &[],
@@ -1533,6 +2032,9 @@ mod tests {
                     providers: EnabledProviders::default(),
                     applications: &[],
                     files: &[],
+                    windows: &[],
+                    clipboard: &[],
+                    features: &[],
                     now: Some(&NOW),
                     ranking: &ranking,
                     configured_scripts: &[],
@@ -1564,6 +2066,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &applications,
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &scripts,
@@ -1580,6 +2085,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &applications,
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&NOW),
             ranking: &empty_ranking(),
             configured_scripts: &scripts,
@@ -1600,6 +2108,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: None,
             ranking: &empty_ranking(),
             configured_scripts: &[],
@@ -1618,6 +2129,9 @@ mod tests {
                 ..EnabledProviders::default()
             },
             applications: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             files: &[],
             now: None,
             ranking: &empty_ranking(),
@@ -1632,7 +2146,7 @@ mod tests {
 
     #[test]
     fn sources_declare_portability_and_labels() {
-        assert_eq!(CommandSource::ALL.len(), 10);
+        assert_eq!(CommandSource::ALL.len(), 15);
         for source in CommandSource::ALL {
             assert!(!source.label().is_empty());
         }
@@ -1640,6 +2154,55 @@ mod tests {
         assert!(CommandSource::Math.portable());
         assert!(!CommandSource::Application.portable());
         assert!(!CommandSource::File.portable());
+    }
+
+    #[test]
+    fn feature_toggles_lead_only_when_the_query_names_the_feature() {
+        let index = CommandIndex::new(Vec::new(), &[]);
+        let feature = |id: &str, title: &str, keywords: [&'static str; 2]| {
+            CommandItem::new(
+                format!("feature:{id}"),
+                CommandSource::Feature,
+                title,
+                format!("Feature {id}"),
+                CommandAction::SetFeatureEnabled {
+                    feature_id: id.to_owned(),
+                    enabled: false,
+                },
+            )
+            .with_keywords(keywords)
+        };
+        let features = [
+            feature(
+                "clipboard.history",
+                "Turn off Clipboard history",
+                ["clipboard", "history"],
+            ),
+            feature("session.lock", "Turn off Lock screen", ["lock", "screen"]),
+        ];
+        let search = |query| {
+            index.search(SearchInput {
+                query,
+                max_results: 5,
+                providers: EnabledProviders::default(),
+                applications: &[],
+                files: &[],
+                windows: &[],
+                clipboard: &[],
+                features: &features,
+                now: None,
+                ranking: &empty_ranking(),
+                configured_scripts: &[],
+            })
+        };
+        let results = search("clipboard");
+        assert_eq!(results[0].item.id, "feature:clipboard.history");
+        assert!(
+            search("token")
+                .iter()
+                .all(|result| result.item.source != CommandSource::Feature),
+            "t-o-k-e-n is scattered through \"Turn off Lock screen\" but names no feature"
+        );
     }
 
     #[test]
@@ -1661,6 +2224,9 @@ mod tests {
             providers: EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: None,
             ranking: &ranking,
             configured_scripts: &[],

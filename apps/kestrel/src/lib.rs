@@ -21,6 +21,7 @@ pub use config::{
     ConfigurationLoadError, ConfigurationWarning, LoadedConfiguration, configuration_path,
     export_file, export_string, import_file, import_string, load, save,
 };
+pub use kestrel_core::QuickPanelConfiguration;
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
     CloseAction, MonitorReadout, NetworkRateUnit, PanelSection,
@@ -42,7 +43,9 @@ pub use kestrel_services::microphone::MicrophoneCommand;
 pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
-pub use runtime::{ApplicationRuntime, FeaturePreset, run_process_action};
+pub use runtime::{
+    ApplicationRuntime, ApplicationWindowDecision, FeaturePreset, run_process_action,
+};
 pub use snippets::{
     CURRENT_SNIPPET_SCHEMA_VERSION, LoadedSnippets, SnippetFile, SnippetStoreError, load_snippets,
     save_snippets, snippet_path,
@@ -91,6 +94,8 @@ pub enum CommandProviderSwitch {
     Files(bool),
     Scripts(bool),
     Emoji(bool),
+    Windows(bool),
+    Clipboard(bool),
 }
 
 /// Snippet-library action from the window.
@@ -377,6 +382,7 @@ fn move_entry(list: &mut [String], entry: &str, toward: PanelMoveDirection) -> b
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     CommandBar,
+    QuickPanel,
     Clipboard,
     Processes,
     Scratchpad,
@@ -537,6 +543,7 @@ pub enum ApplicationCommand {
     CommandBar(CommandBarCommand),
     ResetCommandRanking,
     SetCommandResultLimit(u32),
+    SetQuickPanelFavorites(Vec<String>),
     SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),

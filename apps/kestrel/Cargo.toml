@@ -13,6 +13,9 @@ name = "kestrel"
 path = "src/main.rs"
 required-features = ["gui"]
 
+[build-dependencies]
+pkg-config = "0.3"
+
 [dependencies]
 adw = { package = "libadwaita", version = "0.9", features = ["v1_4", "gtk_v4_10"], optional = true }
 async-channel = "2"

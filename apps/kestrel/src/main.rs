@@ -1,4 +1,5 @@
 mod capture_editor;
+mod layer_shell;
 mod screen_selection;
 mod window;
 
@@ -29,14 +30,17 @@ use kestrel::{
     SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
     disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
 };
-use kestrel::{CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch, FocusTarget};
+use kestrel::{
+    ApplicationWindowDecision, CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch,
+    FocusTarget,
+};
 use kestrel_core::{
     ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
 };
 use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
 use kestrel_services::alerts::notification_text;
 
-use window::WindowView;
+use window::{FloatingSurface, QuickPanelEntry, WindowView};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// Poll interval for mixer and microphone state, which other mixers and
@@ -47,6 +51,8 @@ type RefreshResult = Result<(ApplicationViewModel, String), String>;
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
     clipboard: Option<ClipboardViewModel>,
+    /// Command results re-run because clipboard entries in them changed.
+    command_bar: Option<kestrel::CommandBarViewModel>,
     audio: Option<kestrel::AudioViewModel>,
     microphone: Option<MicrophoneViewModel>,
     speed_test: Option<SpeedTestViewModel>,
@@ -167,9 +173,62 @@ impl ControllerState {
             },
             CommandAction::OpenApplication { index } => {
                 match self.runtime.launch_command_application(*index) {
-                    Ok(()) => format!("Launched {}", result.item.title),
-                    Err(error) => format!("The application was not launched: {error}"),
+                    Ok(ApplicationWindowDecision::Hide(_)) => format!("Hid {}", result.item.title),
+                    Ok(ApplicationWindowDecision::Restore(_)) => {
+                        format!("Brought {} to the front", result.item.title)
+                    }
+                    Ok(ApplicationWindowDecision::Launch) => {
+                        format!("Opened {}", result.item.title)
+                    }
+                    Err(error) => format!("{}: {error}", result.item.title),
                 }
+            }
+            CommandAction::OpenApplicationAction { index, action_id } => {
+                match self
+                    .runtime
+                    .launch_command_application_action(*index, action_id)
+                {
+                    Ok(()) => format!("Ran {}", result.item.title),
+                    Err(error) => format!("The application action was not run: {error}"),
+                }
+            }
+            CommandAction::ActivateWindow(handle) => {
+                match self.runtime.activate_command_window(*handle) {
+                    Ok(()) => "Window activated".to_owned(),
+                    Err(error) => format!("The window was not activated: {error}"),
+                }
+            }
+            CommandAction::CopyClipboardEntry { item_id } => {
+                match self.runtime.execute_clipboard_command(
+                    kestrel_services::clipboard::ClipboardCommand::CopyItem {
+                        item_id: *item_id,
+                        plain_text: true,
+                    },
+                ) {
+                    Some(Ok(_)) => format!("Copied clipboard entry {item_id}"),
+                    Some(Err(error)) => format!("Clipboard entry was not copied: {error}"),
+                    None => "Clipboard history is not running".to_owned(),
+                }
+            }
+            CommandAction::SetFeatureEnabled {
+                feature_id,
+                enabled,
+            } => {
+                let _ = self
+                    .commands
+                    .try_send(ApplicationCommand::SetFeatureEnabled {
+                        feature_id: feature_id.clone(),
+                        enabled: *enabled,
+                    });
+                format!(
+                    "{} {}",
+                    feature_id,
+                    if *enabled {
+                        "enable requested"
+                    } else {
+                        "disable requested"
+                    }
+                )
             }
             CommandAction::OpenFile(path) => {
                 match self
@@ -190,8 +249,13 @@ impl ControllerState {
             },
         };
 
-        // Record only attempted IDs and counts.
-        let _ = self.runtime.record_command_use(id);
+        if !matches!(
+            result.item.source,
+            kestrel_services::command_bar::CommandSource::Window
+                | kestrel_services::command_bar::CommandSource::Clipboard
+        ) {
+            let _ = self.runtime.record_command_use(id);
+        }
         self.refresh_command_results();
         outcome
     }
@@ -242,7 +306,7 @@ impl ControllerState {
         }
 
         let command = match action {
-            "open_window" => return Some("The window is already open".to_string()),
+            "open_window" => ApplicationCommand::PresentWindow,
             "refresh" => ApplicationCommand::RefreshCapabilities,
             "preset_essentials" => {
                 ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Essentials)
@@ -394,10 +458,11 @@ fn run_tick(
     if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
         tray.publish(&monitor.tray);
     }
-    let clipboard = clipboard_tick_update(state);
+    let (clipboard, command_bar) = clipboard_tick_update(state);
     TickUpdate {
         monitor,
         clipboard,
+        command_bar,
         audio,
         microphone,
         speed_test,
@@ -437,14 +502,19 @@ fn deliver_alerts(
     guard.runtime.monitor_view_model(&guard.configuration)
 }
 
-fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
+fn clipboard_tick_update(
+    state: &SharedState,
+) -> (
+    Option<ClipboardViewModel>,
+    Option<kestrel::CommandBarViewModel>,
+) {
     let mut guard = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let snapshot = guard.runtime.clipboard_snapshot();
     let fingerprint = ClipboardFingerprint::of(&snapshot);
     if guard.clipboard_fingerprint == Some(fingerprint) {
-        return None;
+        return (None, None);
     }
     guard.clipboard_fingerprint = Some(fingerprint);
     // Refresh the explicit query so background captures appear in results.
@@ -466,12 +536,21 @@ fn clipboard_tick_update(state: &SharedState) -> Option<ClipboardViewModel> {
             guard.clipboard_preview = None;
         }
     }
-    Some(guard.runtime.clipboard_view_model(
+    // A wipe, lock, or sleep must not leave clipboard previews in command results.
+    let shows_clipboard = guard.command_results.iter().any(|result| {
+        result.item.source == kestrel_services::command_bar::CommandSource::Clipboard
+    });
+    let command_bar = shows_clipboard.then(|| {
+        guard.refresh_command_results();
+        guard.view_model().command_bar
+    });
+    let clipboard = guard.runtime.clipboard_view_model(
         &guard.configuration,
         &guard.clipboard_query,
         &guard.clipboard_matches,
         guard.clipboard_preview.as_ref(),
-    ))
+    );
+    (Some(clipboard), command_bar)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -613,6 +692,7 @@ enum ControllerOperation {
     CommandBar(CommandBarCommand),
     ResetCommandRanking,
     SetCommandResultLimit(u32),
+    SetQuickPanelFavorites(Vec<String>),
     SetCommandProvider(CommandProviderSwitch),
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
@@ -632,6 +712,7 @@ struct ApplicationController {
     state: SharedState,
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
+    floating: RefCell<Option<FloatingSurface>>,
     refreshing: Cell<bool>,
     targeted: Cell<TargetedPanel>,
     monitoring: Cell<bool>,
@@ -726,6 +807,7 @@ impl ApplicationController {
             })),
             config_path,
             window: RefCell::new(None),
+            floating: RefCell::new(None),
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
             monitoring: Cell::new(false),
@@ -813,6 +895,10 @@ impl ApplicationController {
     }
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
+        if matches!(target, FocusTarget::CommandBar | FocusTarget::QuickPanel) {
+            self.open_floating(application, target);
+            return;
+        }
         self.present(application);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -821,6 +907,104 @@ impl ApplicationController {
         if !view.focus(target) {
             view.show_message("Show Quick Controls in Panel sections to reach this control");
         }
+    }
+
+    /// Opens one floating surface without raising the main window.
+    fn open_floating(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
+        let startup_id = self.activation_token.take();
+        let existing = self
+            .floating
+            .borrow()
+            .as_ref()
+            .map(|surface| (surface.kind, surface.window.clone()));
+        if let Some((kind, window)) = existing {
+            if kind == target {
+                present_with(&window, startup_id.as_deref());
+                return;
+            }
+            // Release the slot before closing; the close handler borrows it.
+            self.floating.borrow_mut().take();
+            window.close();
+        }
+
+        let parent = self
+            .window
+            .borrow()
+            .as_ref()
+            .map(|view| view.window.clone().upcast::<gtk::Window>());
+        let surface = if target == FocusTarget::QuickPanel {
+            let entries = self.quick_panel_entries();
+            FloatingSurface::quick_panel(
+                application,
+                parent.as_ref(),
+                startup_id.as_deref(),
+                &self.commands,
+                entries,
+            )
+        } else {
+            let gate = self
+                .command_gate(CommandLineAction::OpenCommandBar)
+                .map(|gate| gate.to_string());
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .runtime
+                .remember_front_window();
+            FloatingSurface::command_bar(
+                application,
+                parent.as_ref(),
+                startup_id.as_deref(),
+                &self.commands,
+                &self.current_view_model().command_bar,
+                gate.as_deref(),
+            )
+        };
+        let weak_controller = Rc::downgrade(self);
+        surface.window.connect_close_request(move |closing| {
+            let Some(controller) = weak_controller.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let owned = controller
+                .floating
+                .borrow()
+                .as_ref()
+                .is_some_and(|surface| &surface.window == closing);
+            if owned {
+                controller.floating.borrow_mut().take();
+            }
+            if target == FocusTarget::CommandBar {
+                // Transient search state ends with the surface.
+                let _ = controller
+                    .commands
+                    .try_send(ApplicationCommand::CommandQuery(String::new()));
+            }
+            glib::Propagation::Proceed
+        });
+        self.floating.replace(Some(surface));
+    }
+
+    /// Favorites in saved order, each with its current gate.
+    fn quick_panel_entries(&self) -> Vec<QuickPanelEntry> {
+        let favorites = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .configuration
+            .quick_panel
+            .favorites
+            .clone();
+        favorites
+            .into_iter()
+            .filter_map(|id| {
+                let action = CommandLineAction::parse(&id).ok()?;
+                Some(QuickPanelEntry {
+                    gate: self.command_gate(action).map(|gate| gate.to_string()),
+                    description: action.description(),
+                    command: action.to_command(),
+                    id,
+                })
+            })
+            .collect()
     }
 
     fn show_message(&self, message: &str) {
@@ -975,12 +1159,24 @@ impl ApplicationController {
 
     fn apply_refresh_result(&self, result: RefreshResult) {
         self.refreshing.set(false);
+        let targeted = self.targeted.replace(TargetedPanel::Full);
+        // The floating surfaces work without the main window.
+        if let Some(surface) = self.floating.borrow().as_ref() {
+            match &result {
+                Ok((view_model, message)) => {
+                    surface.set_command_bar(&view_model.command_bar);
+                    if !message.is_empty() {
+                        surface.show_outcome(message);
+                    }
+                }
+                Err(message) => surface.show_outcome(message),
+            }
+        }
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
         };
         view.set_refreshing(false);
-        let targeted = self.targeted.replace(TargetedPanel::Full);
         match result {
             Ok((view_model, message)) => {
                 apply_color_scheme(view_model.appearance);
@@ -1088,6 +1284,7 @@ impl ApplicationController {
         let TickUpdate {
             monitor,
             clipboard,
+            command_bar,
             audio,
             microphone,
             speed_test,
@@ -1119,6 +1316,10 @@ impl ApplicationController {
             }
         }
         self.open_recording_area();
+        if let (Some(command_bar), Some(surface)) = (&command_bar, self.floating.borrow().as_ref())
+        {
+            surface.set_command_bar(command_bar);
+        }
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1140,6 +1341,9 @@ impl ApplicationController {
         if let Some(clipboard) = clipboard {
             self.clipboard_running.set(clipboard.running);
             view.set_clipboard(&clipboard);
+        }
+        if let Some(command_bar) = command_bar {
+            view.set_command_bar(&command_bar);
         }
         if let Some(audio) = audio {
             view.set_audio(&audio);
@@ -2248,6 +2452,15 @@ impl ControllerState {
                     format!("The command bar shows at most {results} results"),
                 )?
             }
+            ControllerOperation::SetQuickPanelFavorites(favorites) => {
+                let mut candidate = self.configuration.clone();
+                candidate.quick_panel.favorites = favorites;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    "Quick panel favorites updated".to_owned(),
+                )?
+            }
             ControllerOperation::SetCommandProvider(switch) => {
                 let mut candidate = self.configuration.clone();
                 let message = match switch {
@@ -2270,6 +2483,14 @@ impl ControllerState {
                     CommandProviderSwitch::Emoji(enabled) => {
                         candidate.command_bar.enable_emoji = enabled;
                         format!("Emoji results {}", if enabled { "on" } else { "off" })
+                    }
+                    CommandProviderSwitch::Windows(enabled) => {
+                        candidate.command_bar.enable_windows = enabled;
+                        format!("Window results {}", if enabled { "on" } else { "off" })
+                    }
+                    CommandProviderSwitch::Clipboard(enabled) => {
+                        candidate.command_bar.enable_clipboard = enabled;
+                        format!("Clipboard results {}", if enabled { "on" } else { "off" })
                     }
                 };
                 self.commit_configuration(candidate, config_path, message)?
@@ -2513,6 +2734,14 @@ fn panel_label(section: PanelSection) -> &'static str {
     }
 }
 
+/// Presents `window`, applying a fresh activation token when one arrived.
+fn present_with(window: &gtk::Window, startup_id: Option<&str>) {
+    if let Some(startup_id) = startup_id {
+        window.set_startup_id(startup_id);
+    }
+    window.present();
+}
+
 fn apply_color_scheme(preference: AppearancePreference) {
     let scheme = match preference {
         AppearancePreference::System => adw::ColorScheme::Default,
@@ -2691,7 +2920,12 @@ fn main() -> glib::ExitCode {
                     if !command_line.is_remote() {
                         eprintln!("kestrel: {message}");
                     }
-                    controller.show_message(&message);
+                    if action == CommandLineAction::OpenCommandBar {
+                        // The surface opens in its remediation state.
+                        let _ = command_line_commands.try_send(action.to_command());
+                    } else {
+                        controller.show_message(&message);
+                    }
                     return glib::ExitCode::from(gate.exit_status());
                 }
                 let _ = command_line_commands.try_send(action.to_command());
@@ -3050,6 +3284,11 @@ fn dispatch_commands(
                     ControllerOperation::SetCommandResultLimit(results),
                     "kestrel-command-limit",
                 ),
+                ApplicationCommand::SetQuickPanelFavorites(favorites) => controller
+                    .request_operation(
+                        ControllerOperation::SetQuickPanelFavorites(favorites),
+                        "kestrel-quick-panel-settings",
+                    ),
                 ApplicationCommand::SetCommandProvider(switch) => controller.request_operation(
                     ControllerOperation::SetCommandProvider(switch),
                     "kestrel-command-provider",

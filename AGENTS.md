@@ -47,7 +47,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 - `crates/kestrel-platform/src/`: concrete Linux probes/adapters, one module per feature.
 - `crates/kestrel-services/src/`: feature policy, state, commands, snapshots, and lifecycle, one module per feature.
 - `crates/kestrel-services/tests/`: production-backend integration tests; currently clipboard lifecycle only.
-- `scripts/`: packaging automation (the AppImage builder) and the clipboard clean-session QA runner.
+- `scripts/`: packaging automation (the AppImage builder), the clipboard clean-session QA runner, and the layer-shell smoke check.
 - `data/`: desktop metadata and icons used by packaging.
 - `docs/`: product requirements and architecture contracts.
 
@@ -111,15 +111,18 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `.github/workflows/ci.yml`: canonical quality, build, test, and clean-session checks.
 - `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
 - `scripts/build-appimage.sh`: release artifact construction.
+- `apps/kestrel/build.rs`, `apps/kestrel/src/layer_shell.rs`: optional gtk4-layer-shell link and the FFI shim behind the `kestrel_layer_shell` cfg.
+- `scripts/layer-shell-smoke.sh`: opens the command bar on a private headless Sway and requires a layer-shell surface.
 
 ## Runtime/Tooling Preferences
 
 - Required Rust toolchain: **1.98.0**, minimal profile, with `rustfmt` and `clippy`. Use Cargo; there is no Node/Bun package manager.
 - Native compile/link prerequisites include GTK4, libadwaita, and libpulse development packages. CI installs `libadwaita-1-dev libgtk-4-dev libpulse-dev`.
+- gtk4-layer-shell is optional: `build.rs` links it when pkg-config finds `gtk4-layer-shell-0`. CI and the AppImage build it from source (v1.3.0) and set `KESTREL_LAYER_SHELL=required`; `KESTREL_LAYER_SHELL=off` skips it, and the quality job lints both builds. A binary linked against it needs the library at run time.
 - Prefer standard portals/documented D-Bus APIs, then supported native user-session APIs, then bounded executable adapters with resolved paths, timeouts, bounded output, and structured errors.
 - Never infer support solely from desktop/compositor/session names. Report observed backend evidence and remediation.
 - Prefer event signals for D-Bus/PipeWire services and bounded configurable polling for `/proc`, `/sys`, and hardware.
-- AppImage CI runs on Ubuntu 24.04, validates `data/io.github.kamleshkc2002.Kestrel.desktop`, inspects bundled libraries/assets, verifies checksums, and smoke-starts the artifact under Xvfb.
+- AppImage CI runs on Ubuntu 24.04, validates `data/io.github.kamleshkc2002.Kestrel.desktop`, inspects bundled libraries/assets (including gtk4-layer-shell), verifies checksums, checks layer-shell placement under headless Sway, and smoke-starts the artifact under Xvfb.
 
 ## Testing & QA
 
@@ -136,3 +139,4 @@ KESTREL_REQUIRE_CLEAN_SESSION=1 bash scripts/clipboard-clean-session.sh
 
 This requires Xvfb and Sway. It creates fresh X11 (Xvfb on a free display) and headless Wayland sessions and never touches the user's live clipboard.
 - GUI/package changes require the actual AppImage Xvfb startup scenario from `.github/workflows/appimage.yml`, not only unit tests.
+- Floating-surface placement changes require `bash scripts/layer-shell-smoke.sh <kestrel-binary>` against a build linked with gtk4-layer-shell (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA hosts).

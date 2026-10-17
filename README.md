@@ -87,8 +87,18 @@ and running states separately.
 ### Command bar — `commands.bar`
 
 - **Default:** disabled.
-- **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default true), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds.
-- Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins.
+- **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default true), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default true), `enable_windows` (default true), `enable_clipboard` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds.
+- Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins, never queries, window titles, or clipboard entries.
+- `kestrel --command command-bar.open` opens the bar as a floating surface without raising the main window, with the search field already focused. Up/Down or Ctrl+N/Ctrl+P select, Return runs the selection (or the first result) and shows the outcome in the bar, and Escape closes it and returns focus to the window you were in. While the feature is off, the bar shows how to turn it on.
+- Results cover Kestrel actions, feature switches (searching a feature lists its switch first), snippets, applications and their desktop actions, open windows, clipboard history entries while clipboard history runs, scripts, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
+- Open windows come from COSMIC toplevel management, wlroots foreign-toplevel management (Sway, Hyprland, labwc), the generic Wayland toplevel list (listing only), or EWMH on X11. GNOME exposes no window list to applications, so window results stay off there and the provider row says why.
+- Computed answers: arithmetic (numbers may group thousands with a space or an apostrophe and use a comma or period decimal), unit conversion, dates and times, `feb 29` or `days until dec 25`, and colors in `#rrggbb`, `rgb()`, or `hsl()` notation with a swatch.
+- The bar is a wlr-layer-shell overlay where the compositor offers the protocol and Kestrel was built with gtk4-layer-shell (the AppImage bundles it); elsewhere it is a normal undecorated window. The command bar panel shows which placement is in use and why.
+
+### Quick panel
+
+- **Configuration:** `[quick_panel] favorites`, up to 24 command IDs from `kestrel --list-commands`, also editable under Settings → Quick panel.
+- `kestrel --command quick-panel.open` opens a floating palette of your favorites in saved order. Tools whose feature is off or unavailable stay listed, greyed out, with the reason. Return runs the selected tool and closes the panel; Escape closes it.
 
 ### Clipboard history — `clipboard.history`
 
@@ -168,7 +178,8 @@ and running states separately.
 `kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, or your compositor config):
 
 ```bash
-kestrel --command command-bar.open        # window with the command bar focused
+kestrel --command command-bar.open        # floating command bar
+kestrel --command quick-panel.open        # floating palette of favorite tools
 kestrel --command clipboard.quick-paste   # window with clipboard history search focused
 kestrel --command microphone.toggle-mute
 kestrel --command audio.output-next
@@ -176,7 +187,7 @@ kestrel --command toggle.power.keep-awake
 kestrel --list-commands                   # every ID with a description
 ```
 
-IDs cover the window, command bar, clipboard quick paste, scratchpad (`scratchpad.open`), capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), screen tools (`capture.text`, `capture.qr`, `capture.color`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
+IDs cover the window, command bar, quick panel (`quick-panel.open`), clipboard quick paste, scratchpad (`scratchpad.open`), capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), screen tools (`capture.text`, `capture.qr`, `capture.color`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
 
 | Status | Meaning |
 |---|---|
@@ -250,6 +261,13 @@ sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev libdbu
 sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 ```
 
+Floating surfaces become layer-shell overlays only when the build finds
+gtk4-layer-shell through pkg-config (`gtk4-layer-shell-0`). It is optional and
+not packaged on Ubuntu 24.04; build it from source (v1.3.0, Meson, installed to
+`/usr/local`) as the CI workflows do. `KESTREL_LAYER_SHELL=required` makes a
+missing library a build error and `KESTREL_LAYER_SHELL=off` skips it; a binary
+linked against it needs the library at run time.
+
 If Rust is unavailable:
 
 ```bash
@@ -275,6 +293,13 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --workspace --all-targets
 cargo test --workspace --all-targets
+```
+
+With gtk4-layer-shell installed and Sway available, check that the command bar
+becomes an overlay (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA drivers):
+
+```bash
+bash scripts/layer-shell-smoke.sh target/debug/kestrel
 ```
 
 ## License

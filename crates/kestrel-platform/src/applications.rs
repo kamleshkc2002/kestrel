@@ -25,18 +25,29 @@ pub struct ApplicationEntry {
     pub id: String,
     pub name: String,
     pub comment: Option<String>,
+    pub startup_wm_class: Option<String>,
     /// The parsed command line contains the program and its arguments.
     pub command: Vec<String>,
     pub terminal: bool,
+    pub actions: Vec<DesktopAction>,
     /// Launching uses this file so GIO applies desktop-entry rules.
     pub source: Option<PathBuf>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopAction {
+    pub id: String,
+    pub name: String,
+}
+
+const MAX_DESKTOP_ACTIONS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopErrorKind {
     NotAvailable,
     ReadFailed,
     LaunchFailed,
+    UnknownAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,30 +154,63 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
     let mut in_group = false;
     let mut name: Option<String> = None;
     let mut comment: Option<String> = None;
+    let mut startup_wm_class: Option<String> = None;
     let mut exec: Option<String> = None;
     let mut entry_type: Option<String> = None;
     let mut hidden = false;
     let mut no_display = false;
     let mut terminal = false;
+    let mut action_ids = Vec::new();
+    let mut action_groups: Vec<(String, String)> = Vec::new();
+    let mut current_action: Option<String> = None;
 
     for line in contents.lines() {
         let line = line.trim();
         if line.starts_with('[') {
             in_group = line == "[Desktop Entry]";
+            current_action = line
+                .strip_prefix("[Desktop Action ")
+                .and_then(|s| s.strip_suffix(']'))
+                .map(str::to_string);
+            if let Some(action) = current_action.as_ref() {
+                action_groups.push((action.clone(), String::new()));
+            }
             continue;
         }
-        if !in_group || line.is_empty() || line.starts_with('#') {
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
+        let key = key.trim();
         let value = value.trim();
-        match key.trim() {
+        if let Some(action) = current_action.as_ref() {
+            if key == "Name" {
+                if let Some((_, action_name)) =
+                    action_groups.iter_mut().find(|(group, _)| group == action)
+                {
+                    *action_name = value.to_string();
+                }
+            }
+            continue;
+        }
+        if !in_group {
+            continue;
+        }
+        match key {
             "Name" => name = Some(value.to_string()),
             "Comment" => comment = Some(value.to_string()),
+            "StartupWMClass" => startup_wm_class = Some(value.to_string()),
             "Exec" => exec = Some(value.to_string()),
             "Type" => entry_type = Some(value.to_string()),
+            "Actions" => {
+                action_ids = value
+                    .split(';')
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            }
             "Hidden" => hidden = value.eq_ignore_ascii_case("true"),
             "NoDisplay" => no_display = value.eq_ignore_ascii_case("true"),
             "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
@@ -179,12 +223,27 @@ pub fn parse_desktop_entry(id: &str, contents: &str) -> Option<ApplicationEntry>
     }
     let name = name?;
     let command = parse_exec(&exec?)?;
+    let actions = action_ids
+        .into_iter()
+        .filter_map(|id| {
+            action_groups
+                .iter()
+                .find(|(group, action_name)| group == &id && !action_name.is_empty())
+                .map(|(_, action_name)| DesktopAction {
+                    id,
+                    name: action_name.clone(),
+                })
+        })
+        .take(MAX_DESKTOP_ACTIONS)
+        .collect();
     Some(ApplicationEntry {
         id: id.to_string(),
         name,
         comment,
+        startup_wm_class,
         command,
         terminal,
+        actions,
         source: None,
     })
 }
@@ -211,6 +270,32 @@ pub fn launch_desktop_entry(entry: &ApplicationEntry) -> Result<(), DesktopError
                 format!("{} could not be launched: {}", entry.name, error.message()),
             )
         })
+}
+/// Launches one desktop-exposed action through GIO.
+pub fn launch_desktop_action(
+    entry: &ApplicationEntry,
+    action_id: &str,
+) -> Result<(), DesktopError> {
+    if !entry.actions.iter().any(|action| action.id == action_id) {
+        return Err(DesktopError::new(
+            DesktopErrorKind::UnknownAction,
+            format!("{} does not expose action {action_id}", entry.name),
+        ));
+    }
+    let Some(source) = entry.source.as_deref() else {
+        return Err(DesktopError::new(
+            DesktopErrorKind::LaunchFailed,
+            format!("{} has no desktop file to launch", entry.name),
+        ));
+    };
+    let Some(info) = gio_unix::DesktopAppInfo::from_filename(source) else {
+        return Err(DesktopError::new(
+            DesktopErrorKind::NotAvailable,
+            format!("{} is not a launchable desktop entry", entry.name),
+        ));
+    };
+    info.launch_action(action_id, None::<&gio::AppLaunchContext>);
+    Ok(())
 }
 
 /// Splits an `Exec` value into argv, honoring quotes and dropping field codes.
@@ -457,6 +542,24 @@ mod tests {
                 "must be skipped: {contents}"
             );
         }
+    }
+
+    #[test]
+    fn desktop_actions_follow_declared_order_and_cap_missing_groups() {
+        let mut contents = String::from(
+            "[Desktop Entry]\nType=Application\nName=Launcher\nExec=/bin/true\nActions=first;missing;",
+        );
+        for index in 0..20 {
+            contents.push_str(&format!("a{index};"));
+        }
+        contents.push_str("\n[Desktop Action first]\nName=First\n");
+        for index in 0..20 {
+            contents.push_str(&format!("[Desktop Action a{index}]\nName=Action {index}\n"));
+        }
+        let entry = parse_desktop_entry("launcher.desktop", &contents).expect("entry parses");
+        assert_eq!(entry.actions[0].id, "first");
+        assert!(!entry.actions.iter().any(|action| action.id == "missing"));
+        assert_eq!(entry.actions.len(), super::MAX_DESKTOP_ACTIONS);
     }
 
     #[test]

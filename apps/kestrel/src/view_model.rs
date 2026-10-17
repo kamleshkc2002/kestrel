@@ -3051,12 +3051,12 @@ pub(crate) struct CommandBarPresentation<'a> {
     pub running: bool,
     pub max_results: u32,
     pub providers: kestrel_services::command_bar::EnabledProviders,
-    /// Providers usable in this session.
     pub launcher: Option<&'a str>,
     pub applications: usize,
     pub file_roots: usize,
     pub scripts: usize,
-    /// Query and ranked results.
+    pub windows_status: String,
+    pub clipboard_status: String,
     pub query: &'a str,
     pub results: &'a [kestrel_services::command_bar::CommandResult],
     pub ranking: &'a kestrel_services::command_bar::CommandRanking,
@@ -3073,6 +3073,8 @@ impl Default for CommandBarPresentation<'_> {
             applications: 0,
             file_roots: 0,
             scripts: 0,
+            windows_status: "Unavailable".to_owned(),
+            clipboard_status: "Clipboard history stopped".to_owned(),
             query: "",
             results: &[],
             ranking: &EMPTY_COMMAND_RANKING,
@@ -3115,6 +3117,7 @@ pub struct CommandResultViewModel {
     pub pinned: bool,
     pub uses: u32,
     pub action_label: &'static str,
+    pub swatch: Option<[u8; 3]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3131,14 +3134,18 @@ pub enum CommandProvider {
     Files,
     Scripts,
     Emoji,
+    Windows,
+    Clipboard,
 }
 
 impl CommandProvider {
-    pub const ALL: [CommandProvider; 4] = [
+    pub const ALL: [CommandProvider; 6] = [
         CommandProvider::Applications,
         CommandProvider::Files,
         CommandProvider::Scripts,
         CommandProvider::Emoji,
+        CommandProvider::Windows,
+        CommandProvider::Clipboard,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -3147,6 +3154,8 @@ impl CommandProvider {
             Self::Files => "Files (configured roots)",
             Self::Scripts => "Scripts",
             Self::Emoji => "Emoji",
+            Self::Windows => "Windows",
+            Self::Clipboard => "Clipboard",
         }
     }
 
@@ -3156,6 +3165,8 @@ impl CommandProvider {
             Self::Files => "At least one configured root; Kestrel never indexes everything",
             Self::Scripts => "Script definitions in the configuration",
             Self::Emoji => "Built in",
+            Self::Windows => "Compositor window-list protocol",
+            Self::Clipboard => "clipboard.history feature",
         }
     }
 }
@@ -3196,6 +3207,26 @@ impl CommandBarViewModel {
                 enabled: presentation.providers.emoji,
                 status: "Built in".to_string(),
             },
+            CommandProviderViewModel {
+                provider: CommandProvider::Windows,
+                label: CommandProvider::Windows.label(),
+                enabled: presentation.providers.windows,
+                status: if !presentation.providers.windows {
+                    "Disabled".to_string()
+                } else {
+                    presentation.windows_status.clone()
+                },
+            },
+            CommandProviderViewModel {
+                provider: CommandProvider::Clipboard,
+                label: CommandProvider::Clipboard.label(),
+                enabled: presentation.providers.clipboard,
+                status: if !presentation.providers.clipboard {
+                    "Disabled".to_string()
+                } else {
+                    presentation.clipboard_status.clone()
+                },
+            },
         ];
 
         let results = presentation
@@ -3210,6 +3241,7 @@ impl CommandBarViewModel {
                 pinned: result.pinned,
                 uses: result.usage,
                 action_label: command_action_label(&result.item.action),
+                swatch: result.item.swatch,
             })
             .collect::<Vec<_>>();
 
@@ -3249,6 +3281,10 @@ fn command_action_label(action: &kestrel_services::command_bar::CommandAction) -
         CommandAction::InsertText(_) => "Copy",
         CommandAction::RunScript { .. } => "Run script",
         CommandAction::OpenApplication { .. } => "Launch",
+        CommandAction::OpenApplicationAction { .. } => "Run action",
+        CommandAction::ActivateWindow(_) => "Activate",
+        CommandAction::CopyClipboardEntry { .. } => "Copy",
+        CommandAction::SetFeatureEnabled { .. } => "Toggle",
         CommandAction::OpenFile(_) => "Open file",
         CommandAction::OpenUrl(_) => "Open link",
     }
@@ -3303,6 +3339,7 @@ pub struct ApplicationViewModel {
     pub snippets: SnippetsViewModel,
     pub scratchpad: ScratchpadViewModel,
     pub command_bar: CommandBarViewModel,
+    pub quick_panel_favorites: Vec<String>,
     pub monitor: MonitorViewModel,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub appearance: AppearancePreference,
@@ -3390,6 +3427,7 @@ impl ApplicationViewModel {
                 limits: configuration.scratchpad,
             }),
             command_bar: CommandBarViewModel::from_presentation(command_bar),
+            quick_panel_favorites: configuration.quick_panel.favorites.clone(),
             monitor: MonitorViewModel::from_configuration(&configuration.monitoring, monitor),
             warnings: warnings
                 .iter()
@@ -5034,12 +5072,16 @@ mod tests {
                 files: false,
                 scripts: true,
                 emoji: true,
+                windows: true,
+                clipboard: true,
                 snippets: true,
             },
             launcher: Some("xdg-open"),
             applications: 42,
             file_roots: 0,
             scripts: 2,
+            windows_status: "X11 EWMH".to_owned(),
+            clipboard_status: "clipboard history running".to_owned(),
             query: "2+2",
             results,
             ranking,
@@ -5066,6 +5108,9 @@ mod tests {
             providers: kestrel_services::command_bar::EnabledProviders::default(),
             applications: &[],
             files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
             now: Some(&now),
             ranking: &ranking,
             configured_scripts: &[],
@@ -5078,7 +5123,7 @@ mod tests {
         assert_eq!(command_bar.results[0].source, "Math");
         assert_eq!(command_bar.results[0].title, "2+2 = 4");
         assert_eq!(command_bar.results[0].action_label, "Copy");
-        assert_eq!(command_bar.providers.len(), 4);
+        assert_eq!(command_bar.providers.len(), 6);
         assert!(
             command_bar
                 .providers

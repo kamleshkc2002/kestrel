@@ -6,6 +6,7 @@ mod capture;
 mod clipboard;
 mod command_bar;
 mod features;
+mod floating;
 mod monitor;
 mod processes;
 mod recording;
@@ -43,6 +44,8 @@ use screen_tools::build_screen_tools_group;
 use settings::build_settings_group;
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use widgets::configure_wrapping_label;
+
+pub use floating::{FloatingSurface, QuickPanelEntry};
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
@@ -174,6 +177,7 @@ impl WindowView {
     /// Focuses a control; false when its panel is hidden.
     pub fn focus(&self, target: FocusTarget) -> bool {
         let entry: Option<gtk::Widget> = match target {
+            FocusTarget::QuickPanel => None,
             FocusTarget::CommandBar => self
                 .command_panel
                 .borrow()

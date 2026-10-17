@@ -29,6 +29,7 @@ const TOGGLE_PREFIX: &str = "toggle.";
 pub enum CommandLineAction {
     ShowWindow,
     OpenCommandBar,
+    OpenQuickPanel,
     QuickPaste,
     ScratchpadOpen,
     ProcessesOpen,
@@ -51,9 +52,10 @@ pub enum CommandLineAction {
     QuickToggle(QuickToggleId),
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 25] = [
+const FIXED_ACTIONS: [CommandLineAction; 26] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
+    CommandLineAction::OpenQuickPanel,
     CommandLineAction::QuickPaste,
     CommandLineAction::ProcessesOpen,
     CommandLineAction::ScratchpadOpen,
@@ -93,6 +95,7 @@ impl CommandLineAction {
         let fixed = match self {
             Self::ShowWindow => "window.show",
             Self::OpenCommandBar => "command-bar.open",
+            Self::OpenQuickPanel => "quick-panel.open",
             Self::QuickPaste => "clipboard.quick-paste",
             Self::ProcessesOpen => "processes.open",
             Self::ScratchpadOpen => "scratchpad.open",
@@ -123,6 +126,7 @@ impl CommandLineAction {
         match self {
             Self::ShowWindow => "Open the Kestrel window".to_owned(),
             Self::OpenCommandBar => "Open the command bar".to_owned(),
+            Self::OpenQuickPanel => "Open the quick panel".to_owned(),
             Self::QuickPaste => "Search clipboard history to copy an entry".to_owned(),
             Self::ProcessesOpen => "Open the process inspector".to_owned(),
             Self::ScratchpadOpen => "Open the scratchpad editor".to_owned(),
@@ -180,6 +184,7 @@ impl CommandLineAction {
             | Self::Quit
             | Self::ApplyPreset(_)
             | Self::UndoPreset => None,
+            Self::OpenQuickPanel => None,
             Self::OpenCommandBar => Some(COMMAND_BAR_ID),
             Self::ProcessesOpen => Some(kestrel_platform::processes::FEATURE_ID),
             Self::QuickPaste | Self::WipeClipboard | Self::ClearClipboardSelection => {
@@ -202,6 +207,7 @@ impl CommandLineAction {
         match self {
             Self::ShowWindow => ApplicationCommand::PresentWindow,
             Self::OpenCommandBar => ApplicationCommand::Focus(FocusTarget::CommandBar),
+            Self::OpenQuickPanel => ApplicationCommand::Focus(FocusTarget::QuickPanel),
             Self::ProcessesOpen => ApplicationCommand::Focus(FocusTarget::Processes),
             Self::ScratchpadOpen => ApplicationCommand::Focus(FocusTarget::Scratchpad),
             Self::QuickPaste => ApplicationCommand::Focus(FocusTarget::Clipboard),
@@ -433,11 +439,7 @@ mod tests {
             ids.len(),
             "IDs are unique"
         );
-        assert_eq!(
-            actions.len(),
-            25 + ALL_QUICK_TOGGLES.len(),
-            "every quick toggle has exactly one ID"
-        );
+        assert_eq!(actions.len(), 26 + ALL_QUICK_TOGGLES.len(),);
         for action in actions {
             assert_eq!(CommandLineAction::parse(&action.id()), Ok(action));
         }
@@ -523,6 +525,18 @@ mod tests {
         assert_eq!(
             CommandLineAction::parse("clipboard.quick-paste").map(CommandLineAction::to_command),
             Ok(ApplicationCommand::Focus(FocusTarget::Clipboard))
+        );
+    }
+
+    #[test]
+    fn quick_panel_entry_point_parses_to_focus_command() {
+        assert_eq!(
+            parse_arguments(&arguments(&["--command", "quick-panel.open"])),
+            Ok(Invocation::Run(CommandLineAction::OpenQuickPanel))
+        );
+        assert_eq!(
+            CommandLineAction::OpenQuickPanel.to_command(),
+            ApplicationCommand::Focus(FocusTarget::QuickPanel)
         );
     }
 

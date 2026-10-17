@@ -59,6 +59,12 @@ pub(super) fn build_command_panel(
     status_row.set_title("State");
     status_row.add_suffix(&status);
     group.add(&status_row);
+    let placement_row = plain_row()
+        .title("Floating surfaces")
+        .subtitle(crate::layer_shell::observed_placement().summary())
+        .subtitle_lines(0)
+        .build();
+    group.add(&placement_row);
 
     for provider in &command_bar.providers {
         let row = plain_row()
@@ -84,6 +90,12 @@ pub(super) fn build_command_panel(
                     kestrel::CommandProviderSwitch::Scripts(enabled)
                 }
                 kestrel::CommandProvider::Emoji => kestrel::CommandProviderSwitch::Emoji(enabled),
+                kestrel::CommandProvider::Windows => {
+                    kestrel::CommandProviderSwitch::Windows(enabled)
+                }
+                kestrel::CommandProvider::Clipboard => {
+                    kestrel::CommandProviderSwitch::Clipboard(enabled)
+                }
             };
             let _ = sender.try_send(ApplicationCommand::SetCommandProvider(switch));
             gtk::glib::Propagation::Proceed
@@ -177,6 +189,9 @@ pub(super) fn fill_command_panel(
             .subtitle(detail)
             .subtitle_lines(0)
             .build();
+        if let Some(rgb) = result.swatch {
+            row.add_prefix(&color_swatch(rgb));
+        }
         row.update_property(&[Property::Label(&format!(
             "{} result {}",
             result.source, result.title
@@ -217,4 +232,26 @@ pub(super) fn fill_command_panel(
         row.add_suffix(&controls);
         panel.results.append(&row);
     }
+}
+
+/// A 16 px square in the result's color, labelled with its hex value.
+pub(super) fn color_swatch(rgb: [u8; 3]) -> gtk::DrawingArea {
+    let swatch = gtk::DrawingArea::new();
+    swatch.set_content_width(16);
+    swatch.set_content_height(16);
+    swatch.set_valign(Align::Center);
+    swatch.set_draw_func(move |_, context, width, height| {
+        context.set_source_rgb(
+            f64::from(rgb[0]) / 255.0,
+            f64::from(rgb[1]) / 255.0,
+            f64::from(rgb[2]) / 255.0,
+        );
+        context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+        let _ = context.fill();
+    });
+    swatch.update_property(&[Property::Label(&format!(
+        "Color swatch #{:02x}{:02x}{:02x}",
+        rgb[0], rgb[1], rgb[2]
+    ))]);
+    swatch
 }
