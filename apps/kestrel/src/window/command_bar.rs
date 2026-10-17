@@ -8,7 +8,6 @@ use kestrel::ApplicationCommand;
 
 pub(super) struct CommandPanel {
     pub(super) container: gtk::Box,
-    pub(super) query: gtk::SearchEntry,
     pub(super) status: gtk::Label,
     pub(super) results: gtk::Box,
 }
@@ -144,7 +143,6 @@ pub(super) fn build_command_panel(
     let results = gtk::Box::new(Orientation::Vertical, 6);
     let panel = CommandPanel {
         container: container.clone(),
-        query: query.clone(),
         status,
         results: results.clone(),
     };

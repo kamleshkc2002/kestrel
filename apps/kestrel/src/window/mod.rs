@@ -33,15 +33,14 @@ use features::{
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
     ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureViewModel,
-    FocusTarget, MicrophoneViewModel, MonitorViewModel, PanelSection, ShortcutsViewModel,
-    SpeedTestViewModel,
+    FocusTarget, MicrophoneViewModel, MonitorViewModel, ShortcutsViewModel, SpeedTestViewModel,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
 use recording::build_recording_group;
 use scratchpad::{ScratchpadPanel, build_scratchpad_panel};
 use screen_tools::build_screen_tools_group;
-use settings::build_settings_group;
+use settings::{SettingsPage, build_settings_group};
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use widgets::configure_wrapping_label;
 
@@ -52,9 +51,94 @@ const MINIMUM_WINDOW_HEIGHT: i32 = 360;
 const DEFAULT_WINDOW_WIDTH: i32 = 760;
 const DEFAULT_WINDOW_HEIGHT: i32 = 640;
 const CONTENT_MAXIMUM_WIDTH: i32 = 760;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SidebarPage {
+    Overview,
+    Monitoring,
+    Audio,
+    Clipboard,
+    CommandBar,
+    Capture,
+    Notes,
+    Processes,
+    Shortcuts,
+    FeatureHub,
+    Settings,
+}
+
+impl SidebarPage {
+    const ALL: [Self; 11] = [
+        Self::Overview,
+        Self::Monitoring,
+        Self::Audio,
+        Self::Clipboard,
+        Self::CommandBar,
+        Self::Capture,
+        Self::Notes,
+        Self::Processes,
+        Self::Shortcuts,
+        Self::FeatureHub,
+        Self::Settings,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Overview => "Overview",
+            Self::Monitoring => "Monitoring",
+            Self::Audio => "Audio",
+            Self::Clipboard => "Clipboard",
+            Self::CommandBar => "Command bar",
+            Self::Capture => "Capture",
+            Self::Notes => "Notes",
+            Self::Processes => "Processes",
+            Self::Shortcuts => "Shortcuts",
+            Self::FeatureHub => "Feature hub",
+            Self::Settings => "Settings",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Overview => "view-grid-symbolic",
+            Self::Monitoring => "utilities-system-monitor-symbolic",
+            Self::Audio => "audio-volume-high-symbolic",
+            Self::Clipboard => "edit-paste-symbolic",
+            Self::CommandBar => "system-search-symbolic",
+            Self::Capture => "camera-photo-symbolic",
+            Self::Notes => "accessories-text-editor-symbolic",
+            Self::Processes => "system-run-symbolic",
+            Self::Shortcuts => "input-keyboard-symbolic",
+            Self::FeatureHub => "view-app-grid-symbolic",
+            Self::Settings => "emblem-system-symbolic",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Overview => "overview",
+            Self::Monitoring => "monitoring",
+            Self::Audio => "audio",
+            Self::Clipboard => "clipboard",
+            Self::CommandBar => "command-bar",
+            Self::Capture => "capture",
+            Self::Notes => "notes",
+            Self::Processes => "processes",
+            Self::Shortcuts => "shortcuts",
+            Self::FeatureHub => "feature-hub",
+            Self::Settings => "settings",
+        }
+    }
+}
+
 pub struct WindowView {
     pub window: adw::ApplicationWindow,
-    content: gtk::ScrolledWindow,
+    split_view: adw::NavigationSplitView,
+    content_stack: gtk::Stack,
+    content_page: adw::NavigationPage,
+    header_title: adw::WindowTitle,
+    sidebar_search: gtk::SearchEntry,
+    sidebar_rows: std::rc::Rc<Vec<(gtk::ListBoxRow, SidebarPage)>>,
     refresh_button: gtk::Button,
     toasts: adw::ToastOverlay,
     commands: Sender<ApplicationCommand>,
@@ -65,14 +149,11 @@ pub struct WindowView {
     capture_container: std::cell::RefCell<Option<gtk::Box>>,
     screen_tools_container: std::cell::RefCell<Option<gtk::Box>>,
     camera_container: std::cell::RefCell<Option<gtk::Box>>,
-    /// Preview frames shared with the camera service.
     camera_frames: CameraFrameSlot,
     recording_container: std::cell::RefCell<Option<gtk::Box>>,
     shortcuts_container: std::cell::RefCell<Option<gtk::Box>>,
-    /// Retained so searches keep text and focus.
     clipboard_panel: std::cell::RefCell<Option<ClipboardPanel>>,
     snippet_panel: std::cell::RefCell<Option<SnippetPanel>>,
-    /// Retained so searches keep text and focus.
     command_panel: std::cell::RefCell<Option<CommandPanel>>,
     processes_panel: std::cell::RefCell<Option<ProcessesPanel>>,
     scratchpad_panel: std::cell::RefCell<Option<ScratchpadPanel>>,
@@ -93,7 +174,43 @@ impl WindowView {
             .build();
         window.set_size_request(MINIMUM_WINDOW_WIDTH, MINIMUM_WINDOW_HEIGHT);
 
-        let title = adw::WindowTitle::new(kestrel_core::APPLICATION_NAME, "Feature capabilities");
+        let sidebar_search = gtk::SearchEntry::builder()
+            .placeholder_text("Search pages and settings")
+            .hexpand(true)
+            .build();
+        let sidebar_header = adw::HeaderBar::new();
+        sidebar_header.set_title_widget(Some(&sidebar_search));
+        let sidebar_list = gtk::ListBox::new();
+        sidebar_list.add_css_class("navigation-sidebar");
+        sidebar_list.set_selection_mode(gtk::SelectionMode::Single);
+
+        let mut sidebar_rows = Vec::with_capacity(SidebarPage::ALL.len());
+        for page in SidebarPage::ALL {
+            let row = gtk::ListBoxRow::new();
+            let line = gtk::Box::new(Orientation::Horizontal, 12);
+            line.set_margin_top(8);
+            line.set_margin_bottom(8);
+            line.set_margin_start(12);
+            line.set_margin_end(12);
+            let icon = gtk::Image::from_icon_name(page.icon());
+            icon.set_pixel_size(20);
+            let label = gtk::Label::new(Some(page.label()));
+            label.set_xalign(0.0);
+            line.append(&icon);
+            line.append(&label);
+            row.set_child(Some(&line));
+            sidebar_list.append(&row);
+            sidebar_rows.push((row, page));
+        }
+        let sidebar_toolbar = adw::ToolbarView::new();
+        sidebar_toolbar.add_top_bar(&sidebar_header);
+        sidebar_toolbar.set_content(Some(&sidebar_list));
+        let sidebar_page = adw::NavigationPage::builder()
+            .title(kestrel_core::APPLICATION_NAME)
+            .child(&sidebar_toolbar)
+            .build();
+
+        let title = adw::WindowTitle::new("Overview", "Feature capabilities");
         let header = adw::HeaderBar::builder().title_widget(&title).build();
         let refresh_button = gtk::Button::builder()
             .icon_name("view-refresh-symbolic")
@@ -108,105 +225,219 @@ impl WindowView {
         ]);
         header.pack_end(&refresh_button);
 
-        let content = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(PolicyType::Never)
-            .vscrollbar_policy(PolicyType::Automatic)
-            .kinetic_scrolling(true)
-            .propagate_natural_height(false)
-            .vexpand(true)
-            .build();
-        let page = build_page(view_model, &window, &commands, &camera_frames);
-        content.set_child(Some(&page.clamp));
+        let search_for_pages = sidebar_search.clone();
+        let rows_for_pages = std::rc::Rc::new(sidebar_rows.clone());
+        let search_rows = rows_for_pages.clone();
+        sidebar_search.connect_search_changed(move |entry| {
+            let query = entry.text().trim().to_lowercase();
+            for (row, page) in search_rows.iter() {
+                let keywords = page_keywords(*page);
+                row.set_visible(query.is_empty() || keywords.contains(&query));
+            }
+            if query.is_empty() {
+                if let Some(row) = search_rows.first() {
+                    row.0.set_visible(true);
+                }
+            }
+        });
+
+        let content_stack = gtk::Stack::new();
+        content_stack.set_vexpand(true);
+        content_stack.set_hexpand(true);
+        let mut build = PageBuild::default();
+        for page in SidebarPage::ALL {
+            let page_box = build_page(
+                page,
+                view_model,
+                &window,
+                &commands,
+                &camera_frames,
+                &sidebar_search,
+            );
+            content_stack.add_named(&page_box.scrolled, Some(page.name()));
+            build.absorb(page_box);
+        }
+        content_stack.set_visible_child_name(SidebarPage::Overview.name());
 
         let toasts = adw::ToastOverlay::new();
-        toasts.set_child(Some(&content));
+        let content_toolbar = adw::ToolbarView::new();
+        content_toolbar.add_top_bar(&header);
+        content_toolbar.set_content(Some(&content_stack));
+        toasts.set_child(Some(&content_toolbar));
+        let content_page = adw::NavigationPage::builder()
+            .title("Overview")
+            .child(&toasts)
+            .build();
+        let split_view = adw::NavigationSplitView::new();
+        split_view.set_sidebar(Some(&sidebar_page));
+        split_view.set_content(Some(&content_page));
+        split_view.set_sidebar_width_fraction(0.27);
+        let breakpoint = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse("max-width: 560sp")
+                .expect("valid sidebar breakpoint condition"),
+        );
+        let collapsed = true.to_value();
+        breakpoint.add_setter(&split_view, "collapsed", Some(&collapsed));
+        window.add_breakpoint(breakpoint);
+        window.set_content(Some(&split_view));
 
-        let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&header);
-        toolbar.set_content(Some(&toasts));
-        window.set_content(Some(&toolbar));
+        let rows_for_selection = std::rc::Rc::new(sidebar_rows.clone());
+        let split_for_selection = split_view.clone();
+        let stack_for_selection = content_stack.clone();
+        let page_for_selection = content_page.clone();
+        let title_for_selection = title.clone();
+        sidebar_list.connect_row_selected(move |_, row| {
+            let Some(row) = row else { return };
+            let Some((_, page)) = rows_for_selection.iter().find(|(item, _)| item == row) else {
+                return;
+            };
+            stack_for_selection.set_visible_child_name(page.name());
+            page_for_selection.set_title(page.label());
+            title_for_selection.set_title(page.label());
+            if split_for_selection.is_collapsed() {
+                split_for_selection.set_show_content(true);
+            }
+        });
+        sidebar_list.select_row(Some(&sidebar_rows[0].0));
 
         Self {
             window,
-            content,
+            split_view,
+            content_stack,
+            content_page,
+            header_title: title,
+            sidebar_search: search_for_pages,
+            sidebar_rows: rows_for_pages,
             refresh_button,
             toasts,
             commands,
-            monitor_container: std::cell::RefCell::new(page.monitor_container),
-            audio_container: std::cell::RefCell::new(page.audio_container),
-            microphone_container: std::cell::RefCell::new(page.microphone_container),
-            speed_test_container: std::cell::RefCell::new(page.speed_test_container),
-            capture_container: std::cell::RefCell::new(page.capture_container),
-            screen_tools_container: std::cell::RefCell::new(page.screen_tools_container),
-            camera_container: std::cell::RefCell::new(page.camera_container),
+            monitor_container: std::cell::RefCell::new(build.monitor_container),
+            audio_container: std::cell::RefCell::new(build.audio_container),
+            microphone_container: std::cell::RefCell::new(build.microphone_container),
+            speed_test_container: std::cell::RefCell::new(build.speed_test_container),
+            capture_container: std::cell::RefCell::new(build.capture_container),
+            screen_tools_container: std::cell::RefCell::new(build.screen_tools_container),
+            camera_container: std::cell::RefCell::new(build.camera_container),
             camera_frames,
-            recording_container: std::cell::RefCell::new(page.recording_container),
-            shortcuts_container: std::cell::RefCell::new(Some(page.shortcuts_container)),
-            clipboard_panel: std::cell::RefCell::new(page.clipboard_panel),
-            snippet_panel: std::cell::RefCell::new(page.snippet_panel),
-            processes_panel: std::cell::RefCell::new(page.processes_panel),
-            scratchpad_panel: std::cell::RefCell::new(page.scratchpad_panel),
-            command_panel: std::cell::RefCell::new(page.command_panel),
+            recording_container: std::cell::RefCell::new(build.recording_container),
+            shortcuts_container: std::cell::RefCell::new(Some(build.shortcuts_container)),
+            clipboard_panel: std::cell::RefCell::new(build.clipboard_panel),
+            snippet_panel: std::cell::RefCell::new(build.snippet_panel),
+            processes_panel: std::cell::RefCell::new(build.processes_panel),
+            scratchpad_panel: std::cell::RefCell::new(build.scratchpad_panel),
+            command_panel: std::cell::RefCell::new(build.command_panel),
         }
     }
 
     pub fn set_view_model(&self, view_model: &ApplicationViewModel) {
-        let page = build_page(
-            view_model,
-            &self.window,
-            &self.commands,
-            &self.camera_frames,
-        );
-        self.content.set_child(Some(&page.clamp));
-        *self.monitor_container.borrow_mut() = page.monitor_container;
-        *self.audio_container.borrow_mut() = page.audio_container;
-        *self.microphone_container.borrow_mut() = page.microphone_container;
-        *self.speed_test_container.borrow_mut() = page.speed_test_container;
-        *self.capture_container.borrow_mut() = page.capture_container;
-        *self.screen_tools_container.borrow_mut() = page.screen_tools_container;
-        *self.camera_container.borrow_mut() = page.camera_container;
-        *self.recording_container.borrow_mut() = page.recording_container;
-        *self.shortcuts_container.borrow_mut() = Some(page.shortcuts_container);
-        *self.clipboard_panel.borrow_mut() = page.clipboard_panel;
-        *self.snippet_panel.borrow_mut() = page.snippet_panel;
-        *self.command_panel.borrow_mut() = page.command_panel;
-        *self.processes_panel.borrow_mut() = page.processes_panel;
-        *self.scratchpad_panel.borrow_mut() = page.scratchpad_panel;
+        let selected = self
+            .content_stack
+            .visible_child_name()
+            .and_then(|name| {
+                SidebarPage::ALL
+                    .iter()
+                    .find(|page| page.name() == name.as_str())
+            })
+            .copied()
+            .unwrap_or(SidebarPage::Overview);
+        let build = SidebarPage::ALL.map(|page| {
+            build_page(
+                page,
+                view_model,
+                &self.window,
+                &self.commands,
+                &self.camera_frames,
+                &self.sidebar_search,
+            )
+        });
+        for (page, built) in SidebarPage::ALL.into_iter().zip(build) {
+            if let Some(old) = self.content_stack.child_by_name(page.name()) {
+                old.unparent();
+            }
+            self.content_stack
+                .add_named(&built.scrolled, Some(page.name()));
+            self.replace_page_state(page, built);
+        }
+        self.select_page(selected);
     }
 
-    /// Focuses a control; false when its panel is hidden.
+    fn replace_page_state(&self, page: SidebarPage, build: PageBuild) {
+        match page {
+            SidebarPage::Monitoring => {
+                *self.monitor_container.borrow_mut() = build.monitor_container;
+                *self.speed_test_container.borrow_mut() = build.speed_test_container;
+            }
+            SidebarPage::Audio => {
+                *self.audio_container.borrow_mut() = build.audio_container;
+                *self.microphone_container.borrow_mut() = build.microphone_container;
+            }
+            SidebarPage::Capture => {
+                *self.capture_container.borrow_mut() = build.capture_container;
+                *self.screen_tools_container.borrow_mut() = build.screen_tools_container;
+                *self.camera_container.borrow_mut() = build.camera_container;
+                *self.recording_container.borrow_mut() = build.recording_container;
+            }
+            SidebarPage::Shortcuts => {
+                *self.shortcuts_container.borrow_mut() = Some(build.shortcuts_container);
+            }
+            SidebarPage::Clipboard => *self.clipboard_panel.borrow_mut() = build.clipboard_panel,
+            SidebarPage::Notes => {
+                *self.snippet_panel.borrow_mut() = build.snippet_panel;
+                *self.scratchpad_panel.borrow_mut() = build.scratchpad_panel;
+            }
+            SidebarPage::CommandBar => *self.command_panel.borrow_mut() = build.command_panel,
+            SidebarPage::Processes => *self.processes_panel.borrow_mut() = build.processes_panel,
+            SidebarPage::Overview | SidebarPage::FeatureHub | SidebarPage::Settings => {}
+        }
+    }
+
+    fn select_page(&self, page: SidebarPage) {
+        self.content_stack.set_visible_child_name(page.name());
+        self.content_page.set_title(page.label());
+        self.header_title.set_title(page.label());
+        if self.split_view.is_collapsed() {
+            self.split_view.set_show_content(true);
+        }
+        if let Some((row, _)) = self.sidebar_rows.iter().find(|(_, item)| *item == page) {
+            if let Some(list) = row
+                .parent()
+                .and_then(|parent| parent.downcast::<gtk::ListBox>().ok())
+            {
+                list.select_row(Some(row));
+            }
+        }
+    }
+
     pub fn focus(&self, target: FocusTarget) -> bool {
-        let entry: Option<gtk::Widget> = match target {
-            FocusTarget::QuickPanel => None,
-            FocusTarget::CommandBar => self
-                .command_panel
-                .borrow()
-                .as_ref()
-                .map(|panel| panel.query.clone().upcast()),
-            FocusTarget::Clipboard => self
-                .clipboard_panel
-                .borrow()
-                .as_ref()
-                .map(|panel| panel.search.clone().upcast()),
-            FocusTarget::Processes => self
-                .processes_panel
-                .borrow()
-                .as_ref()
-                .map(|panel| panel.search.clone().upcast()),
-            FocusTarget::Scratchpad => self
-                .scratchpad_panel
-                .borrow()
-                .as_ref()
-                .map(|panel| panel.editor.clone().upcast()),
-        };
-        entry.is_some_and(|entry| entry.grab_focus())
+        match target {
+            FocusTarget::QuickPanel | FocusTarget::CommandBar => false,
+            FocusTarget::Clipboard => {
+                self.select_page(SidebarPage::Clipboard);
+                self.clipboard_panel
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|panel| panel.search.grab_focus())
+            }
+            FocusTarget::Processes => {
+                self.select_page(SidebarPage::Processes);
+                self.processes_panel
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|panel| panel.search.grab_focus())
+            }
+            FocusTarget::Scratchpad => {
+                self.select_page(SidebarPage::Notes);
+                self.scratchpad_panel
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|panel| panel.editor.grab_focus())
+            }
+        }
     }
 
     pub fn set_command_bar(&self, command_bar: &kestrel::CommandBarViewModel) {
         let panel = self.command_panel.borrow();
-        let Some(panel) = panel.as_ref() else {
-            return;
-        };
+        let Some(panel) = panel.as_ref() else { return };
         panel.status.set_text(&command_bar.status);
         while let Some(child) = panel.results.first_child() {
             child.unparent();
@@ -216,20 +447,15 @@ impl WindowView {
 
     pub fn set_clipboard(&self, clipboard: &kestrel::ClipboardViewModel) {
         let panel = self.clipboard_panel.borrow();
-        let Some(panel) = panel.as_ref() else {
-            return;
-        };
+        let Some(panel) = panel.as_ref() else { return };
         panel.status.set_text(&clipboard.status);
         fill_clipboard_results(panel, clipboard, &self.commands);
-        // Background capture may create entries before the first search.
         request_initial_clipboard_listing(clipboard, &self.commands);
     }
 
     pub fn set_snippets(&self, snippets: &kestrel::SnippetsViewModel) {
         let panel = self.snippet_panel.borrow();
-        let Some(panel) = panel.as_ref() else {
-            return;
-        };
+        let Some(panel) = panel.as_ref() else { return };
         panel.status.set_text(&snippets.status);
         panel.insertion.set_text(&snippets.insertion_status);
         while let Some(child) = panel.results.first_child() {
@@ -246,6 +472,7 @@ impl WindowView {
             panel.set_model(scratchpad);
         }
     }
+
     pub fn set_scratchpad_preview(&self, scratchpad: &kestrel::ScratchpadViewModel) {
         if let Some(panel) = self.scratchpad_panel.borrow().as_ref() {
             panel.set_preview(scratchpad);
@@ -345,7 +572,6 @@ impl WindowView {
         container.append(&build_screen_tools_group(tools, &self.commands));
     }
 
-    /// Updates the process list in place; the search keeps its text and focus.
     pub fn set_processes(&self, processes: &kestrel::ProcessesViewModel) {
         if let Some(panel) = self.processes_panel.borrow().as_ref() {
             panel.set_processes(processes, &self.commands);
@@ -385,7 +611,7 @@ impl WindowView {
 }
 
 struct PageBuild {
-    clamp: adw::Clamp,
+    scrolled: gtk::ScrolledWindow,
     monitor_container: Option<gtk::Box>,
     audio_container: Option<gtk::Box>,
     microphone_container: Option<gtk::Box>,
@@ -402,158 +628,278 @@ struct PageBuild {
     scratchpad_panel: Option<ScratchpadPanel>,
 }
 
+impl Default for PageBuild {
+    fn default() -> Self {
+        Self {
+            scrolled: gtk::ScrolledWindow::new(),
+            monitor_container: None,
+            audio_container: None,
+            microphone_container: None,
+            speed_test_container: None,
+            capture_container: None,
+            screen_tools_container: None,
+            camera_container: None,
+            recording_container: None,
+            shortcuts_container: gtk::Box::new(Orientation::Vertical, 0),
+            clipboard_panel: None,
+            snippet_panel: None,
+            processes_panel: None,
+            command_panel: None,
+            scratchpad_panel: None,
+        }
+    }
+}
+
+impl PageBuild {
+    fn absorb(&mut self, other: Self) {
+        self.monitor_container = self.monitor_container.take().or(other.monitor_container);
+        self.audio_container = self.audio_container.take().or(other.audio_container);
+        self.microphone_container = self
+            .microphone_container
+            .take()
+            .or(other.microphone_container);
+        self.speed_test_container = self
+            .speed_test_container
+            .take()
+            .or(other.speed_test_container);
+        self.capture_container = self.capture_container.take().or(other.capture_container);
+        self.screen_tools_container = self
+            .screen_tools_container
+            .take()
+            .or(other.screen_tools_container);
+        self.camera_container = self.camera_container.take().or(other.camera_container);
+        self.recording_container = self
+            .recording_container
+            .take()
+            .or(other.recording_container);
+        self.shortcuts_container = if self.shortcuts_container.first_child().is_some() {
+            self.shortcuts_container.clone()
+        } else {
+            other.shortcuts_container
+        };
+        self.clipboard_panel = self.clipboard_panel.take().or(other.clipboard_panel);
+        self.snippet_panel = self.snippet_panel.take().or(other.snippet_panel);
+        self.processes_panel = self.processes_panel.take().or(other.processes_panel);
+        self.command_panel = self.command_panel.take().or(other.command_panel);
+        self.scratchpad_panel = self.scratchpad_panel.take().or(other.scratchpad_panel);
+    }
+}
+
 fn build_page(
+    page: SidebarPage,
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     camera_frames: &CameraFrameSlot,
+    search: &gtk::SearchEntry,
 ) -> PageBuild {
-    let page = gtk::Box::new(Orientation::Vertical, 24);
-    page.set_margin_top(24);
-    page.set_margin_bottom(24);
-    page.set_margin_start(18);
-    page.set_margin_end(18);
-
-    let heading = gtk::Label::new(Some(kestrel_core::APPLICATION_NAME));
-    heading.add_css_class("title-1");
-    heading.set_halign(Align::Start);
-    heading.set_wrap(true);
-    heading.set_xalign(0.0);
-    page.append(&heading);
-
-    let description = gtk::Label::new(Some(
-        "Kestrel keeps registered features visible, explains unavailable platform paths, and lets you change presentation preferences without hiding warnings.",
-    ));
-    configure_wrapping_label(&description);
-    description.add_css_class("dim-label");
-    page.append(&description);
-
-    let search = gtk::SearchEntry::builder()
-        .placeholder_text("Search settings and features")
-        .hexpand(true)
-        .build();
-    page.append(&build_settings_group(view_model, window, commands, &search));
-    let shortcuts_container = gtk::Box::new(Orientation::Vertical, 0);
-    shortcuts_container.append(&build_shortcuts_group(&view_model.shortcuts));
-    page.append(&shortcuts_container);
-    if !view_model.warnings.is_empty() {
-        page.append(&build_warning_group(view_model));
-    }
-    let mut monitor_container = None;
-    let mut audio_container = None;
-    let mut microphone_container = None;
-    let mut speed_test_container = None;
-    let mut capture_container = None;
-    let mut screen_tools_container = None;
-    let mut camera_container = None;
-    let mut recording_container = None;
-    let mut clipboard_panel = None;
-    let mut snippet_panel = None;
-    let mut command_panel = None;
-    let mut processes_panel = None;
-    let mut scratchpad_panel = None;
-    for panel in &view_model.panel_sections {
-        if !panel.visible {
-            continue;
+    let body = gtk::Box::new(Orientation::Vertical, 24);
+    body.set_margin_top(24);
+    body.set_margin_bottom(24);
+    body.set_margin_start(18);
+    body.set_margin_end(18);
+    if page == SidebarPage::Overview {
+        let heading = gtk::Label::new(Some(kestrel_core::APPLICATION_NAME));
+        heading.add_css_class("title-1");
+        heading.set_halign(Align::Start);
+        heading.set_wrap(true);
+        heading.set_xalign(0.0);
+        body.append(&heading);
+        let description = gtk::Label::new(Some(
+            "Kestrel keeps registered features visible and explains unavailable platform paths.",
+        ));
+        configure_wrapping_label(&description);
+        description.add_css_class("dim-label");
+        body.append(&description);
+        if !view_model.quick_toggles.is_empty() {
+            body.append(&build_quick_toggle_group(
+                &view_model.quick_toggles,
+                window,
+                commands,
+            ));
         }
-        match panel.section {
-            PanelSection::QuickControls => {
-                let panel = build_command_panel(&view_model.command_bar, commands);
-                page.append(&panel.container);
-                command_panel = Some(panel);
-                if !view_model.quick_toggles.is_empty() {
-                    page.append(&build_quick_toggle_group(
-                        &view_model.quick_toggles,
-                        window,
-                        commands,
-                    ));
-                }
-                let audio = gtk::Box::new(Orientation::Vertical, 0);
-                audio.append(&build_audio_controls(&view_model.audio, commands));
-                page.append(&audio);
-                audio_container = Some(audio);
-                let microphone = gtk::Box::new(Orientation::Vertical, 0);
-                microphone.append(&build_microphone_controls(&view_model.microphone, commands));
-                page.append(&microphone);
-                microphone_container = Some(microphone);
-                let capture = gtk::Box::new(Orientation::Vertical, 0);
-                capture.append(&build_capture_group(&view_model.capture, window, commands));
-                page.append(&capture);
-                capture_container = Some(capture);
-                let screen_tools = gtk::Box::new(Orientation::Vertical, 0);
-                screen_tools.append(&build_screen_tools_group(
-                    &view_model.screen_tools,
-                    commands,
-                ));
-                page.append(&screen_tools);
-                screen_tools_container = Some(screen_tools);
-                let recording = gtk::Box::new(Orientation::Vertical, 0);
-                recording.append(&build_recording_group(&view_model.recording, commands));
-                page.append(&recording);
-                recording_container = Some(recording);
-                let camera = gtk::Box::new(Orientation::Vertical, 0);
-                camera.append(&build_camera_group(
-                    &view_model.camera,
-                    Some(camera_frames),
-                    commands,
-                ));
-                page.append(&camera);
-                camera_container = Some(camera);
-                let panel = build_clipboard_panel(&view_model.clipboard, commands);
-                page.append(&panel.container);
-                clipboard_panel = Some(panel);
-                let snippet = build_snippet_panel(&view_model.snippets, commands);
-                page.append(&snippet.container);
-                snippet_panel = Some(snippet);
-                let scratchpad = build_scratchpad_panel(&view_model.scratchpad, window, commands);
-                page.append(&scratchpad.container);
-                scratchpad_panel = Some(scratchpad);
-            }
-            PanelSection::FeatureHub => {
-                page.append(&build_feature_hub_group(
-                    &view_model.features,
-                    commands,
-                    &search,
-                ));
-            }
-            PanelSection::Monitoring => {
-                let container = gtk::Box::new(Orientation::Vertical, 0);
-                container.append(&build_monitor_group(&view_model.monitor, commands));
-                let speed_test = gtk::Box::new(Orientation::Vertical, 0);
-                speed_test.set_margin_top(24);
-                speed_test.append(&build_speed_test_group(&view_model.speed_test, commands));
-                container.append(&speed_test);
-                page.append(&container);
-                monitor_container = Some(container);
-                speed_test_container = Some(speed_test);
-                let panel =
-                    build_processes_panel(&view_model.processes, &view_model.listeners, commands);
-                panel.container.set_margin_top(24);
-                page.append(&panel.container);
-                processes_panel = Some(panel);
-            }
+        if !view_model.warnings.is_empty() {
+            body.append(&build_warning_group(view_model));
         }
     }
-
+    let mut build = PageBuild::default();
+    match page {
+        SidebarPage::Monitoring => {
+            let monitor = gtk::Box::new(Orientation::Vertical, 0);
+            monitor.append(&build_monitor_group(&view_model.monitor, commands));
+            let speed = gtk::Box::new(Orientation::Vertical, 0);
+            speed.set_margin_top(24);
+            speed.append(&build_speed_test_group(&view_model.speed_test, commands));
+            monitor.append(&speed);
+            body.append(&monitor);
+            build.monitor_container = Some(monitor);
+            build.speed_test_container = Some(speed);
+            let settings = build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::Monitoring,
+            );
+            body.append(&settings);
+        }
+        SidebarPage::Audio => {
+            let audio = gtk::Box::new(Orientation::Vertical, 0);
+            audio.append(&build_audio_controls(&view_model.audio, commands));
+            body.append(&audio);
+            let microphone = gtk::Box::new(Orientation::Vertical, 0);
+            microphone.append(&build_microphone_controls(&view_model.microphone, commands));
+            body.append(&microphone);
+            build.audio_container = Some(audio);
+            build.microphone_container = Some(microphone);
+            body.append(&build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::Audio,
+            ));
+        }
+        SidebarPage::Clipboard => {
+            let panel = build_clipboard_panel(&view_model.clipboard, commands);
+            body.append(&panel.container);
+            build.clipboard_panel = Some(panel);
+            body.append(&build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::Clipboard,
+            ));
+        }
+        SidebarPage::CommandBar => {
+            let panel = build_command_panel(&view_model.command_bar, commands);
+            body.append(&panel.container);
+            build.command_panel = Some(panel);
+            body.append(&build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::CommandBar,
+            ));
+        }
+        SidebarPage::Capture => {
+            let capture = gtk::Box::new(Orientation::Vertical, 0);
+            capture.append(&build_capture_group(&view_model.capture, window, commands));
+            body.append(&capture);
+            let tools = gtk::Box::new(Orientation::Vertical, 0);
+            tools.append(&build_screen_tools_group(
+                &view_model.screen_tools,
+                commands,
+            ));
+            body.append(&tools);
+            let recording = gtk::Box::new(Orientation::Vertical, 0);
+            recording.append(&build_recording_group(&view_model.recording, commands));
+            body.append(&recording);
+            let camera = gtk::Box::new(Orientation::Vertical, 0);
+            camera.append(&build_camera_group(
+                &view_model.camera,
+                Some(camera_frames),
+                commands,
+            ));
+            body.append(&camera);
+            build.capture_container = Some(capture);
+            build.screen_tools_container = Some(tools);
+            build.recording_container = Some(recording);
+            build.camera_container = Some(camera);
+            body.append(&build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::Capture,
+            ));
+        }
+        SidebarPage::Notes => {
+            let snippets = build_snippet_panel(&view_model.snippets, commands);
+            body.append(&snippets.container);
+            build.snippet_panel = Some(snippets);
+            let scratchpad = build_scratchpad_panel(&view_model.scratchpad, window, commands);
+            body.append(&scratchpad.container);
+            build.scratchpad_panel = Some(scratchpad);
+            body.append(&build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::Notes,
+            ));
+        }
+        SidebarPage::Processes => {
+            let panel =
+                build_processes_panel(&view_model.processes, &view_model.listeners, commands);
+            body.append(&panel.container);
+            build.processes_panel = Some(panel);
+            body.append(&build_settings_group(
+                view_model,
+                window,
+                commands,
+                search,
+                SettingsPage::Processes,
+            ));
+        }
+        SidebarPage::Shortcuts => {
+            let shortcuts = gtk::Box::new(Orientation::Vertical, 0);
+            shortcuts.append(&build_shortcuts_group(&view_model.shortcuts));
+            body.append(&shortcuts);
+            build.shortcuts_container = shortcuts;
+        }
+        SidebarPage::FeatureHub => body.append(&build_feature_hub_group(
+            &view_model.features,
+            commands,
+            search,
+        )),
+        SidebarPage::Settings => body.append(&build_settings_group(
+            view_model,
+            window,
+            commands,
+            search,
+            SettingsPage::Settings,
+        )),
+        SidebarPage::Overview => {}
+    }
     let clamp = adw::Clamp::new();
     clamp.set_maximum_size(CONTENT_MAXIMUM_WIDTH);
     clamp.set_tightening_threshold(MINIMUM_WINDOW_WIDTH);
-    clamp.set_child(Some(&page));
-    PageBuild {
-        clamp,
-        monitor_container,
-        audio_container,
-        microphone_container,
-        speed_test_container,
-        capture_container,
-        screen_tools_container,
-        camera_container,
-        recording_container,
-        shortcuts_container,
-        clipboard_panel,
-        snippet_panel,
-        command_panel,
-        processes_panel,
-        scratchpad_panel,
+    clamp.set_child(Some(&body));
+    let scrolled = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vscrollbar_policy(PolicyType::Automatic)
+        .kinetic_scrolling(true)
+        .propagate_natural_height(false)
+        .vexpand(true)
+        .child(&clamp)
+        .build();
+    build.scrolled = scrolled;
+    build
+}
+
+fn page_keywords(page: SidebarPage) -> String {
+    match page {
+        SidebarPage::Overview => "overview status warning capability quick toggle".to_owned(),
+        SidebarPage::Monitoring => {
+            "monitor monitoring speed test readout alert network cpu temperature processes"
+                .to_owned()
+        }
+        SidebarPage::Audio => "audio mixer microphone policy volume".to_owned(),
+        SidebarPage::Clipboard => "clipboard history limits retention entries".to_owned(),
+        SidebarPage::CommandBar => "command bar quick panel favorites search".to_owned(),
+        SidebarPage::Capture => {
+            "capture screenshot screen tools recording camera limits".to_owned()
+        }
+        SidebarPage::Notes => "notes snippets scratchpad limits editor".to_owned(),
+        SidebarPage::Processes => "process processes listeners limits refresh rows".to_owned(),
+        SidebarPage::Shortcuts => "shortcuts keyboard global".to_owned(),
+        SidebarPage::FeatureHub => "feature hub capabilities enablement".to_owned(),
+        SidebarPage::Settings => {
+            "settings appearance close button autostart presets configuration import export"
+                .to_owned()
+        }
     }
 }

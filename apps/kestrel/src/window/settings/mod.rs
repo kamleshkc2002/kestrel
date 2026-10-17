@@ -1,4 +1,4 @@
-//! Settings group with searchable rows.
+//! Settings groups shared by the sidebar pages.
 
 mod media;
 mod panels;
@@ -11,42 +11,111 @@ use gtk::{Align, Orientation};
 use kestrel::{ApplicationCommand, ApplicationViewModel};
 use kestrel_core::{AppearancePreference, CloseAction};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SettingsPage {
+    Monitoring,
+    Audio,
+    Clipboard,
+    CommandBar,
+    Capture,
+    Notes,
+    Processes,
+    Settings,
+}
+
 pub(super) fn build_settings_group(
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     search: &gtk::SearchEntry,
+    page: SettingsPage,
 ) -> adw::PreferencesGroup {
-    let group = adw::PreferencesGroup::builder()
-        .title("Settings")
-        .description("Presentation and startup preferences. Search filters this content and the feature hub.")
-        .build();
+    let title = if page == SettingsPage::Settings {
+        "Settings".to_owned()
+    } else {
+        format!("{} settings", page.title())
+    };
+    let group = adw::PreferencesGroup::builder().title(title).build();
     let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
 
-    add_general_rows(&group, view_model, commands, search, &mut filter_rows);
-    panels::add_panel_sections_group(&group, view_model, commands, &mut filter_rows);
-    panels::add_monitoring_readouts_group(&group, view_model, commands, &mut filter_rows);
-    panels::add_monitoring_alerts_group(&group, view_model, commands, &mut filter_rows);
-    media::add_audio_policy_group(&group, view_model, commands, &mut filter_rows);
-    media::add_screenshot_limits_group(&group, view_model, commands, &mut filter_rows);
-    media::add_screen_tools_group(&group, view_model, commands, &mut filter_rows);
-    panels::add_process_limits_group(&group, view_model, commands, &mut filter_rows);
-    tools::add_clipboard_limits_group(&group, view_model, commands, &mut filter_rows);
-    tools::add_snippet_limits_group(&group, view_model, commands, &mut filter_rows);
-    tools::add_scratchpad_limits_group(&group, view_model, commands, &mut filter_rows);
-    tools::add_command_bar_group(&group, view_model, commands, &mut filter_rows);
-    add_quick_panel_group(&group, view_model, commands, &mut filter_rows);
+    match page {
+        SettingsPage::Monitoring => {
+            panels::add_monitoring_readouts_group(&group, view_model, commands, &mut filter_rows);
+            panels::add_monitoring_alerts_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::Audio => {
+            media::add_audio_policy_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::Clipboard => {
+            tools::add_clipboard_limits_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::CommandBar => {
+            tools::add_command_bar_group(&group, view_model, commands, &mut filter_rows);
+            add_quick_panel_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::Capture => {
+            media::add_screenshot_limits_group(&group, view_model, commands, &mut filter_rows);
+            media::add_screen_tools_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::Notes => {
+            tools::add_snippet_limits_group(&group, view_model, commands, &mut filter_rows);
+            tools::add_scratchpad_limits_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::Processes => {
+            panels::add_process_limits_group(&group, view_model, commands, &mut filter_rows);
+        }
+        SettingsPage::Settings => {
+            add_general_rows(&group, view_model, commands, &mut filter_rows);
+            let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
+            group.add(&io_row);
+        }
+    }
 
-    let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
     let filter_rows = std::rc::Rc::new(filter_rows);
+    let group_for_search = group.clone();
     search.connect_search_changed(move |entry| {
         let query = entry.text().trim().to_lowercase();
         for (row, content) in filter_rows.iter() {
             row.set_visible(query.is_empty() || content.contains(&query));
         }
+        update_nested_group_visibility(&group_for_search);
     });
-    group.add(&io_row);
     group
+}
+
+impl SettingsPage {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Monitoring => "Monitoring",
+            Self::Audio => "Audio",
+            Self::Clipboard => "Clipboard",
+            Self::CommandBar => "Command bar",
+            Self::Capture => "Capture",
+            Self::Notes => "Notes",
+            Self::Processes => "Processes",
+            Self::Settings => "Settings",
+        }
+    }
+}
+
+fn update_nested_group_visibility(group: &adw::PreferencesGroup) {
+    let mut child = group.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        let Ok(nested) = widget.clone().downcast::<adw::PreferencesGroup>() else {
+            continue;
+        };
+        let mut row = nested.first_child();
+        let mut any_visible = false;
+        while let Some(item) = row {
+            if item.is_visible() {
+                any_visible = true;
+                break;
+            }
+            row = item.next_sibling();
+        }
+        nested.set_visible(any_visible);
+    }
 }
 fn add_quick_panel_group(
     group: &adw::PreferencesGroup,
@@ -136,15 +205,8 @@ fn add_general_rows(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
     commands: &Sender<ApplicationCommand>,
-    search: &gtk::SearchEntry,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
 ) {
-    let search_row = adw::ActionRow::new();
-    search_row.set_title("Search");
-    search_row.add_suffix(search);
-    search_row.set_activatable_widget(Some(search));
-    group.add(&search_row);
-
     let appearance = adw::ComboRow::builder()
         .title("Appearance")
         .subtitle("Choose the application color scheme.")

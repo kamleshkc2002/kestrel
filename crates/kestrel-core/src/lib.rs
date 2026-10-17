@@ -392,36 +392,6 @@ pub enum AppearancePreference {
     Dark,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PanelSection {
-    QuickControls,
-    FeatureHub,
-    Monitoring,
-}
-
-impl PanelSection {
-    pub const ALL: [PanelSection; 3] = [
-        PanelSection::QuickControls,
-        PanelSection::FeatureHub,
-        PanelSection::Monitoring,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::QuickControls => "Quick Controls",
-            Self::FeatureHub => "Feature Hub",
-            Self::Monitoring => "Monitoring",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PanelSectionConfiguration {
-    pub section: PanelSection,
-    pub visible: bool,
-}
-
 /// What the window's close button does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -432,34 +402,12 @@ pub enum CloseAction {
     Quit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiConfiguration {
     #[serde(default)]
     pub appearance: AppearancePreference,
-    #[serde(default = "default_panel_sections")]
-    pub panel_sections: Vec<PanelSectionConfiguration>,
     #[serde(default)]
     pub close_action: CloseAction,
-}
-
-fn default_panel_sections() -> Vec<PanelSectionConfiguration> {
-    PanelSection::ALL
-        .into_iter()
-        .map(|section| PanelSectionConfiguration {
-            section,
-            visible: true,
-        })
-        .collect()
-}
-
-impl Default for UiConfiguration {
-    fn default() -> Self {
-        Self {
-            appearance: AppearancePreference::default(),
-            panel_sections: default_panel_sections(),
-            close_action: CloseAction::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -620,7 +568,6 @@ impl ApplicationConfiguration {
         for feature_id in self.features.keys() {
             validate_feature_id(feature_id)?;
         }
-        self.ui.validate()?;
         self.audio.validate()?;
         self.speed_test.validate()?;
         self.capture.validate()?;
@@ -702,31 +649,6 @@ impl ApplicationConfiguration {
         }
 
         Ok(())
-    }
-}
-
-impl UiConfiguration {
-    pub fn validate(&self) -> Result<(), ConfigurationError> {
-        let mut seen = [false; PanelSection::ALL.len()];
-        for entry in &self.panel_sections {
-            let Some(index) = PanelSection::ALL
-                .iter()
-                .position(|section| *section == entry.section)
-            else {
-                return Err(ConfigurationError::MissingPanelSection);
-            };
-            if seen[index] {
-                return Err(ConfigurationError::DuplicatePanelSection);
-            }
-            seen[index] = true;
-        }
-        if self.panel_sections.len() != PanelSection::ALL.len()
-            || seen.iter().any(|section_seen| !section_seen)
-        {
-            Err(ConfigurationError::MissingPanelSection)
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -2066,8 +1988,6 @@ impl SnippetConfiguration {
 pub enum ConfigurationError {
     UnsupportedSchemaVersion { version: u32 },
     InvalidFeatureId { feature_id: String },
-    DuplicatePanelSection,
-    MissingPanelSection,
     InvalidMonitorRefreshInterval { millis: u64 },
     InvalidMonitorHistorySamples { samples: u32 },
     DuplicateMonitorReadout,
@@ -2245,9 +2165,9 @@ mod tests {
         MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SNIPPET_NAME_CHARS,
         MAX_SNIPPET_VARIABLES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
         MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
-        MonitorReadout, PanelSection, PanelSectionConfiguration, ResourceCost, Snippet,
-        SnippetConfiguration, SnippetError, SnippetExpansionTiming, SnippetProviderPreference,
-        SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, UiConfiguration, variable_tokens,
+        MonitorReadout, ResourceCost, Snippet, SnippetConfiguration, SnippetError,
+        SnippetExpansionTiming, SnippetProviderPreference, SnippetVariable,
+        UNAMPLIFIED_AUDIO_VOLUME_PERCENT, variable_tokens,
     };
 
     #[test]
@@ -2316,14 +2236,6 @@ mod tests {
     fn defaults_cover_presentation_and_static_cost_contracts() {
         let configuration = ApplicationConfiguration::default();
         assert_eq!(configuration.ui.appearance, AppearancePreference::System);
-        assert_eq!(configuration.ui.panel_sections.len(), 3);
-        assert!(
-            configuration
-                .ui
-                .panel_sections
-                .iter()
-                .all(|section| section.visible)
-        );
         assert!(!configuration.startup.autostart);
 
         let feature = FeatureSpec::new(
@@ -2355,69 +2267,6 @@ mod tests {
         configuration.restore_feature_snapshot(snapshot);
         assert!(configuration.feature_enabled("audio.mixer"));
         assert!(!configuration.features.contains_key("clipboard.history"));
-    }
-
-    #[test]
-    fn panel_section_default_is_complete_in_all_order() {
-        let configuration = UiConfiguration::default();
-        let sections = configuration
-            .panel_sections
-            .iter()
-            .map(|entry| entry.section)
-            .collect::<Vec<_>>();
-
-        assert_eq!(sections, PanelSection::ALL.to_vec());
-        assert!(
-            configuration
-                .panel_sections
-                .iter()
-                .all(|entry| entry.visible)
-        );
-        assert_eq!(configuration.validate(), Ok(()));
-    }
-
-    #[test]
-    fn panel_section_validation_rejects_duplicates_and_missing_sections() {
-        let duplicate = UiConfiguration {
-            panel_sections: vec![
-                PanelSectionConfiguration {
-                    section: PanelSection::QuickControls,
-                    visible: true,
-                },
-                PanelSectionConfiguration {
-                    section: PanelSection::FeatureHub,
-                    visible: true,
-                },
-                PanelSectionConfiguration {
-                    section: PanelSection::Monitoring,
-                    visible: true,
-                },
-                PanelSectionConfiguration {
-                    section: PanelSection::Monitoring,
-                    visible: false,
-                },
-            ],
-            ..UiConfiguration::default()
-        };
-        assert_eq!(
-            duplicate.validate(),
-            Err(ConfigurationError::DuplicatePanelSection)
-        );
-
-        let missing = UiConfiguration {
-            panel_sections: PanelSection::ALL[..2]
-                .iter()
-                .map(|&section| PanelSectionConfiguration {
-                    section,
-                    visible: true,
-                })
-                .collect(),
-            ..UiConfiguration::default()
-        };
-        assert_eq!(
-            missing.validate(),
-            Err(ConfigurationError::MissingPanelSection)
-        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub use config::{
 pub use kestrel_core::QuickPanelConfiguration;
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
-    CloseAction, MonitorReadout, NetworkRateUnit, PanelSection,
+    CloseAction, MonitorReadout, NetworkRateUnit,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -65,9 +65,8 @@ pub use view_model::{
     ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureLifecycleViewModel,
     FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
     MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
-    PanelSectionViewModel, PriorityDeviceViewModel, ProcessActionViewModel, ProcessRowViewModel,
-    ProcessesViewModel, QrRowViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
-    QuickToggleViewModel, RecordingControls, RecordingExportViewModel, RecordingTakeViewModel,
+    ProcessRowViewModel, ProcessesViewModel, QrRowViewModel, QuickToggleActionViewModel,
+    QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls, RecordingExportViewModel,
     RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel,
     RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
     ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
@@ -456,14 +455,6 @@ pub enum ApplicationCommand {
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),
     SetAutostart(bool),
-    SetPanelVisibility {
-        section: PanelSection,
-        visible: bool,
-    },
-    MovePanelSection {
-        section: PanelSection,
-        direction: PanelMoveDirection,
-    },
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
