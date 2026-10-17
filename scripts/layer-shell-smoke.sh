@@ -94,28 +94,29 @@ dbus-run-session --config-file="$work/bus.conf" -- bash -c '
   WAYLAND_DEBUG=1 "$KESTREL_SMOKE_BINARY" >"$log" 2>&1 &
   kestrel_pid=$!
   # The instance owns its bus name before it maps the main window, so a
-  # forwarded command reaches it once a toplevel title appears.
+  # forwarded command reaches it once a toplevel title appears. libwayland
+  # prints object IDs as name@id before 1.23 and name#id since.
   for _ in $(seq 1 120); do
-    grep -Eq "xdg_toplevel#[0-9]+\.set_title" "$log" && break
+    grep -Eq "xdg_toplevel[@#][0-9]+\.set_title" "$log" && break
     kill -0 "$kestrel_pid" 2>/dev/null || break
     sleep 0.5
   done
   timeout 20 "$KESTREL_SMOKE_BINARY" --command command-bar.open || true
   for _ in $(seq 1 30); do
-    grep -Eq "zwlr_layer_shell_v1#[0-9]+\.get_layer_surface\(" "$log" && break
+    grep -Eq "zwlr_layer_shell_v1[@#][0-9]+\.get_layer_surface\(" "$log" && break
     sleep 0.5
   done
   kill "$kestrel_pid" 2>/dev/null || true
   wait "$kestrel_pid" 2>/dev/null || true
 ' 2>"$work/session.log"
 
-if ! grep -Eq 'zwlr_layer_shell_v1#[0-9]+\.get_layer_surface\(.*"kestrel-command-bar"\)' \
+if ! grep -Eq 'zwlr_layer_shell_v1[@#][0-9]+\.get_layer_surface\(.*"kestrel-command-bar"\)' \
   "$work/kestrel.log"; then
   printf 'The command bar did not become a layer-shell surface.\n' >&2
   printf 'Layer-shell protocol traffic:\n' >&2
   grep -E 'zwlr_layer_shell|zwlr_layer_surface' "$work/kestrel.log" | head -n 10 >&2 || true
   printf 'Toplevel titles:\n' >&2
-  grep -E 'xdg_toplevel#[0-9]+\.set_title' "$work/kestrel.log" | head -n 10 >&2 || true
+  grep -E 'xdg_toplevel[@#][0-9]+\.set_title' "$work/kestrel.log" | head -n 10 >&2 || true
   printf 'Kestrel output:\n' >&2
   grep -v '^\[' "$work/kestrel.log" | tail -n 30 >&2 || true
   printf 'Session output:\n' >&2
