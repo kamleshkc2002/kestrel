@@ -816,11 +816,11 @@ fn build_page(
         SidebarPage::Monitoring => {
             let monitor = gtk::Box::new(Orientation::Vertical, 0);
             monitor.append(&build_monitor_group(&view_model.monitor, commands));
-            let speed = gtk::Box::new(Orientation::Vertical, 0);
-            speed.set_margin_top(24);
-            speed.append(&build_speed_test_group(&view_model.speed_test, commands));
-            monitor.append(&speed);
             body.append(&monitor);
+            // Its own container: monitor ticks redraw only the readouts.
+            let speed = gtk::Box::new(Orientation::Vertical, 0);
+            speed.append(&build_speed_test_group(&view_model.speed_test, commands));
+            body.append(&speed);
             build.monitor_container = Some(monitor);
             build.speed_test_container = Some(speed);
             append_settings(
@@ -1013,6 +1013,14 @@ fn restore_scroll(scrolled: &gtk::ScrolledWindow, offset: f64) {
         });
     });
     handler.set(Some(id));
+    // A page that came back shorter never fits the offset; stop trying soon so
+    // later height changes, such as live readouts, never pull the view back.
+    let adjustment = adjustment.downgrade();
+    gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(1), move || {
+        if let (Some(adjustment), Some(id)) = (adjustment.upgrade(), handler.take()) {
+            adjustment.disconnect(id);
+        }
+    });
 }
 
 /// Appends a page's settings group and keeps its rows for the sidebar search.
