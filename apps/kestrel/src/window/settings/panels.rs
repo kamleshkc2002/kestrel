@@ -21,15 +21,19 @@ pub(super) fn add_monitoring_readouts_group(
 ) {
     let readout_group = adw::PreferencesGroup::builder()
         .title("Monitoring readouts")
-        .description("Choose visible readouts and their order in the Monitoring panel.")
+        .description(
+            "Choose which readouts the Monitoring panel at the top of this page shows, and in \
+             what order. Tray also shows a readout's value as its own tray icon.",
+        )
         .build();
     for setting in &view_model.monitor.readout_settings {
         let row = plain_row()
             .title(setting.label)
-            .subtitle(if setting.visible {
-                "Show this readout and move it in the configured order."
-            } else {
-                "Hidden; show it to include it in the Monitoring panel."
+            .subtitle(match (setting.visible, setting.in_tray) {
+                (true, true) => "Shown in the panel and in the tray",
+                (true, false) => "Shown in the panel",
+                (false, true) => "Hidden from the panel; shown in the tray",
+                (false, false) => "Hidden from the panel",
             })
             .build();
         let controls = gtk::Box::new(Orientation::Horizontal, 6);
