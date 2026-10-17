@@ -19,8 +19,8 @@ use kestrel_core::{
     MIN_COMMAND_RESULTS, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
     MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
     MIN_SPEED_TEST_DOWNLOAD_MEGABYTES, MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout,
-    PanelSection, PanelSectionConfiguration, SnippetExpansionTiming, SnippetProviderPreference,
-    StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
+    SnippetExpansionTiming, SnippetProviderPreference, StartupConfiguration,
+    UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -195,36 +195,8 @@ fn parse(contents: &str) -> Result<LoadedConfiguration, ConfigurationLoadError> 
         version => Err(ConfigurationLoadError::UnsupportedSchemaVersion(version)),
     }
 }
-
 fn migrate_v2(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
-    let source_has_monitoring = document
-        .get("ui")
-        .and_then(|value| value.as_table())
-        .and_then(|ui| ui.get("panel_sections"))
-        .and_then(|value| value.as_array())
-        .is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                PanelSectionConfiguration::deserialize(entry.clone())
-                    .map(|entry| entry.section == PanelSection::Monitoring)
-                    .unwrap_or(false)
-            })
-        });
-    let mut loaded = LoadedConfiguration::default();
-    parse_features(&mut loaded, document.get("features"));
-    parse_ui(&mut loaded, document.get("ui"));
-    parse_startup(&mut loaded, document.get("startup"));
-    if !source_has_monitoring
-        && !loaded.warnings.iter().any(|warning| {
-            warning.feature_id == "ui.panel_sections"
-                && warning.reason == "Missing Monitoring panel section; its default was restored."
-        })
-    {
-        loaded.warnings.push(warning(
-            "ui.panel_sections",
-            "Missing Monitoring panel section; its default was restored.",
-        ));
-    }
-    Ok(loaded)
+    parse_v2(document)
 }
 
 fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
@@ -355,62 +327,7 @@ fn parse_ui(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
             )),
         }
     }
-
-    if let Some(panel_sections) = ui.get("panel_sections") {
-        parse_panel_sections(loaded, panel_sections);
-    }
 }
-
-fn parse_panel_sections(loaded: &mut LoadedConfiguration, value: &toml::Value) {
-    let Some(entries) = value.as_array() else {
-        loaded.warnings.push(warning(
-            "ui.panel_sections",
-            "Panel sections must be an array.",
-        ));
-        return;
-    };
-
-    let mut parsed = Vec::new();
-    for (index, value) in entries.iter().enumerate() {
-        let location = format!("ui.panel_sections[{index}]");
-        let entry = match PanelSectionConfiguration::deserialize(value.clone()) {
-            Ok(entry) => entry,
-            Err(error) => {
-                loaded.warnings.push(warning(
-                    &location,
-                    format!("Panel section is invalid and was ignored: {error}"),
-                ));
-                continue;
-            }
-        };
-        if parsed
-            .iter()
-            .any(|item: &PanelSectionConfiguration| item.section == entry.section)
-        {
-            loaded.warnings.push(warning(
-                &location,
-                "Duplicate panel section was ignored; the first entry was retained.",
-            ));
-            continue;
-        }
-        parsed.push(entry);
-    }
-
-    for section in PanelSection::ALL {
-        if !parsed.iter().any(|entry| entry.section == section) {
-            loaded.warnings.push(warning(
-                "ui.panel_sections",
-                format!("Missing {section:?} panel section; its default was restored."),
-            ));
-            parsed.push(PanelSectionConfiguration {
-                section,
-                visible: true,
-            });
-        }
-    }
-    loaded.configuration.ui.panel_sections = parsed;
-}
-
 fn parse_startup(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
     let Some(value) = value else { return };
     let Some(startup) = value.as_table() else {
@@ -1575,8 +1492,7 @@ mod tests {
     };
     use kestrel_core::{
         AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy, AudioOutputSwitch,
-        CURRENT_CONFIGURATION_SCHEMA_VERSION, MonitorReadout, PanelSection,
-        PanelSectionConfiguration,
+        CURRENT_CONFIGURATION_SCHEMA_VERSION, MonitorReadout,
     };
     use std::path::{Path, PathBuf};
 
@@ -1611,12 +1527,6 @@ enabled = true
 schema_version = 2
 [ui]
 appearance = "dark"
-[[ui.panel_sections]]
-section = "feature_hub"
-visible = false
-[[ui.panel_sections]]
-section = "quick_controls"
-visible = true
 [startup]
 autostart = true
 "#,
@@ -1626,7 +1536,6 @@ autostart = true
             loaded.configuration.ui.appearance,
             AppearancePreference::Dark
         );
-        assert!(!loaded.configuration.ui.panel_sections[0].visible);
         assert!(loaded.configuration.startup.autostart);
     }
 
@@ -1641,23 +1550,12 @@ enabled = true
 enabled = "yes"
 [ui]
 appearance = "invalid"
-[[ui.panel_sections]]
-section = "quick_controls"
-visible = false
-[[ui.panel_sections]]
-section = "quick_controls"
-visible = true
 [startup]
 autostart = "yes"
 "#,
         )
         .expect("document itself is valid TOML");
         assert!(loaded.configuration.feature_enabled("audio.mixer"));
-        assert_eq!(
-            loaded.configuration.ui.panel_sections[0].section,
-            PanelSection::QuickControls
-        );
-        assert!(!loaded.configuration.ui.panel_sections[0].visible);
         assert!(!loaded.configuration.startup.autostart);
         assert!(
             loaded
@@ -1675,52 +1573,31 @@ autostart = "yes"
             loaded
                 .warnings
                 .iter()
-                .any(|warning| warning.feature_id == "ui.panel_sections[1]")
-        );
-        assert!(
-            loaded
-                .warnings
-                .iter()
                 .any(|warning| warning.feature_id == "startup.autostart")
         );
     }
 
     #[test]
-    fn migrates_v2_with_monitoring_defaults_and_restored_panel() {
+    fn old_panel_sections_are_ignored_while_ui_settings_load() {
         let loaded = parse(
             r#"
-schema_version = 2
+schema_version = 3
 [ui]
-[[ui.panel_sections]]
-section = "quick_controls"
-visible = false
+appearance = "dark"
 [[ui.panel_sections]]
 section = "feature_hub"
-visible = true
+visible = false
+[startup]
+autostart = true
 "#,
         )
-        .expect("v2 config migrates");
+        .expect("legacy panel sections are ignored");
         assert_eq!(
-            loaded.configuration.monitoring,
-            kestrel_core::MonitorConfiguration::default()
+            loaded.configuration.ui.appearance,
+            AppearancePreference::Dark
         );
-        assert_eq!(
-            loaded
-                .configuration
-                .ui
-                .panel_sections
-                .last()
-                .map(|entry| entry.section),
-            Some(PanelSection::Monitoring)
-        );
-        assert!(
-            loaded
-                .warnings
-                .iter()
-                .any(|warning| warning.feature_id == "ui.panel_sections"
-                    && warning.reason
-                        == "Missing Monitoring panel section; its default was restored.")
-        );
+        assert!(loaded.configuration.startup.autostart);
+        assert!(loaded.warnings.is_empty());
     }
 
     #[test]
@@ -2602,26 +2479,12 @@ enable_files = true
     }
 
     #[test]
-    fn readout_order_and_panel_visibility_survive_round_trip() {
+    fn readout_order_survives_round_trip() {
         let mut configuration = ApplicationConfiguration::default();
         configuration.monitoring.readouts = vec![
             MonitorReadout::Gpu,
             MonitorReadout::Cpu,
             MonitorReadout::Network,
-        ];
-        configuration.ui.panel_sections = vec![
-            PanelSectionConfiguration {
-                section: PanelSection::FeatureHub,
-                visible: false,
-            },
-            PanelSectionConfiguration {
-                section: PanelSection::Monitoring,
-                visible: true,
-            },
-            PanelSectionConfiguration {
-                section: PanelSection::QuickControls,
-                visible: false,
-            },
         ];
         let exported = export_string(&configuration).expect("configuration exports");
         let imported = import_string(&exported).expect("configuration imports");

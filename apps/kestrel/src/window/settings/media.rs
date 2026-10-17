@@ -14,7 +14,7 @@ pub(super) fn add_audio_policy_group(
 ) {
     let audio = &view_model.audio;
     let audio_group = adw::PreferencesGroup::builder()
-        .title("Audio")
+        .title("Audio settings")
         .description(
             "Mixer policy: how loud amplification may go, what an output switch moves, and how \
              lost output devices are handled.",
@@ -184,7 +184,7 @@ pub(super) fn add_screenshot_limits_group(
 ) {
     let capture_limits = view_model.capture.limits;
     let capture_group = adw::PreferencesGroup::builder()
-        .title("Screenshots")
+        .title("Screenshot settings")
         .description(
             "Recent captures are private files in Kestrel's data directory. The oldest are \
              removed first when a limit is reached.",
@@ -241,7 +241,7 @@ pub(super) fn add_screen_tools_group(
 ) {
     let settings = &view_model.screen_tools.settings;
     let tools_group = adw::PreferencesGroup::builder()
-        .title("Screen tools")
+        .title("Screen tool settings")
         .description("Text is read locally by Tesseract with these settings.")
         .build();
 

@@ -26,17 +26,15 @@ use kestrel::{
     AlertKind, AppearancePreference, ApplicationCommand, ApplicationRuntime, ApplicationViewModel,
     ClipboardLifecycle, ClipboardViewModel, CloseAction, ConfigurationWarning, FeaturePreset,
     LoadedConfiguration, MicrophoneCommand, MonitorReadout, MonitorViewModel, PanelMoveDirection,
-    PanelSection, SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch,
-    SnippetProviderPreference, StatusNotifierIntegration, configuration_path,
-    disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
+    SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch, SnippetProviderPreference,
+    StatusNotifierIntegration, configuration_path, disable as disable_autostart,
+    enable as enable_autostart, export_file, import_file, load, save,
 };
 use kestrel::{
     ApplicationWindowDecision, CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch,
     FocusTarget,
 };
-use kestrel_core::{
-    ApplicationConfiguration, FeatureConfigurationSnapshot, PanelSectionConfiguration,
-};
+use kestrel_core::{ApplicationConfiguration, FeatureConfigurationSnapshot};
 use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
 use kestrel_services::alerts::notification_text;
 
@@ -630,14 +628,6 @@ enum ControllerOperation {
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),
     SetAutostart(bool),
-    SetPanelVisibility {
-        section: PanelSection,
-        visible: bool,
-    },
-    MovePanelSection {
-        section: PanelSection,
-        direction: PanelMoveDirection,
-    },
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
@@ -904,9 +894,7 @@ impl ApplicationController {
         let Some(view) = window.as_ref() else {
             return;
         };
-        if !view.focus(target) {
-            view.show_message("Show Quick Controls in Panel sections to reach this control");
-        }
+        let _ = view.focus(target);
     }
 
     /// Opens one floating surface without raising the main window.
@@ -1807,49 +1795,6 @@ impl ControllerState {
                 self.set_autostart(enabled, config_path)?;
                 format!("Autostart {}", if enabled { "enabled" } else { "disabled" })
             }
-            ControllerOperation::SetPanelVisibility { section, visible } => {
-                let old = self.configuration.clone();
-                let Some(panel) = self
-                    .configuration
-                    .ui
-                    .panel_sections
-                    .iter_mut()
-                    .find(|panel| panel.section == section)
-                else {
-                    return Err(format!("Panel section {section:?} is not configured"));
-                };
-                panel.visible = visible;
-                let message = format!(
-                    "{} panel {}",
-                    panel_label(section),
-                    if visible { "shown" } else { "hidden" }
-                );
-                if let Err(error) = persist(config_path, &self.configuration) {
-                    self.configuration = old;
-                    return Err(format!("Panel visibility was not saved: {error}"));
-                }
-
-                message
-            }
-            ControllerOperation::MovePanelSection { section, direction } => {
-                let old = self.configuration.clone();
-                if !move_panel_section(
-                    &mut self.configuration.ui.panel_sections,
-                    section,
-                    direction,
-                ) {
-                    return Ok((
-                        self.view_model(),
-                        format!("{} panel is already at that boundary", panel_label(section)),
-                    ));
-                }
-                if let Err(error) = persist(config_path, &self.configuration) {
-                    self.configuration = old;
-                    return Err(format!("Panel order was not saved: {error}"));
-                }
-
-                "Panel order updated".to_owned()
-            }
             ControllerOperation::SetMonitorReadoutVisible { readout, visible } => {
                 let mut candidate = self.configuration.clone();
                 if visible {
@@ -2633,22 +2578,6 @@ fn set_autostart_side_effect(enabled: bool) -> Result<(), String> {
     }
 }
 
-fn move_panel_section(
-    sections: &mut [PanelSectionConfiguration],
-    section: PanelSection,
-    direction: PanelMoveDirection,
-) -> bool {
-    let Some(index) = sections.iter().position(|entry| entry.section == section) else {
-        return false;
-    };
-    let target = match direction {
-        PanelMoveDirection::Up => index.checked_sub(1),
-        PanelMoveDirection::Down => (index + 1 < sections.len()).then_some(index + 1),
-    };
-    let Some(target) = target else { return false };
-    sections.swap(index, target);
-    true
-}
 fn move_monitor_readout(
     readouts: &mut [MonitorReadout],
     readout: MonitorReadout,
@@ -2723,14 +2652,6 @@ fn clipboard_command_summary(command: &kestrel::ClipboardCommand) -> &'static st
         } => "Clipboard clear unpinned",
         kestrel::ClipboardCommand::ClearEntries { .. } => "Clipboard wipe",
         kestrel::ClipboardCommand::CopyUnstoredText(_) => "Image text copy",
-    }
-}
-
-fn panel_label(section: PanelSection) -> &'static str {
-    match section {
-        PanelSection::QuickControls => "Quick Controls",
-        PanelSection::FeatureHub => "Feature Hub",
-        PanelSection::Monitoring => "Monitoring",
     }
 }
 
@@ -3037,16 +2958,6 @@ fn dispatch_commands(
                     ControllerOperation::SetAutostart(enabled),
                     "kestrel-autostart-change",
                 ),
-                ApplicationCommand::SetPanelVisibility { section, visible } => controller
-                    .request_operation(
-                        ControllerOperation::SetPanelVisibility { section, visible },
-                        "kestrel-panel-visibility",
-                    ),
-                ApplicationCommand::MovePanelSection { section, direction } => controller
-                    .request_operation(
-                        ControllerOperation::MovePanelSection { section, direction },
-                        "kestrel-panel-movement",
-                    ),
                 ApplicationCommand::SetMonitorReadoutVisible { readout, visible } => controller
                     .request_operation(
                         ControllerOperation::SetMonitorReadoutVisible { readout, visible },
@@ -3345,40 +3256,9 @@ fn dispatch_tick_results(controller: &Rc<ApplicationController>, receiver: Recei
 
 #[cfg(test)]
 mod tests {
-    use super::{load_startup_configuration, move_monitor_readout, move_panel_section, persist};
+    use super::{load_startup_configuration, move_monitor_readout, persist};
     use kestrel::{MonitorReadout, PanelMoveDirection};
-    use kestrel_core::{ApplicationConfiguration, PanelSection, PanelSectionConfiguration};
-
-    #[test]
-    fn panel_movement_is_bounded_and_deterministic() {
-        let mut sections = vec![
-            PanelSectionConfiguration {
-                section: PanelSection::QuickControls,
-                visible: true,
-            },
-            PanelSectionConfiguration {
-                section: PanelSection::FeatureHub,
-                visible: true,
-            },
-        ];
-        assert!(!move_panel_section(
-            &mut sections,
-            PanelSection::QuickControls,
-            PanelMoveDirection::Up
-        ));
-        assert!(move_panel_section(
-            &mut sections,
-            PanelSection::QuickControls,
-            PanelMoveDirection::Down
-        ));
-        assert_eq!(sections[0].section, PanelSection::FeatureHub);
-        assert_eq!(sections[1].section, PanelSection::QuickControls);
-        assert!(!move_panel_section(
-            &mut sections,
-            PanelSection::QuickControls,
-            PanelMoveDirection::Down
-        ));
-    }
+    use kestrel_core::ApplicationConfiguration;
     #[test]
     fn monitor_readout_movement_is_bounded_and_deterministic() {
         let mut readouts = vec![MonitorReadout::Cpu, MonitorReadout::Memory];

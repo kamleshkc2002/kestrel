@@ -1,7 +1,7 @@
 use kestrel_core::{
     AlertKind, AppearancePreference, ApplicationConfiguration, CapabilityStatus, CostLevel,
-    MonitorConfiguration, MonitorReadout, PanelSection, Permission, ResourceCost,
-    SnippetExpansionTiming, SnippetProviderPreference,
+    MonitorConfiguration, MonitorReadout, Permission, ResourceCost, SnippetExpansionTiming,
+    SnippetProviderPreference,
 };
 use kestrel_platform::camera::CameraInfo;
 use kestrel_platform::capture::{CaptureErrorKind, CaptureMode, CaptureProvider};
@@ -3345,7 +3345,6 @@ pub struct ApplicationViewModel {
     pub appearance: AppearancePreference,
     pub close_action: kestrel_core::CloseAction,
     pub autostart: bool,
-    pub panel_sections: Vec<PanelSectionViewModel>,
     pub can_undo: bool,
 }
 impl Default for ProcessesViewModel {
@@ -3436,29 +3435,7 @@ impl ApplicationViewModel {
             appearance: configuration.ui.appearance,
             close_action: configuration.ui.close_action,
             autostart: configuration.startup.autostart,
-            panel_sections: configuration
-                .ui
-                .panel_sections
-                .iter()
-                .map(PanelSectionViewModel::from)
-                .collect(),
             can_undo,
-        }
-    }
-}
-
-/// Panel placement and visibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PanelSectionViewModel {
-    pub section: PanelSection,
-    pub visible: bool,
-}
-
-impl From<&kestrel_core::PanelSectionConfiguration> for PanelSectionViewModel {
-    fn from(configuration: &kestrel_core::PanelSectionConfiguration) -> Self {
-        Self {
-            section: configuration.section,
-            visible: configuration.visible,
         }
     }
 }
@@ -3821,8 +3798,8 @@ mod tests {
         SnippetsViewModel, SpeedTestPresentation, SpeedTestViewModel,
     };
     use kestrel_core::{
-        AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus, FeatureSpec,
-        MonitorConfiguration, MonitorReadout, Permission,
+        AlertKind, AppearancePreference, ApplicationConfiguration, CapabilityReport,
+        CapabilityStatus, FeatureSpec, MonitorConfiguration, MonitorReadout, Permission,
     };
     use kestrel_platform::audio::{AudioServer, InputDevice, OutputDevice, PlaybackStream};
     use kestrel_platform::clipboard::{ClipboardEntryKind, ClipboardKindSupport};
@@ -4073,21 +4050,9 @@ mod tests {
 
     #[test]
     fn exposes_presentation_preferences_and_reversible_state() {
-        use kestrel_core::{AppearancePreference, PanelSection, PanelSectionConfiguration};
-
         let mut configuration = ApplicationConfiguration::default();
         configuration.ui.appearance = AppearancePreference::Dark;
         configuration.startup.autostart = true;
-        configuration.ui.panel_sections = vec![
-            PanelSectionConfiguration {
-                section: PanelSection::FeatureHub,
-                visible: false,
-            },
-            PanelSectionConfiguration {
-                section: PanelSection::QuickControls,
-                visible: true,
-            },
-        ];
         let view_model = ApplicationViewModel::new(
             std::iter::empty(),
             std::iter::empty(),
@@ -4134,11 +4099,6 @@ mod tests {
         assert_eq!(view_model.appearance, AppearancePreference::Dark);
         assert!(view_model.autostart);
         assert!(view_model.can_undo);
-        assert_eq!(
-            view_model.panel_sections[0].section,
-            PanelSection::FeatureHub
-        );
-        assert!(!view_model.panel_sections[0].visible);
     }
     #[test]
     fn monitoring_configured_order_and_hidden_readouts_are_honoured() {

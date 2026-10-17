@@ -42,7 +42,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 
 ## Key Directories
 
-- `apps/kestrel/src/`: executable shell and app composition. New end-to-end features usually touch `runtime.rs`, `view_model.rs`, and one feature file under `window/` (plus a `window/settings/` section when the feature has settings).
+- `apps/kestrel/src/`: executable shell and app composition. New end-to-end features usually touch `runtime.rs`, `view_model.rs`, and one feature file under `window/` (plus a `window/settings/` group on the feature's sidebar page when it has settings).
 - `crates/kestrel-core/src/`: cross-layer vocabulary, capability reports, feature specs, configuration models, and non-I/O validation.
 - `crates/kestrel-platform/src/`: concrete Linux probes/adapters, one module per feature.
 - `crates/kestrel-services/src/`: feature policy, state, commands, snapshots, and lifecycle, one module per feature.
@@ -101,7 +101,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `apps/kestrel/src/runtime.rs`: authoritative feature composition, concrete backends, enablement, and runtime operations.
 - `apps/kestrel/src/config.rs`: XDG path resolution, schema migration, per-feature warning isolation.
 - `apps/kestrel/src/view_model.rs`: domain/service state to owned presentation state.
-- `apps/kestrel/src/window/`: GTK rendering; no service ownership. `mod.rs` holds `WindowView` and page assembly, one file per panel (`audio.rs`, `capture.rs`, `clipboard.rs`, …), `widgets.rs` for shared row/dialog helpers, and `settings/` for the Settings group sections.
+- `apps/kestrel/src/window/`: GTK rendering; no service ownership. `mod.rs` holds `WindowView`, the sidebar pages (`SidebarPage`), the shared sidebar search, and page assembly; one file per panel (`audio.rs`, `capture.rs`, `clipboard.rs`, …), `widgets.rs` for shared row/dialog helpers, and `settings/` for each page's settings groups. Settings groups return their rows and keywords (`FilterRows`) for the one search handler.
 - `apps/kestrel/src/status_notifier.rs`: optional SNI adapter and fallback capability report.
 - `crates/kestrel-core/src/lib.rs`: shared capability/configuration contracts and feature-ID validation.
 - `crates/kestrel-services/src/lib.rs`: `FeatureRegistry`, registration invariants, lifecycle transitions.

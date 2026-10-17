@@ -1,6 +1,6 @@
 //! Clipboard history panel.
 
-use super::widgets::{SearchGuard, plain_row};
+use super::widgets::{SearchGuard, plain_row, stacked_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, gdk, glib};
@@ -122,14 +122,6 @@ pub(super) fn build_clipboard_panel(
     group.add(&status_row);
 
     let counts = Rc::new(Cell::new(ClearCounts::default()));
-    let actions = plain_row()
-        .title("History actions")
-        .subtitle(
-            "Clear the live selection, remove unpinned entries, or wipe every retained entry. \
-             Removing entries asks first; anything copied while it asks is kept.",
-        )
-        .subtitle_lines(0)
-        .build();
     let action_box = gtk::Box::new(Orientation::Horizontal, 6);
     let clear = gtk::Button::with_label("Clear selection");
     clear.set_valign(Align::Center);
@@ -152,7 +144,11 @@ pub(super) fn build_clipboard_panel(
     action_box.append(&clear);
     action_box.append(&clear_unpinned);
     action_box.append(&wipe);
-    actions.add_suffix(&action_box);
+    let actions = stacked_row(
+        "History actions",
+        "Removing entries asks first; anything copied while it asks is kept.",
+        &action_box,
+    );
     group.add(&actions);
 
     let results = gtk::Box::new(Orientation::Vertical, 6);

@@ -4,85 +4,7 @@ use crate::window::widgets::plain_row;
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
-use kestrel::{
-    AlertKind, ApplicationCommand, ApplicationViewModel, PanelMoveDirection, PanelSection,
-};
-
-pub(super) fn add_panel_sections_group(
-    group: &adw::PreferencesGroup,
-    view_model: &ApplicationViewModel,
-    commands: &Sender<ApplicationCommand>,
-    filter_rows: &mut Vec<(gtk::Widget, String)>,
-) {
-    let panel_group = adw::PreferencesGroup::builder()
-        .title("Panel sections")
-        .description(
-            "Choose visibility and keyboard-accessible order for Quick Controls, Feature Hub, and Monitoring.",
-        )
-        .build();
-    for (index, panel) in view_model.panel_sections.iter().enumerate() {
-        let row = plain_row()
-            .title(panel_title(panel.section))
-            .subtitle("Visible in the main panel")
-            .build();
-        let controls = gtk::Box::new(Orientation::Horizontal, 6);
-        let visibility = gtk::Switch::builder()
-            .active(panel.visible)
-            .valign(Align::Center)
-            .build();
-        let panel_name = panel_title(panel.section);
-        let visibility_label = format!("Show {panel_name}");
-        let visibility_description = format!("Show or hide the {panel_name} panel");
-        visibility.update_property(&[
-            Property::Label(&visibility_label),
-            Property::Description(&visibility_description),
-        ]);
-        let sender = commands.clone();
-        let section = panel.section;
-        visibility.connect_state_set(move |_, visible| {
-            let _ = sender.try_send(ApplicationCommand::SetPanelVisibility { section, visible });
-            gtk::glib::Propagation::Proceed
-        });
-        let up = gtk::Button::builder().icon_name("go-up-symbolic").build();
-        let up_label = format!("Move {panel_name} up");
-        up.update_property(&[Property::Label(&up_label), Property::Description(&up_label)]);
-        up.set_tooltip_text(Some(&up_label));
-        up.set_sensitive(index > 0);
-        let down = gtk::Button::builder().icon_name("go-down-symbolic").build();
-        let down_label = format!("Move {panel_name} down");
-        down.update_property(&[
-            Property::Label(&down_label),
-            Property::Description(&down_label),
-        ]);
-        down.set_tooltip_text(Some(&down_label));
-        down.set_sensitive(index + 1 < view_model.panel_sections.len());
-        let sender = commands.clone();
-        up.connect_clicked(move |_| {
-            let _ = sender.try_send(ApplicationCommand::MovePanelSection {
-                section,
-                direction: PanelMoveDirection::Up,
-            });
-        });
-        let sender = commands.clone();
-        down.connect_clicked(move |_| {
-            let _ = sender.try_send(ApplicationCommand::MovePanelSection {
-                section,
-                direction: PanelMoveDirection::Down,
-            });
-        });
-        controls.append(&visibility);
-        controls.append(&up);
-        controls.append(&down);
-        row.add_suffix(&controls);
-        row.set_activatable_widget(Some(&visibility));
-        panel_group.add(&row);
-        filter_rows.push((
-            row.clone().upcast(),
-            format!("{} panel visibility order", panel_title(panel.section)),
-        ));
-    }
-    group.add(&panel_group);
-}
+use kestrel::{AlertKind, ApplicationCommand, ApplicationViewModel, PanelMoveDirection};
 
 pub(super) fn add_monitoring_readouts_group(
     group: &adw::PreferencesGroup,
@@ -316,14 +238,6 @@ pub(super) fn add_monitoring_alerts_group(
     group.add(&alert_group);
 }
 
-fn panel_title(section: PanelSection) -> &'static str {
-    match section {
-        PanelSection::QuickControls => "Quick Controls",
-        PanelSection::FeatureHub => "Feature Hub",
-        PanelSection::Monitoring => "Monitoring",
-    }
-}
-
 pub(super) fn add_process_limits_group(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
@@ -332,7 +246,7 @@ pub(super) fn add_process_limits_group(
 ) {
     let limits = view_model.processes.limits;
     let process_group = adw::PreferencesGroup::builder()
-        .title("Processes")
+        .title("Process inspector settings")
         .description("How often the process list refreshes and how many rows it keeps.")
         .build();
     for (title, subtitle, min, max, step, value, limit) in [

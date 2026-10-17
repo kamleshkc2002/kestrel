@@ -14,7 +14,7 @@ pub(super) fn add_clipboard_limits_group(
 ) {
     let clipboard = &view_model.clipboard;
     let clipboard_group = adw::PreferencesGroup::builder()
-        .title("Clipboard")
+        .title("Clipboard settings")
         .description(
             "Memory-only retention bounds. Lock, sleep, service stop, wipe, and shutdown always \
              drop retained entries regardless of these values.",
@@ -262,7 +262,7 @@ pub(super) fn add_snippet_limits_group(
 ) {
     let snippets = &view_model.snippets;
     let snippet_group = adw::PreferencesGroup::builder()
-        .title("Snippets")
+        .title("Snippet settings")
         .description(
             "Library bounds and the insertion provider. Snippets are stored in a private file; \
              clipboard variables are read once at insert time and never stored.",
@@ -402,7 +402,7 @@ pub(super) fn add_command_bar_group(
 ) {
     let command_bar = &view_model.command_bar;
     let command_group = adw::PreferencesGroup::builder()
-        .title("Command bar")
+        .title("Command bar settings")
         .description(
             "How many ranked results the bar shows. Provider switches and the learned ranking \
              live in the command bar panel; file roots and scripts are configured in the \
@@ -439,7 +439,7 @@ pub(super) fn add_scratchpad_limits_group(
 ) {
     let limits = view_model.scratchpad.limits;
     let scratchpad_group = adw::PreferencesGroup::builder()
-        .title("Scratchpad")
+        .title("Scratchpad settings")
         .description("Notes are saved privately on this computer and never exported.")
         .build();
     for (title, subtitle, (min, max), value, limit) in [

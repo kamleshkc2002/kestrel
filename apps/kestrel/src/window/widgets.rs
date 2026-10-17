@@ -1,10 +1,13 @@
 //! Shared widget helpers.
 
 use adw::prelude::*;
-use gtk::Align;
+use gtk::{Align, Orientation};
 
 /// Blocks searches triggered by programmatic updates.
 pub(super) type SearchGuard = std::rc::Rc<std::cell::Cell<bool>>;
+
+/// Rows the sidebar search can hide, with their lowercase keywords.
+pub(super) type FilterRows = Vec<(gtk::Widget, String)>;
 
 /// Asks for a path with the desktop's file dialog; `save` picks a destination.
 /// The dialog keeps itself alive until the user answers.
@@ -93,4 +96,35 @@ pub(super) fn configure_wrapping_label(label: &gtk::Label) {
     label.set_wrap(true);
     label.set_xalign(0.0);
     label.set_hexpand(true);
+}
+
+/// A row whose controls sit on their own line below the title and description,
+/// so several buttons never squeeze the text into a narrow column.
+pub(super) fn stacked_row(
+    title: &str,
+    subtitle: &str,
+    controls: &impl IsA<gtk::Widget>,
+) -> adw::PreferencesRow {
+    let row = adw::PreferencesRow::builder()
+        .title(title)
+        .activatable(false)
+        .build();
+    let content = gtk::Box::new(Orientation::Vertical, 4);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    let heading = gtk::Label::new(Some(title));
+    configure_wrapping_label(&heading);
+    let description = gtk::Label::new(Some(subtitle));
+    configure_wrapping_label(&description);
+    description.add_css_class("dim-label");
+    description.add_css_class("caption");
+    content.append(&heading);
+    content.append(&description);
+    controls.set_halign(Align::Start);
+    controls.set_margin_top(6);
+    content.append(controls);
+    row.set_child(Some(&content));
+    row
 }
