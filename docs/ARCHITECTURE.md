@@ -447,6 +447,45 @@ dedicated threads. Script outcomes carry the exit status, the duration, and
 whether output hit its bound, so truncation is data the user can see rather than
 a silent loss.
 
+Window, clipboard, and feature results are gathered by the application runtime
+and handed to the service like application results. `kestrel-platform` owns
+the window backends behind one `WindowProvider` trait: COSMIC toplevel
+management, wlroots foreign-toplevel management, the generic Wayland toplevel
+list (list only, so activation returns a typed `Unsupported`), and EWMH on X11.
+Discovery reads the registry or root-window atoms and never infers support from
+desktop names; inside a Wayland session it never falls back to Xwayland, which
+would list X11 clients only. Wayland backends own a dedicated connection and a
+named worker thread that dispatches events into bounded state, and minimize is
+confirmed with a roundtrip, so a compositor that ignores the request yields a
+typed error. The runtime holds a provider while the command bar runs with
+window results on and drops it when the bar stops or the list fails; a
+capability refresh rediscovers. Kestrel's own windows are excluded by
+application ID, and the front window is recorded when the bar opens because
+compositors stop reporting it active while an overlay holds the keyboard.
+Running an application result hides it when it is that front window, restores
+its window when it has one, and launches it otherwise.
+
+Clipboard results come from the bounded clipboard search only while clipboard
+history runs; their outcome messages name entry IDs only. When the clipboard
+fingerprint changes (capture, wipe, lock, sleep), command results that include
+clipboard entries are re-run so no stale preview survives. Window and clipboard
+results are never recorded in the learned ranking because their IDs are
+ephemeral. A feature switch outranks commands only when the query names the
+feature, so scattered letters across a label never push a switch to the top.
+
+The floating command bar and quick panel are undecorated GTK windows owned by
+the controller, one at a time. `build.rs` links gtk4-layer-shell only when
+pkg-config finds it, because the library interposes libwayland-client and must
+load first; it emits the `kestrel_layer_shell` cfg for a six-function FFI shim.
+`SurfacePlacement` is decided at runtime: an overlay only when the shim is
+built in, the display is Wayland, and the compositor advertises wlr-layer-shell;
+otherwise a normal window, transient for the main window only when that window
+is mapped. Surfaces update without the main window, take keyboard focus before
+mapping, close on Escape or after focus stays away for 250 ms, and clear the
+query when they close. `scripts/layer-shell-smoke.sh` proves the overlay path on
+a private headless Sway, and the AppImage workflow runs it against the bundled
+build.
+
 ### 5.10 Network speed test
 
 `network.speed_test` never runs on its own: enabling the feature makes a test
@@ -474,10 +513,12 @@ called when the feature is disabled and on drop — cancels and joins the worker
 forwards it through `GApplication` command-line forwarding. The running
 instance checks the action's feature registration and returns a typed
 `CommandGate` as the exit status: 3 disabled, 4 unavailable, 5 stopped; the
-window shows the full reason and the client prints it. Gated actions are never
-queued. When no instance runs, the invocation becomes the instance and opens the
-window. `command-bar.open` and `clipboard.quick-paste` present the window and
-focus their search entry.
+window shows the full reason and the client prints it. A gated action is never
+run; `command-bar.open` still opens the floating command bar, which shows the
+gate and its remediation in place of search. When no instance runs, the
+invocation becomes the instance and opens the window. `quick-panel.open` opens
+the favorites palette, where each tool shows its own gate, and
+`clipboard.quick-paste` presents the window and focuses its search entry.
 
 `global.shortcuts` is opt-in. `kestrel-core` owns the `[[shortcuts.bindings]]`
 contract (command ID, canonical `ShortcutTrigger`, at most 32 bindings); the
