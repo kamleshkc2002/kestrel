@@ -12,8 +12,9 @@
 # writes @raycast directives for other launchers that read Raycast script
 # commands (Vicinae reads them too, without the keywords). Each script runs
 # `kestrel --command <id>` for an ID from `kestrel --list-commands` and turns
-# Kestrel's exit status into a one-line message. Run this again after updating
-# Kestrel so new actions appear.
+# Kestrel's exit status into a one-line message. When Kestrel isn't running,
+# the command starts it and the script returns after three seconds, leaving it
+# running. Run this again after updating Kestrel so new actions appear.
 
 set -euo pipefail
 
@@ -102,7 +103,18 @@ while IFS=$'\t' read -r id description; do
       echo "# @vicinae.keywords [\"kestrel\", \"$id\"]"
     fi
     echo "$marker"
-    echo "$(quote "$kestrel") --command $(quote "$id")"
+    # A running Kestrel answers at once. Without one, this process becomes
+    # Kestrel and keeps running, so the script stops waiting and leaves it in
+    # its own session.
+    echo "setsid $(quote "$kestrel") --command $(quote "$id") >/dev/null 2>&1 </dev/null &"
+    echo 'pid=$!'
+    echo 'waited=0'
+    echo 'while kill -0 "$pid" 2>/dev/null; do'
+    echo '  [ "$waited" -lt 30 ] || exit 0'
+    echo '  sleep 0.1'
+    echo '  waited=$((waited + 1))'
+    echo 'done'
+    echo 'wait "$pid"'
     echo 'case $? in'
     echo '  0) exit 0 ;;'
     echo "  3) echo \"Turn this feature on in Kestrel's Feature hub\" ;;"
