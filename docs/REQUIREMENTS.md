@@ -71,8 +71,11 @@ runtime evidence. Subject to that evidence, Kestrel's differentiators are:
 - **Cross-desktop without shell replacement:** Kestrel aims to work alongside
   existing desktops, panels, launchers, notification services, and compositor
   settings rather than taking ownership of them.
-- **One human-facing utility surface:** a shared command and status experience
-  connects monitoring, audio, clipboard, capture, and automation-adjacent tasks.
+- **The utilities desktops leave out, in one window:** monitoring with
+  sustained alerts, audio routing, private clipboard history, screen tools,
+  recording, and process and port tools. They are reached from the window, the
+  tray, shortcuts, `kestrel --command`, the user's own launcher, and a command
+  bar limited to Kestrel's actions. Kestrel is not a general launcher.
 - **Progressive enhancement:** a useful core remains available when optional
   compositor, portal, hardware, or package-manager integrations are absent.
 - **Local-first privacy:** no required account or telemetry; clipboard, media, and
@@ -105,7 +108,7 @@ Difficulty legend: ✅ straightforward · 🟡 moderate/partial · 🔶 hard or 
 | Keep awake / battery alerts | ✅ | `systemd-inhibit`, UPower, `/sys/class/power_supply` | `caffeine`, GNOME power settings |
 | Brightness toggles | ✅ | `/sys/class/backlight`, `brightnessctl` | `brightnessctl` |
 | Bluetooth / WiFi toggles | ✅ | BlueZ D-Bus, NetworkManager / `rfkill` | DE quick settings |
-| Command bar / launcher | ✅ | File search + command registry, D-Bus | `rofi`, `wofi`, `ulauncher` |
+| Command bar (Kestrel actions) | ✅ | Kestrel command registry; optional app/file/window sources | Vicinae, `rofi`, `ulauncher` for general launching |
 | Fan control | 🔶 | `/sys/class/hwmon`, `thinkfan`, `nbfc`; hardware-specific | `thinkfan`, `nbfc` |
 | Window snapping / layout | 🟡/🔶 | Easy on X11 (EWMH); **restricted by design on Wayland** | WM built-ins, GNOME "Tactile" |
 | App switcher + window previews | 🟡/🔶 | Easy on X11; compositor-specific on Wayland | `rofi` window mode, `sway`/`hyprland` IPC |
@@ -438,7 +441,7 @@ specific remediation rather than simply hiding a feature without explanation.
 | Screen recording | `recorder` | PipeWire + `ScreenCast` portal | portal consent dialog |
 | Keep awake / battery | `power` | `systemd-inhibit`, UPower, `/sys/class/power_supply` | universal |
 | Brightness / BT / WiFi | `toggles` | `/sys/class/backlight`, BlueZ D-Bus, NetworkManager | hardware-probed |
-| Launcher / command bar | `launcher` | file index + command registry + D-Bus | DE-independent |
+| Command bar (Kestrel actions) | `launcher` | command registry; optional app, file, and window sources | DE-independent |
 | Fan control | `fan` | `/sys/class/hwmon`, `thinkfan`/`nbfc` | opt-in, hardware-guarded |
 | Window snapping / switcher | `windows` | X11 EWMH; wlroots/`hyprland`/KDE/GNOME protocols | Phase 3, Wayland-limited |
 | OCR / QR / color | `screen-tools` | Portal/compositor capture + Tesseract/ZBar/pixel sampling | one-shot tools should not require a permanent capture session |
@@ -559,7 +562,7 @@ new reference commit so roadmap drift remains reviewable.
   charge/health/time/cycles/power, peripheral batteries, per-process resource
   use, history graphs, configurable menu/panel readouts, sustained alerts, and
   hardware-gated fan RPM/control.
-- **Everyday tools:** quick launcher and command bar; quick toggles; radial menu;
+- **Everyday tools:** a command bar for Kestrel's own actions; quick toggles; radial menu;
   screenshots, screen recording, OCR/QR and color sampling; recent captures;
   camera preview; scratchpad; cleaning mode; process termination; media
   conversion/editing; cleaner; application/package update aggregation;
@@ -652,10 +655,11 @@ second explicit opt-in; memory-only history remains the default.
 ### 11.4 Phase 2 — Utility expansion
 - Text snippets with folders, search, date/time and clipboard variables, plus
   capability-gated X11/Wayland injection.
-- Command bar / launcher with apps, files in user-selected roots, feature
-  commands, math, units, dates, URLs, emoji, local scripts, row shortcuts, and
-  privacy-bounded result learning. Window and application-menu actions remain
-  backend-gated.
+- Command bar for Kestrel's feature commands, snippets, clipboard history,
+  math, units, dates, URLs, local scripts, row shortcuts, and privacy-bounded
+  result learning. Applications, files in user-selected roots, windows, and
+  emoji are opt-in sources, off by default; window and application-menu
+  actions remain backend-gated.
 - Clipboard search, pins, deletion/multi-select, preview/edit, quick paste,
   image/file entries where ownership is safe, independent auto-clear, and
   paste-as-plain-text. Optional sensitive-pattern filters must document false
@@ -821,10 +825,10 @@ it well enough to *integrate* (shell out / D-Bus) rather than reinvent:
 | System monitor | `btop`, `Mission Center` | Reuse `/proc`+`/sys` approach, not the tools |
 | Clipboard | `CopyQ`, `cliphist` | Could integrate or reimplement; re-owning selection is the key |
 | Snippets | `Espanso`, `xremap` | Integrate with Espanso or provide a uinput-backed implementation; app-specific Wayland behavior is limited |
-| Launcher | `rofi`, `wofi`, `ulauncher`, `albert` | Compete or embed; integrate via config/scripts |
+| Launcher | `rofi`, `wofi`, `ulauncher`, `albert` | Do not compete; expose Kestrel actions through `kestrel --command` and launcher script commands |
 | Screenshots | `flameshot`, `grim`+`slurp` | Reuse `grim`/portal; custom annotation UI if needed |
 | Recording | `OBS`, `Kooha`, `wf-recorder` | Use portal directly or shell to `wf-recorder` |
-| Command bar | `Vicinae` | Evaluate as an integration target and competitive reference |
+| Command bar | `Vicinae` | Integration target: Raycast-compatible script commands run Kestrel actions from Vicinae; Kestrel's own bar stays limited to Kestrel's actions |
 | Per-app audio | `volctl`, EasyEffects | Integrate where it provides the desired UI/effects; retain PipeWire backend ownership |
 | Input remapping | `Input Remapper`, `xremap` | Integrate or reuse their device/profile model; avoid duplicating low-level injection prematurely |
 | Fan control | `CoolerControl`, `asusctl`, `thinkfan` | Detect and delegate supported hardware; never assume generic laptop control |
