@@ -251,6 +251,7 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 
 - Each script runs `kestrel --command <id>` with the installed binary's absolute path, under the action's own title, such as "Open the process inspector" or "Toggle Keep awake". Vicinae finds them by title, by "kestrel", or by ID.
 - Scripts use compact mode. Success stays quiet, and when Kestrel can't run the action the launcher shows a one-line reason: the feature is off, unavailable on this desktop, or on but not running. Kestrel's window shows the full reason.
+- When Kestrel isn't running, the script starts it, which opens the window and runs or explains the action there. The script returns after three seconds and leaves Kestrel running.
 - Only files this script wrote are replaced or removed. Run it again after updating Kestrel so new actions appear; `command-bar.open` is left out.
 
 ## AppImage preview
