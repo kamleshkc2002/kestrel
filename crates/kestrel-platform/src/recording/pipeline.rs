@@ -488,10 +488,15 @@ impl GstRecording {
     /// thread blocked in the muxer. A track that fed nothing would hold the
     /// muxer back forever (it waits for data on every pad), so its pad is
     /// released once the output is idle and the bin stopped.
+    ///
+    /// Either way the error failed the pipeline's state change if it was
+    /// still starting, which leaves the file sink paused once it prerolls and
+    /// the muxer blocked behind it, so the pipeline is asked for PLAYING again.
     fn drop_track(&mut self, index: usize) -> AudioTrack {
         let track = self.tracks.remove(index);
         if track.produced.load(std::sync::atomic::Ordering::Acquire) {
             track.entry.send_event(gst::event::Eos::new());
+            let _ = self.pipeline.set_state(gst::State::Playing);
         } else {
             let (detached, done) = std::sync::mpsc::sync_channel(1);
             let mux_pad = track.mux_pad.clone();
@@ -508,8 +513,7 @@ impl GstRecording {
             if done.recv_timeout(Duration::from_secs(1)).is_ok() {
                 let _ = track.bin.set_state(gst::State::Null);
                 let _ = self.pipeline.remove(&track.bin);
-                // An error while starting leaves the pipeline short of
-                // PLAYING; ask again now that the failed bin is gone.
+                // Ask again once the failed bin is gone.
                 let _ = self.pipeline.set_state(gst::State::Playing);
             }
         }
@@ -809,6 +813,22 @@ pub(super) mod tests {
             .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test source"))
     }
 
+    /// Waits until `track` has fed the muxer. A failing Microphone queues its
+    /// buffers before the error, so this always happens; waiting before the
+    /// first poll fixes which way the recorder ends the track.
+    fn wait_until_recorded(recording: &GstRecording, track: AudioTrack) {
+        let track = recording
+            .tracks
+            .iter()
+            .find(|candidate| candidate.track == track)
+            .expect("track is recording");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !track.produced.load(std::sync::atomic::Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "the track never recorded audio");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Records `length` of test video with a System tone track.
     pub(in crate::recording) fn record_test_take(
         directory: &TempDir,
@@ -890,6 +910,7 @@ pub(super) mod tests {
             GstRecording::start_with(VideoInput::Test, &plan, &test_audio)
                 .expect("recording starts"),
         );
+        wait_until_recorded(&recording, AudioTrack::Microphone);
         let event = recording.poll(Duration::from_secs(3));
         assert!(
             matches!(
@@ -906,6 +927,77 @@ pub(super) mod tests {
             None,
             "video and system continue"
         );
+        recording.finish().expect("recording completes");
+        assert_eq!(
+            stream_kinds(&plan.output),
+            ["audio_0", "audio_1", "video_0"]
+        );
+    }
+
+    #[test]
+    fn a_track_failing_before_the_take_settles_still_lets_it_complete() {
+        if !ready(&["matroskademux", "fakesink"]) {
+            return;
+        }
+        let directory = TempDir::new().expect("temp dir");
+        let plan = plan(&directory, vec![AudioTrack::System, AudioTrack::Microphone]);
+        // The Microphone's audio is held back until its source has failed, so
+        // the error arrives while the file sink is still waiting to preroll.
+        let (failed, source_failed) = std::sync::mpsc::sync_channel(1);
+        let held = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let hold = std::sync::Arc::clone(&held);
+        let sources = move |track: AudioTrack| -> Result<gst::Element, RecordingError> {
+            if track == AudioTrack::System {
+                return test_audio(track);
+            }
+            let bin = gst::parse::bin_from_description(
+                "audiotestsrc is-live=true ! identity error-after=5 ! queue name=hold",
+                true,
+            )
+            .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test source"))?;
+            let queue = bin.by_name("hold").expect("hold queue");
+            // The source sends EOS right after posting its error.
+            let failed = failed.clone();
+            queue.static_pad("sink").expect("sink pad").add_probe(
+                gst::PadProbeType::EVENT_DOWNSTREAM,
+                move |_, info| {
+                    if let Some(gst::PadProbeData::Event(event)) = &info.data {
+                        if event.type_() == gst::EventType::Eos {
+                            let _ = failed.try_send(());
+                        }
+                    }
+                    gst::PadProbeReturn::Ok
+                },
+            );
+            let output = queue.static_pad("src").expect("src pad");
+            // Buffers only: events and the allocation query must pass, or the
+            // source never negotiates far enough to fail.
+            let block = output
+                .add_probe(
+                    gst::PadProbeType::BLOCK | gst::PadProbeType::BUFFER,
+                    |_, _| gst::PadProbeReturn::Ok,
+                )
+                .expect("block probe");
+            *hold.lock().expect("hold") = Some((output, block));
+            Ok(bin.upcast())
+        };
+        let mut recording = Box::new(
+            GstRecording::start_with(VideoInput::Test, &plan, &sources).expect("recording starts"),
+        );
+        source_failed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the Microphone source fails");
+        let (output, block) = held.lock().expect("hold").take().expect("held output");
+        output.remove_probe(block);
+        wait_until_recorded(&recording, AudioTrack::Microphone);
+        assert!(matches!(
+            recording.poll(Duration::from_secs(3)),
+            Some(RecordingEvent::TrackFailed {
+                track: AudioTrack::Microphone,
+                ..
+            })
+        ));
+        assert_eq!(recording.poll(Duration::from_millis(400)), None);
         recording.finish().expect("recording completes");
         assert_eq!(
             stream_kinds(&plan.output),
