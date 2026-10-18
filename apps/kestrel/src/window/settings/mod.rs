@@ -4,7 +4,9 @@ mod media;
 mod panels;
 mod tools;
 
-use crate::window::widgets::{FilterRows, choose_path, icon_button, plain_row, stacked_row};
+use crate::window::widgets::{
+    FilterRows, choose_path, icon_button, on_spin_row_settled, plain_row, stacked_row,
+};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation};
@@ -152,8 +154,8 @@ fn add_logging_group(
         row.set_value(f64::from(value));
         row.set_numeric(true);
         let sender = commands.clone();
-        row.connect_value_notify(move |spin| {
-            let value = (spin.value() as u32).clamp(min, max);
+        on_spin_row_settled(&row, move |value| {
+            let value = (value as u32).clamp(min, max);
             let _ = sender.try_send(ApplicationCommand::SetLoggingSetting(setting(value)));
         });
         filter_rows.push((

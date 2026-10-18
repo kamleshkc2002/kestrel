@@ -1,6 +1,6 @@
 //! Audio mixer and microphone controls.
 
-use super::widgets::{icon_button, plain_row};
+use super::widgets::{icon_button, on_spin_button_settled, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
@@ -110,8 +110,8 @@ fn build_audio_level_controls(
         format!("{label} does not accept volume changes")
     }));
     let sender = commands.clone();
-    volume.connect_value_changed(move |spin| {
-        let (volume_command, _) = target.command(spin.value() as u8, muted);
+    on_spin_button_settled(&volume, move |value| {
+        let (volume_command, _) = target.command(value as u8, muted);
         let _ = sender.try_send(volume_command);
     });
     controls.append(&volume);

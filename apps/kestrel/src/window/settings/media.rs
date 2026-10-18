@@ -1,6 +1,6 @@
 //! Audio policy, screenshot limit, and screen tool settings.
 
-use crate::window::widgets::plain_row;
+use crate::window::widgets::{on_spin_row_settled, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -42,8 +42,8 @@ pub(super) fn add_audio_policy_group(
         Property::Description("The largest volume the mixer requests, bounded by the hard cap"),
     ]);
     let sender = commands.clone();
-    boost.connect_value_notify(move |spin| {
-        let _ = sender.try_send(ApplicationCommand::SetAudioBoostPercent(spin.value() as u8));
+    on_spin_row_settled(&boost, move |value| {
+        let _ = sender.try_send(ApplicationCommand::SetAudioBoostPercent(value as u8));
     });
     audio_group.add(&boost);
     filter_rows.push((
@@ -135,9 +135,9 @@ pub(super) fn add_audio_policy_group(
         Property::Description("The volume reapplied after output loss, from 0 to 100 percent"),
     ]);
     let sender = commands.clone();
-    disconnect_volume.connect_value_notify(move |spin| {
+    on_spin_row_settled(&disconnect_volume, move |value| {
         let _ = sender.try_send(ApplicationCommand::SetAudioDisconnectVolumePercent(
-            spin.value() as u8,
+            value as u8,
         ));
     });
     audio_group.add(&disconnect_volume);
@@ -220,8 +220,8 @@ pub(super) fn add_screenshot_limits_group(
         row.set_numeric(true);
         row.update_property(&[Property::Label(&format!("Screenshots: {title}"))]);
         let sender = commands.clone();
-        row.connect_value_notify(move |spin| {
-            let value = spin.value().max(1.0) as u32;
+        on_spin_row_settled(&row, move |value| {
+            let value = value.max(1.0) as u32;
             let _ = sender.try_send(ApplicationCommand::SetCaptureLimit(limit(value)));
         });
         filter_rows.push((
@@ -282,9 +282,9 @@ pub(super) fn add_screen_tools_group(
     timeout.set_numeric(true);
     timeout.update_property(&[Property::Label("Screen tools: OCR time limit")]);
     let sender = commands.clone();
-    timeout.connect_value_notify(move |spin| {
+    on_spin_row_settled(&timeout, move |value| {
         let _ = sender.try_send(ApplicationCommand::SetScreenToolsSetting(
-            kestrel::ScreenToolsSetting::OcrTimeoutSeconds(spin.value() as u32),
+            kestrel::ScreenToolsSetting::OcrTimeoutSeconds(value as u32),
         ));
     });
     filter_rows.push((

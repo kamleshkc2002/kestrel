@@ -1,6 +1,6 @@
 //! Panel layout, monitoring readout, alert, and process settings.
 
-use crate::window::widgets::plain_row;
+use crate::window::widgets::{on_spin_row_settled, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
@@ -231,10 +231,10 @@ pub(super) fn add_monitoring_alerts_group(
         threshold.add_suffix(&unit_label);
         threshold.update_property(&[Property::Label(&format!("{} alert threshold", rule.label))]);
         let sender = commands.clone();
-        threshold.connect_value_notify(move |spin| {
+        on_spin_row_settled(&threshold, move |value| {
             let _ = sender.try_send(ApplicationCommand::SetAlertThreshold {
                 kind,
-                threshold: spin.value(),
+                threshold: value,
             });
         });
         row.add_row(&threshold);
@@ -349,8 +349,8 @@ pub(super) fn add_process_limits_group(
         row.set_numeric(true);
         row.update_property(&[Property::Label(&format!("Processes: {title}"))]);
         let sender = commands.clone();
-        row.connect_value_notify(move |spin| {
-            let value = (spin.value() as u32).clamp(min, max);
+        on_spin_row_settled(&row, move |value| {
+            let value = (value as u32).clamp(min, max);
             let _ = sender.try_send(ApplicationCommand::SetProcessLimit(limit(value)));
         });
         filter_rows.push((
