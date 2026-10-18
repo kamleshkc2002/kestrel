@@ -1,6 +1,6 @@
 //! Runtime-agnostic policy and state for the PulseAudio-compatible mixer.
 
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use kestrel_core::{
     AudioConfiguration, AudioDisconnectPolicy, AudioOutputSwitch, CapabilityReport,
@@ -283,6 +283,10 @@ pub struct AudioMixerService<B> {
     last_reconcile: Option<AudioReconcileOutcome>,
     latest: AudioSnapshot,
     capability: CapabilityReport,
+    /// Streams and outputs Kestrel muted because their level reached zero;
+    /// raising the level unmutes only these.
+    zero_muted_streams: BTreeSet<u32>,
+    zero_muted_outputs: BTreeSet<u32>,
 }
 
 impl<B: AudioBackend> AudioMixerService<B> {
@@ -310,6 +314,8 @@ impl<B: AudioBackend> AudioMixerService<B> {
                 },
                 "Audio mixer has not been started.",
             ),
+            zero_muted_streams: BTreeSet::new(),
+            zero_muted_outputs: BTreeSet::new(),
         })
     }
 
@@ -361,6 +367,8 @@ impl<B: AudioBackend> AudioMixerService<B> {
                 self.capability = capability_for_error(&error);
                 self.discovered = None;
                 self.last_reconcile = None;
+                self.zero_muted_streams.clear();
+                self.zero_muted_outputs.clear();
                 self.latest = AudioSnapshot::unavailable(self.policy);
                 return Err(error);
             }
@@ -404,6 +412,19 @@ impl<B: AudioBackend> AudioMixerService<B> {
         }
 
         self.capability = capability_for(&discovery);
+        // A mute lifted elsewhere, or a device that left, ends Kestrel's claim.
+        self.zero_muted_streams.retain(|id| {
+            discovery
+                .streams
+                .iter()
+                .any(|stream| stream.id == *id && stream.muted)
+        });
+        self.zero_muted_outputs.retain(|id| {
+            discovery
+                .outputs
+                .iter()
+                .any(|output| output.id == *id && output.muted)
+        });
         self.latest = self.present(&discovery);
         self.discovered = Some(discovery);
         Ok(&self.latest)
@@ -425,14 +446,29 @@ impl<B: AudioBackend> AudioMixerService<B> {
             AudioCommand::SetStreamVolume {
                 stream_id,
                 volume_percent,
-            } => self
-                .backend
-                .set_stream_volume(stream_id, volume_percent)
-                .map_err(AudioCommandError::Backend),
-            AudioCommand::SetStreamMute { stream_id, muted } => self
-                .backend
-                .set_stream_mute(stream_id, muted)
-                .map_err(AudioCommandError::Backend),
+            } => {
+                let muted = self.stream(stream_id).is_ok_and(|stream| stream.muted);
+                self.backend
+                    .set_stream_volume(stream_id, volume_percent)
+                    .map_err(AudioCommandError::Backend)?;
+                if volume_percent == 0 && !muted {
+                    self.backend
+                        .set_stream_mute(stream_id, true)
+                        .map_err(AudioCommandError::Backend)?;
+                    self.zero_muted_streams.insert(stream_id);
+                } else if volume_percent > 0 && self.zero_muted_streams.remove(&stream_id) {
+                    self.backend
+                        .set_stream_mute(stream_id, false)
+                        .map_err(AudioCommandError::Backend)?;
+                }
+                Ok(())
+            }
+            AudioCommand::SetStreamMute { stream_id, muted } => {
+                self.zero_muted_streams.remove(&stream_id);
+                self.backend
+                    .set_stream_mute(stream_id, muted)
+                    .map_err(AudioCommandError::Backend)
+            }
             AudioCommand::MoveStream {
                 stream_id,
                 output_id,
@@ -443,14 +479,29 @@ impl<B: AudioBackend> AudioMixerService<B> {
             AudioCommand::SetOutputVolume {
                 output_id,
                 volume_percent,
-            } => self
-                .backend
-                .set_output_volume(output_id, volume_percent)
-                .map_err(AudioCommandError::Backend),
-            AudioCommand::SetOutputMute { output_id, muted } => self
-                .backend
-                .set_output_mute(output_id, muted)
-                .map_err(AudioCommandError::Backend),
+            } => {
+                let muted = self.output(output_id).is_ok_and(|output| output.muted);
+                self.backend
+                    .set_output_volume(output_id, volume_percent)
+                    .map_err(AudioCommandError::Backend)?;
+                if volume_percent == 0 && !muted {
+                    self.backend
+                        .set_output_mute(output_id, true)
+                        .map_err(AudioCommandError::Backend)?;
+                    self.zero_muted_outputs.insert(output_id);
+                } else if volume_percent > 0 && self.zero_muted_outputs.remove(&output_id) {
+                    self.backend
+                        .set_output_mute(output_id, false)
+                        .map_err(AudioCommandError::Backend)?;
+                }
+                Ok(())
+            }
+            AudioCommand::SetOutputMute { output_id, muted } => {
+                self.zero_muted_outputs.remove(&output_id);
+                self.backend
+                    .set_output_mute(output_id, muted)
+                    .map_err(AudioCommandError::Backend)
+            }
             AudioCommand::SetDefaultOutput { output_id } => {
                 self.switch_default_output(output_id, AudioSwitchReason::Manual);
                 Ok(())
@@ -1209,6 +1260,143 @@ mod tests {
 
         assert_eq!(log.borrow().output_volume_calls, vec![(3, 120)]);
         assert_eq!(log.borrow().output_mute_calls, vec![(3, true)]);
+    }
+
+    fn muted_stream(id: u32, output_id: u32, volume_percent: u8) -> PlaybackStream {
+        PlaybackStream {
+            muted: true,
+            ..stream(id, output_id, volume_percent)
+        }
+    }
+
+    fn muted_output(id: u32, volume_percent: u8) -> OutputDevice {
+        OutputDevice {
+            muted: true,
+            ..output(id, true, volume_percent)
+        }
+    }
+
+    #[test]
+    fn zero_level_mutes_and_raising_it_unmutes() {
+        let (backend, log) = fake([
+            standard(50),
+            discovery(vec![output(3, true, 50)], vec![muted_stream(7, 3, 0)]),
+            standard(40),
+            discovery(vec![muted_output(3, 0)], vec![stream(7, 3, 40)]),
+            discovery(vec![output(3, true, 30)], vec![stream(7, 3, 40)]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("discovery succeeds");
+
+        service
+            .execute(AudioCommand::SetStreamVolume {
+                stream_id: 7,
+                volume_percent: 0,
+            })
+            .expect("zero is accepted");
+        service
+            .execute(AudioCommand::SetStreamVolume {
+                stream_id: 7,
+                volume_percent: 40,
+            })
+            .expect("raising is accepted");
+        service
+            .execute(AudioCommand::SetOutputVolume {
+                output_id: 3,
+                volume_percent: 0,
+            })
+            .expect("zero is accepted");
+        let snapshot = service
+            .execute(AudioCommand::SetOutputVolume {
+                output_id: 3,
+                volume_percent: 30,
+            })
+            .expect("raising is accepted");
+
+        let log = log.borrow();
+        assert_eq!(log.mute_calls, vec![(7, true), (7, false)]);
+        assert_eq!(log.output_mute_calls, vec![(3, true), (3, false)]);
+        assert!(!snapshot.outputs[0].muted, "the re-read state is unmuted");
+    }
+
+    #[test]
+    fn a_mute_kestrel_did_not_set_survives_level_changes() {
+        let (backend, log) = fake([
+            // The user muted the stream before touching its level.
+            discovery(vec![output(3, true, 50)], vec![muted_stream(7, 3, 50)]),
+            discovery(vec![output(3, true, 50)], vec![muted_stream(7, 3, 0)]),
+            discovery(vec![output(3, true, 50)], vec![muted_stream(7, 3, 40)]),
+            // Zero mutes the output, then the user mutes it explicitly.
+            discovery(vec![muted_output(3, 0)], vec![muted_stream(7, 3, 40)]),
+            discovery(vec![muted_output(3, 0)], vec![muted_stream(7, 3, 40)]),
+            discovery(vec![muted_output(3, 30)], vec![muted_stream(7, 3, 40)]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("discovery succeeds");
+
+        for volume_percent in [0, 40] {
+            service
+                .execute(AudioCommand::SetStreamVolume {
+                    stream_id: 7,
+                    volume_percent,
+                })
+                .expect("level changes are accepted");
+        }
+        service
+            .execute(AudioCommand::SetOutputVolume {
+                output_id: 3,
+                volume_percent: 0,
+            })
+            .expect("zero is accepted");
+        service
+            .execute(AudioCommand::SetOutputMute {
+                output_id: 3,
+                muted: true,
+            })
+            .expect("mute is accepted");
+        service
+            .execute(AudioCommand::SetOutputVolume {
+                output_id: 3,
+                volume_percent: 30,
+            })
+            .expect("raising is accepted");
+
+        let log = log.borrow();
+        assert!(log.mute_calls.is_empty(), "the user's stream mute stays");
+        assert_eq!(
+            log.output_mute_calls,
+            vec![(3, true), (3, true)],
+            "raising never lifts a mute the user confirmed"
+        );
+    }
+
+    #[test]
+    fn a_mute_lifted_elsewhere_is_not_lifted_again() {
+        let (backend, log) = fake([
+            standard(50),
+            discovery(vec![output(3, true, 50)], vec![muted_stream(7, 3, 0)]),
+            // Another mixer unmuted the stream at zero.
+            standard(0),
+            standard(40),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("discovery succeeds");
+
+        service
+            .execute(AudioCommand::SetStreamVolume {
+                stream_id: 7,
+                volume_percent: 0,
+            })
+            .expect("zero is accepted");
+        service.refresh().expect("discovery succeeds");
+        service
+            .execute(AudioCommand::SetStreamVolume {
+                stream_id: 7,
+                volume_percent: 40,
+            })
+            .expect("raising is accepted");
+
+        assert_eq!(log.borrow().mute_calls, vec![(7, true)]);
     }
 
     #[test]

@@ -77,6 +77,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** `[audio] boost_percent` (100–150; default 130), `output_switch` (`default_output` or `all_streams`), `disconnect_policy` (`preserve_volume` or `reset_volume`), `disconnect_volume_percent` (0–100; default 100), `include_inactive_streams` (default false), `output_priority` (up to 16 device names), `follow_output_priority` (default false), and `mixer_favorites` (up to 32 application identities). The ranking and pins are edited in the panel.
 - Amplification is bounded by the configured ceiling and a 150% hard cap; process IDs and the Pulse authentication cookie stay private.
+- Setting an output or stream to 0% also mutes it, and raising it again lifts that mute. A mute you set yourself, here or in another mixer, stays when the level changes.
 - Output priority: while followed, the highest-ranked connected output becomes the default when outputs connect or disconnect, or when the ranking changes. A manual choice stands until then. Disconnected devices keep their rank. Only server device names are stored.
 - Pinned applications are listed first in their pinned order, keyed by `application.id`, else the process binary, else the application name. Unpinned streams keep the server's order, and a pin applies again when the application returns.
 
