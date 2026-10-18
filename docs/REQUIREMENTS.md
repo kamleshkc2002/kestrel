@@ -513,21 +513,13 @@ specific remediation rather than simply hiding a feature without explanation.
 
 ## 11. Product roadmap (phased)
 
-### 11.1 Reference-feature coverage contract
+### 11.1 Feature coverage contract
 
-The product roadmap is audited against the Vorssaint feature catalog at commit
-`fe24c17` (upstream `main` on 2026-10-12, 77 identifiers, unchanged since the
-`0cf7529` audit of 2026-10-04; the audit before that, at `29bd174`, covered 57).
-The `fe24c17` audit added depth to existing stories: snap zones, clipboard
-reuse ordering and layouts, text-only redaction, per-core CPU, and overlay
-controls. Behavior tied to macOS hardware or apps (AirPlay targets, Wine input,
-notch gap filling) needs no Linux counterpart; per-stream routing to any output
-already covers single-app output choice. This is a product-scope ledger, not a
-promise of identical implementation or uniform Linux support.
-Every reference feature must be either scheduled, translated to an appropriate
-Linux workflow, or explicitly excluded with a reason.
-Repeat this identifier audit when the reference catalog changes, recording the
-new reference commit so roadmap drift remains reviewable.
+The roadmap below is a product-scope ledger, not a promise of identical
+implementation or uniform Linux support. Every planned capability is either
+scheduled in a phase, translated to a Linux workflow, or excluded with a reason
+in §11.7. When scope changes, update this ledger, the phases, and the project
+board together.
 
 - **Windows:** window layout and edge snapping, maximize-without-fullscreen,
   move/restore across displays, quit-on-last-window, and quit/close
@@ -544,8 +536,7 @@ new reference commit so roadmap drift remains reviewable.
   independent timed/lock/sleep clipboard clearing; paste as plain text; a drag
   shelf; file-manager cut/move, rename and image-to-file actions through
   supported file-manager interfaces; URL cleanup; and package/image installation
-  handoff. Finder-specific behavior and macOS disk-image installation are not
-  portable contracts.
+  handoff.
 - **Sound:** master and per-stream volume, mute and routing; values above 100%
   with safe limiting; output cycling and disconnect policy; preferred input and
   global microphone mute; and capability-gated suppression of unwanted media-app
@@ -579,44 +570,7 @@ does not complete scrolling capture, editing, redaction, pinned/recent captures,
 or explicit temporary sharing; those capabilities stay visible as later roadmap
 work rather than being treated as implicitly delivered.
 
-The stable reference identifiers map to the phases below:
-
-- **Phase 1:** `clipboardHistory`, `mixer`, `soundOutputSwitcher`, `keepAwake`,
-  `brightness`, `quickToggles`, `monitorCPU`, `monitorGPU`, `monitorMemory`,
-  `monitorNetwork`, `monitorDisk`, and `monitorPower`.
-- **Phase 2:** `textSnippets`, `pastePlain`, `micMute`, `quickLauncher`,
-  `colorPicker`, `screenOCR`, `screenshot`, `screenRecorder`, `cameraPreview`,
-  `scratchpad`, `commandBar`, `killProcess`, and `portManager`.
-- **Phase 3:** `windowMaximizer`, `windowLayout`, `finderCutPaste`,
-  `finderRename`, `shelf`, `urlCleaner`, `diskImageInstaller`,
-  `bluetoothSleep`, `cleaningMode`, `mediaTools`, `fanControl`,
-  `audioPriority`, `connectedDevices`, and `wallpaper`.
-- **Phase 4:** `autoQuit`, `scrollInverter`, `scrollHorizontal`,
-  `focusFollowsMouse`, `smoothScroll`, `linearScroll`, `mouseAcceleration`,
-  `mouseNavigation`, `mouseButtonShortcuts`, `middleClick`,
-  `mouseClickDebounce`, `keyboardDebounce`, `superKey`,
-  `quitWindowProtection`, `musicBlock`, `extraBrightness`, `notch` (as the
-  Kestrel status overlay), `notchGestures`, and `notchAccessories`.
-- **Excluded:**
-  - `spacesOrder`: Linux desktops keep workspaces in the order the user set, so
-    the macOS reordering it corrects has no counterpart.
-  - `switcher`, `dockPreview`, `dockClick`, `radialMenu`: launcher and shell
-    territory; Kestrel exposes its actions to launchers instead.
-  - `cleaner`, `uninstaller`, `homebrew`, `appUpdates`, and the messaging-download
-    workflows: package managers and software centres own application management.
-  - `notchCalendar`, `notchNotifications`, `notchTimer`, `notchLyrics`,
-    `notchQueue`, `notchLiveEqualizer`, `notchDownloads`, `notchAgents`,
-    `notchWatch`, `notchMascot`: desktop panels, notification daemons, and media
-    applets already provide them; the overlay shows only Kestrel's own state.
-
-Identifiers retain their reference spelling only for auditability. Kestrel uses
-its own namespaced IDs and Linux-native product language; Finder actions,
-`diskImageInstaller`, and Apple display
-behavior are translated or capability-gated as described below rather than
-promised literally.
-
-The reference product permits very large or unlimited clipboard retention.
-Kestrel deliberately does not: retention remains bounded. Persistent history or
+Clipboard retention stays bounded by design. Persistent history or
 pinned favorites require a separate threat model, private file permissions,
 atomic recovery, migration and immediate secure-clear design, and must be a
 second explicit opt-in; memory-only history remains the default.
@@ -716,15 +670,20 @@ second explicit opt-in; memory-only history remains the default.
 - Shipping a Kestrel-owned Dock, app switcher, radial menu, or taskbar
   integration, or replacing the desktop shell. Launchers and shells own
   general launching and window switching; Kestrel exposes its actions to them.
-- Finder-specific automation and macOS disk-image installation. Linux file
-  actions use documented file-manager interfaces, and installation delegates to
-  explicit package, Flatpak, Snap, AppImage or distribution providers.
+- File-manager automation beyond documented interfaces, and disk-image
+  installation. Linux file actions use documented file-manager interfaces, and
+  installation delegates to explicit package, Flatpak, Snap, AppImage or
+  distribution providers.
 - Application updates, cleanup, uninstall, Homebrew handoff, and
   messaging-download organization. Package managers and software centres own
   application management.
-- Apple-only SMC/XDR behavior or a promise of universal fan, HDR, closed-lid,
-  input interception, window control, or application identity. Unsupported
-  hardware and desktop paths remain visible capability states.
+- Status overlay modules for media playback, lyrics, calendar, notifications,
+  timers, downloads, AI-agent usage, window watching, and companions. Desktop
+  panels, notification daemons, and media applets already provide them; the
+  overlay shows only Kestrel's own state.
+- A promise of universal fan, HDR, closed-lid, input interception, window
+  control, or application identity. Unsupported hardware and desktop paths
+  remain visible capability states.
 
 ---
 

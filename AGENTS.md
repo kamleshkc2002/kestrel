@@ -94,6 +94,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - Pass owned snapshots/view models across boundaries. Keep live backend handles private to their service/runtime owner; widgets must not own service resources.
 - Configuration failures are isolated: a malformed feature setting emits a warning and disables/ignores only that feature rather than blocking unrelated startup.
 - Privacy is structural: capability evidence is sanitized; clipboard content is bounded, memory-only, zeroized, and never exposed in public snapshots. Preserve lock/sleep/stop wipe behavior and `clear_if_matches` ownership checks.
+- Repository files, Markdown included, never contain commit SHAs, PR links, or the names of external products used as feature references; describe scope, decisions, and audits in Kestrel's own terms. Commit messages, issues, and PRs follow the same rule for external reference products.
 
 ## Important Files
 
