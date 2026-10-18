@@ -4,6 +4,7 @@ mod autostart;
 mod command_bar;
 pub mod command_line;
 mod config;
+pub mod logging;
 mod private_file;
 mod runtime;
 mod snippets;
@@ -116,6 +117,14 @@ pub enum CaptureLimit {
 pub enum ProcessLimit {
     RefreshMillis(u32),
     MaxRows(u32),
+}
+
+/// One logging setting changed on the Settings page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoggingSetting {
+    Debug(bool),
+    RetentionDays(u32),
+    MaxTotalMegabytes(u32),
 }
 
 /// Scratchpad bound edited from Settings.
@@ -492,6 +501,10 @@ pub enum ApplicationCommand {
     SetCaptureLimit(CaptureLimit),
     SetProcessLimit(ProcessLimit),
     SetScratchpadLimit(ScratchpadLimit),
+    SetLoggingSetting(LoggingSetting),
+    /// Opens the log folder in the file manager.
+    OpenLogFolder,
+    ClearLogs,
     Processes(ProcessRequest),
     Camera(CameraRequest),
     Recording(RecordingRequest),

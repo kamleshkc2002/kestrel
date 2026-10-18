@@ -216,6 +216,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_recording(&mut loaded, document.get("recording"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
     parse_quick_panel(&mut loaded, document.get("quick_panel"));
+    parse_logging(&mut loaded, document.get("logging"));
     retire_battery_alerts_toggle(&mut loaded);
     Ok(loaded)
 }
@@ -777,6 +778,67 @@ fn parse_capture(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         &mut limits.max_age_hours,
     );
     loaded.configuration.capture = limits;
+}
+
+fn parse_logging(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "logging",
+            "The logging value must be a TOML table.",
+        ));
+        return;
+    };
+    let configuration = &mut loaded.configuration.logging;
+    let mut warnings = Vec::new();
+    if let Some(value) = table.get("debug") {
+        match bool::deserialize(value.clone()) {
+            Ok(debug) => configuration.debug = debug,
+            Err(_) => warnings.push(warning(
+                "logging.debug",
+                "Must be true or false; debug logging stays off.",
+            )),
+        }
+    }
+    if let Some(value) = table.get("retention_days") {
+        match u32::deserialize(value.clone()) {
+            Ok(days)
+                if (kestrel_core::MIN_LOG_RETENTION_DAYS
+                    ..=kestrel_core::MAX_LOG_RETENTION_DAYS)
+                    .contains(&days) =>
+            {
+                configuration.retention_days = days;
+            }
+            _ => warnings.push(warning(
+                "logging.retention_days",
+                format!(
+                    "Must be between {} and {} days; the default was retained.",
+                    kestrel_core::MIN_LOG_RETENTION_DAYS,
+                    kestrel_core::MAX_LOG_RETENTION_DAYS
+                ),
+            )),
+        }
+    }
+    if let Some(value) = table.get("max_total_megabytes") {
+        match u32::deserialize(value.clone()) {
+            Ok(megabytes)
+                if (kestrel_core::MIN_LOG_TOTAL_MEGABYTES
+                    ..=kestrel_core::MAX_LOG_TOTAL_MEGABYTES)
+                    .contains(&megabytes) =>
+            {
+                configuration.max_total_megabytes = megabytes;
+            }
+            _ => warnings.push(warning(
+                "logging.max_total_megabytes",
+                format!(
+                    "Must be between {} and {} MB; the default was retained.",
+                    kestrel_core::MIN_LOG_TOTAL_MEGABYTES,
+                    kestrel_core::MAX_LOG_TOTAL_MEGABYTES
+                ),
+            )),
+        }
+    }
+    loaded.warnings.extend(warnings);
 }
 
 fn parse_scratchpad(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -1607,6 +1669,30 @@ autostart = true
         );
         assert!(loaded.configuration.startup.autostart);
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn malformed_logging_fields_keep_their_defaults_and_warn() {
+        let loaded = parse(
+            "schema_version = 3\n[logging]\ndebug = true\nretention_days = 0\nmax_total_megabytes = 50\n",
+        )
+        .expect("document itself is valid TOML");
+        let logging = loaded.configuration.logging;
+        assert!(logging.debug);
+        assert_eq!(
+            logging.retention_days,
+            kestrel_core::DEFAULT_LOG_RETENTION_DAYS,
+            "an out-of-range retention keeps the default"
+        );
+        assert_eq!(logging.max_total_megabytes, 50);
+        assert_eq!(
+            loaded
+                .warnings
+                .iter()
+                .map(|warning| warning.feature_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["logging.retention_days"]
+        );
     }
 
     #[test]

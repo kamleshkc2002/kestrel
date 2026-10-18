@@ -1069,6 +1069,7 @@ dependencies = [
  "ksni",
  "libadwaita",
  "libc",
+ "log",
  "pangocairo",
  "pkg-config",
  "serde",

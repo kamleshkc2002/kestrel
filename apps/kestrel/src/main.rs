@@ -670,6 +670,8 @@ enum ControllerOperation {
     SetCaptureLimit(kestrel::CaptureLimit),
     SetProcessLimit(kestrel::ProcessLimit),
     SetScratchpadLimit(kestrel::ScratchpadLimit),
+    SetLoggingSetting(kestrel::LoggingSetting),
+    ClearLogs,
     SetScreenToolsSetting(kestrel::ScreenToolsSetting),
     SetRecordingSetting(kestrel::RecordingSetting),
     RefreshProcesses,
@@ -1082,10 +1084,15 @@ impl ApplicationController {
         let worker = thread::Builder::new()
             .name(worker_name.to_owned())
             .spawn(move || {
+                let started = Instant::now();
                 let result = state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .run(operation, config_path.as_deref());
+                log::debug!(
+                    "{worker_name} finished in {} ms",
+                    started.elapsed().as_millis()
+                );
                 let _ = results.send_blocking(result);
             });
         if let Err(error) = worker {
@@ -1191,6 +1198,7 @@ impl ApplicationController {
                 }
             }
             Err(message) => {
+                log::warn!("operation failed: {message}");
                 let view_model = self.current_view_model();
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
@@ -1697,6 +1705,7 @@ impl ApplicationController {
 
 impl ControllerState {
     fn run(&mut self, operation: ControllerOperation, config_path: Option<&Path>) -> RefreshResult {
+        let logging_before = self.configuration.logging;
         let message = match operation {
             ControllerOperation::Refresh => {
                 self.runtime
@@ -2157,6 +2166,35 @@ impl ControllerState {
                 };
                 self.commit_configuration(candidate, config_path, message)?
             }
+            ControllerOperation::SetLoggingSetting(setting) => {
+                let mut candidate = self.configuration.clone();
+                let message = match setting {
+                    kestrel::LoggingSetting::Debug(true) => {
+                        candidate.logging.debug = true;
+                        "Debug logging is on".to_owned()
+                    }
+                    kestrel::LoggingSetting::Debug(false) => {
+                        candidate.logging.debug = false;
+                        "Debug logging is off".to_owned()
+                    }
+                    kestrel::LoggingSetting::RetentionDays(days) => {
+                        candidate.logging.retention_days = days;
+                        format!("Logs are kept for {days} days")
+                    }
+                    kestrel::LoggingSetting::MaxTotalMegabytes(megabytes) => {
+                        candidate.logging.max_total_megabytes = megabytes;
+                        format!("Logs use at most {megabytes} MB")
+                    }
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::ClearLogs => match kestrel::logging::logger() {
+                Some(logger) => match logger.clear() {
+                    Ok(removed) => format!("Removed {removed} log file(s)"),
+                    Err(error) => return Err(format!("The logs were not cleared: {error}")),
+                },
+                None => "Logging is unavailable without a home folder".to_owned(),
+            },
             ControllerOperation::SetScratchpadLimit(limit) => {
                 let mut candidate = self.configuration.clone();
                 let message = match limit {
@@ -2524,6 +2562,13 @@ impl ControllerState {
                 format!("Exported configuration to {}", path.display())
             }
         };
+        if self.configuration.logging != logging_before {
+            if let Some(logger) = kestrel::logging::logger() {
+                logger.apply(kestrel::logging::LogPolicy::from_configuration(
+                    &self.configuration.logging,
+                ));
+            }
+        }
         Ok((self.view_model(), message))
     }
     fn commit_configuration(
@@ -2677,7 +2722,6 @@ fn load_startup_configuration(
     match load(&path) {
         Ok(loaded) => (loaded, Some(path)),
         Err(error) => {
-            eprintln!("Kestrel could not load its configuration: {error}");
             let mut loaded = LoadedConfiguration::default();
             loaded.warnings.push(ConfigurationWarning {
                 feature_id: "configuration".to_owned(),
@@ -2717,6 +2761,14 @@ fn main() -> glib::ExitCode {
     };
 
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
+    let logger = kestrel::logging::install(kestrel::logging::LogPolicy::from_configuration(
+        &loaded.configuration.logging,
+    ));
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        log::error!("panic: {info}");
+        default_panic(info);
+    }));
     let initial_appearance = loaded.configuration.ui.appearance;
     let application = adw::Application::builder()
         .application_id(kestrel_core::APPLICATION_ID)
@@ -2726,7 +2778,7 @@ fn main() -> glib::ExitCode {
         apply_color_scheme(initial_appearance);
     });
     if let Err(error) = application.register(None::<&adw::gio::Cancellable>) {
-        eprintln!("kestrel: could not register with the session bus: {error}");
+        log::error!("could not register with the session bus: {error}");
         return glib::ExitCode::FAILURE;
     }
     if application.is_remote() {
@@ -2742,6 +2794,22 @@ fn main() -> glib::ExitCode {
             }
         }
         return exit;
+    }
+
+    log::info!("Kestrel {} started", env!("CARGO_PKG_VERSION"));
+    for warning in &loaded.warnings {
+        if logger.is_some() {
+            log::warn!(target: "configuration", "{}: {}", warning.feature_id, warning.reason);
+        } else {
+            eprintln!("kestrel: {}: {}", warning.feature_id, warning.reason);
+        }
+    }
+    if let Some(logger) = logger {
+        let _ = logger.prune(std::time::SystemTime::now());
+        glib::timeout_add_seconds_local(60 * 60, move || {
+            let _ = logger.prune(std::time::SystemTime::now());
+            glib::ControlFlow::Continue
+        });
     }
 
     if loaded.configuration.startup.autostart {
@@ -2835,7 +2903,7 @@ fn main() -> glib::ExitCode {
                     // The remote client reports the gate from the exit status.
                     let message = format!("{}: {gate}", action.id());
                     if !command_line.is_remote() {
-                        eprintln!("kestrel: {message}");
+                        log::warn!("{message}");
                     }
                     if action == CommandLineAction::OpenCommandBar {
                         // The surface opens in its remediation state.
@@ -3083,6 +3151,31 @@ fn dispatch_commands(
                     ControllerOperation::SetScratchpadLimit(limit),
                     "kestrel-scratchpad-limit",
                 ),
+                ApplicationCommand::SetLoggingSetting(setting) => controller.request_operation(
+                    ControllerOperation::SetLoggingSetting(setting),
+                    "kestrel-logging-setting",
+                ),
+                ApplicationCommand::ClearLogs => controller
+                    .request_operation(ControllerOperation::ClearLogs, "kestrel-clear-logs"),
+                ApplicationCommand::OpenLogFolder => {
+                    let Some(logger) = kestrel::logging::logger() else {
+                        controller.show_message("Logging is unavailable without a home folder");
+                        continue;
+                    };
+                    if let Err(error) = logger.ensure_directory() {
+                        controller
+                            .show_message(&format!("The log folder was not created: {error}"));
+                        continue;
+                    }
+                    let uri = gtk::gio::File::for_path(logger.directory()).uri();
+                    let window = controller.window.borrow();
+                    let parent = window.as_ref().map(|view| view.window.clone());
+                    gtk::UriLauncher::new(&uri).launch(
+                        parent.as_ref(),
+                        gtk::gio::Cancellable::NONE,
+                        |_| {},
+                    );
+                }
                 ApplicationCommand::ScreenTools(request) => controller.screen_tool_request(request),
                 ApplicationCommand::Camera(request) => controller.camera_request(request),
                 ApplicationCommand::Recording(request) => controller.recording_request(request),
