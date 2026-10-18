@@ -26,8 +26,8 @@ capability status, and explicit resource ownership. The implementation must be
 new and Linux-native.
 
 **Conclusion:** Kestrel is feasible as a new application. A large subset of the
-feature set has a clean Linux implementation; window snapping, an app switcher
-with previews, fan control, and some display/input features depend on the
+feature set has a clean Linux implementation; window snapping, fan control,
+and some display/input features depend on the
 desktop environment, compositor, or hardware. Support uses per-capability
 reporting; a single portability percentage is not used.
 
@@ -111,10 +111,10 @@ Difficulty legend: ✅ straightforward · 🟡 moderate/partial · 🔶 hard or 
 | Command bar (Kestrel actions) | ✅ | Kestrel command registry; optional app/file/window sources | Vicinae, `rofi`, `ulauncher` for general launching |
 | Fan control | 🔶 | `/sys/class/hwmon`, `thinkfan`, `nbfc`; hardware-specific | `thinkfan`, `nbfc` |
 | Window snapping / layout | 🟡/🔶 | Easy on X11 (EWMH); **restricted by design on Wayland** | WM built-ins, GNOME "Tactile" |
-| App switcher + window previews | 🟡/🔶 | Easy on X11; compositor-specific on Wayland | `rofi` window mode, `sway`/`hyprland` IPC |
-| Dock previews | ➖ | No Dock on Linux; closest is taskbar/overview | KDE/GNOME overview |
-| Uninstaller / Homebrew handoff | ➖ | Different model: package managers, Flatpak | GNOME Software, KDE Discover |
-| Radial menu | ✅ | Custom UI overlay | n/a |
+| App switcher + window previews | ➖ | Not planned: launcher and shell territory | Vicinae, KRunner, GNOME Overview, `rofi` window mode |
+| Dock previews | ➖ | Not planned: no Dock on Linux, and taskbars belong to the shell | KDE/GNOME overview |
+| Updates, cleanup, uninstall, Homebrew handoff | ➖ | Not planned: package managers and software centres own this | GNOME Software, KDE Discover |
+| Radial menu | ➖ | Not planned: duplicates launchers | Vicinae, KRunner |
 | File shelf / drop zone | ✅ | GTK drag-and-drop | n/a |
 | Clipboard auto-clear / paste as plain text | ✅/🟡 | Clipboard manager + timed ownership; text-only write | `CopyQ`, `wl-copy` |
 | OCR / QR / color picker | ✅/🟡 | Portal or compositor capture + Tesseract/ZBar/pixel sampling | `ksnip`, `grim`, `slurp` |
@@ -261,7 +261,7 @@ hardware limitations. Every privileged operation must be narrowly scoped and aud
 
 | # | Problem | Impact | Mitigation |
 |---|---|---|---|
-| 1 | **Wayland window management** (no unified API to move/switch/focus other windows) | Blocks window snapping and a macOS-style switcher | X11 first; on Wayland support per-compositor (wlroots `wlr-foreign-toplevel`, KDE/GNOME extensions); degrade gracefully |
+| 1 | **Wayland window management** (no unified API to move/switch/focus other windows) | Blocks window snapping and layouts | X11 first; on Wayland support per-compositor (wlroots `wlr-foreign-toplevel`, KDE/GNOME extensions); degrade gracefully |
 | 2 | **GNOME tray gap** | App invisible in default GNOME | SNI + document the extension; optionally offer a GNOME extension or a normal window fallback |
 | 3 | **Fan control portability** | Broken/absent on many machines | Opt-in, hardware-probed (`/sys/class/hwmon`), never crash on missing sensors |
 | 4 | **Screen capture consent UX** | Wayland requires portal dialogs | Use the `Screenshot` portal for stills and `ScreenCast` for recording; treat capture features as "portal-gated" |
@@ -272,8 +272,8 @@ hardware limitations. Every privileged operation must be narrowly scoped and aud
 | 9 | **Sensitive local data** (clipboard, recordings, files) | A local-first app can still retain secrets | Retention limits, ignore rules, clear-on-lock/sleep, size limits, and explicit upload consent |
 | 10 | **Tray/popup behavior** | SNI exists but tray placement and popovers differ | Use a normal-window fallback and do not make the tray the only access path |
 
-The single biggest strategic risk is **#1**: it is what makes the macOS "switcher +
-window controls" feel hard to fully replicate on Wayland, and it should not block the MVP.
+The single biggest strategic risk is **#1**: it is what makes window layout and
+snapping hard to fully replicate on Wayland, and it should not block the MVP.
 
 ---
 
@@ -443,7 +443,7 @@ specific remediation rather than simply hiding a feature without explanation.
 | Brightness / BT / WiFi | `toggles` | `/sys/class/backlight`, BlueZ D-Bus, NetworkManager | hardware-probed |
 | Command bar (Kestrel actions) | `launcher` | command registry; optional app, file, and window sources | DE-independent |
 | Fan control | `fan` | `/sys/class/hwmon`, `thinkfan`/`nbfc` | opt-in, hardware-guarded |
-| Window snapping / switcher | `windows` | X11 EWMH; wlroots/`hyprland`/KDE/GNOME protocols | Phase 3, Wayland-limited |
+| Window snapping / layout | `windows` | X11 EWMH; wlroots/`hyprland`/KDE/GNOME protocols | Phase 3, Wayland-limited |
 | OCR / QR / color | `screen-tools` | Portal/compositor capture + Tesseract/ZBar/pixel sampling | one-shot tools should not require a permanent capture session |
 | Camera preview | `camera` | V4L2/PipeWire | permission/camera availability is runtime-probed |
 | Packages / cleanup | `packages` | APT, Flatpak, Snap, AppImage metadata | provider interface; never assume one package database |
@@ -529,11 +529,10 @@ Linux workflow, or explicitly excluded with a reason.
 Repeat this identifier audit when the reference catalog changes, recording the
 new reference commit so roadmap drift remains reviewable.
 
-- **Windows and task switching:** app/window switcher, window layout and edge
-  snapping, maximize-without-fullscreen, move/restore across displays, live
-  previews where capture APIs permit them, quit-on-last-window, and quit/close
-  protection. Dock preview and Dock-click behavior translate to optional
-  taskbar/overview integrations; Kestrel does not provide or replace a Dock.
+- **Windows:** window layout and edge snapping, maximize-without-fullscreen,
+  move/restore across displays, quit-on-last-window, and quit/close
+  protection. App and window switching, Dock previews, and Dock clicks are left
+  to launchers and desktop shells.
 - **Mouse and keyboard:** vertical/horizontal scroll inversion, smooth scrolling,
   pointer-acceleration policy, focus-follows-mouse, back/forward navigation,
   arbitrary extra-button shortcuts and gestures, middle click, click and key
@@ -562,16 +561,13 @@ new reference commit so roadmap drift remains reviewable.
   charge/health/time/cycles/power, peripheral batteries, per-process resource
   use, history graphs, configurable menu/panel readouts, sustained alerts, and
   hardware-gated fan RPM/control.
-- **Everyday tools:** a command bar for Kestrel's own actions; quick toggles; radial menu;
+- **Everyday tools:** a command bar for Kestrel's own actions; quick toggles;
   screenshots, screen recording, OCR/QR and color sampling; recent captures;
   camera preview; scratchpad; cleaning mode; process termination; media
-  conversion/editing; cleaner; application/package update aggregation;
-  package-manager actions; reviewed application cleanup/uninstall workflows;
-  metadata-verified organization/retention of downloads from supported messaging
-  clients; and a status overlay that translates the camera-notch Dynamic Island
-  into an optional top-center surface on desktops that allow one, with media,
-  notification, calendar, timer, download, accessory, AI-agent usage, window-area
-  watch, and companion modules.
+  conversion/editing; and an optional top-center status overlay, on desktops
+  that allow one, limited to Kestrel's own state: recording and capture,
+  monitoring alerts, microphone and volume, keyboard light, and accessory
+  batteries.
 - **Product shell:** install/uninstall semantics for feature modules, first-run
   presets, honest idle/input/polling energy-cost labels, permission/capability
   transparency, sidebar navigation with per-feature settings pages, settings search,
@@ -593,24 +589,29 @@ The stable reference identifiers map to the phases below:
   `scratchpad`, `commandBar`, `killProcess`, and `portManager`.
 - **Phase 3:** `windowMaximizer`, `windowLayout`, `finderCutPaste`,
   `finderRename`, `shelf`, `urlCleaner`, `diskImageInstaller`,
-  `bluetoothSleep`, `radialMenu`, `cleaningMode`, `mediaTools`, `cleaner`,
-  `uninstaller`, `homebrew`, `appUpdates`, `fanControl`, `audioPriority`,
-  `connectedDevices`, and `wallpaper`.
-- **Phase 4:** `switcher`, `dockPreview`, `dockClick`, `autoQuit`,
-  `scrollInverter`, `scrollHorizontal`, `focusFollowsMouse`, `smoothScroll`,
-  `linearScroll`, `mouseAcceleration`, `mouseNavigation`,
-  `mouseButtonShortcuts`, `middleClick`, `mouseClickDebounce`,
-  `keyboardDebounce`, `superKey`, `quitWindowProtection`, `musicBlock`,
-  `extraBrightness`, `notch`, `notchCalendar`, `notchNotifications`,
-  `notchGestures`, `notchTimer`, `notchAccessories`, `notchLyrics`,
-  `notchQueue`, `notchLiveEqualizer`, `notchDownloads`, `notchAgents`,
-  `notchWatch`, and `notchMascot`.
-- **Excluded:** `spacesOrder`. Linux desktops keep workspaces in the order the
-  user set, so the macOS reordering it corrects has no counterpart.
+  `bluetoothSleep`, `cleaningMode`, `mediaTools`, `fanControl`,
+  `audioPriority`, `connectedDevices`, and `wallpaper`.
+- **Phase 4:** `autoQuit`, `scrollInverter`, `scrollHorizontal`,
+  `focusFollowsMouse`, `smoothScroll`, `linearScroll`, `mouseAcceleration`,
+  `mouseNavigation`, `mouseButtonShortcuts`, `middleClick`,
+  `mouseClickDebounce`, `keyboardDebounce`, `superKey`,
+  `quitWindowProtection`, `musicBlock`, `extraBrightness`, `notch` (as the
+  Kestrel status overlay), `notchGestures`, and `notchAccessories`.
+- **Excluded:**
+  - `spacesOrder`: Linux desktops keep workspaces in the order the user set, so
+    the macOS reordering it corrects has no counterpart.
+  - `switcher`, `dockPreview`, `dockClick`, `radialMenu`: launcher and shell
+    territory; Kestrel exposes its actions to launchers instead.
+  - `cleaner`, `uninstaller`, `homebrew`, `appUpdates`, and the messaging-download
+    workflows: package managers and software centres own application management.
+  - `notchCalendar`, `notchNotifications`, `notchTimer`, `notchLyrics`,
+    `notchQueue`, `notchLiveEqualizer`, `notchDownloads`, `notchAgents`,
+    `notchWatch`, `notchMascot`: desktop panels, notification daemons, and media
+    applets already provide them; the overlay shows only Kestrel's own state.
 
 Identifiers retain their reference spelling only for auditability. Kestrel uses
-its own namespaced IDs and Linux-native product language; `dockPreview`,
-`dockClick`, Finder actions, `diskImageInstaller`, `homebrew`, and Apple display
+its own namespaced IDs and Linux-native product language; Finder actions,
+`diskImageInstaller`, and Apple display
 behavior are translated or capability-gated as described below rather than
 promised literally.
 
@@ -668,30 +669,23 @@ second explicit opt-in; memory-only history remains the default.
   captures, OCR/QR, color picker, camera preview, and a tabbed scratchpad.
 - Microphone mute/input preference, network speed test, process inspector with
   confirmed terminate/restart actions, and expanded monitor alerts/readouts.
-- Quick panel/toggles and radial-menu foundations with configurable actions.
+- Quick panel and toggles with configurable actions.
 
 ### 11.5 Phase 3 — Advanced workflows
 - Window snapping/layout (X11 first; per-compositor on Wayland), configurable
   gaps, edge previews, pointer move/resize, restore history, display movement,
   and maximize-without-fullscreen.
-- App/window switcher with search, grouping, minimized/multi-window entries,
-  display filtering, per-app rules, and previews only through verified capture
-  paths.
 - Fan control (opt-in, hardware-guarded).
-- Radial-menu profiles and a file/text/link shelf with reviewed persistence and
-  sharing handoff.
+- A file/text/link shelf with reviewed persistence and sharing handoff.
 - Optional persistent clipboard entries and pins only after the separate
   encrypted/private-storage threat model is accepted; unbounded retention stays
   unsupported.
-- Display/DDC controls, Bluetooth-on-sleep, URL cleanup, package-provider actions,
-  application updates, reviewed cleanup/uninstall, media conversion, cleaning
-  mode, and optional temporary sharing with visible destination and expiry.
+- Display/DDC controls, Bluetooth-on-sleep, URL cleanup, media conversion,
+  cleaning mode, and optional temporary sharing with visible destination and
+  expiry.
 - Keep-awake automation for power/display/application conditions, pause-on-lock,
   display-sleep policy, keyboard-backlight actions, and closed-lid controls only
   where logind, hardware and policy permit them.
-- Metadata-verified messaging-download review, retention and organization
-  adapters; unsupported clients remain unavailable and cleanup defaults to
-  recoverable trash operations.
 - Advanced capture: scrolling screenshots, pinning, reusable annotations and
   backgrounds, recording audio tracks, trim/cut, pointer smoothing/zoom,
   text/image overlays, timed blur, GIF/export compression, presets, and
@@ -708,8 +702,9 @@ second explicit opt-in; memory-only history remains the default.
   justify unrestricted input-device access.
 - Quit-on-last-window and quit/close protection where application and window
   identity plus input interception are reliable.
-- Optional taskbar/overview preview and click behaviors for desktops exposing a
-  maintained extension or API; no generic Dock claim.
+- An optional status overlay for Kestrel's own state (recording and capture,
+  monitoring alerts, microphone and volume, keyboard light, accessory
+  batteries) on desktops that allow a top-center surface.
 - Keyboard-backlight shortcuts, extra-brightness/HDR controls, media-app launch
   suppression, closed-lid behavior, and fan curves only on verified hardware or
   service backends.
@@ -718,13 +713,15 @@ second explicit opt-in; memory-only history remains the default.
 - Localization expansion and accessibility review across all shipped surfaces.
 
 ### 11.7 Explicitly out of scope or translated for Linux
-- Shipping a Kestrel-owned Dock or replacing the desktop shell. Preview/click
-  behavior is optional integration with an existing taskbar or overview.
+- Shipping a Kestrel-owned Dock, app switcher, radial menu, or taskbar
+  integration, or replacing the desktop shell. Launchers and shells own
+  general launching and window switching; Kestrel exposes its actions to them.
 - Finder-specific automation and macOS disk-image installation. Linux file
   actions use documented file-manager interfaces, and installation delegates to
   explicit package, Flatpak, Snap, AppImage or distribution providers.
-- Homebrew as the universal application-management model. Kestrel may expose a
-  Homebrew-on-Linux provider, but it is one provider among others.
+- Application updates, cleanup, uninstall, Homebrew handoff, and
+  messaging-download organization. Package managers and software centres own
+  application management.
 - Apple-only SMC/XDR behavior or a promise of universal fan, HDR, closed-lid,
   input interception, window control, or application identity. Unsupported
   hardware and desktop paths remain visible capability states.
