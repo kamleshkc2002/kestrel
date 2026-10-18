@@ -70,18 +70,17 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
                     .snapshots
                     .get(&id)
                     .expect("every built-in quick toggle has a snapshot");
-                let source =
-                    if matches!(id, QuickToggleId::KeepAwake | QuickToggleId::BatteryAlerts) {
-                        ToggleStateSource::KestrelOwned
-                    } else {
-                        match snapshot.observation.as_ref() {
-                            None => ToggleStateSource::ProviderObserved,
-                            Some(previous) if previous.control == observation.control => {
-                                snapshot.source
-                            }
-                            Some(_) => ToggleStateSource::ChangedElsewhere,
+                let source = if id == QuickToggleId::KeepAwake {
+                    ToggleStateSource::KestrelOwned
+                } else {
+                    match snapshot.observation.as_ref() {
+                        None => ToggleStateSource::ProviderObserved,
+                        Some(previous) if previous.control == observation.control => {
+                            snapshot.source
                         }
-                    };
+                        Some(_) => ToggleStateSource::ChangedElsewhere,
+                    }
+                };
                 let snapshot = self
                     .snapshots
                     .get_mut(&id)
@@ -143,7 +142,7 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
 
     /// Provider-observed toggles remain untouched on stop.
     pub fn stop(&mut self, id: QuickToggleId) {
-        if matches!(id, QuickToggleId::KeepAwake | QuickToggleId::BatteryAlerts) {
+        if id == QuickToggleId::KeepAwake {
             let _ = self
                 .backend
                 .apply(id, QuickToggleMutation::SetEnabled(false), None);
@@ -153,7 +152,6 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
 
     pub fn stop_all(&mut self) {
         self.stop(QuickToggleId::KeepAwake);
-        self.stop(QuickToggleId::BatteryAlerts);
     }
 }
 
@@ -164,7 +162,7 @@ impl<B: QuickToggleBackend> Drop for QuickToggleService<B> {
 }
 
 fn local_source(id: QuickToggleId) -> ToggleStateSource {
-    if matches!(id, QuickToggleId::KeepAwake | QuickToggleId::BatteryAlerts) {
+    if id == QuickToggleId::KeepAwake {
         ToggleStateSource::KestrelOwned
     } else {
         ToggleStateSource::ProviderObserved
@@ -202,13 +200,6 @@ mod tests {
                 ),
                 (
                     QuickToggleId::KeepAwake,
-                    QuickToggleControl::Switch {
-                        enabled: false,
-                        confirmation: None,
-                    },
-                ),
-                (
-                    QuickToggleId::BatteryAlerts,
                     QuickToggleControl::Switch {
                         enabled: false,
                         confirmation: None,

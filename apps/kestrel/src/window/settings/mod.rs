@@ -223,7 +223,7 @@ fn add_general_rows(
 
     let close_button = adw::ComboRow::builder()
         .title("Close button")
-        .subtitle("Minimizing keeps Kestrel running in the taskbar. Ctrl+Q always quits.")
+        .subtitle("Minimizing keeps Kestrel running in the taskbar.")
         .model(&gtk::StringList::new(&[
             "Minimize to the taskbar",
             "Quit Kestrel",
@@ -250,7 +250,7 @@ fn add_general_rows(
 
     let quit_row = plain_row()
         .title("Quit Kestrel")
-        .subtitle("Ctrl+Q also quits from any Kestrel window.")
+        .subtitle("Ctrl+Q quits from any Kestrel window.")
         .build();
     let quit = gtk::Button::with_label("Quit");
     quit.set_valign(Align::Center);

@@ -78,25 +78,6 @@ fn notification_proxy(connection: &Connection) -> Result<Proxy<'_>, Notification
     })
 }
 
-pub(crate) fn capabilities() -> Result<Vec<String>, NotificationError> {
-    let connection = Connection::session().map_err(|error| {
-        NotificationError::unavailable(format!("connecting to the session bus failed: {error}"))
-    })?;
-    let proxy = notification_proxy(&connection)?;
-    proxy.call("GetCapabilities", &()).map_err(|error| {
-        let message = error.to_string();
-        let kind = if message.contains("AccessDenied") {
-            NotificationErrorKind::PermissionDenied
-        } else {
-            NotificationErrorKind::Unavailable
-        };
-        NotificationError {
-            kind,
-            message: format!("querying notification capabilities failed: {error}"),
-        }
-    })
-}
-
 impl AlertNotifier for DesktopNotifier {
     fn notify(&self, notification: &AlertNotification) -> Result<(), NotificationError> {
         let connection = Connection::session().map_err(|error| {

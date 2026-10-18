@@ -53,8 +53,8 @@ use kestrel_platform::{
         SystemRestarter,
     },
     quick_toggles::{
-        ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleControl,
-        QuickToggleError, QuickToggleId,
+        ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleError,
+        QuickToggleId,
     },
     recording::{
         AudioTrack, FEATURE_ID as RECORDING_ID, GstTakeEditor, PortalRecordingBackend,
@@ -153,7 +153,6 @@ const TRAY_COST: ResourceCost = cost(CostLevel::Low, CostLevel::Moderate, CostLe
 const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
     match id {
         QuickToggleId::KeepAwake => cost(CostLevel::Low, CostLevel::Low, CostLevel::None),
-        QuickToggleId::BatteryAlerts => cost(CostLevel::Low, CostLevel::Low, CostLevel::Low),
         QuickToggleId::Appearance
         | QuickToggleId::Brightness
         | QuickToggleId::KeyboardLight
@@ -453,8 +452,6 @@ pub struct ApplicationRuntime {
     scratchpad_path: Option<PathBuf>,
     scratchpad_warning: Option<String>,
     scratchpad_policy: kestrel_core::ScratchpadConfiguration,
-    /// Quick toggle may narrow battery alerts.
-    battery_alert_configured: bool,
     quick_toggles: QuickToggleService,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -815,11 +812,9 @@ impl ApplicationRuntime {
             scratchpad: scratchpad_service,
             scratchpad_path: scratchpad_path.clone(),
             scratchpad_policy: configuration.scratchpad,
-            battery_alert_configured: configuration.monitoring.alerts.battery.enabled,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
         };
         runtime.configure_audio_preferences(&configuration.audio);
-        runtime.sync_battery_alert_rule();
         Ok(runtime)
     }
 
@@ -880,7 +875,6 @@ impl ApplicationRuntime {
         self.alerts.set_policy(AlertPolicy::from_configuration(
             &configuration.monitoring.alerts,
         ));
-        self.battery_alert_configured = configuration.monitoring.alerts.battery.enabled;
         self.audio_mixer
             .set_policy(AudioPolicy::from_configuration(&configuration.audio))
             .expect("the validated audio policy is valid");
@@ -959,7 +953,6 @@ impl ApplicationRuntime {
         self.registry.start_enabled();
         self.reconcile_resources();
         self.refresh_quick_toggles();
-        self.sync_battery_alert_rule();
         Ok(())
     }
 
@@ -1107,7 +1100,6 @@ impl ApplicationRuntime {
                 history: self.system_monitor.history_summary(),
                 alerts: self.alerts.snapshot(),
                 running: self.system_monitor_is_running(),
-                policy: Some(self.alerts.policy()),
             },
             warnings,
             configuration,
@@ -1172,7 +1164,6 @@ impl ApplicationRuntime {
                 history: self.system_monitor.history_summary(),
                 alerts: self.alerts.snapshot(),
                 running: self.system_monitor_is_running(),
-                policy: Some(self.alerts.policy()),
             },
         )
         .with_local_addresses(self.local_addresses.as_ref())
@@ -2753,12 +2744,9 @@ impl ApplicationRuntime {
         command: QuickToggleCommand,
     ) -> Option<Result<QuickToggleSnapshot, QuickToggleError>> {
         if !self.quick_toggle_is_running(command.id) {
-            self.sync_battery_alert_rule();
             return None;
         }
-        let result = self.quick_toggles.execute(command).cloned();
-        self.sync_battery_alert_rule();
-        Some(result)
+        Some(self.quick_toggles.execute(command).cloned())
     }
 
     fn refresh_quick_toggles(&mut self) {
@@ -2767,7 +2755,6 @@ impl ApplicationRuntime {
                 self.quick_toggles.refresh(id);
             }
         }
-        self.sync_battery_alert_rule();
     }
 
     fn reconcile_resources(&mut self) {
@@ -2846,10 +2833,6 @@ impl ApplicationRuntime {
                 self.scratchpad_warning = Some(error.to_string());
             }
         }
-        if !self.quick_toggle_is_running(QuickToggleId::BatteryAlerts) {
-            self.quick_toggles.stop(QuickToggleId::BatteryAlerts);
-        }
-
         if !self.quick_toggle_is_running(QuickToggleId::KeepAwake) {
             self.quick_toggles.stop(QuickToggleId::KeepAwake);
         }
@@ -2870,24 +2853,6 @@ impl ApplicationRuntime {
             Ok(provider) => self.window_provider = Some(provider),
             Err(unavailable) => self.window_provider_unavailable = Some(unavailable),
         }
-    }
-
-    /// Battery alerts can only narrow the user's configured preference.
-    fn sync_battery_alert_rule(&mut self) {
-        let toggle_enabled = self
-            .quick_toggles
-            .snapshots()
-            .find(|snapshot| snapshot.id == QuickToggleId::BatteryAlerts)
-            .and_then(|snapshot| snapshot.observation.as_ref())
-            .and_then(|observation| match &observation.control {
-                QuickToggleControl::Switch { enabled, .. } => Some(*enabled),
-                _ => None,
-            })
-            .unwrap_or(false);
-        self.alerts.set_rule_enabled(
-            AlertKind::Battery,
-            self.battery_alert_configured && toggle_enabled,
-        );
     }
 
     fn start_clipboard_history(&mut self) -> Result<(), ClipboardServiceError> {
@@ -3084,17 +3049,20 @@ mod tests {
         assert!(runtime.system_monitor_snapshot().is_some());
     }
     #[test]
-    fn battery_alert_rule_is_gated_until_toggle_observation() {
-        let runtime =
-            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
-        assert!(
-            !runtime
+    fn battery_alerts_follow_the_saved_rule() {
+        let battery_enabled = |configuration: &ApplicationConfiguration| {
+            ApplicationRuntime::new(configuration)
+                .expect("runtime builds")
                 .alerts
                 .policy()
                 .rule(AlertKind::Battery)
                 .expect("battery rule exists")
                 .enabled
-        );
+        };
+        let mut configuration = ApplicationConfiguration::default();
+        assert!(battery_enabled(&configuration));
+        configuration.monitoring.alerts.battery.enabled = false;
+        assert!(!battery_enabled(&configuration));
     }
 
     #[test]

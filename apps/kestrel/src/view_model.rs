@@ -21,7 +21,7 @@ use kestrel_platform::snippets::InsertionProvider;
 use kestrel_platform::speed_test::SpeedTestPhase;
 use kestrel_services::{
     ServiceLifecycle, ServiceRegistration,
-    alerts::{ActiveAlert, AlertPolicy, AlertSnapshot},
+    alerts::{ActiveAlert, AlertSnapshot},
     audio::{AudioAvailability, AudioPolicy, AudioSnapshot},
     camera::{CameraPhase, CameraSnapshot},
     capture::{CaptureId, CapturePhase, CaptureSnapshot},
@@ -152,8 +152,6 @@ pub(crate) struct MonitorPresentation<'a> {
     pub history: Option<HistorySummary>,
     pub alerts: AlertSnapshot,
     pub running: bool,
-    /// Effective rules after quick-toggle gates.
-    pub policy: Option<&'a AlertPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -292,11 +290,12 @@ impl MonitorViewModel {
             .into_iter()
             .map(|kind| {
                 let configured = configuration.alerts.rule(kind);
-                let effective = presentation.policy.and_then(|policy| policy.rule(kind));
-                let enabled = effective.map_or(configured.enabled, |rule| rule.enabled);
-                let threshold = effective.map_or(configured.threshold, |rule| rule.threshold);
-                let sustain_samples =
-                    effective.map_or(configured.sustain_samples, |rule| rule.sustain_samples);
+                let kestrel_core::AlertRuleConfiguration {
+                    enabled,
+                    threshold,
+                    sustain_samples,
+                    cooldown_seconds,
+                } = *configured;
                 // One sample means the first reading past the threshold alerts.
                 let sustain = if sustain_samples <= 1 {
                     std::time::Duration::ZERO
@@ -306,9 +305,7 @@ impl MonitorViewModel {
                         configuration.refresh_interval_millis,
                     )
                 };
-                let cooldown_seconds =
-                    effective.map_or(configured.cooldown_seconds, |rule| rule.cooldown.as_secs());
-                let mut summary = format!(
+                let summary = format!(
                     "Alerts when {} {}{} {}; repeats at most every {}",
                     if kind.alerts_above() {
                         "at or above"
@@ -324,9 +321,6 @@ impl MonitorViewModel {
                     },
                     format_span(std::time::Duration::from_secs(cooldown_seconds))
                 );
-                if configured.enabled && !enabled {
-                    summary.push_str("; currently paused by its quick toggle");
-                }
                 AlertRuleViewModel {
                     kind,
                     label: kind.label(),
@@ -3288,7 +3282,7 @@ impl CommandBarViewModel {
 
         Self {
             running: presentation.running,
-            status: command_bar_status(&presentation, providers.as_slice()),
+            status: command_bar_status(&presentation),
             query: presentation.query.to_owned(),
             max_results: presentation.max_results,
             providers,
@@ -3320,35 +3314,21 @@ fn command_action_label(action: &kestrel_services::command_bar::CommandAction) -
     }
 }
 
-fn command_bar_status(
-    presentation: &CommandBarPresentation<'_>,
-    providers: &[CommandProviderViewModel],
-) -> String {
+/// What the command bar rows don't already show: whether it runs, a missing
+/// launcher, and the first ranking warning. Empty when there is nothing else.
+fn command_bar_status(presentation: &CommandBarPresentation<'_>) -> String {
     if !presentation.running {
         return "The command bar is not running. Enable commands.bar in the Feature Hub."
             .to_string();
     }
-    let enabled = providers.iter().filter(|provider| provider.enabled).count();
-    let mut status = format!(
-        "{} of {} providers enabled · at most {} results",
-        enabled,
-        providers.len(),
-        presentation.max_results
-    );
+    let mut notes = Vec::new();
     if presentation.launcher.is_none() {
-        status.push_str(" · links and files cannot be opened (no xdg-open)");
-    }
-    if !presentation.ranking.entries().is_empty() {
-        status.push_str(&format!(
-            " · {} learned identifiers, {} pinned",
-            presentation.ranking.entries().len(),
-            presentation.ranking.pinned_entries().len()
-        ));
+        notes.push("Links and files cannot be opened (no xdg-open)".to_owned());
     }
     if let Some(warning) = presentation.warnings.first() {
-        status.push_str(&format!(" · {}", warning.reason));
+        notes.push(warning.reason.clone());
     }
-    status
+    notes.join(" · ")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4010,7 +3990,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,
@@ -4066,7 +4045,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &warnings,
             &configuration,
@@ -4119,7 +4097,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,
@@ -4143,7 +4120,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
         );
         assert_eq!(
@@ -4172,41 +4148,6 @@ mod tests {
         for hidden in settings.iter().skip(2) {
             assert!(!hidden.visible && !hidden.can_move_up && !hidden.can_move_down);
         }
-    }
-
-    #[test]
-    fn alert_rules_expose_the_gated_effective_state() {
-        use kestrel_services::alerts::AlertPolicy;
-
-        // Policy carries quick-toggle gates over configuration intent.
-        let configuration = MonitorConfiguration::default();
-        assert!(configuration.alerts.battery.enabled);
-        let mut policy = AlertPolicy::from_configuration(&configuration.alerts);
-        policy.set_enabled(AlertKind::Battery, false);
-        let monitor = MonitorViewModel::from_configuration(
-            &configuration,
-            MonitorPresentation {
-                snapshot: None,
-                history: None,
-                alerts: Default::default(),
-                running: false,
-                policy: Some(&policy),
-            },
-        );
-        let battery = monitor
-            .alert_rules
-            .iter()
-            .find(|rule| rule.kind == AlertKind::Battery)
-            .expect("battery rule is always reported");
-        assert!(!battery.enabled);
-        assert!(battery.summary.contains("paused by its quick toggle"));
-        let cpu = monitor
-            .alert_rules
-            .iter()
-            .find(|rule| rule.kind == AlertKind::Cpu)
-            .expect("cpu rule is always reported");
-        assert!(cpu.enabled);
-        assert!(!cpu.summary.contains("quick toggle"));
     }
 
     #[test]
@@ -4306,7 +4247,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: true,
-                policy: None,
             },
         );
 
@@ -4427,7 +4367,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: true,
-                policy: None,
             },
         );
 
@@ -4475,7 +4414,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: true,
-                policy: None,
             },
         );
         assert_eq!(monitor.readouts[0].value, None);
@@ -4511,7 +4449,6 @@ mod tests {
                     delivery_failures: Vec::new(),
                 },
                 running: true,
-                policy: None,
             },
         );
         assert_eq!(monitor.alerts[0].label, "Temperature");
@@ -4539,7 +4476,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
         );
         assert!(!monitor.running);
@@ -4686,7 +4622,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,
@@ -4755,7 +4690,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,
@@ -4849,7 +4783,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,
@@ -4912,7 +4845,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,
@@ -5135,7 +5067,9 @@ mod tests {
             "a disabled provider is reported, not hidden"
         );
         assert!(
-            command_bar.status.contains("launcher") || command_bar.status.contains("providers")
+            command_bar.status.is_empty(),
+            "provider and result counts stay in their own rows: {}",
+            command_bar.status
         );
     }
 
@@ -5207,7 +5141,6 @@ mod tests {
                 history: None,
                 alerts: Default::default(),
                 running: false,
-                policy: None,
             },
             &[],
             &configuration,

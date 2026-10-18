@@ -55,10 +55,6 @@ impl AlertPolicy {
     pub fn rule(&self, kind: AlertKind) -> Option<&AlertRule> {
         self.rules.get(kind_index(kind))
     }
-
-    pub fn set_enabled(&mut self, kind: AlertKind, enabled: bool) {
-        self.rules[kind_index(kind)].enabled = enabled;
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,10 +147,6 @@ impl AlertEngine {
 
     pub fn set_policy(&mut self, policy: AlertPolicy) {
         self.policy = policy;
-    }
-
-    pub fn set_rule_enabled(&mut self, kind: AlertKind, enabled: bool) {
-        self.policy.set_enabled(kind, enabled);
     }
 
     pub fn evaluate(&mut self, snapshot: &SystemSnapshot) -> Vec<AlertEvent> {
@@ -492,26 +484,30 @@ mod tests {
 
     #[test]
     fn disabled_rule_is_inert() {
-        let mut engine = AlertEngine::new(policy(AlertKind::Cpu, 80.0, 1, 1));
+        let enabled = policy(AlertKind::Cpu, 80.0, 1, 1);
+        let mut configuration = MonitorAlertConfiguration::default();
+        *configuration.rule_mut(AlertKind::Cpu) = AlertRuleConfiguration::new(false, 80.0, 1, 1);
+        let disabled = AlertPolicy::from_configuration(&configuration);
+        let mut engine = AlertEngine::new(enabled.clone());
         let mut value = snapshot(1);
         value.cpu_usage_percent = Some(100.0);
-        engine.set_rule_enabled(AlertKind::Cpu, false);
+        engine.set_policy(disabled.clone());
         assert!(engine.evaluate(&value).is_empty());
         value.observed_at = Duration::from_secs(2);
         assert!(engine.evaluate(&value).is_empty());
         assert!(engine.snapshot().active.is_empty());
 
-        engine.set_rule_enabled(AlertKind::Cpu, true);
+        engine.set_policy(enabled.clone());
         value.observed_at = Duration::from_secs(3);
         assert!(matches!(
             engine.evaluate(&value).as_slice(),
             [AlertEvent::Raised { .. }]
         ));
-        engine.set_rule_enabled(AlertKind::Cpu, false);
+        engine.set_policy(disabled);
         value.observed_at = Duration::from_secs(4);
         assert!(engine.evaluate(&value).is_empty());
         assert_eq!(engine.snapshot().active.len(), 1);
-        engine.set_rule_enabled(AlertKind::Cpu, true);
+        engine.set_policy(enabled);
         value.observed_at = Duration::from_secs(5);
         assert!(matches!(
             engine.evaluate(&value).as_slice(),

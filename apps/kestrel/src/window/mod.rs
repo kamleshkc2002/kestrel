@@ -443,7 +443,7 @@ impl WindowView {
     pub fn set_command_bar(&self, command_bar: &kestrel::CommandBarViewModel) {
         let panel = self.command_panel.borrow();
         let Some(panel) = panel.as_ref() else { return };
-        panel.status.set_text(&command_bar.status);
+        panel.set_status(&command_bar.status);
         while let Some(child) = panel.results.first_child() {
             child.unparent();
         }

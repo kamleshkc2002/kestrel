@@ -24,6 +24,9 @@ use kestrel_core::{
 };
 use serde::Deserialize;
 
+/// Feature ID of the retired Battery alerts quick toggle.
+const RETIRED_BATTERY_ALERTS_ID: &str = "power.battery-alerts";
+
 /// Loaded configuration and isolated diagnostics.
 #[derive(Debug, Default)]
 pub struct LoadedConfiguration {
@@ -217,7 +220,20 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_recording(&mut loaded, document.get("recording"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
     parse_quick_panel(&mut loaded, document.get("quick_panel"));
+    retire_battery_alerts_toggle(&mut loaded);
     Ok(loaded)
+}
+
+/// The Battery alerts quick toggle was retired; the Monitoring alert rule is
+/// the only switch. A toggle left off had kept the rule silent, so the rule
+/// takes that state once and the stale feature entry is dropped.
+fn retire_battery_alerts_toggle(loaded: &mut LoadedConfiguration) {
+    let configuration = &mut loaded.configuration;
+    if let Some(toggle) = configuration.features.remove(RETIRED_BATTERY_ALERTS_ID) {
+        if !toggle.enabled {
+            configuration.monitoring.alerts.battery.enabled = false;
+        }
+    }
 }
 
 fn migrate_v0(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
@@ -1598,6 +1614,31 @@ autostart = true
         );
         assert!(loaded.configuration.startup.autostart);
         assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn retired_battery_toggle_left_off_keeps_battery_alerts_off() {
+        let parse_battery = |toggle: &str| {
+            let loaded = parse(&format!(
+                "schema_version = 3\n{toggle}\n[monitoring.alerts.battery]\nenabled = true\n"
+            ))
+            .expect("document itself is valid TOML");
+            assert!(
+                !loaded
+                    .configuration
+                    .features
+                    .contains_key("power.battery-alerts"),
+                "the retired feature entry is dropped"
+            );
+            loaded.configuration.monitoring.alerts.battery.enabled
+        };
+        assert!(!parse_battery(
+            "[features.\"power.battery-alerts\"]\nenabled = false"
+        ));
+        assert!(parse_battery(
+            "[features.\"power.battery-alerts\"]\nenabled = true"
+        ));
+        assert!(parse_battery(""));
     }
 
     #[test]

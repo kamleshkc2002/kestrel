@@ -826,9 +826,9 @@ the platform adapter recomputes that token immediately before mutation, so
 stale Trash, removable-drive, session, or radio state cannot bypass
 confirmation. Refresh compares provider observations with the last published
 snapshot: commands mark state as Kestrel-owned, while later provider changes
-are marked as external. The battery-alert service owns its bounded polling
-thread and joins it on disable or shutdown; the platform layer only reads
-battery state and sends notifications.
+are marked as external. Battery alerts are a monitoring alert rule, switched
+only on the Monitoring page; the alert engine evaluates them with the other
+rules on each monitor sample.
 
 
 ### 8.3 Capability refresh
