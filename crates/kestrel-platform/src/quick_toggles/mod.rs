@@ -26,7 +26,6 @@ pub const EJECT_ID: &str = "storage.eject";
 pub const HIDDEN_FILES_ID: &str = "files.show-hidden";
 pub const DESKTOP_ICONS_ID: &str = "desktop.icons";
 pub const SCREEN_LOCK_ID: &str = "session.lock";
-pub const BATTERY_ALERTS_ID: &str = "power.battery-alerts";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QuickToggleId {
@@ -41,10 +40,9 @@ pub enum QuickToggleId {
     HiddenFiles,
     DesktopIcons,
     ScreenLock,
-    BatteryAlerts,
 }
 
-pub const ALL_QUICK_TOGGLES: [QuickToggleId; 12] = [
+pub const ALL_QUICK_TOGGLES: [QuickToggleId; 11] = [
     QuickToggleId::KeepAwake,
     QuickToggleId::Appearance,
     QuickToggleId::Brightness,
@@ -56,7 +54,6 @@ pub const ALL_QUICK_TOGGLES: [QuickToggleId; 12] = [
     QuickToggleId::HiddenFiles,
     QuickToggleId::DesktopIcons,
     QuickToggleId::ScreenLock,
-    QuickToggleId::BatteryAlerts,
 ];
 
 impl QuickToggleId {
@@ -73,7 +70,6 @@ impl QuickToggleId {
             Self::HiddenFiles => HIDDEN_FILES_ID,
             Self::DesktopIcons => DESKTOP_ICONS_ID,
             Self::ScreenLock => SCREEN_LOCK_ID,
-            Self::BatteryAlerts => BATTERY_ALERTS_ID,
         }
     }
 
@@ -90,7 +86,6 @@ impl QuickToggleId {
             Self::HiddenFiles => "Show hidden files",
             Self::DesktopIcons => "Desktop icons",
             Self::ScreenLock => "Lock screen",
-            Self::BatteryAlerts => "Battery alerts",
         }
     }
 
@@ -107,7 +102,6 @@ impl QuickToggleId {
             Self::HiddenFiles => "A writable supported file-manager GSettings key.",
             Self::DesktopIcons => "A writable supported desktop-icons GSettings key.",
             Self::ScreenLock => "A current logind graphical session.",
-            Self::BatteryAlerts => "A system battery and a desktop notification service.",
         }
     }
 }
@@ -221,7 +215,6 @@ pub struct LinuxQuickToggleBackend {
     sys_root: PathBuf,
     data_home: PathBuf,
     inhibitor: Arc<Mutex<Option<session::InhibitorLease>>>,
-    battery_alerts: Arc<Mutex<bool>>,
 }
 
 impl fmt::Debug for LinuxQuickToggleBackend {
@@ -256,7 +249,6 @@ impl LinuxQuickToggleBackend {
             sys_root: sys_root.into(),
             data_home: data_home.into(),
             inhibitor: Arc::new(Mutex::new(None)),
-            battery_alerts: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -305,7 +297,6 @@ impl QuickToggleBackend for LinuxQuickToggleBackend {
             QuickToggleId::HiddenFiles => desktop::hidden_files_capability(),
             QuickToggleId::DesktopIcons => desktop::desktop_icons_capability(),
             QuickToggleId::ScreenLock => session::screen_lock_capability(),
-            QuickToggleId::BatteryAlerts => storage::battery_alerts_capability(&self.sys_root),
         }
     }
 
@@ -328,9 +319,6 @@ impl QuickToggleBackend for LinuxQuickToggleBackend {
             QuickToggleId::HiddenFiles => desktop::observe_hidden_files(),
             QuickToggleId::DesktopIcons => desktop::observe_desktop_icons(),
             QuickToggleId::ScreenLock => session::observe_screen_lock(),
-            QuickToggleId::BatteryAlerts => {
-                storage::observe_battery_alerts(&self.sys_root, &self.battery_alerts)
-            }
         }
     }
 
@@ -376,9 +364,6 @@ impl QuickToggleBackend for LinuxQuickToggleBackend {
             QuickToggleId::HiddenFiles => desktop::set_hidden_files(&mutation)?,
             QuickToggleId::DesktopIcons => desktop::set_desktop_icons(&mutation)?,
             QuickToggleId::ScreenLock => session::lock_screen(&mutation)?,
-            QuickToggleId::BatteryAlerts => {
-                storage::set_battery_alerts(&self.battery_alerts, &mutation)?
-            }
         }
         self.observe(id)
     }

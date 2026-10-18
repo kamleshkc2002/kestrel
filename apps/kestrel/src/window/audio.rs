@@ -168,10 +168,11 @@ pub(super) fn build_audio_controls(
     commands: &Sender<ApplicationCommand>,
 ) -> gtk::Box {
     let container = gtk::Box::new(Orientation::Vertical, 12);
-    let group = adw::PreferencesGroup::builder()
-        .title("Audio")
-        .description(gtk::glib::markup_escape_text(&audio.status).as_str())
-        .build();
+    let group = adw::PreferencesGroup::builder().title("Audio").build();
+    // While stopped, the row below carries the status.
+    if audio.running {
+        group.set_description(Some(gtk::glib::markup_escape_text(&audio.status).as_str()));
+    }
 
     if !audio.running {
         let row = plain_row()
@@ -598,10 +599,13 @@ pub(super) fn build_microphone_controls(
     commands: &Sender<ApplicationCommand>,
 ) -> gtk::Box {
     let container = gtk::Box::new(Orientation::Vertical, 12);
-    let group = adw::PreferencesGroup::builder()
-        .title("Microphone")
-        .description(gtk::glib::markup_escape_text(&microphone.status).as_str())
-        .build();
+    let group = adw::PreferencesGroup::builder().title("Microphone").build();
+    // While stopped, the row below carries the status.
+    if microphone.running {
+        group.set_description(Some(
+            gtk::glib::markup_escape_text(&microphone.status).as_str(),
+        ));
+    }
     container.append(&group);
     if !microphone.running {
         let row = plain_row()

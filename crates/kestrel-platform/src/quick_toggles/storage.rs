@@ -3,7 +3,6 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     path::Path,
-    sync::{Arc, Mutex},
 };
 
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus, Permission};
@@ -13,7 +12,6 @@ use super::{
     QuickToggleId, QuickToggleMutation, QuickToggleObservation, ToggleAction, permission_denied,
     supported,
 };
-use crate::notifications;
 
 const MAX_TRASH_ENTRIES: usize = 100_000;
 
@@ -22,13 +20,6 @@ struct TrashScope {
     items: usize,
     bytes: u64,
     fingerprint: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BatteryReading {
-    pub name: String,
-    pub capacity: Option<u8>,
-    pub status: Option<String>,
 }
 
 pub(crate) fn trash_capability(data_home: &Path) -> CapabilityReport {
@@ -119,113 +110,6 @@ pub(crate) fn empty_trash(
     let trash = data_home.join("Trash");
     remove_children(&trash.join("files"))?;
     remove_children(&trash.join("info"))
-}
-
-pub(crate) fn battery_alerts_capability(sys_root: &Path) -> CapabilityReport {
-    let id = QuickToggleId::BatteryAlerts;
-    let batteries = match batteries(sys_root) {
-        Ok(batteries) if !batteries.is_empty() => batteries,
-        Ok(_) => {
-            return CapabilityReport::new(
-                id.feature_id(),
-                CapabilityStatus::Unsupported {
-                    reason: "no system battery is exposed by sysfs".to_owned(),
-                },
-                "Battery alerts are not applicable on this system.",
-            )
-            .with_remediation(
-                "Connect a supported battery exposed through /sys/class/power_supply, or leave battery alerts disabled on batteryless systems.",
-            );
-        }
-        Err(error) => {
-            return CapabilityReport::new(
-                id.feature_id(),
-                CapabilityStatus::Unsupported {
-                    reason: error.message.clone(),
-                },
-                "Battery state cannot be inspected.",
-            )
-            .with_remediation(error.message);
-        }
-    };
-
-    match notification_capabilities() {
-        Ok(_) => supported(
-            id,
-            "Battery state is available and the desktop notification service is reachable.",
-            "sysfs power_supply + org.freedesktop.Notifications",
-        )
-        .with_evidence(CapabilityEvidence::new(
-            "battery-count",
-            batteries.len().to_string(),
-        )),
-        Err(error) if error.kind == QuickToggleErrorKind::PermissionDenied => permission_denied(
-            id,
-            Permission::Notifications,
-            "The notification service rejected access.",
-            "Allow notifications for Kestrel in desktop notification settings.",
-        ),
-        Err(error) => CapabilityReport::new(
-            id.feature_id(),
-            CapabilityStatus::MissingDependency {
-                name: "org.freedesktop.Notifications".to_owned(),
-            },
-            "Battery state is available, but no notification service is reachable.",
-        )
-        .with_remediation(error.message),
-    }
-}
-
-pub(crate) fn observe_battery_alerts(
-    sys_root: &Path,
-    enabled: &Arc<Mutex<bool>>,
-) -> Result<QuickToggleObservation, QuickToggleError> {
-    let batteries = batteries(sys_root)?;
-    let enabled = *enabled
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let detail = batteries
-        .first()
-        .map(|battery| {
-            let capacity = battery
-                .capacity
-                .map(|capacity| format!("{capacity}%"))
-                .unwrap_or_else(|| "unknown charge".to_owned());
-            format!(
-                "Alerts are {}; {} is at {} ({}).",
-                if enabled { "enabled" } else { "disabled" },
-                battery.name,
-                capacity,
-                battery.status.as_deref().unwrap_or("unknown state")
-            )
-        })
-        .unwrap_or_else(|| "No system battery is available.".to_owned());
-    Ok(QuickToggleObservation {
-        control: QuickToggleControl::Switch {
-            enabled,
-            confirmation: None,
-        },
-        detail,
-    })
-}
-
-pub(crate) fn set_battery_alerts(
-    enabled_state: &Arc<Mutex<bool>>,
-    mutation: &QuickToggleMutation,
-) -> Result<(), QuickToggleError> {
-    let QuickToggleMutation::SetEnabled(enabled) = mutation else {
-        return Err(QuickToggleError::new(
-            QuickToggleErrorKind::InvalidRequest,
-            "battery alerts accept only an enabled/disabled value",
-        ));
-    };
-    if *enabled {
-        notification_capabilities()?;
-    }
-    *enabled_state
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = *enabled;
-    Ok(())
 }
 
 fn trash_scope_confirmation(scope: &TrashScope) -> MutationConfirmation {
@@ -320,86 +204,14 @@ fn remove_children(directory: &Path) -> Result<(), QuickToggleError> {
     Ok(())
 }
 
-pub(crate) fn batteries(sys_root: &Path) -> Result<Vec<BatteryReading>, QuickToggleError> {
-    let root = sys_root.join("class/power_supply");
-    let entries = fs::read_dir(&root).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            QuickToggleError::unavailable("no power_supply class is exposed by sysfs")
-        } else {
-            QuickToggleError::io("reading system power supplies", &error)
-        }
-    })?;
-    let mut result = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|error| QuickToggleError::io("reading a power supply entry", &error))?
-            .path();
-        let kind = fs::read_to_string(path.join("type")).unwrap_or_default();
-        if kind.trim() != "Battery" {
-            continue;
-        }
-        let capacity = fs::read_to_string(path.join("capacity"))
-            .ok()
-            .and_then(|value| value.trim().parse::<u8>().ok())
-            .map(|value| value.min(100));
-        let status = fs::read_to_string(path.join("status"))
-            .ok()
-            .map(|value| value.trim().to_owned());
-        result.push(BatteryReading {
-            name: path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("battery")
-                .to_owned(),
-            capacity,
-            status,
-        });
-    }
-    result.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(result)
-}
-
-fn notification_capabilities() -> Result<Vec<String>, QuickToggleError> {
-    notifications::capabilities().map_err(notification_error)
-}
-
-fn notification_error(error: crate::notifications::NotificationError) -> QuickToggleError {
-    let kind = match error.kind() {
-        crate::notifications::NotificationErrorKind::Unavailable => {
-            QuickToggleErrorKind::Unavailable
-        }
-        crate::notifications::NotificationErrorKind::Protocol => QuickToggleErrorKind::Protocol,
-        crate::notifications::NotificationErrorKind::PermissionDenied => {
-            QuickToggleErrorKind::PermissionDenied
-        }
-    };
-    QuickToggleError::new(kind, error.message)
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use tempfile::TempDir;
 
-    use super::{battery_alerts_capability, empty_trash, observe_trash, trash_confirmation};
+    use super::{empty_trash, observe_trash, trash_confirmation};
     use crate::quick_toggles::{QuickToggleControl, QuickToggleMutation};
-    use kestrel_core::CapabilityStatus;
-
-    #[test]
-    fn batteryless_system_reports_actionable_remediation() {
-        let directory = TempDir::new().expect("temporary sysfs root");
-        fs::create_dir_all(directory.path().join("class/power_supply"))
-            .expect("power supply class");
-
-        let report = battery_alerts_capability(directory.path());
-
-        assert!(matches!(
-            report.status,
-            CapabilityStatus::Unsupported { .. }
-        ));
-        assert!(report.remediation.is_some());
-    }
 
     #[test]
     fn trash_confirmation_changes_when_scope_changes() {

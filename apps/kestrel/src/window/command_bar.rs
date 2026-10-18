@@ -8,8 +8,16 @@ use kestrel::ApplicationCommand;
 
 pub(super) struct CommandPanel {
     pub(super) container: gtk::Box,
-    pub(super) status: gtk::Label,
+    status: adw::ActionRow,
     pub(super) results: gtk::Box,
+}
+
+impl CommandPanel {
+    /// Shows the status row only while it has something the rows below don't.
+    pub(super) fn set_status(&self, status: &str) {
+        self.status.set_subtitle(status);
+        self.status.set_visible(!status.is_empty());
+    }
 }
 
 pub(super) fn build_command_panel(
@@ -50,14 +58,8 @@ pub(super) fn build_command_panel(
     }
     group.add(&query_row);
 
-    let status = gtk::Label::new(Some(&command_bar.status));
-    status.set_wrap(true);
-    status.set_xalign(0.0);
-    status.add_css_class("dim-label");
-    let status_row = adw::ActionRow::new();
-    status_row.set_title("State");
-    status_row.add_suffix(&status);
-    group.add(&status_row);
+    let status = plain_row().title("Status").subtitle_lines(0).build();
+    group.add(&status);
     let placement_row = plain_row()
         .title("Floating surfaces")
         .subtitle(crate::layer_shell::observed_placement().summary())
@@ -146,6 +148,7 @@ pub(super) fn build_command_panel(
         status,
         results: results.clone(),
     };
+    panel.set_status(&command_bar.status);
     fill_command_panel(&panel, command_bar, commands);
     group.add(&results);
     container.append(&group);

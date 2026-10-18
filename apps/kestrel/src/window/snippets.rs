@@ -214,13 +214,12 @@ pub(super) fn fill_snippet_panel(
             } else {
                 "No snippets match the search"
             })
-            .subtitle(if snippets.running {
-                "Fill the editor and press Save, or edit the snippet file directly."
-            } else {
-                "Enable snippets.text in the Feature Hub to use the library."
-            })
             .sensitive(false)
             .build();
+        // While stopped, the Library row above says how to start it.
+        if snippets.running {
+            row.set_subtitle("Fill the editor and press Save, or edit the snippet file directly.");
+        }
         row.update_property(&[Property::Label("No snippets to show")]);
         panel.results.append(&row);
         return;
