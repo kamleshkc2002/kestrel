@@ -282,6 +282,7 @@ fn parse_v2(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationL
     parse_features(&mut loaded, document.get("features"));
     parse_ui(&mut loaded, document.get("ui"));
     parse_startup(&mut loaded, document.get("startup"));
+    retire_battery_alerts_toggle(&mut loaded);
     Ok(loaded)
 }
 

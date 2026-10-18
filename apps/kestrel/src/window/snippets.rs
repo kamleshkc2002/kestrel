@@ -245,7 +245,7 @@ pub(super) fn fill_snippet_panel(
         insert.set_tooltip_text(Some(if can_insert {
             "Render the variables and type this snippet into the focused window"
         } else if !snippets.running {
-            "Enable snippets.text to insert snippets"
+            snippets.status.as_str()
         } else {
             "Insertion needs a verified provider"
         }));

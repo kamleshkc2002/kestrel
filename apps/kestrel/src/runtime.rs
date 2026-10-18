@@ -1059,6 +1059,7 @@ impl ApplicationRuntime {
                 running: self.snippets_running(),
                 provider: self.snippet_provider(),
                 unavailable_reason: self.snippet_unavailable_reason(),
+                stopped_reason: self.snippets_stopped_reason(),
                 directory: self.snippet_directory(),
                 expansion_timing: self.snippet_expansion_timing,
                 provider_preference: self.snippet_provider_preference,
@@ -2619,6 +2620,26 @@ impl ApplicationRuntime {
             .any(|registration| registration.feature.id == SNIPPETS_ID && registration.running)
     }
 
+    /// Why snippets are not running: switched off, or the capability's remedy.
+    fn snippets_stopped_reason(&self) -> Option<String> {
+        let registration = self
+            .registry
+            .registrations()
+            .find(|registration| registration.feature.id == SNIPPETS_ID)?;
+        if registration.running {
+            return None;
+        }
+        Some(if registration.enabled {
+            registration
+                .capability
+                .remediation
+                .clone()
+                .unwrap_or_else(|| registration.capability.summary.clone())
+        } else {
+            crate::view_model::SNIPPETS_OFF.to_owned()
+        })
+    }
+
     pub fn snippet_provider(&self) -> Option<InsertionProvider> {
         self.snippet_service.provider()
     }
@@ -2675,7 +2696,9 @@ impl ApplicationRuntime {
     pub fn insert_snippet(&mut self, name: &str) -> Result<InsertionReport, SnippetServiceError> {
         if !self.snippets_running() {
             return Err(SnippetServiceError::ExpansionUnavailable {
-                reason: "snippets.text is not running; enable it in the Feature Hub".to_owned(),
+                reason: self
+                    .snippets_stopped_reason()
+                    .unwrap_or_else(|| crate::view_model::SNIPPETS_OFF.to_owned()),
             });
         }
         let snippet = self.snippet_library.get(name).cloned().ok_or_else(|| {
@@ -3483,7 +3506,8 @@ mod tests {
 
         assert!(matches!(
             &error,
-            SnippetServiceError::ExpansionUnavailable { reason } if reason.contains("not running")
+            SnippetServiceError::ExpansionUnavailable { reason }
+                if reason.contains("Enable snippets.text")
         ));
     }
 

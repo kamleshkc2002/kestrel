@@ -495,12 +495,15 @@ pub fn insertion_capability_report(
             ))
             .with_evidence(CapabilityEvidence::new("storage", "private_file"))
         }
+        // The library and editor need no provider; only typing a snippet into
+        // another application does.
         Err(error) => CapabilityReport::new(
             FEATURE_ID,
-            CapabilityStatus::MissingDependency {
-                name: "an insertion provider".to_string(),
+            CapabilityStatus::Limited {
+                reason: "no insertion provider is installed".to_string(),
             },
-            "Snippet insertion is unavailable until a provider is installed.",
+            "Snippets can be stored and edited; inserting them into other applications needs an \
+             insertion provider.",
         )
         .with_remediation(
             "Install wtype for Wayland or xdotool for X11. ydotool needs input-device access and \
@@ -844,10 +847,10 @@ mod tests {
             InsertionErrorKind::MissingDependency,
             "none",
         )));
-        assert!(matches!(
-            missing.status,
-            CapabilityStatus::MissingDependency { .. }
-        ));
+        assert!(
+            matches!(missing.status, CapabilityStatus::Limited { .. }),
+            "the library still runs without an insertion provider"
+        );
         assert!(
             missing
                 .remediation
@@ -865,7 +868,7 @@ mod tests {
         assert!(
             matches!(
                 report.status,
-                CapabilityStatus::Supported | CapabilityStatus::MissingDependency { .. }
+                CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
             ),
             "the probe answers definitely: {:?}",
             report.status
@@ -955,7 +958,7 @@ mod tests {
         let report = insertion_capability_report(discovered);
         assert!(matches!(
             report.status,
-            CapabilityStatus::Supported | CapabilityStatus::MissingDependency { .. }
+            CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
         ));
     }
 }
