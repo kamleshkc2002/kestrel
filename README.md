@@ -11,8 +11,9 @@ Every feature says whether it works on your session (GNOME, KDE Plasma, Sway,
 Hyprland, COSMIC, or X11), what it uses, and what to install or allow when it
 doesn't. Kestrel runs as your normal user, with no root helpers, accounts, or
 telemetry. Use it from the window, the tray, global shortcuts,
-`kestrel --command`, or its command bar for Kestrel's own actions. It is not a
-general app launcher.
+`kestrel --command`, your own launcher (see
+[Launcher script commands](#launcher-script-commands)), or its command bar for
+Kestrel's own actions. It is not a general app launcher.
 
 ## Status
 
@@ -236,6 +237,21 @@ trigger = "LOGO+ALT+o"
 ```
 
 - The window lists each binding with its state (active, waiting, in use, not registered). Disabling the feature releases the portal session or every grab.
+
+#### Launcher script commands
+
+Kestrel's actions can run from your own launcher as script commands. The scripts are generated from `kestrel --list-commands`:
+
+```bash
+bash scripts/launcher-commands.sh              # Vicinae: ~/.local/share/vicinae/scripts/kestrel
+bash scripts/launcher-commands.sh --raycast    # @raycast directives for other Raycast-compatible launchers
+bash scripts/launcher-commands.sh --dir DIR    # another script directory
+bash scripts/launcher-commands.sh --uninstall  # remove them
+```
+
+- Each script runs `kestrel --command <id>` with the installed binary's absolute path, under the action's own title, such as "Open the process inspector" or "Toggle Keep awake". Vicinae finds them by title, by "kestrel", or by ID.
+- Scripts use compact mode. Success stays quiet, and when Kestrel can't run the action the launcher shows a one-line reason: the feature is off, unavailable on this desktop, or on but not running. Kestrel's window shows the full reason.
+- Only files this script wrote are replaced or removed. Run it again after updating Kestrel so new actions appear; `command-bar.open` is left out.
 
 ## AppImage preview
 
