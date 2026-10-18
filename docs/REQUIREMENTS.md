@@ -642,9 +642,9 @@ second explicit opt-in; memory-only history remains the default.
   immediate wipe, and lock/sleep cleanup.
 - Quick toggles: appearance, brightness, keyboard light where available,
   Bluetooth, WiFi, keep-awake, empty Trash, eject eligible disks with
-  exclusions, hidden-file and desktop-icon visibility, screen lock, and battery
-  alerts. Each action is independently capability-reported and confirmed when
-  destructive.
+  exclusions, hidden-file and desktop-icon visibility, and screen lock. Each
+  action is independently capability-reported and confirmed when destructive.
+  Battery alerts are a Monitoring alert rule.
 - Settings search, sidebar navigation with per-feature settings, config import/export
   with sensitive fields excluded, appearance choice, and autostart.
 - **Exit criteria:** installable native package and AppImage preview; runs on GNOME and

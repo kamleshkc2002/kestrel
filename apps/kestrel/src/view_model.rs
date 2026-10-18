@@ -2872,6 +2872,9 @@ pub struct CommandBarQuery<'a> {
     pub results: &'a [kestrel_services::command_bar::CommandResult],
 }
 
+pub(crate) const SNIPPETS_OFF: &str =
+    "Text snippets are off. Enable snippets.text in the Feature Hub.";
+
 pub(crate) struct SnippetsPresentation<'a> {
     pub library: &'a SnippetLibrary,
     pub policy: SnippetPolicy,
@@ -2879,6 +2882,8 @@ pub(crate) struct SnippetsPresentation<'a> {
     /// Verified insertion provider, if any.
     pub provider: Option<InsertionProvider>,
     pub unavailable_reason: Option<&'a str>,
+    /// Why the feature is not running, when it is not.
+    pub stopped_reason: Option<String>,
     pub directory: Option<String>,
     pub expansion_timing: SnippetExpansionTiming,
     /// Configured preference, which may differ from discovery.
@@ -3017,7 +3022,9 @@ impl SnippetsViewModel {
                 ));
                 status
             } else {
-                "Text snippets are not running. Enable snippets.text in the Feature Hub.".to_owned()
+                presentation
+                    .stopped_reason
+                    .unwrap_or_else(|| SNIPPETS_OFF.to_owned())
             },
             insertion_status,
             insertion_available,
@@ -3976,6 +3983,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4031,6 +4039,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4083,6 +4092,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4608,6 +4618,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4676,6 +4687,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4769,6 +4781,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4831,6 +4844,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -4935,6 +4949,7 @@ mod tests {
             running: true,
             provider: Some(kestrel_platform::snippets::InsertionProvider::Wtype),
             unavailable_reason: None,
+            stopped_reason: None,
             directory: Some("/tmp/example/kestrel".to_string()),
             expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
             provider_preference: kestrel_core::SnippetProviderPreference::Auto,
@@ -5127,6 +5142,7 @@ mod tests {
                 running: false,
                 provider: None,
                 unavailable_reason: None,
+                stopped_reason: None,
                 directory: None,
                 expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
