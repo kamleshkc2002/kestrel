@@ -3296,7 +3296,35 @@ pub struct ApplicationViewModel {
     pub appearance: AppearancePreference,
     pub close_action: kestrel_core::CloseAction,
     pub autostart: bool,
+    pub logging: LoggingViewModel,
     pub can_undo: bool,
+}
+
+/// Logging settings and the log folder for the Settings page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggingViewModel {
+    pub debug: bool,
+    /// `KESTREL_LOG=debug` keeps debug detail on whatever the setting says.
+    pub debug_forced: bool,
+    pub retention_days: u32,
+    pub max_total_megabytes: u32,
+    /// The log folder, when Kestrel can log.
+    pub directory: Option<String>,
+}
+
+impl LoggingViewModel {
+    fn new(
+        configuration: &kestrel_core::LoggingConfiguration,
+        logger: Option<&crate::logging::FileLogger>,
+    ) -> Self {
+        Self {
+            debug: configuration.debug,
+            debug_forced: logger.is_some_and(crate::logging::FileLogger::debug_forced),
+            retention_days: configuration.retention_days,
+            max_total_megabytes: configuration.max_total_megabytes,
+            directory: logger.map(|logger| logger.directory().display().to_string()),
+        }
+    }
 }
 impl Default for ProcessesViewModel {
     fn default() -> Self {
@@ -3386,6 +3414,7 @@ impl ApplicationViewModel {
             appearance: configuration.ui.appearance,
             close_action: configuration.ui.close_action,
             autostart: configuration.startup.autostart,
+            logging: LoggingViewModel::new(&configuration.logging, crate::logging::logger()),
             can_undo,
         }
     }

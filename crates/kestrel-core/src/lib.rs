@@ -173,6 +173,12 @@ pub const MIN_SCRATCHPAD_NOTE_BYTES: u32 = 1024;
 pub const DEFAULT_SCRATCHPAD_NOTE_BYTES: u32 = 256 * 1024;
 pub const MAX_SCRATCHPAD_NOTE_BYTES: u32 = 1024 * 1024;
 pub const MAX_SCRATCHPAD_AGE_DAYS: u32 = 365;
+pub const MIN_LOG_RETENTION_DAYS: u32 = 1;
+pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 7;
+pub const MAX_LOG_RETENTION_DAYS: u32 = 30;
+pub const MIN_LOG_TOTAL_MEGABYTES: u32 = 1;
+pub const DEFAULT_LOG_TOTAL_MEGABYTES: u32 = 20;
+pub const MAX_LOG_TOTAL_MEGABYTES: u32 = 100;
 
 pub const MIN_PROCESS_REFRESH_MILLIS: u32 = 1_000;
 pub const DEFAULT_PROCESS_REFRESH_MILLIS: u32 = 2_000;
@@ -497,6 +503,8 @@ pub struct ApplicationConfiguration {
     pub scratchpad: ScratchpadConfiguration,
     #[serde(default)]
     pub recording: RecordingConfiguration,
+    #[serde(default)]
+    pub logging: LoggingConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -519,6 +527,7 @@ impl Default for ApplicationConfiguration {
             command_bar: CommandBarConfiguration::default(),
             scratchpad: ScratchpadConfiguration::default(),
             recording: RecordingConfiguration::default(),
+            logging: LoggingConfiguration::default(),
         }
     }
 }
@@ -578,6 +587,7 @@ impl ApplicationConfiguration {
         self.quick_panel.validate()?;
         self.scratchpad.validate()?;
         self.recording.validate()?;
+        self.logging.validate()?;
         self.command_bar.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
@@ -1190,6 +1200,52 @@ impl ScratchpadConfiguration {
         if self.max_age_days > MAX_SCRATCHPAD_AGE_DAYS {
             return Err(ConfigurationError::InvalidScratchpadAgeDays {
                 days: self.max_age_days,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Local diagnostic log detail and retention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoggingConfiguration {
+    /// Adds debug detail to the warnings, errors, and lifecycle events.
+    #[serde(default)]
+    pub debug: bool,
+    #[serde(default = "default_log_retention_days")]
+    pub retention_days: u32,
+    #[serde(default = "default_log_total_megabytes")]
+    pub max_total_megabytes: u32,
+}
+
+fn default_log_retention_days() -> u32 {
+    DEFAULT_LOG_RETENTION_DAYS
+}
+fn default_log_total_megabytes() -> u32 {
+    DEFAULT_LOG_TOTAL_MEGABYTES
+}
+
+impl Default for LoggingConfiguration {
+    fn default() -> Self {
+        Self {
+            debug: false,
+            retention_days: DEFAULT_LOG_RETENTION_DAYS,
+            max_total_megabytes: DEFAULT_LOG_TOTAL_MEGABYTES,
+        }
+    }
+}
+
+impl LoggingConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !(MIN_LOG_RETENTION_DAYS..=MAX_LOG_RETENTION_DAYS).contains(&self.retention_days) {
+            return Err(ConfigurationError::InvalidLogRetentionDays {
+                days: self.retention_days,
+            });
+        }
+        if !(MIN_LOG_TOTAL_MEGABYTES..=MAX_LOG_TOTAL_MEGABYTES).contains(&self.max_total_megabytes)
+        {
+            return Err(ConfigurationError::InvalidLogTotalMegabytes {
+                megabytes: self.max_total_megabytes,
             });
         }
         Ok(())
@@ -2031,6 +2087,8 @@ pub enum ConfigurationError {
     InvalidScratchpadMaxNotes { notes: u32 },
     InvalidScratchpadNoteBytes { bytes: u32 },
     InvalidScratchpadAgeDays { days: u32 },
+    InvalidLogRetentionDays { days: u32 },
+    InvalidLogTotalMegabytes { megabytes: u32 },
     InvalidCommandResults { results: u32 },
     MissingCommandFileRoot,
     TooManyCommandFileRoots { roots: usize },

@@ -2,8 +2,8 @@
 # Build and install Kestrel for the current user.
 #
 #   bash scripts/install-local.sh              install or update
-#   bash scripts/install-local.sh --restart    also (re)start Kestrel; log:
-#                                              ~/.local/state/kestrel/launch.log
+#   bash scripts/install-local.sh --restart    also (re)start Kestrel; it logs to
+#                                              ~/.local/state/kestrel/logs
 #   bash scripts/install-local.sh --uninstall  remove installed files
 #
 # Settings and data in ~/.config/kestrel and ~/.local/share/kestrel stay.
@@ -62,17 +62,20 @@ sed "s|^Exec=kestrel\$|Exec=$binary|" "$repository/data/$app_id.desktop" >"$desk
 chmod 644 "$desktop_file"
 refresh_caches
 
+# Kestrel now keeps bounded logs; the older unbounded launch log goes.
+rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/kestrel/launch.log"
+
 printf 'Installed %s (%s).\n' "$binary" "$("$binary" --version)"
 
 launch() {
-  local log="${XDG_STATE_HOME:-$HOME/.local/state}/kestrel/launch.log"
-  mkdir -p "$(dirname -- "$log")"
-  setsid "$binary" >"$log" 2>&1 </dev/null &
+  # Kestrel keeps its own bounded logs; stdout and stderr carry nothing extra.
+  setsid "$binary" >/dev/null 2>&1 </dev/null &
   for _ in $(seq 1 50); do
     running && return 0
     sleep 0.1
   done
-  printf 'Kestrel did not start; see %s.\n' "$log" >&2
+  printf 'Kestrel did not start; see %s.\n' \
+    "${XDG_STATE_HOME:-$HOME/.local/state}/kestrel/logs" >&2
   return 1
 }
 

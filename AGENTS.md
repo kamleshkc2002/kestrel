@@ -94,6 +94,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - Pass owned snapshots/view models across boundaries. Keep live backend handles private to their service/runtime owner; widgets must not own service resources.
 - Configuration failures are isolated: a malformed feature setting emits a warning and disables/ignores only that feature rather than blocking unrelated startup.
 - Privacy is structural: capability evidence is sanitized; clipboard content is bounded, memory-only, zeroized, and never exposed in public snapshots. Preserve lock/sleep/stop wipe behavior and `clear_if_matches` ownership checks.
+- Log through the `log` macros, with a feature ID as the target where one applies (`log::warn!(target: "audio.mixer", ...)`). Info and above are for warnings, errors, and lifecycle events; detail goes to `debug!`. Never pass clipboard, snippet, or note text, OCR or QR results, queries, window titles, command lines, or environments to a log call; the logger only scrubs home paths and network addresses.
 - Repository files, Markdown included, never contain commit SHAs, PR links, or the names of external products used as feature references; describe scope, decisions, and audits in Kestrel's own terms. Commit messages, issues, and PRs follow the same rule for external reference products.
 
 ## Important Files
@@ -104,6 +105,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `apps/kestrel/src/view_model.rs`: domain/service state to owned presentation state.
 - `apps/kestrel/src/window/`: GTK rendering; no service ownership. `mod.rs` holds `WindowView`, the sidebar pages (`SidebarPage`), the shared sidebar search, and page assembly; one file per panel (`audio.rs`, `capture.rs`, `clipboard.rs`, …), `widgets.rs` for shared row/dialog helpers, and `settings/` for each page's settings groups. Settings groups return their rows and keywords (`FilterRows`) for the one search handler.
 - `apps/kestrel/src/status_notifier.rs`: optional SNI adapter and fallback capability report.
+- `apps/kestrel/src/logging.rs`: the process file logger behind the `log` facade, with daily and size rotation, retention pruning, and home-path and address scrubbing; installed once in `main.rs`.
 - `crates/kestrel-core/src/lib.rs`: shared capability/configuration contracts and feature-ID validation.
 - `crates/kestrel-services/src/lib.rs`: `FeatureRegistry`, registration invariants, lifecycle transitions.
 - `crates/kestrel-platform/src/lib.rs`: platform boundary and `CapabilityProbe` seam.

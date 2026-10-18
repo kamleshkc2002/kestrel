@@ -69,6 +69,7 @@ pub(super) fn build_settings_group(
             add_general_rows(&group, view_model, commands, &mut filter_rows);
             let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
             group.add(&io_row);
+            add_logging_group(&group, view_model, window, commands, &mut filter_rows);
         }
     }
 
@@ -76,6 +77,136 @@ pub(super) fn build_settings_group(
         *keywords = keywords.to_lowercase();
     }
     (group, filter_rows)
+}
+
+fn add_logging_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let logging = &view_model.logging;
+    let logs_group = adw::PreferencesGroup::builder()
+        .title("Diagnostic logs")
+        .description(
+            "Warnings, errors, and features starting or stopping are kept on this computer. \
+             Logs never record clipboard, snippet, or note text, searches, window titles, \
+             network addresses, or paths in your home folder, and never leave this computer.",
+        )
+        .build();
+
+    let debug = plain_row()
+        .title("Debug logging")
+        .subtitle(if logging.debug_forced {
+            "On for this run because KESTREL_LOG=debug is set."
+        } else {
+            "Also records operation names and timings, for tracking down a problem."
+        })
+        .subtitle_lines(0)
+        .build();
+    let debug_switch = gtk::Switch::builder()
+        .active(logging.debug)
+        .valign(Align::Center)
+        .build();
+    let sender = commands.clone();
+    debug_switch.connect_state_set(move |_, enabled| {
+        let _ = sender.try_send(ApplicationCommand::SetLoggingSetting(
+            kestrel::LoggingSetting::Debug(enabled),
+        ));
+        gtk::glib::Propagation::Proceed
+    });
+    debug.add_suffix(&debug_switch);
+    debug.set_activatable_widget(Some(&debug_switch));
+    filter_rows.push((
+        debug.clone().upcast(),
+        "debug logging logs diagnostics verbose".to_owned(),
+    ));
+    logs_group.add(&debug);
+
+    for (title, subtitle, (min, max), value, setting) in [
+        (
+            "Keep logs for",
+            "Days before a log file is deleted.",
+            (
+                kestrel_core::MIN_LOG_RETENTION_DAYS,
+                kestrel_core::MAX_LOG_RETENTION_DAYS,
+            ),
+            logging.retention_days,
+            kestrel::LoggingSetting::RetentionDays as fn(u32) -> kestrel::LoggingSetting,
+        ),
+        (
+            "Log size limit",
+            "Total size of all log files, in MB; the oldest go first.",
+            (
+                kestrel_core::MIN_LOG_TOTAL_MEGABYTES,
+                kestrel_core::MAX_LOG_TOTAL_MEGABYTES,
+            ),
+            logging.max_total_megabytes,
+            kestrel::LoggingSetting::MaxTotalMegabytes,
+        ),
+    ] {
+        let row = adw::SpinRow::with_range(f64::from(min), f64::from(max), 1.0);
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_value(f64::from(value));
+        row.set_numeric(true);
+        let sender = commands.clone();
+        row.connect_value_notify(move |spin| {
+            let value = (spin.value() as u32).clamp(min, max);
+            let _ = sender.try_send(ApplicationCommand::SetLoggingSetting(setting(value)));
+        });
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("logs logging retention ttl size {title} {subtitle}"),
+        ));
+        logs_group.add(&row);
+    }
+
+    let buttons = gtk::Box::new(Orientation::Horizontal, 6);
+    let open = gtk::Button::with_label("Open folder");
+    let clear = gtk::Button::with_label("Clear logs…");
+    clear.add_css_class("destructive-action");
+    open.set_sensitive(logging.directory.is_some());
+    clear.set_sensitive(logging.directory.is_some());
+    let sender = commands.clone();
+    open.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::OpenLogFolder);
+    });
+    let sender = commands.clone();
+    let parent = window.clone();
+    clear.connect_clicked(move |_| {
+        let dialog = adw::MessageDialog::builder()
+            .transient_for(&parent)
+            .heading("Clear the logs?")
+            .body("Every log file is deleted. Logging continues with a new file.")
+            .build();
+        dialog.add_responses(&[("cancel", "Cancel"), ("clear", "Clear logs")]);
+        dialog.set_close_response("cancel");
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_response_appearance("clear", adw::ResponseAppearance::Destructive);
+        let sender = sender.clone();
+        dialog.connect_response(None, move |dialog, response| {
+            if response == "clear" {
+                let _ = sender.try_send(ApplicationCommand::ClearLogs);
+            }
+            dialog.close();
+        });
+        dialog.present();
+    });
+    buttons.append(&open);
+    buttons.append(&clear);
+    let folder = logging
+        .directory
+        .as_deref()
+        .unwrap_or("Unavailable without a home folder");
+    let files_row = stacked_row("Log files", folder, &buttons);
+    filter_rows.push((
+        files_row.clone().upcast(),
+        "log files folder open clear logs diagnostics".to_owned(),
+    ));
+    logs_group.add(&files_row);
+    group.add(&logs_group);
 }
 
 fn add_quick_panel_group(
