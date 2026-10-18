@@ -32,7 +32,7 @@ Startup flow:
 1. `main.rs` loads `$XDG_CONFIG_HOME/kestrel/config.toml` (or `$HOME/.config/kestrel/config.toml).
 2. `ApplicationRuntime` registers stable feature descriptors and runs non-interactive probes.
 3. `FeatureRegistry` retains every feature and starts only entries that are enabled and `Supported`/`Limited`.
-4. Services publish owned snapshots; `view_model.rs` converts registry/config state into presentation data; `window/` renders it.
+4. Services publish owned snapshots; `view_model/` converts registry/config state into presentation data; `window/` renders it.
 
 Command flow is typed UI/tray command -> enablement/capability validation -> service -> platform adapter -> structured result/snapshot. Permission denial and missing dependencies are normal states, not process failures.
 
@@ -42,7 +42,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 
 ## Key Directories
 
-- `apps/kestrel/src/`: executable shell and app composition. New end-to-end features usually touch `runtime.rs`, `view_model.rs`, and one feature file under `window/` (plus a `window/settings/` group on the feature's sidebar page when it has settings).
+- `apps/kestrel/src/`: executable shell and app composition. New end-to-end features usually touch one feature module each under `runtime/`, `view_model/`, and `window/` (plus a `window/settings/` group on the feature's sidebar page when it has settings).
 - `crates/kestrel-core/src/`: cross-layer vocabulary, capability reports, feature specs, configuration models, and non-I/O validation.
 - `crates/kestrel-platform/src/`: concrete Linux probes/adapters, one module per feature.
 - `crates/kestrel-services/src/`: feature policy, state, commands, snapshots, and lifecycle, one module per feature.
@@ -100,9 +100,9 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 ## Important Files
 
 - `apps/kestrel/src/main.rs`: executable entry, GTK controller, action/channel dispatch.
-- `apps/kestrel/src/runtime.rs`: authoritative feature composition, concrete backends, enablement, and runtime operations.
+- `apps/kestrel/src/runtime/`: authoritative feature composition, concrete backends, enablement, and runtime operations. `mod.rs` holds `ApplicationRuntime`, construction, configuration, presets, and resource reconciliation; each feature module (`audio.rs`, `capture.rs`, `clipboard.rs`, …) adds that feature's `impl ApplicationRuntime` block and tests; `probes.rs` holds the runtime-owned capability probes and `lifecycle.rs` the feature lifecycle log events.
 - `apps/kestrel/src/config.rs`: XDG path resolution, schema migration, per-feature warning isolation.
-- `apps/kestrel/src/view_model.rs`: domain/service state to owned presentation state.
+- `apps/kestrel/src/view_model/`: domain/service state to owned presentation state. `mod.rs` holds `ApplicationViewModel` and re-exports every view model, one file per feature (`audio.rs`, `monitor.rs`, `clipboard.rs`, …), and `features.rs` for feature-hub, capability, and quick-toggle presentation.
 - `apps/kestrel/src/window/`: GTK rendering; no service ownership. `mod.rs` holds `WindowView`, the sidebar pages (`SidebarPage`), the shared sidebar search, and page assembly; one file per panel (`audio.rs`, `capture.rs`, `clipboard.rs`, …), `widgets.rs` for shared row/dialog helpers, and `settings/` for each page's settings groups. Settings groups return their rows and keywords (`FilterRows`) for the one search handler.
 - `apps/kestrel/src/status_notifier.rs`: optional SNI adapter and fallback capability report.
 - `apps/kestrel/src/logging.rs`: the process file logger behind the `log` facade, with daily and size rotation, retention pruning, and home-path and address scrubbing; installed once in `main.rs`.
