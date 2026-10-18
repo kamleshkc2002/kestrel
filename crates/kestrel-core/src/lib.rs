@@ -256,9 +256,11 @@ impl QuickPanelConfiguration {
 pub struct CommandBarConfiguration {
     #[serde(default = "default_command_results")]
     pub max_results: u32,
-    #[serde(default = "default_true")]
+    /// Applications, windows, files, and emoji are opt-in; the bar centres on
+    /// Kestrel's own actions.
+    #[serde(default)]
     pub enable_applications: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enable_windows: bool,
     #[serde(default = "default_true")]
     pub enable_clipboard: bool,
@@ -267,7 +269,7 @@ pub struct CommandBarConfiguration {
     pub enable_files: bool,
     #[serde(default = "default_true")]
     pub enable_scripts: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enable_emoji: bool,
     #[serde(default)]
     pub file_roots: Vec<String>,
@@ -283,12 +285,12 @@ impl Default for CommandBarConfiguration {
     fn default() -> Self {
         Self {
             max_results: DEFAULT_COMMAND_RESULTS,
-            enable_applications: true,
+            enable_applications: false,
             enable_files: false,
             enable_scripts: true,
-            enable_windows: true,
+            enable_windows: false,
             enable_clipboard: true,
-            enable_emoji: true,
+            enable_emoji: false,
             file_roots: Vec::new(),
             scripts: Vec::new(),
         }

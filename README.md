@@ -1,10 +1,18 @@
 # Kestrel
 
-Kestrel is a local-first, capability-aware utility host for Linux desktops. It
-combines monitoring, audio, clipboard, capture, and automation workflows in one
-application alongside an existing desktop. The core is Wayland-first with X11
-compatibility; each integration reports its actual session, dependency,
-hardware, and permission capabilities.
+Kestrel is the set of utilities your Linux desktop leaves out: system
+monitoring with sustained alerts and tray readouts, audio routing with device
+priority, private clipboard history, snippets, screenshots with OCR, QR and
+color picking, screen recording with trim, a camera check, and process and
+port tools. They live in one window alongside your existing desktop, so you
+don't have to install and learn a separate app for each one.
+
+Every feature says whether it works on your session (GNOME, KDE Plasma, Sway,
+Hyprland, COSMIC, or X11), what it uses, and what to install or allow when it
+doesn't. Kestrel runs as your normal user, with no root helpers, accounts, or
+telemetry. Use it from the window, the tray, global shortcuts,
+`kestrel --command`, or its command bar for Kestrel's own actions. It is not a
+general app launcher.
 
 ## Status
 
@@ -45,7 +53,7 @@ reversible operation. The Feature Hub reports registered, enabled, available,
 and running states separately.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
-Command bar, Capture, Notes, Processes, Shortcuts, Feature hub, and Settings)
+Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
 and shows one at a time. Each feature's settings sit on its own page, and the
 Settings page keeps app-wide choices. The sidebar search filters pages and
 settings together. On narrow windows the sidebar and the page take turns.
@@ -96,10 +104,11 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Command bar — `commands.bar`
 
 - **Default:** disabled.
-- **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default true), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default true), `enable_windows` (default true), `enable_clipboard` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds.
+- A keyboard surface for Kestrel's own features: actions, feature switches, presets, snippets, clipboard history, and your scripts, plus computed answers. Applications, windows, files, and emoji are optional sources, off by default, for when you have no other launcher.
+- **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default false), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default false), `enable_windows` (default false), `enable_clipboard` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds. Configurations that already list these keys keep their values.
 - Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins, never queries, window titles, or clipboard entries.
 - `kestrel --command command-bar.open` opens the bar as a floating surface without raising the main window, with the search field already focused. Up/Down or Ctrl+N/Ctrl+P select, Return runs the selection (or the first result) and shows the outcome in the bar, and Escape closes it and returns focus to the window you were in. While the feature is off, the bar shows how to turn it on.
-- Results cover Kestrel actions, feature switches (searching a feature lists its switch first), snippets, applications and their desktop actions, open windows, clipboard history entries while clipboard history runs, scripts, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
+- Results cover Kestrel actions, feature switches (searching a feature lists its switch first), snippets, clipboard history entries while clipboard history runs, and scripts; with their sources switched on, also applications and their desktop actions, open windows, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
 - Open windows come from COSMIC toplevel management, wlroots foreign-toplevel management (Sway, Hyprland, labwc), the generic Wayland toplevel list (listing only), or EWMH on X11. GNOME exposes no window list to applications, so window results stay off there and the provider row says why.
 - Computed answers: arithmetic (numbers may group thousands with a space or an apostrophe and use a comma or period decimal), unit conversion, dates and times, `feb 29` or `days until dec 25`, and colors in `#rrggbb`, `rgb()`, or `hsl()` notation with a swatch.
 - The bar is a wlr-layer-shell overlay where the compositor offers the protocol and Kestrel was built with gtk4-layer-shell (the AppImage bundles it); elsewhere it is a normal undecorated window. The command bar panel shows which placement is in use and why.
