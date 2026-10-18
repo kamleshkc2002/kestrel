@@ -1,8 +1,44 @@
 //! Shared widget helpers.
 
+use std::{cell::RefCell, rc::Rc, time::Duration};
+
 use adw::prelude::*;
-use gtk::{Align, Orientation, accessible::Property, gdk};
+use gtk::{Align, Orientation, accessible::Property, gdk, glib};
 use kestrel::text_lines::{LineDirection, move_lines};
+
+/// How long a spin value must stay put before it is saved. A save rebuilds the
+/// page, and a rebuild during a click left the old button repeating its step;
+/// this matches GTK's delay before a held button starts repeating.
+const SPIN_SETTLE_DELAY: Duration = Duration::from_millis(500);
+
+type PendingSpin = Rc<RefCell<Option<glib::SourceId>>>;
+
+/// Calls `commit` with a spin row's value once it stops changing.
+pub(super) fn on_spin_row_settled(row: &adw::SpinRow, commit: impl Fn(f64) + 'static) {
+    let commit: Rc<dyn Fn(f64)> = Rc::new(commit);
+    let pending = PendingSpin::default();
+    row.connect_value_notify(move |spin| settle_spin(&pending, &commit, spin.value()));
+}
+
+/// Calls `commit` with a spin button's value once it stops changing.
+pub(super) fn on_spin_button_settled(button: &gtk::SpinButton, commit: impl Fn(f64) + 'static) {
+    let commit: Rc<dyn Fn(f64)> = Rc::new(commit);
+    let pending = PendingSpin::default();
+    button.connect_value_changed(move |spin| settle_spin(&pending, &commit, spin.value()));
+}
+
+fn settle_spin(pending: &PendingSpin, commit: &Rc<dyn Fn(f64)>, value: f64) {
+    if let Some(source) = pending.borrow_mut().take() {
+        source.remove();
+    }
+    let slot = Rc::clone(pending);
+    let commit = Rc::clone(commit);
+    let source = glib::timeout_add_local_once(SPIN_SETTLE_DELAY, move || {
+        slot.borrow_mut().take();
+        commit(value);
+    });
+    *pending.borrow_mut() = Some(source);
+}
 
 /// Blocks searches triggered by programmatic updates.
 pub(super) type SearchGuard = std::rc::Rc<std::cell::Cell<bool>>;

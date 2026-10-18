@@ -1,6 +1,6 @@
 //! Clipboard, snippet, scratchpad, and command-bar settings.
 
-use crate::window::widgets::plain_row;
+use crate::window::widgets::{on_spin_row_settled, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -30,9 +30,9 @@ pub(super) fn add_clipboard_limits_group(
             Property::Description(&description),
         ]);
         row.set_tooltip_text(Some(&description));
-        row.connect_value_notify(move |spin| {
+        on_spin_row_settled(row, move |value| {
             // Bounds use kibibytes in the UI and bytes in storage.
-            let value = spin.value().max(0.0);
+            let value = value.max(0.0);
             let command = match limit {
                 kestrel::ClipboardLimit::Items(_) => kestrel::ClipboardLimit::Items(value as u32),
                 kestrel::ClipboardLimit::ItemBytes(_) => {
@@ -280,8 +280,8 @@ pub(super) fn add_snippet_limits_group(
     content.set_value(f64::from(snippet_content_kib));
     content.set_numeric(true);
     let sender = commands.clone();
-    content.connect_value_notify(move |spin| {
-        let bytes = (spin.value().max(0.0) as u32).saturating_mul(1024);
+    on_spin_row_settled(&content, move |value| {
+        let bytes = (value.max(0.0) as u32).saturating_mul(1024);
         let _ = sender.try_send(ApplicationCommand::SetSnippetLimit(
             kestrel::SnippetLimit::ContentBytes(bytes),
         ));
@@ -299,8 +299,8 @@ pub(super) fn add_snippet_limits_group(
     clipboard_variable.set_value(f64::from(snippets.policy.clipboard_variable_bytes));
     clipboard_variable.set_numeric(true);
     let sender = commands.clone();
-    clipboard_variable.connect_value_notify(move |spin| {
-        let bytes = spin.value().max(0.0) as u32;
+    on_spin_row_settled(&clipboard_variable, move |value| {
+        let bytes = value.max(0.0) as u32;
         let _ = sender.try_send(ApplicationCommand::SetSnippetLimit(
             kestrel::SnippetLimit::ClipboardBytes(bytes),
         ));
@@ -317,8 +317,8 @@ pub(super) fn add_snippet_limits_group(
     timeout.set_value(snippets.policy.insert_timeout_millis as f64);
     timeout.set_numeric(true);
     let sender = commands.clone();
-    timeout.connect_value_notify(move |spin| {
-        let millis = spin.value().max(0.0) as u64;
+    on_spin_row_settled(&timeout, move |value| {
+        let millis = value.max(0.0) as u64;
         let _ = sender.try_send(ApplicationCommand::SetSnippetLimit(
             kestrel::SnippetLimit::InsertTimeoutMillis(millis),
         ));
@@ -419,8 +419,8 @@ pub(super) fn add_command_bar_group(
     results.set_value(f64::from(command_bar.max_results));
     results.set_numeric(true);
     let sender = commands.clone();
-    results.connect_value_notify(move |spin| {
-        let value = spin.value().max(0.0) as u32;
+    on_spin_row_settled(&results, move |value| {
+        let value = value.max(0.0) as u32;
         let _ = sender.try_send(ApplicationCommand::SetCommandResultLimit(value));
     });
     command_group.add(&results);
@@ -478,8 +478,8 @@ pub(super) fn add_scratchpad_limits_group(
         row.set_numeric(true);
         row.update_property(&[Property::Label(&format!("Scratchpad: {title}"))]);
         let sender = commands.clone();
-        row.connect_value_notify(move |spin| {
-            let value = (spin.value() as u32).clamp(min, max);
+        on_spin_row_settled(&row, move |value| {
+            let value = (value as u32).clamp(min, max);
             let _ = sender.try_send(ApplicationCommand::SetScratchpadLimit(limit(value)));
         });
         filter_rows.push((
