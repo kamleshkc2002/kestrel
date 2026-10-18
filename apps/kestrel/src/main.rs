@@ -129,7 +129,7 @@ impl ControllerState {
             return;
         }
         let clock = kestrel_platform::snippets::SystemClock;
-        let now = kestrel_platform::snippets::Clock::local_time(&clock);
+        let now = clock.local_time();
         self.command_results = self
             .runtime
             .command_search(&self.command_query.clone(), &now);
@@ -1841,7 +1841,7 @@ impl ControllerState {
             }
             ControllerOperation::MoveMonitorReadout { readout, direction } => {
                 let mut candidate = self.configuration.clone();
-                if !move_monitor_readout(&mut candidate.monitoring.readouts, readout, direction) {
+                if !kestrel::move_entry(&mut candidate.monitoring.readouts, &readout, direction) {
                     return Ok((
                         self.view_model(),
                         format!("{} readout is already at that boundary", readout.label()),
@@ -2591,23 +2591,6 @@ fn set_autostart_side_effect(enabled: bool) -> Result<(), String> {
     }
 }
 
-fn move_monitor_readout(
-    readouts: &mut [MonitorReadout],
-    readout: MonitorReadout,
-    direction: PanelMoveDirection,
-) -> bool {
-    let Some(index) = readouts.iter().position(|entry| *entry == readout) else {
-        return false;
-    };
-    let target = match direction {
-        PanelMoveDirection::Up => index.checked_sub(1),
-        PanelMoveDirection::Down => (index + 1 < readouts.len()).then_some(index + 1),
-    };
-    let Some(target) = target else { return false };
-    readouts.swap(index, target);
-    true
-}
-
 fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
     match command {
         kestrel::AudioCommand::SetStreamVolume { .. } => "Stream volume",
@@ -3274,26 +3257,26 @@ fn dispatch_tick_results(controller: &Rc<ApplicationController>, receiver: Recei
 
 #[cfg(test)]
 mod tests {
-    use super::{load_startup_configuration, move_monitor_readout, persist};
+    use super::{load_startup_configuration, persist};
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::ApplicationConfiguration;
     #[test]
     fn monitor_readout_movement_is_bounded_and_deterministic() {
         let mut readouts = vec![MonitorReadout::Cpu, MonitorReadout::Memory];
-        assert!(!move_monitor_readout(
+        assert!(!kestrel::move_entry(
             &mut readouts,
-            MonitorReadout::Cpu,
+            &MonitorReadout::Cpu,
             PanelMoveDirection::Up
         ));
-        assert!(move_monitor_readout(
+        assert!(kestrel::move_entry(
             &mut readouts,
-            MonitorReadout::Cpu,
+            &MonitorReadout::Cpu,
             PanelMoveDirection::Down
         ));
         assert_eq!(readouts, vec![MonitorReadout::Memory, MonitorReadout::Cpu]);
-        assert!(!move_monitor_readout(
+        assert!(!kestrel::move_entry(
             &mut readouts,
-            MonitorReadout::Cpu,
+            &MonitorReadout::Cpu,
             PanelMoveDirection::Down
         ));
     }

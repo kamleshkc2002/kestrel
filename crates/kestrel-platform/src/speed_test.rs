@@ -670,12 +670,6 @@ fn spawn_upload_writer(
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SpeedTestProbe;
 
-impl SpeedTestProbe {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl CapabilityProbe for SpeedTestProbe {
     fn probe(&self) -> CapabilityReport {
         let backend = CurlSpeedTestBackend::discover();

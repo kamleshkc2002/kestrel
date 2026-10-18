@@ -8,7 +8,7 @@ use kestrel::{
     ProcessesViewModel,
 };
 
-use super::widgets::{SearchGuard, plain_row};
+use super::widgets::{SearchGuard, icon_button, plain_row};
 
 /// Widgets kept across updates so the search keeps its text and focus.
 pub(super) struct ProcessesPanel {
@@ -68,7 +68,7 @@ impl ProcessesPanel {
                 item.add_suffix(&copy_button("PID", pid.to_string(), commands));
             }
             if let Some(url) = row.open_url.as_ref().filter(|_| self.browser) {
-                let open = flat_button("web-browser-symbolic", &format!("Open {url}"));
+                let open = icon_button("web-browser-symbolic", &format!("Open {url}"), true);
                 let sender = commands.clone();
                 let url = url.clone();
                 open.connect_clicked(move |_| {
@@ -132,7 +132,7 @@ pub(super) fn build_processes_panel(
             entry.text().to_string(),
         )));
     });
-    let refresh = flat_button("view-refresh-symbolic", "Refresh processes");
+    let refresh = icon_button("view-refresh-symbolic", "Refresh processes", true);
     let sender = commands.clone();
     refresh.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::Processes(ProcessRequest::Refresh));
@@ -221,15 +221,6 @@ fn copy_button(what: &str, value: String, commands: &Sender<ApplicationCommand>)
     button.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::CopyText(value.clone()));
     });
-    button
-}
-
-fn flat_button(icon: &str, label: &str) -> gtk::Button {
-    let button = gtk::Button::from_icon_name(icon);
-    button.set_valign(Align::Center);
-    button.add_css_class("flat");
-    button.set_tooltip_text(Some(label));
-    button.update_property(&[Property::Label(label)]);
     button
 }
 

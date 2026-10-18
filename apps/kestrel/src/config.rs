@@ -192,14 +192,10 @@ fn parse(contents: &str) -> Result<LoadedConfiguration, ConfigurationLoadError> 
 
     match schema_version {
         0 => migrate_v0(document),
-        1 => migrate_v1(document),
-        2 => migrate_v2(document),
+        1 | 2 => parse_v2(document),
         CURRENT_CONFIGURATION_SCHEMA_VERSION => parse_current(document),
         version => Err(ConfigurationLoadError::UnsupportedSchemaVersion(version)),
     }
-}
-fn migrate_v2(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
-    parse_v2(document)
 }
 
 fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
@@ -271,10 +267,6 @@ fn migrate_v0(document: toml::Table) -> Result<LoadedConfiguration, Configuratio
         }
     }
     Ok(loaded)
-}
-
-fn migrate_v1(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
-    parse_v2(document)
 }
 
 fn parse_v2(document: toml::Table) -> Result<LoadedConfiguration, ConfigurationLoadError> {
@@ -1487,7 +1479,7 @@ fn alert_kind_name(kind: AlertKind) -> &'static str {
     }
 }
 
-fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
+pub(crate) fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
     ConfigurationWarning {
         feature_id: location.to_owned(),
         reason: reason.into(),

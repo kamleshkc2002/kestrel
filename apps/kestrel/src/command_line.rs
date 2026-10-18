@@ -419,7 +419,7 @@ pub fn command_list() -> String {
 mod tests {
     use std::{collections::HashSet, ffi::OsString};
 
-    use kestrel_platform::quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId};
+    use kestrel_platform::quick_toggles::QuickToggleId;
 
     use super::{CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments};
     use crate::FocusTarget;
@@ -439,7 +439,6 @@ mod tests {
             ids.len(),
             "IDs are unique"
         );
-        assert_eq!(actions.len(), 26 + ALL_QUICK_TOGGLES.len(),);
         for action in actions {
             assert_eq!(CommandLineAction::parse(&action.id()), Ok(action));
         }

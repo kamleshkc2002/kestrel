@@ -6,9 +6,8 @@ use std::{
     error::Error,
     ffi::{OsStr, OsString},
     fmt,
-    io::{self, Write},
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    io::Write,
+    path::PathBuf,
     process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -96,11 +95,6 @@ impl InsertionPath {
     pub fn provider(&self) -> InsertionProvider {
         self.provider
     }
-
-    /// Resolved executable, excluded from evidence because paths are machine-specific.
-    pub fn executable(&self) -> &Path {
-        &self.executable
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,9 +144,10 @@ pub fn discover_insertion_provider_with(
         Some(provider) => vec![provider],
         None => InsertionProvider::AUTO_ORDER.to_vec(),
     };
-    let search_roots = search_roots(path_env);
     for provider in &candidates {
-        if let Some(executable) = find_executable(provider.executable(), &search_roots) {
+        if let Some(executable) =
+            crate::applications::resolve_executable(provider.executable(), path_env)
+        {
             return Ok(InsertionPath {
                 provider: *provider,
                 executable,
@@ -168,7 +163,7 @@ pub fn discover_insertion_provider_with(
         .join(", ");
     let mut message = format!("no verified insertion provider was found (checked {checked})");
     if preferred == SnippetProviderPreference::Auto
-        && find_executable("ydotool", &search_roots).is_some()
+        && crate::applications::resolve_executable("ydotool", path_env).is_some()
     {
         message.push_str(
             "; ydotool is present but needs input-device access, so it is only used when \
@@ -185,28 +180,6 @@ pub fn discover_insertion_provider(
     preferred: SnippetProviderPreference,
 ) -> Result<InsertionPath, InsertionError> {
     discover_insertion_provider_with(preferred, env::var_os("PATH").as_deref())
-}
-
-fn search_roots(path_env: Option<&OsStr>) -> Vec<PathBuf> {
-    let Some(path_env) = path_env else {
-        return Vec::new();
-    };
-    env::split_paths(path_env)
-        .filter(|root| root.is_absolute())
-        .collect()
-}
-
-fn find_executable(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
-    for root in roots {
-        let candidate = root.join(name);
-        let Ok(metadata) = candidate.metadata() else {
-            continue;
-        };
-        if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 /// Stdin keeps text out of `/proc/<pid>/cmdline`; discarded output bounds exposure.
@@ -384,17 +357,11 @@ impl LocalTime {
     }
 }
 
-pub trait Clock: Send + Sync {
-    /// Local time-zone name, or a neutral fallback.
-    fn timezone_name(&self) -> String;
-    fn local_time(&self) -> LocalTime;
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
-impl Clock for SystemClock {
-    fn timezone_name(&self) -> String {
+impl SystemClock {
+    pub fn timezone_name(&self) -> String {
         // SAFETY: `localtime_r` fills caller-owned storage; copy the zone immediately.
         unsafe {
             let now = libc::time(std::ptr::null_mut());
@@ -412,7 +379,7 @@ impl Clock for SystemClock {
         }
     }
 
-    fn local_time(&self) -> LocalTime {
+    pub fn local_time(&self) -> LocalTime {
         // SAFETY: `localtime_r` fills caller-owned storage; copy fields before it dies.
         unsafe {
             let now = libc::time(std::ptr::null_mut());
@@ -515,15 +482,6 @@ pub fn insertion_capability_report(
     }
 }
 
-fn io_kind(error: &io::Error) -> &'static str {
-    match error.kind() {
-        io::ErrorKind::NotFound => "not_found",
-        io::ErrorKind::PermissionDenied => "permission_denied",
-        io::ErrorKind::TimedOut => "timed_out",
-        _ => "io",
-    }
-}
-
 impl InsertionError {
     fn kind(&self) -> &'static str {
         match self.kind {
@@ -535,17 +493,6 @@ impl InsertionError {
             InsertionErrorKind::EmptyText => "empty_text",
         }
     }
-}
-
-pub fn is_executable(path: &Path) -> bool {
-    path.metadata()
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-/// Maps I/O failure to insertion evidence while keeping paths private.
-pub fn insertion_io_kind(error: &io::Error) -> &'static str {
-    io_kind(error)
 }
 
 #[cfg(test)]
@@ -560,10 +507,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Clock, ExecutableInsertionBackend, InsertionBackend, InsertionErrorKind, InsertionPath,
+        ExecutableInsertionBackend, InsertionBackend, InsertionErrorKind, InsertionPath,
         InsertionProvider, LocalTime, SnippetInsertionProbe, SystemClock,
-        discover_insertion_provider, discover_insertion_provider_with, insertion_capability_report,
-        is_executable,
+        discover_insertion_provider_with, insertion_capability_report,
     };
     use crate::CapabilityProbe;
 
@@ -656,12 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_ignores_non_executable_and_relative_entries() {
-        let dir = TempDir::new().expect("temp dir");
-        let not_executable = dir.path().join("wtype");
-        fs::write(&not_executable, "#!/bin/sh\nexit 0\n").expect("file is written");
-        assert!(!is_executable(&not_executable));
-
+    fn discovery_ignores_relative_entries() {
         let relative = std::ffi::OsString::from(".");
         let error =
             discover_insertion_provider_with(SnippetProviderPreference::Auto, Some(&relative))
@@ -950,15 +891,5 @@ mod tests {
             InsertionProvider::from_preference(SnippetProviderPreference::Auto),
             None
         );
-    }
-
-    #[test]
-    fn discovery_uses_the_process_path_when_no_preference_is_pinned() {
-        let discovered = discover_insertion_provider(SnippetProviderPreference::Auto);
-        let report = insertion_capability_report(discovered);
-        assert!(matches!(
-            report.status,
-            CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
-        ));
     }
 }

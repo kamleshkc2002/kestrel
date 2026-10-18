@@ -157,11 +157,6 @@ pub fn disable() -> Result<(), AutostartError> {
     disable_at(&config_home)
 }
 
-/// Resolves the autostart path, preferring non-empty `XDG_CONFIG_HOME`.
-pub fn autostart_path() -> Result<PathBuf, AutostartError> {
-    autostart_path_in(&config_home()?)
-}
-
 fn config_home() -> Result<PathBuf, AutostartError> {
     let config_home = non_empty_var("XDG_CONFIG_HOME")
         .or_else(|| non_empty_var("HOME").map(|home| home.join(".config")))

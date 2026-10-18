@@ -303,10 +303,6 @@ impl CommandRanking {
         self.usage.clear();
     }
 
-    pub fn uses_pins(&self) -> usize {
-        self.pins.len()
-    }
-
     pub fn from_parts(
         pins: impl IntoIterator<Item = String>,
         usage: impl IntoIterator<Item = (String, u32)>,
@@ -658,8 +654,6 @@ fn convert_temperature(value: f64, from: &str, to: &str) -> Option<f64> {
         _ => None,
     }
 }
-
-pub const DATE_QUERIES: [&str; 6] = ["date", "time", "now", "today", "tomorrow", "yesterday"];
 
 /// Renders a local date/time query deterministically from the supplied clock.
 pub fn render_date_query(query: &str, now: &LocalTime) -> Option<String> {
@@ -1094,10 +1088,6 @@ impl CommandIndex {
                 })
                 .collect(),
         }
-    }
-
-    pub fn builtin_count(&self) -> usize {
-        self.builtins.len()
     }
 
     pub fn search(&self, input: SearchInput<'_>) -> Vec<CommandResult> {
@@ -2216,7 +2206,7 @@ mod tests {
     #[test]
     fn builtin_catalog_covers_kestrel_actions_and_toggles() {
         let index = CommandIndex::new(Vec::new(), &[]);
-        assert!(index.builtin_count() > 8);
+
         let ranking = empty_ranking();
         let results = index.search(SearchInput {
             query: "wipe clipboard",

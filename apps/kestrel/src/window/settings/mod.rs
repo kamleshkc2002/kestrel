@@ -4,7 +4,7 @@ mod media;
 mod panels;
 mod tools;
 
-use crate::window::widgets::{FilterRows, choose_path, plain_row, stacked_row};
+use crate::window::widgets::{FilterRows, choose_path, icon_button, plain_row, stacked_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation};
@@ -148,8 +148,7 @@ fn add_quick_panel_group(
                 Some(index + 1).filter(|next| *next < favorites.len()),
             ),
         ] {
-            let button = icon_button(icon, &format!("{label}: {description}"));
-            button.set_sensitive(target.is_some());
+            let button = icon_button(icon, &format!("{label}: {description}"), target.is_some());
             let sender = commands.clone();
             let current = favorites.clone();
             button.connect_clicked(move |_| {
@@ -162,7 +161,11 @@ fn add_quick_panel_group(
             });
             row.add_suffix(&button);
         }
-        let remove = icon_button("user-trash-symbolic", &format!("Remove {description}"));
+        let remove = icon_button(
+            "user-trash-symbolic",
+            &format!("Remove {description}"),
+            true,
+        );
         let sender = commands.clone();
         let current = favorites.clone();
         remove.connect_clicked(move |_| {
@@ -178,16 +181,6 @@ fn add_quick_panel_group(
         panel_group.add(&row);
     }
     group.add(&panel_group);
-}
-
-/// A flat icon button with a tooltip and accessible label.
-fn icon_button(icon: &str, label: &str) -> gtk::Button {
-    let button = gtk::Button::from_icon_name(icon);
-    button.add_css_class("flat");
-    button.set_valign(Align::Center);
-    button.set_tooltip_text(Some(label));
-    button.update_property(&[gtk::accessible::Property::Label(label)]);
-    button
 }
 
 fn add_general_rows(

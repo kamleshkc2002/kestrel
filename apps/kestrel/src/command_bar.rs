@@ -11,7 +11,7 @@ use kestrel_core::MAX_COMMAND_USAGE_ENTRIES;
 use kestrel_services::command_bar::CommandRanking;
 use serde::{Deserialize, Serialize};
 
-use crate::{ConfigurationWarning, private_file::write_private_atomic};
+use crate::{ConfigurationWarning, config::warning, private_file::write_private_atomic};
 
 pub const CURRENT_RANKING_SCHEMA_VERSION: u32 = 1;
 
@@ -135,13 +135,6 @@ pub fn save_ranking(path: &Path, ranking: &CommandRanking) -> Result<(), String>
     let serialized = toml::to_string_pretty(&document)
         .map_err(|error| format!("the ranking could not be serialized: {error}"))?;
     write_private_atomic(path, serialized.as_bytes()).map_err(|error| error.to_string())
-}
-
-fn warning(location: &str, reason: impl Into<String>) -> ConfigurationWarning {
-    ConfigurationWarning {
-        feature_id: location.to_owned(),
-        reason: reason.into(),
-    }
 }
 
 #[cfg(test)]

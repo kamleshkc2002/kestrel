@@ -9,7 +9,7 @@ use std::{
 
 use kestrel_platform::{
     system_monitor::{
-        CoreKind, CpuCounters, DiskCounters, FilesystemUsage, GpuReading, MemoryCounters, Metric,
+        CoreKind, CpuCounters, FilesystemUsage, GpuReading, MemoryCounters, Metric,
         NetworkCounters, PowerSupplyReading, RawSystemSample, SourceIssue, SystemMonitorSource,
         TemperatureReading,
     },
@@ -19,7 +19,6 @@ use kestrel_platform::{
 pub const MIN_REFRESH_INTERVAL: Duration =
     Duration::from_millis(kestrel_core::MIN_MONITOR_REFRESH_INTERVAL_MILLIS);
 pub const MAX_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
-pub const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidRefreshInterval {
@@ -122,15 +121,6 @@ pub struct DiskUsageSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct DiskActivitySnapshot {
-    pub device: String,
-    pub read_bytes: u64,
-    pub written_bytes: u64,
-    pub read_bytes_per_second: Option<f64>,
-    pub write_bytes_per_second: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct GpuSnapshot {
     pub device: String,
     pub label: Option<String>,
@@ -177,20 +167,14 @@ pub struct HistorySample {
     pub observed_at: Duration,
     pub cpu_usage_percent: Option<f64>,
     pub memory_used_percent: Option<f64>,
-    pub swap_used_percent: Option<f64>,
     pub disk_used_percent: Option<f64>,
     pub temperature_celsius_max: Option<f64>,
-    pub battery_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistorySummary {
     pub samples: usize,
     pub span: Duration,
-    pub cpu_usage_percent_max: Option<f64>,
-    pub memory_used_percent_max: Option<f64>,
-    pub disk_used_percent_max: Option<f64>,
-    pub temperature_celsius_max: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -210,7 +194,6 @@ pub struct SystemSnapshot {
     pub cores: Vec<CoreUsage>,
     pub memory: Option<MemorySnapshot>,
     pub disk_usage: Vec<DiskUsageSnapshot>,
-    pub disk_activity: Vec<DiskActivitySnapshot>,
     pub network: Vec<NetworkSnapshot>,
     pub network_session: Option<NetworkSessionTotals>,
     pub temperatures: Vec<TemperatureReading>,
@@ -306,28 +289,12 @@ impl<S: SystemMonitorSource> SystemMonitorService<S> {
         self.latest.as_ref()
     }
 
-    pub fn history(&self) -> impl Iterator<Item = &HistorySample> {
-        self.history.iter()
-    }
-
     pub fn history_summary(&self) -> Option<HistorySummary> {
         let first = self.history.front()?;
         let last = self.history.back()?;
         Some(HistorySummary {
             samples: self.history.len(),
             span: last.observed_at.saturating_sub(first.observed_at),
-            cpu_usage_percent_max: max_history_value(&self.history, |sample| {
-                sample.cpu_usage_percent
-            }),
-            memory_used_percent_max: max_history_value(&self.history, |sample| {
-                sample.memory_used_percent
-            }),
-            disk_used_percent_max: max_history_value(&self.history, |sample| {
-                sample.disk_used_percent
-            }),
-            temperature_celsius_max: max_history_value(&self.history, |sample| {
-                sample.temperature_celsius_max
-            }),
         })
     }
 
@@ -389,17 +356,6 @@ fn build_snapshot(
     let disk_usage = available(&raw.disk_usage)
         .map(|entries| entries.iter().map(disk_usage_snapshot).collect())
         .unwrap_or_default();
-    let disk_activity = available(&raw.disk_io)
-        .map(|entries| {
-            disk_activity_snapshots(
-                entries,
-                previous
-                    .and_then(|(_, sample)| available(&sample.disk_io))
-                    .map(Vec::as_slice),
-                elapsed_seconds,
-            )
-        })
-        .unwrap_or_default();
 
     SystemSnapshot {
         observed_at,
@@ -410,7 +366,6 @@ fn build_snapshot(
             .unwrap_or_default(),
         memory,
         disk_usage,
-        disk_activity,
         network,
         network_session: None,
         temperatures: available(&raw.temperatures).cloned().unwrap_or_default(),
@@ -488,7 +443,6 @@ fn collect_issues(raw: &RawSystemSample) -> Vec<SourceIssue> {
         issue(&raw.temperatures),
         issue(&raw.power_supplies),
         issue(&raw.disk_usage),
-        issue(&raw.disk_io),
         issue(&raw.gpu),
         issue(&raw.peripherals),
     ]
@@ -568,39 +522,6 @@ fn disk_usage_snapshot(entry: &FilesystemUsage) -> DiskUsageSnapshot {
     }
 }
 
-fn disk_activity_snapshots(
-    current: &[DiskCounters],
-    previous: Option<&[DiskCounters]>,
-    elapsed_seconds: Option<f64>,
-) -> Vec<DiskActivitySnapshot> {
-    let previous = previous
-        .into_iter()
-        .flatten()
-        .map(|disk| (disk.device.as_str(), disk))
-        .collect::<BTreeMap<_, _>>();
-    current
-        .iter()
-        .map(|disk| {
-            let prior = previous.get(disk.device.as_str()).copied();
-            DiskActivitySnapshot {
-                device: disk.device.clone(),
-                read_bytes: disk.read_bytes,
-                written_bytes: disk.written_bytes,
-                read_bytes_per_second: counter_rate(
-                    disk.read_bytes,
-                    prior.map(|value| value.read_bytes),
-                    elapsed_seconds,
-                ),
-                write_bytes_per_second: counter_rate(
-                    disk.written_bytes,
-                    prior.map(|value| value.written_bytes),
-                    elapsed_seconds,
-                ),
-            }
-        })
-        .collect()
-}
-
 fn network_snapshots(
     current: &[NetworkCounters],
     previous: Option<&[NetworkCounters]>,
@@ -675,10 +596,6 @@ fn history_sample(snapshot: &SystemSnapshot) -> HistorySample {
             .memory
             .as_ref()
             .and_then(|memory| memory.used_percent),
-        swap_used_percent: snapshot
-            .memory
-            .as_ref()
-            .and_then(|memory| memory.swap_used_percent),
         disk_used_percent: snapshot
             .disk_usage
             .iter()
@@ -689,23 +606,7 @@ fn history_sample(snapshot: &SystemSnapshot) -> HistorySample {
             .iter()
             .map(|temperature| temperature.millidegrees_celsius as f64 / 1_000.0)
             .max_by(f64::total_cmp),
-        battery_percent: snapshot
-            .power_supplies
-            .iter()
-            .filter(|supply| {
-                supply.kind.as_deref() == Some("Battery")
-                    && supply.scope.as_deref() == Some("System")
-            })
-            .filter_map(|supply| supply.capacity_percent)
-            .min(),
     }
-}
-
-fn max_history_value(
-    history: &VecDeque<HistorySample>,
-    value: impl Fn(&HistorySample) -> Option<f64>,
-) -> Option<f64> {
-    history.iter().filter_map(value).max_by(f64::total_cmp)
 }
 
 fn percentage(numerator: u64, denominator: u64) -> Option<f64> {
@@ -725,8 +626,8 @@ mod tests {
     use std::{cell::RefCell, collections::VecDeque, time::Duration};
 
     use kestrel_platform::system_monitor::{
-        CpuCounters, DiskCounters, FilesystemUsage, GpuReading, MemoryCounters, Metric,
-        NetworkCounters, PowerSupplyReading, RawSystemSample, SourceIssue, SystemMonitorSource,
+        CpuCounters, FilesystemUsage, GpuReading, MemoryCounters, Metric, NetworkCounters,
+        PowerSupplyReading, RawSystemSample, SourceIssue, SystemMonitorSource,
     };
 
     use super::{
@@ -779,11 +680,6 @@ mod tests {
                 filesystem: "ext4".to_string(),
                 total_bytes: 100,
                 available_bytes: 0,
-            }]),
-            disk_io: Metric::Available(vec![DiskCounters {
-                device: "sda".to_string(),
-                read_bytes: received,
-                written_bytes: transmitted,
             }]),
             gpu: Metric::Available(vec![GpuReading {
                 device: "gpu0".to_string(),
@@ -862,7 +758,10 @@ mod tests {
         assert_eq!(snapshot.network[0].transmit_bytes_per_second, Some(300.0));
         assert_eq!(snapshot.memory.as_ref().expect("memory").used_bytes, 750);
         assert_eq!(snapshot.issues.len(), 1);
-        assert_eq!(service.history().count(), 2);
+        assert_eq!(
+            service.history_summary().expect("history summary").samples,
+            2
+        );
     }
 
     #[test]
@@ -880,7 +779,6 @@ mod tests {
         assert_eq!(snapshot.cpu_usage_percent, None);
         assert_eq!(snapshot.network[0].receive_bytes_per_second, None);
         assert_eq!(snapshot.network[0].transmit_bytes_per_second, None);
-        assert_eq!(snapshot.disk_activity[0].read_bytes_per_second, None);
     }
 
     #[test]
@@ -902,14 +800,14 @@ mod tests {
         service.refresh(Duration::from_secs(1));
         service.refresh(Duration::from_secs(2));
         service.refresh(Duration::from_secs(3));
-        let history = service.history().collect::<Vec<_>>();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].observed_at, Duration::from_secs(2));
-        assert_eq!(history[1].observed_at, Duration::from_secs(3));
+        assert_eq!(
+            service.history_summary().expect("history summary").samples,
+            2
+        );
     }
 
     #[test]
-    fn history_summary_reports_maxima_and_empty_is_none() {
+    fn history_summary_reports_samples_and_span() {
         let empty = service(Vec::new(), 2);
         assert_eq!(empty.history_summary(), None);
         let mut service = service(vec![sample(100, 80, 1, 2), sample(200, 120, 2, 4)], 2);
@@ -918,10 +816,6 @@ mod tests {
         let summary = service.history_summary().expect("history summary");
         assert_eq!(summary.samples, 2);
         assert_eq!(summary.span, Duration::from_secs(1));
-        assert_eq!(summary.cpu_usage_percent_max, Some(60.0));
-        assert_eq!(summary.memory_used_percent_max, Some(75.0));
-        assert_eq!(summary.disk_used_percent_max, Some(100.0));
-        assert_eq!(summary.temperature_celsius_max, None);
     }
 
     #[test]
@@ -986,7 +880,6 @@ mod tests {
             temperatures: unavailable("temperatures"),
             power_supplies: unavailable("power"),
             disk_usage: unavailable("disk_usage"),
-            disk_io: unavailable("disk_io"),
             gpu: unavailable("gpu"),
             peripherals: unavailable("peripherals"),
         };
@@ -1007,7 +900,6 @@ mod tests {
                 "temperatures",
                 "power",
                 "disk_usage",
-                "disk_io",
                 "gpu",
                 "peripherals"
             ]

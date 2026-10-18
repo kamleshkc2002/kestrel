@@ -407,8 +407,8 @@ executable on `PATH` without a shell and accepts `wtype` and `xdotool`
 automatically; the uinput-based provider is excluded from automatic selection
 because it needs input-device access a user must grant deliberately, and it is
 only used when the configuration names it. With no verified provider the
-capability report carries the missing dependency and its remediation and the
-service refuses to insert, so the feature cannot type text through an
+capability report is Limited with the remediation: the library and editor run,
+and the service refuses to insert, so the feature cannot type text through an
 unvalidated mechanism. A provider run is bounded by a timeout, receives its
 payload as one argument, and reports only a structured outcome.
 

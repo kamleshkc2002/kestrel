@@ -127,7 +127,6 @@ enum WorkerMessage {
 
 /// A bounded scratchpad whose state is persisted privately in one JSON file.
 pub struct ScratchpadService {
-    path: PathBuf,
     policy: ScratchpadConfiguration,
     state: State,
     warning: Option<String>,
@@ -144,7 +143,7 @@ impl ScratchpadService {
             .map_err(|_| ScratchpadError::LimitExceeded)?;
         let (state, warning) = load_state(&path, &policy)?;
         let (sender, receiver) = mpsc::channel();
-        let worker_path = path.clone();
+        let worker_path = path;
         let autosave_error = Arc::new(Mutex::new(None));
         let worker_error = Arc::clone(&autosave_error);
         let worker = thread::Builder::new()
@@ -152,7 +151,6 @@ impl ScratchpadService {
             .spawn(move || worker_loop(worker_path, receiver, worker_error))
             .map_err(|error| ScratchpadError::SaveFailed(error.to_string()))?;
         Ok(Self {
-            path,
             policy,
             state,
             warning,
@@ -200,12 +198,6 @@ impl ScratchpadService {
     }
     pub fn notes(&self) -> &[ScratchpadNote] {
         &self.state.notes
-    }
-    pub fn active(&self) -> Option<NoteId> {
-        self.state.active
-    }
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     pub fn create(

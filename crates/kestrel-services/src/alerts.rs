@@ -48,10 +48,6 @@ impl AlertPolicy {
         }
     }
 
-    pub fn rules(&self) -> impl Iterator<Item = &AlertRule> {
-        self.rules.iter()
-    }
-
     pub fn rule(&self, kind: AlertKind) -> Option<&AlertRule> {
         self.rules.get(kind_index(kind))
     }
@@ -59,28 +55,15 @@ impl AlertPolicy {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AlertEvent {
-    Raised {
-        kind: AlertKind,
-        value: f64,
-        threshold: f64,
-        subject: Option<String>,
-        observed_at: Duration,
-    },
-    Cleared {
-        kind: AlertKind,
-        observed_at: Duration,
-    },
+    Raised { kind: AlertKind, value: f64 },
+    Cleared { kind: AlertKind },
 }
 
 impl AlertEvent {
     pub fn kind(&self) -> AlertKind {
         match self {
-            Self::Raised { kind, .. } | Self::Cleared { kind, .. } => *kind,
+            Self::Raised { kind, .. } | Self::Cleared { kind } => *kind,
         }
-    }
-
-    pub fn is_raised(&self) -> bool {
-        matches!(self, Self::Raised { .. })
     }
 }
 
@@ -104,9 +87,7 @@ pub fn notification_text(event: &AlertEvent) -> (String, String) {
 pub struct ActiveAlert {
     pub kind: AlertKind,
     pub value: f64,
-    pub threshold: f64,
     pub subject: Option<String>,
-    pub raised_at: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,10 +122,6 @@ impl AlertEngine {
         }
     }
 
-    pub fn policy(&self) -> &AlertPolicy {
-        &self.policy
-    }
-
     pub fn set_policy(&mut self, policy: AlertPolicy) {
         self.policy = policy;
     }
@@ -176,10 +153,7 @@ impl AlertEngine {
                 self.active[index] = None;
                 self.sustain_counters[index] = 0;
                 self.last_raised[index] = None;
-                events.push(AlertEvent::Cleared {
-                    kind,
-                    observed_at: snapshot.observed_at,
-                });
+                events.push(AlertEvent::Cleared { kind });
                 continue;
             }
 
@@ -206,20 +180,12 @@ impl AlertEngine {
             let active_alert = ActiveAlert {
                 kind,
                 value,
-                threshold: rule.threshold,
                 subject,
-                raised_at: snapshot.observed_at,
             };
             self.active[index] = Some(active_alert.clone());
             self.sustain_counters[index] = 0;
             self.last_raised[index] = Some(snapshot.observed_at);
-            events.push(AlertEvent::Raised {
-                kind,
-                value,
-                threshold: rule.threshold,
-                subject: active_alert.subject,
-                observed_at: snapshot.observed_at,
-            });
+            events.push(AlertEvent::Raised { kind, value });
         }
         events
     }
@@ -328,7 +294,6 @@ mod tests {
             peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
-            disk_activity: Vec::new(),
             network: Vec::new(),
             temperatures: Vec::new(),
             power_supplies: Vec::new(),
@@ -388,7 +353,10 @@ mod tests {
         let mut engine = AlertEngine::new(policy(AlertKind::Cpu, 80.0, 1, 900));
         let mut value = snapshot(1);
         value.cpu_usage_percent = Some(90.0);
-        assert!(engine.evaluate(&value)[0].is_raised());
+        assert!(matches!(
+            engine.evaluate(&value)[0],
+            AlertEvent::Raised { .. }
+        ));
         value.cpu_usage_percent = Some(74.0);
         value.observed_at = Duration::from_secs(2);
         assert!(matches!(
@@ -397,7 +365,10 @@ mod tests {
         ));
         value.cpu_usage_percent = Some(90.0);
         value.observed_at = Duration::from_secs(3);
-        assert!(engine.evaluate(&value)[0].is_raised());
+        assert!(matches!(
+            engine.evaluate(&value)[0],
+            AlertEvent::Raised { .. }
+        ));
     }
 
     #[test]
@@ -461,7 +432,10 @@ mod tests {
             remaining_seconds: None,
             online: None,
         });
-        assert!(engine.evaluate(&value)[0].is_raised());
+        assert!(matches!(
+            engine.evaluate(&value)[0],
+            AlertEvent::Raised { .. }
+        ));
         value.power_supplies[0].status = Some("Charging".into());
         value.observed_at = Duration::from_secs(2);
         assert!(engine.evaluate(&value).is_empty());
@@ -549,13 +523,17 @@ mod tests {
             label: "CPU".into(),
             millidegrees_celsius: 10_000,
         });
+        let events = engine.evaluate(&value);
         for kind in [
             AlertKind::Cpu,
             AlertKind::Memory,
             AlertKind::Disk,
             AlertKind::Temperature,
         ] {
-            assert!(!engine.evaluate(&value).is_empty() || engine.policy().rule(kind).is_some());
+            assert!(
+                events.iter().any(|event| event.kind() == kind),
+                "{kind:?} did not raise"
+            );
         }
         let active = engine.snapshot().active;
         assert!(
@@ -571,7 +549,10 @@ mod tests {
         engine.record_delivery_failure(AlertKind::Cpu, "unavailable");
         let mut value = snapshot(1);
         value.cpu_usage_percent = Some(90.0);
-        assert!(engine.evaluate(&value)[0].is_raised());
+        assert!(matches!(
+            engine.evaluate(&value)[0],
+            AlertEvent::Raised { .. }
+        ));
         let snapshot = engine.snapshot();
         assert_eq!(snapshot.delivery_failures[0].message, "unavailable");
         assert_eq!(snapshot.active.len(), 1);

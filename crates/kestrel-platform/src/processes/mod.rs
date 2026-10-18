@@ -4,8 +4,7 @@
 mod backend;
 
 pub use backend::{
-    ListenersProbe, PidfdSignaller, ProcessProbe, ProcfsListeners, ProcfsProcesses,
-    SystemRestarter, parse_scope, validate_unit_name,
+    ListenersProbe, PidfdSignaller, ProcessProbe, ProcfsListeners, ProcfsProcesses, SystemRestarter,
 };
 
 use std::fmt;
@@ -215,8 +214,4 @@ pub struct Listener {
     /// Owning process when its file descriptors were readable.
     pub owner: Option<ProcessIdentity>,
     pub owner_name: Option<String>,
-}
-
-pub trait ListenerSource: Send {
-    fn listeners(&self, limit: usize) -> Result<Vec<Listener>, ProcessError>;
 }

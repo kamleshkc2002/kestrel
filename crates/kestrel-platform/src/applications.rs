@@ -45,7 +45,6 @@ const MAX_DESKTOP_ACTIONS: usize = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopErrorKind {
     NotAvailable,
-    ReadFailed,
     LaunchFailed,
     UnknownAction,
 }
@@ -412,37 +411,6 @@ impl ExternalLauncher {
         &self.handler_name
     }
 
-    /// Starts a detached program with its arguments.
-    pub fn launch(&self, command: &[String]) -> Result<(), DesktopError> {
-        let Some((program, args)) = command.split_first() else {
-            return Err(DesktopError::new(
-                DesktopErrorKind::LaunchFailed,
-                "an empty command cannot be launched",
-            ));
-        };
-        let path_env = env::var_os("PATH");
-        let program = resolve_executable(program, path_env.as_deref()).ok_or_else(|| {
-            DesktopError::new(
-                DesktopErrorKind::NotAvailable,
-                format!("{program} was not found on PATH"),
-            )
-        })?;
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        crate::spawn_with_busy_retry(&mut command)
-            .map(|_| ())
-            .map_err(|error| {
-                DesktopError::new(
-                    DesktopErrorKind::LaunchFailed,
-                    format!("the program could not be started: {error}"),
-                )
-            })
-    }
-
     pub fn open(&self, target: &str) -> Result<(), DesktopError> {
         if target.is_empty() {
             return Err(DesktopError::new(
@@ -654,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_reports_a_missing_handler_and_missing_programs() {
+    fn launcher_reports_a_missing_handler_and_finds_a_present_one() {
         let error = ExternalLauncher::discover_with(Some(std::ffi::OsStr::new("/nonexistent")))
             .expect_err("no handler means no launcher");
         assert_eq!(error.kind, super::DesktopErrorKind::NotAvailable);
@@ -669,12 +637,6 @@ mod tests {
         let launcher =
             ExternalLauncher::discover_with(Some(&path_env)).expect("the stub handler is found");
         assert_eq!(launcher.handler_name(), "xdg-open");
-
-        let error = launcher
-            .launch(&["definitely-not-installed-anywhere".to_string()])
-            .expect_err("a missing program is reported");
-        assert_eq!(error.kind, super::DesktopErrorKind::NotAvailable);
-        assert!(launcher.launch(&[]).is_err());
     }
 
     #[test]

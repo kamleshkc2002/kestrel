@@ -444,9 +444,7 @@ fn system_connection() -> Result<Connection, QuickToggleError> {
 }
 
 fn current_session() -> Result<(Connection, String), QuickToggleError> {
-    let connection = Connection::system().map_err(|error| {
-        QuickToggleError::unavailable(format!("connecting to the system bus failed: {error}"))
-    })?;
+    let connection = system_connection()?;
     let manager = Proxy::new(&connection, LOGIN_DESTINATION, LOGIN_PATH, LOGIN_INTERFACE)
         .map_err(|error| dbus_error("creating the logind manager proxy", error))?;
     let path: OwnedObjectPath = manager
@@ -466,9 +464,7 @@ fn current_session() -> Result<(Connection, String), QuickToggleError> {
 }
 
 fn bluez_adapter() -> Result<(Connection, OwnedObjectPath, bool), QuickToggleError> {
-    let connection = Connection::system().map_err(|error| {
-        QuickToggleError::unavailable(format!("connecting to the system bus failed: {error}"))
-    })?;
+    let connection = system_connection()?;
     let manager = Proxy::new(
         &connection,
         "org.bluez",
@@ -496,9 +492,7 @@ fn bluez_adapter() -> Result<(Connection, OwnedObjectPath, bool), QuickToggleErr
 }
 
 fn network_manager() -> Result<(Connection, bool, bool), QuickToggleError> {
-    let connection = Connection::system().map_err(|error| {
-        QuickToggleError::unavailable(format!("connecting to the system bus failed: {error}"))
-    })?;
+    let connection = system_connection()?;
     let proxy = Proxy::new(
         &connection,
         "org.freedesktop.NetworkManager",
@@ -521,9 +515,7 @@ fn ejectable_drives() -> Result<Vec<EjectableDrive>, QuickToggleError> {
 }
 
 fn udisks_objects() -> Result<(Connection, ManagedObjects), QuickToggleError> {
-    let connection = Connection::system().map_err(|error| {
-        QuickToggleError::unavailable(format!("connecting to the system bus failed: {error}"))
-    })?;
+    let connection = system_connection()?;
     let manager = Proxy::new(
         &connection,
         "org.freedesktop.UDisks2",

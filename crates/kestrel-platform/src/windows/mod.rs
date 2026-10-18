@@ -15,8 +15,6 @@ use x11rb::{
     rust_connection::RustConnection,
 };
 
-pub use cosmic::CosmicProvider;
-
 const MAX_WINDOWS: usize = 256;
 
 /// Window-management protocol selected for the current session.
@@ -41,11 +39,6 @@ impl WindowBackend {
             Self::CosmicToplevel => "COSMIC toplevel",
             Self::ExtForeignToplevelList => "ext foreign toplevel list",
         }
-    }
-
-    /// Returns whether the backend can activate windows.
-    pub fn can_activate(self) -> bool {
-        !matches!(self, Self::ExtForeignToplevelList)
     }
 
     /// Returns whether the backend can minimize windows.

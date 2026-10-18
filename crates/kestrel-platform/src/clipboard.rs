@@ -7,10 +7,6 @@ use std::{
     error::Error,
     fmt,
     io::Read,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -84,15 +80,6 @@ impl ClipboardEntryKind {
             Self::Files => "Files",
         }
     }
-
-    /// Evidence key for this kind.
-    pub const fn evidence_key(self) -> &'static str {
-        match self {
-            Self::Text => "text_entries",
-            Self::Image => "image_entries",
-            Self::Files => "file_entries",
-        }
-    }
 }
 
 /// Entry kinds a provider can capture and re-own.
@@ -146,24 +133,6 @@ pub enum OwnedSelection {
     Text(String),
     ImagePng(Vec<u8>),
     Files(Vec<String>),
-}
-
-impl OwnedSelection {
-    pub const fn kind(&self) -> ClipboardEntryKind {
-        match self {
-            Self::Text(_) => ClipboardEntryKind::Text,
-            Self::ImagePng(_) => ClipboardEntryKind::Image,
-            Self::Files(_) => ClipboardEntryKind::Files,
-        }
-    }
-
-    pub fn size_bytes(&self) -> usize {
-        match self {
-            Self::Text(text) => text.len(),
-            Self::ImagePng(bytes) => bytes.len(),
-            Self::Files(paths) => paths.iter().map(String::len).sum(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,7 +307,6 @@ pub trait ClipboardBackend: Send + 'static {
 struct ServedSelection {
     owned: OwnedSelection,
     handle: Option<JoinHandle<()>>,
-    _wake: Arc<AtomicBool>,
 }
 
 impl ServedSelection {
@@ -376,11 +344,10 @@ impl ArboardClipboardBackend {
         let Some(mut served) = self.served.take() else {
             return;
         };
-        let cleared = clear(
+        let _ = clear(
             WaylandCopyClipboardType::Regular,
             wl_clipboard_rs::copy::Seat::All,
         );
-        let _ = cleared;
         let Some(handle) = served.handle.take() else {
             return;
         };
@@ -424,13 +391,10 @@ impl ArboardClipboardBackend {
                 format!("clipboard ownership failed: {error}"),
             )
         })?;
-        let wake = Arc::new(AtomicBool::new(false));
-        let thread_wake = Arc::clone(&wake);
         let handle = thread::Builder::new()
             .name("kestrel-clipboard-serve".to_string())
             .spawn(move || {
                 let _ = prepared.serve();
-                thread_wake.store(true, Ordering::Relaxed);
             })
             .map_err(|error| {
                 ClipboardError::new(
@@ -441,7 +405,6 @@ impl ArboardClipboardBackend {
         self.served = Some(ServedSelection {
             owned,
             handle: Some(handle),
-            _wake: wake,
         });
         Ok(())
     }
@@ -531,10 +494,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
     }
 
     fn kind_support(&self) -> ClipboardKindSupport {
-        match self.provider {
-            ClipboardProvider::WaylandDataControl => ClipboardKindSupport::ALL,
-            ClipboardProvider::X11 => ClipboardKindSupport::TEXT_ONLY,
-        }
+        kind_support_for(self.provider)
     }
 
     fn read_text(&mut self) -> Result<Option<String>, ClipboardError> {
@@ -921,8 +881,8 @@ mod tests {
 
     use super::{
         ClipboardEntryKind, ClipboardError, ClipboardErrorKind, ClipboardKindSupport,
-        ClipboardProvider, FEATURE_ID, OwnedSelection, capability_report, encode_uri_list,
-        kind_support_for, parse_uri_list, png_dimensions,
+        ClipboardProvider, FEATURE_ID, capability_report, encode_uri_list, kind_support_for,
+        parse_uri_list, png_dimensions,
     };
 
     const PNG_HEADER: [u8; 34] = [
@@ -995,19 +955,6 @@ mod tests {
             "text,image,files"
         );
         assert_eq!(ClipboardKindSupport::TEXT_ONLY.evidence_value(), "text");
-    }
-
-    #[test]
-    fn owned_selection_reports_kind_and_size() {
-        assert_eq!(
-            OwnedSelection::Text("abcd".to_string()).kind(),
-            ClipboardEntryKind::Text
-        );
-        assert_eq!(OwnedSelection::ImagePng(vec![0; 12]).size_bytes(), 12);
-        assert_eq!(
-            OwnedSelection::Files(vec!["/a".to_string(), "/bb".to_string()]).size_bytes(),
-            5
-        );
     }
 
     #[test]

@@ -1,13 +1,10 @@
 //! Snippet library panel and editor.
 
-use super::widgets::{SearchGuard, plain_row};
+use super::widgets::{SearchGuard, connect_line_movement, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
-use gtk::{Orientation, PolicyType, accessible::Property, gdk};
-use kestrel::{
-    ApplicationCommand,
-    text_lines::{LineDirection, move_lines},
-};
+use gtk::{Orientation, PolicyType, accessible::Property};
+use kestrel::ApplicationCommand;
 
 pub(super) struct SnippetPanel {
     pub(super) container: gtk::Box,
@@ -163,10 +160,10 @@ pub(super) fn fill_snippet_panel(
     });
 
     let editable = snippets.running;
-    let name = entry_row(panel, commands, "Name", &draft.name, editable);
-    let folder = entry_row(panel, commands, "Folder", &draft.folder, editable);
-    let trigger = entry_row(panel, commands, "Trigger", &draft.trigger, editable);
-    let content = text_view_row(panel, commands, &draft.content, editable);
+    let name = entry_row(panel, "Name", &draft.name, editable);
+    let folder = entry_row(panel, "Folder", &draft.folder, editable);
+    let trigger = entry_row(panel, "Trigger", &draft.trigger, editable);
+    let content = text_view_row(panel, &draft.content, editable);
 
     let actions = gtk::Box::new(Orientation::Horizontal, 6);
     let new_button = gtk::Button::with_label("New");
@@ -283,13 +280,7 @@ pub(super) fn fill_snippet_panel(
     }
 }
 
-fn entry_row(
-    panel: &SnippetPanel,
-    _commands: &Sender<ApplicationCommand>,
-    title: &str,
-    value: &str,
-    sensitive: bool,
-) -> gtk::Entry {
+fn entry_row(panel: &SnippetPanel, title: &str, value: &str, sensitive: bool) -> gtk::Entry {
     let entry = gtk::Entry::builder()
         .text(value)
         .hexpand(true)
@@ -303,51 +294,7 @@ fn entry_row(
     entry
 }
 
-fn connect_line_movement(view: &gtk::TextView) {
-    let buffer = view.buffer();
-    buffer.set_enable_undo(true);
-    let keys = gtk::EventControllerKey::new();
-    keys.connect_key_pressed(move |_, key, _, state| {
-        let direction = match (key, state.contains(gdk::ModifierType::ALT_MASK)) {
-            (gdk::Key::Up, true) => LineDirection::Up,
-            (gdk::Key::Down, true) => LineDirection::Down,
-            _ => return gtk::glib::Propagation::Proceed,
-        };
-        let text = buffer
-            .text(&buffer.start_iter(), &buffer.end_iter(), true)
-            .to_string();
-        let selection = buffer
-            .selection_bounds()
-            .map(|(start, end)| (start.offset() as usize, end.offset() as usize))
-            .unwrap_or_else(|| {
-                let cursor = buffer.cursor_position().max(0) as usize;
-                (cursor, cursor)
-            });
-        let Some(line_move) = move_lines(&text, selection, direction) else {
-            return gtk::glib::Propagation::Stop;
-        };
-
-        let mut range_start = buffer.iter_at_offset(line_move.range.0 as i32);
-        let mut range_end = buffer.iter_at_offset(line_move.range.1 as i32);
-        buffer.begin_user_action();
-        buffer.delete(&mut range_start, &mut range_end);
-        let mut insert_at = buffer.iter_at_offset(line_move.range.0 as i32);
-        buffer.insert(&mut insert_at, &line_move.replacement);
-        let new_start = buffer.iter_at_offset(line_move.selection.0 as i32);
-        let new_end = buffer.iter_at_offset(line_move.selection.1 as i32);
-        buffer.select_range(&new_start, &new_end);
-        buffer.end_user_action();
-        gtk::glib::Propagation::Stop
-    });
-    view.add_controller(keys);
-}
-
-fn text_view_row(
-    panel: &SnippetPanel,
-    _commands: &Sender<ApplicationCommand>,
-    value: &str,
-    editable: bool,
-) -> gtk::TextView {
+fn text_view_row(panel: &SnippetPanel, value: &str, editable: bool) -> gtk::TextView {
     let view = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
         .accepts_tab(false)

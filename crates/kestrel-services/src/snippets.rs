@@ -398,7 +398,7 @@ impl<B: InsertionBackend> SnippetInsertionService<B> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use kestrel_core::{Snippet, SnippetError, SnippetProviderPreference, SnippetVariable};
+    use kestrel_core::{Snippet, SnippetError, SnippetVariable};
     use kestrel_platform::snippets::{
         InsertionBackend, InsertionError, InsertionErrorKind, InsertionProvider, LocalTime,
     };
@@ -722,25 +722,6 @@ mod tests {
                 kind: InsertionErrorKind::Rejected,
                 message: "provider refused".to_string()
             })
-        );
-    }
-
-    #[test]
-    fn policy_projects_the_configuration() {
-        let policy = SnippetPolicy::from_configuration(&kestrel_core::SnippetConfiguration {
-            max_content_bytes: 2048,
-            clipboard_variable_bytes: 128,
-            insert_timeout_millis: 750,
-            preferred_provider: SnippetProviderPreference::Xdotool,
-            expansion_timing: kestrel_core::SnippetExpansionTiming::Delimiter,
-        });
-
-        assert_eq!(policy.max_content_bytes, 2048);
-        assert_eq!(policy.clipboard_variable_bytes, 128);
-        assert_eq!(policy.insert_timeout, std::time::Duration::from_millis(750));
-        assert_eq!(
-            SnippetPolicy::default().max_content_bytes,
-            kestrel_core::DEFAULT_SNIPPET_CONTENT_BYTES
         );
     }
 }

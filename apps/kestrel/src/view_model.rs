@@ -217,7 +217,6 @@ pub struct MonitorReadoutSettingViewModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveAlertViewModel {
-    pub kind: AlertKind,
     pub label: &'static str,
     pub message: String,
 }
@@ -539,7 +538,6 @@ fn active_alert(alert: &ActiveAlert) -> ActiveAlertViewModel {
         .map(|subject| format!(" ({subject})"))
         .unwrap_or_default();
     ActiveAlertViewModel {
-        kind: alert.kind,
         label: alert.kind.label(),
         message: format!(
             "{}{} is {}{}",
@@ -607,9 +605,7 @@ fn issue_reason(snapshot: &SystemSnapshot, readout: MonitorReadout) -> Option<St
         MonitorReadout::Network => source == "/proc/net/dev",
         MonitorReadout::Temperature => source == "/sys/class/hwmon + /sys/class/thermal",
         MonitorReadout::Battery => source == "/sys/class/power_supply",
-        MonitorReadout::Disk => {
-            source == "/proc/diskstats" || source.starts_with("/proc/self/mounts")
-        }
+        MonitorReadout::Disk => source.starts_with("/proc/self/mounts"),
         MonitorReadout::Gpu => source == "/sys/class/drm",
     };
     snapshot
@@ -947,7 +943,6 @@ pub struct AudioStreamViewModel {
     pub volume_writable: bool,
     pub muted: bool,
     pub output_id: u32,
-    pub inactive: bool,
     /// Stable application identity, when the stream reports one.
     pub application_id: Option<String>,
     /// Position among pinned applications and how many are pinned.
@@ -1065,7 +1060,6 @@ impl AudioViewModel {
                 volume_writable: stream.volume_writable,
                 muted: stream.muted,
                 output_id: stream.output_id,
-                inactive: stream.corked,
                 application_id: stream.application_id.clone(),
                 pinned: stream
                     .application_id
@@ -1756,8 +1750,6 @@ pub struct CameraViewModel {
     pub cameras: Vec<CameraChoiceViewModel>,
     /// A preview is opening or showing frames; Stop is offered.
     pub active: bool,
-    /// Frames are arriving.
-    pub previewing: bool,
 }
 
 impl CameraViewModel {
@@ -1799,7 +1791,6 @@ impl CameraViewModel {
                     phase,
                     CameraPhase::Starting { .. } | CameraPhase::Previewing { .. }
                 ),
-            previewing: presentation.running && matches!(phase, CameraPhase::Previewing { .. }),
         }
     }
 }
@@ -2524,18 +2515,10 @@ pub(crate) struct ClipboardPresentation<'a> {
 pub struct ClipboardViewModel {
     pub running: bool,
     pub status: String,
-    /// Entry kinds supported by the active provider.
-    pub kind_support: String,
     pub search_query: String,
     pub items: Vec<ClipboardItemViewModel>,
     pub total_items: usize,
-    pub total_bytes: usize,
     pub pinned_items: usize,
-    pub rejected_oversize_items: u64,
-    pub filtered_sensitive_items: u64,
-    pub selection_clears: u64,
-    pub wipe_count: u64,
-    pub last_filtered_pattern: Option<&'static str>,
     pub preview: Option<ClipboardPreviewViewModel>,
     pub policy: ClipboardPolicyViewModel,
     /// Newest retained entry; clears confirm up to it so later copies survive.
@@ -2553,7 +2536,6 @@ pub struct ClipboardItemViewModel {
     /// Byte ranges of `preview` that match the search.
     pub highlights: Vec<(usize, usize)>,
     pub pinned: bool,
-    pub text_editable: bool,
     pub is_image: bool,
 }
 
@@ -2621,7 +2603,6 @@ pub struct ClipboardPolicyViewModel {
     pub max_item_bytes: u32,
     pub max_image_bytes: u32,
     pub max_file_entries: u32,
-    pub max_total_bytes: u32,
     pub max_age_hours: u32,
     pub clear_seconds: u64,
     pub filter_sensitive: bool,
@@ -2636,7 +2617,6 @@ pub struct ClipboardBoundsViewModel {
     pub max_image_bytes: u32,
     pub max_file_entries: u32,
     pub max_items: u32,
-    pub max_total_bytes: u32,
     pub max_age_hours: u32,
     pub max_clear_seconds: u64,
 }
@@ -2652,7 +2632,6 @@ impl ClipboardViewModel {
             max_image_bytes: kestrel_core::MAX_CLIPBOARD_IMAGE_BYTES,
             max_file_entries: kestrel_core::MAX_CLIPBOARD_FILE_ENTRIES,
             max_items: kestrel_core::MAX_CLIPBOARD_MAX_ITEMS,
-            max_total_bytes: kestrel_core::MAX_CLIPBOARD_TOTAL_BYTES,
             max_age_hours: kestrel_core::MAX_CLIPBOARD_AGE_HOURS,
             max_clear_seconds: kestrel_core::MAX_CLIPBOARD_CLEAR_SECONDS,
         };
@@ -2661,7 +2640,6 @@ impl ClipboardViewModel {
             max_item_bytes: configuration.max_item_bytes,
             max_image_bytes: configuration.max_image_bytes,
             max_file_entries: configuration.max_file_entries,
-            max_total_bytes: configuration.max_total_bytes,
             max_age_hours: configuration.max_age_hours,
             clear_seconds: configuration.clear_seconds,
             filter_sensitive: configuration.filter_sensitive,
@@ -2682,17 +2660,10 @@ impl ClipboardViewModel {
                      Hub to retain entries."
                         .to_owned()
                 },
-                kind_support: "unavailable".to_owned(),
                 search_query: presentation.search_query.to_owned(),
                 items: Vec::new(),
                 total_items: 0,
-                total_bytes: 0,
                 pinned_items: 0,
-                rejected_oversize_items: 0,
-                filtered_sensitive_items: 0,
-                selection_clears: 0,
-                wipe_count: 0,
-                last_filtered_pattern: None,
                 preview: presentation.preview.map(clipboard_preview),
                 policy,
                 newest_id: None,
@@ -2721,8 +2692,6 @@ impl ClipboardViewModel {
                     highlights: match_ranges(&matched.preview, presentation.search_query),
                     preview: matched.preview.clone(),
                     pinned: metadata.as_ref().is_some_and(|item| item.pinned),
-                    text_editable: matched.kind
-                        == kestrel_platform::clipboard::ClipboardEntryKind::Text,
                     is_image: matched.kind
                         == kestrel_platform::clipboard::ClipboardEntryKind::Image,
                 }
@@ -2732,17 +2701,10 @@ impl ClipboardViewModel {
         Self {
             running: true,
             status: clipboard_status(snapshot, presentation.matches.len()),
-            kind_support: snapshot.kind_support.evidence_value(),
             search_query: presentation.search_query.to_owned(),
             items,
             total_items: snapshot.items.len(),
-            total_bytes: snapshot.total_bytes,
             pinned_items: snapshot.pinned_items,
-            rejected_oversize_items: snapshot.rejected_oversize_items,
-            filtered_sensitive_items: snapshot.filtered_sensitive_items,
-            selection_clears: snapshot.selection_clears,
-            wipe_count: snapshot.wipe_count,
-            last_filtered_pattern: snapshot.last_filtered_pattern,
             preview: presentation.preview.map(clipboard_preview),
             policy,
             newest_id: snapshot.items.iter().map(|item| item.id).max(),
@@ -2900,15 +2862,11 @@ pub struct SnippetsViewModel {
     pub status: String,
     pub insertion_status: String,
     pub insertion_available: bool,
-    pub provider: Option<&'static str>,
-    pub transport: Option<&'static str>,
     pub directory: Option<String>,
     pub expansion_label: &'static str,
-    pub expansion_active: bool,
     pub search_query: String,
     pub items: Vec<SnippetItemViewModel>,
     pub total: usize,
-    pub folders: Vec<String>,
     pub draft: Option<SnippetDraftViewModel>,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub policy: SnippetPolicyViewModel,
@@ -2921,8 +2879,6 @@ pub struct SnippetItemViewModel {
     pub trigger: Option<String>,
     pub detail: String,
     pub preview: String,
-    pub preview_truncated: bool,
-    pub variables: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2984,9 +2940,6 @@ impl SnippetsViewModel {
                 .map(str::to_owned)
                 .unwrap_or_else(|| "no verified insertion provider".to_owned()),
         };
-        let expansion_active = insertion_available
-            && presentation.expansion_timing == SnippetExpansionTiming::Delimiter
-            && false;
         let items = presentation
             .matches
             .iter()
@@ -2996,12 +2949,6 @@ impl SnippetsViewModel {
                 trigger: matched.trigger.clone(),
                 detail: snippet_detail(matched),
                 preview: matched.preview.clone(),
-                preview_truncated: matched.preview_truncated,
-                variables: matched
-                    .variables
-                    .iter()
-                    .map(|variable| variable.label())
-                    .collect(),
             })
             .collect::<Vec<_>>();
         let total = presentation.library.len();
@@ -3028,15 +2975,11 @@ impl SnippetsViewModel {
             },
             insertion_status,
             insertion_available,
-            provider: provider.map(InsertionProvider::label),
-            transport: provider.map(InsertionProvider::transport),
             directory: presentation.directory,
             expansion_label: presentation.expansion_timing.label(),
-            expansion_active,
             search_query: presentation.search_query.to_owned(),
             items,
             total,
-            folders: presentation.library.folders(),
             draft: presentation.draft.map(|draft| SnippetDraftViewModel {
                 name: draft.name.clone(),
                 folder: draft.folder.clone(),
@@ -3170,15 +3113,6 @@ pub enum CommandProvider {
 }
 
 impl CommandProvider {
-    pub const ALL: [CommandProvider; 6] = [
-        CommandProvider::Applications,
-        CommandProvider::Files,
-        CommandProvider::Scripts,
-        CommandProvider::Emoji,
-        CommandProvider::Windows,
-        CommandProvider::Clipboard,
-    ];
-
     pub const fn label(self) -> &'static str {
         match self {
             Self::Applications => "Applications",
@@ -3722,45 +3656,30 @@ pub struct CapabilityViewModel {
 /// Capability status and optional detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityStatusViewModel {
-    pub kind: CapabilityKindViewModel,
     pub label: &'static str,
     pub detail: Option<String>,
-}
-/// Semantic capability state for presentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapabilityKindViewModel {
-    Supported,
-    Limited,
-    NeedsPermission,
-    MissingDependency,
-    Unsupported,
 }
 
 impl From<&CapabilityStatus> for CapabilityStatusViewModel {
     fn from(status: &CapabilityStatus) -> Self {
         match status {
             CapabilityStatus::Supported => Self {
-                kind: CapabilityKindViewModel::Supported,
                 label: "Supported",
                 detail: None,
             },
             CapabilityStatus::Limited { reason } => Self {
-                kind: CapabilityKindViewModel::Limited,
                 label: "Limited",
                 detail: Some(reason.clone()),
             },
             CapabilityStatus::NeedsPermission { permission } => Self {
-                kind: CapabilityKindViewModel::NeedsPermission,
                 label: "Needs permission",
                 detail: Some(permission_label(*permission).to_string()),
             },
             CapabilityStatus::MissingDependency { name } => Self {
-                kind: CapabilityKindViewModel::MissingDependency,
                 label: "Missing dependency",
                 detail: Some(name.clone()),
             },
             CapabilityStatus::Unsupported { reason } => Self {
-                kind: CapabilityKindViewModel::Unsupported,
                 label: "Unsupported",
                 detail: Some(reason.clone()),
             },
@@ -3807,18 +3726,17 @@ mod tests {
     use kestrel_platform::capture::{CaptureErrorKind, CaptureMode, CaptureProvider};
 
     use super::{
-        ApplicationViewModel, AudioPresentation, CapabilityKindViewModel,
-        CapabilityStatusViewModel, ClipboardPresentation, ClipboardViewModel,
-        CommandBarPresentation, CommandBarViewModel, CommandProvider, FeatureLifecycleViewModel,
-        FeatureViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
-        MonitorViewModel, ShortcutsPresentation, ShortcutsViewModel, SnippetsPresentation,
-        SnippetsViewModel, SpeedTestPresentation, SpeedTestViewModel,
+        ApplicationViewModel, AudioPresentation, CapabilityStatusViewModel, ClipboardPresentation,
+        ClipboardViewModel, CommandBarPresentation, CommandBarViewModel, CommandProvider,
+        FeatureLifecycleViewModel, FeatureViewModel, MicrophonePresentation, MicrophoneViewModel,
+        MonitorPresentation, MonitorViewModel, ShortcutsPresentation, ShortcutsViewModel,
+        SnippetsPresentation, SnippetsViewModel, SpeedTestPresentation, SpeedTestViewModel,
     };
     use kestrel_core::{
         AlertKind, AppearancePreference, ApplicationConfiguration, CapabilityReport,
         CapabilityStatus, FeatureSpec, MonitorConfiguration, MonitorReadout, Permission,
     };
-    use kestrel_platform::audio::{AudioServer, InputDevice, OutputDevice, PlaybackStream};
+    use kestrel_platform::audio::{InputDevice, OutputDevice, PlaybackStream};
     use kestrel_platform::clipboard::{ClipboardEntryKind, ClipboardKindSupport};
     use kestrel_platform::quick_toggles::QuickToggleId;
     use kestrel_platform::speed_test::{
@@ -3857,10 +3775,6 @@ mod tests {
         assert!(view_model.configurable);
         assert_eq!(view_model.lifecycle, FeatureLifecycleViewModel::Registered);
         assert_eq!(view_model.lifecycle.label(), "Disabled");
-        assert_eq!(
-            view_model.capability.status.kind,
-            CapabilityKindViewModel::Supported
-        );
         assert_eq!(view_model.capability.status.label, "Supported");
         assert_eq!(
             view_model.capability.selected_backend.as_deref(),
@@ -3891,10 +3805,6 @@ mod tests {
         let view_model = FeatureViewModel::from(&registration);
 
         assert_eq!(view_model.lifecycle, FeatureLifecycleViewModel::Unavailable);
-        assert_eq!(
-            view_model.capability.status.kind,
-            CapabilityKindViewModel::NeedsPermission
-        );
         assert_eq!(view_model.capability.status.label, "Needs permission");
         assert_eq!(
             view_model.capability.status.detail.as_deref(),
@@ -3920,7 +3830,6 @@ mod tests {
                 reason: "Only one provider is available.".to_string(),
             }),
             CapabilityStatusViewModel {
-                kind: CapabilityKindViewModel::Limited,
                 label: "Limited",
                 detail: Some("Only one provider is available.".to_string()),
             }
@@ -3930,7 +3839,6 @@ mod tests {
                 name: "example-service".to_string(),
             }),
             CapabilityStatusViewModel {
-                kind: CapabilityKindViewModel::MissingDependency,
                 label: "Missing dependency",
                 detail: Some("example-service".to_string()),
             }
@@ -4223,7 +4131,6 @@ mod tests {
             peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
-            disk_activity: Vec::new(),
             network: vec![NetworkSnapshot {
                 interface: "eth0".to_owned(),
                 received_bytes: 0,
@@ -4346,7 +4253,7 @@ mod tests {
         use kestrel_services::system_monitor::SystemSnapshot;
         use std::time::Duration;
 
-        // Exact source matching prevents `/proc/diskstats` from explaining CPU.
+        // Exact source matching prevents the disk source from explaining CPU.
         let snapshot = SystemSnapshot {
             observed_at: Duration::from_secs(1),
             cpu_usage_percent: None,
@@ -4356,14 +4263,13 @@ mod tests {
             peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
-            disk_activity: Vec::new(),
             network: Vec::new(),
             temperatures: Vec::new(),
             power_supplies: Vec::new(),
             gpu: Vec::new(),
             issues: vec![SourceIssue {
-                source: "/proc/diskstats".to_owned(),
-                reason: "no whole-disk statistics are readable".to_owned(),
+                source: "/proc/self/mounts + statvfs".to_owned(),
+                reason: "no mounted filesystem is readable".to_owned(),
             }],
         };
         let configuration = MonitorConfiguration {
@@ -4384,7 +4290,7 @@ mod tests {
         assert!(!monitor.readouts[0].detail.contains("disk"));
         assert_eq!(
             monitor.readouts[1].detail,
-            "no whole-disk statistics are readable"
+            "no mounted filesystem is readable"
         );
     }
 
@@ -4403,7 +4309,6 @@ mod tests {
             peripherals: Vec::new(),
             memory: None,
             disk_usage: Vec::new(),
-            disk_activity: Vec::new(),
             network: Vec::new(),
             temperatures: Vec::new(),
             power_supplies: Vec::new(),
@@ -4452,9 +4357,7 @@ mod tests {
                     active: vec![ActiveAlert {
                         kind: AlertKind::Temperature,
                         value: 91.0,
-                        threshold: 80.0,
                         subject: Some("CPU package".to_owned()),
-                        raised_at: Duration::from_secs(2),
                     }],
                     delivery_failures: Vec::new(),
                 },
@@ -4544,9 +4447,7 @@ mod tests {
             volume_percent,
             muted,
             is_default,
-            card_id: Some(0),
             card_name: Some("Built-in Audio".to_string()),
-            port_name: Some("analog-output".to_string()),
             port_description: Some("Headphones".to_string()),
         }
     }
@@ -4558,7 +4459,6 @@ mod tests {
             application_name: Some(format!("Application {id}")),
             application_id: Some(format!("application-{id}")),
             media_name: Some("A track".to_string()),
-            media_role: Some("music".to_string()),
             output_id,
             volume_percent: Some(60),
             volume_writable: true,
@@ -4570,12 +4470,6 @@ mod tests {
     fn audio_snapshot(streams: Vec<PlaybackStream>, inactive: usize) -> AudioSnapshot {
         AudioSnapshot {
             availability: AudioAvailability::Ready,
-            server: Some(AudioServer {
-                name: Some("PulseAudio (on PipeWire)".to_string()),
-                version: Some("1".to_string()),
-                protocol_version: Some(35),
-                default_output_name: Some("output-3".to_string()),
-            }),
             outputs: vec![
                 audio_output(3, true, 75, false),
                 audio_output(4, false, 40, true),
@@ -4811,7 +4705,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![7, 8]
         );
-        assert!(audio.streams[1].inactive);
+        assert!(audio.streams[1].detail.contains("Inactive"));
         assert!(
             audio.status.contains("1 playing streams"),
             "the status must count playing streams even when inactive ones are listed"
@@ -4968,14 +4862,8 @@ mod tests {
             SnippetsViewModel::from_presentation(snippet_presentation(&library, &matches));
 
         assert!(snippets.insertion_available);
-        assert_eq!(snippets.provider, Some("wtype"));
-        assert_eq!(
-            snippets.transport,
-            Some("Wayland virtual-keyboard protocol")
-        );
         assert!(snippets.insertion_status.contains("wtype"));
         assert_eq!(snippets.total, 1);
-        assert_eq!(snippets.folders, vec!["Contact"]);
         assert_eq!(snippets.items.len(), 1);
         assert_eq!(snippets.items[0].name, "Address");
         assert_eq!(snippets.items[0].trigger.as_deref(), Some(";addr"));
@@ -4986,10 +4874,6 @@ mod tests {
             snippets.items[0].preview
         );
         assert!(snippets.items[0].detail.contains("{{date}}"));
-        assert!(
-            !snippets.expansion_active,
-            "manual timing never claims trigger expansion"
-        );
     }
 
     #[test]
@@ -5003,7 +4887,6 @@ mod tests {
         let snippets = SnippetsViewModel::from_presentation(presentation);
 
         assert!(!snippets.insertion_available);
-        assert_eq!(snippets.provider, None);
         assert_eq!(
             snippets.insertion_status,
             "no verified insertion provider was found"
@@ -5201,8 +5084,6 @@ mod tests {
         );
         assert_eq!(clipboard.items[0].preview, "matched text");
         assert!(clipboard.items[0].pinned);
-        assert!(clipboard.items[0].text_editable);
-        assert!(!clipboard.items[1].text_editable);
         assert!(clipboard.items[1].detail.contains("2 files"));
         assert_eq!(clipboard.search_query, "match");
         assert_eq!(clipboard.total_items, 2);
@@ -5730,7 +5611,6 @@ mod tests {
                     &png,
                     NewCapture {
                         mode: CaptureMode::Area,
-                        provider: Some(CaptureProvider::Grim),
                         edited,
                         width: 4,
                         height: 3,
@@ -6209,14 +6089,14 @@ mod tests {
         #[test]
         fn preview_state_drives_stop_and_frame_display() {
             let idle = view(true, CameraPhase::Idle);
-            assert!(!idle.active && !idle.previewing);
+            assert!(!idle.active);
             let starting = view(
                 true,
                 CameraPhase::Starting {
                     name: "Camera".into(),
                 },
             );
-            assert!(starting.active && !starting.previewing);
+            assert!(starting.active);
             let previewing = view(
                 true,
                 CameraPhase::Previewing {
@@ -6225,7 +6105,7 @@ mod tests {
                     height: 480,
                 },
             );
-            assert!(previewing.active && previewing.previewing);
+            assert!(previewing.active);
             assert!(
                 previewing.status.contains("640 × 480"),
                 "{}",

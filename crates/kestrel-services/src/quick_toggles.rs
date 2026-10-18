@@ -57,12 +57,6 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
         Self { backend, snapshots }
     }
 
-    pub fn refresh_all(&mut self) {
-        for id in ALL_QUICK_TOGGLES {
-            self.refresh(id);
-        }
-    }
-
     pub fn refresh(&mut self, id: QuickToggleId) -> &QuickToggleSnapshot {
         match self.backend.observe(id) {
             Ok(observation) => {
@@ -132,12 +126,6 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
 
     pub fn snapshots(&self) -> impl Iterator<Item = &QuickToggleSnapshot> {
         ALL_QUICK_TOGGLES.iter().map(|id| &self.snapshots[id])
-    }
-    pub fn set_runtime_error(&mut self, id: QuickToggleId, error: Option<QuickToggleError>) {
-        self.snapshots
-            .get_mut(&id)
-            .expect("every built-in quick toggle has a snapshot")
-            .error = error;
     }
 
     /// Provider-observed toggles remain untouched on stop.

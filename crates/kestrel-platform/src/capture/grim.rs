@@ -32,7 +32,8 @@ pub struct GrimCaptureBackend {
 
 impl GrimCaptureBackend {
     /// Relative paths are ignored, so capture never searches `PATH`.
-    pub fn new(grim: PathBuf, slurp: Option<PathBuf>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(grim: PathBuf, slurp: Option<PathBuf>) -> Self {
         Self::from_detection(Some(grim), slurp)
     }
 
