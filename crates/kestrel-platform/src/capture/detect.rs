@@ -66,7 +66,8 @@ pub struct CaptureDetection {
 
 impl CaptureDetection {
     /// A detection with no provider evidence.
-    pub fn new(session: SessionKind) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(session: SessionKind) -> Self {
         Self {
             session,
             portal_version: None,
@@ -205,17 +206,7 @@ impl CaptureDetection {
 }
 
 fn portal_version(bus: &Connection) -> Option<u32> {
-    let reply = bus
-        .call_method(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &("org.freedesktop.portal.Screenshot", "version"),
-        )
-        .ok()?;
-    let value: OwnedValue = reply.body().deserialize().ok()?;
-    u32::try_from(value).ok()
+    super::portal::portal_property(bus, "org.freedesktop.portal.Screenshot", "version")
 }
 
 fn screen_permission(bus: &Connection) -> ScreenPermission {

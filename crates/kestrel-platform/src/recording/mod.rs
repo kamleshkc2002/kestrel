@@ -10,11 +10,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
-use zbus::blocking::{Connection, connection::Builder};
-use zbus::zvariant::OwnedValue;
-
 pub use export::{EXPORT_ELEMENTS, export_missing, export_range, frame_at, media_duration};
+use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
+use zbus::blocking::connection::Builder;
 
 /// Reads and trims completed takes.
 pub trait TakeEditor: Send + Sync {
@@ -60,7 +58,6 @@ impl TakeEditor for GstTakeEditor {
 pub use pipeline::gstreamer_missing;
 pub use portal::{PortalScreenCast, ScreenCastSession};
 
-use crate::CapabilityProbe;
 use crate::audio::{AudioBackend, MicrophoneBackend, PulseAudioBackend};
 use crate::capture::CaptureCancel;
 
@@ -346,7 +343,15 @@ impl RecordingDetection {
         let bus = Builder::session()
             .and_then(|builder| builder.method_timeout(PROBE_TIMEOUT).build())
             .ok();
-        let property = |name: &str| bus.as_ref().and_then(|bus| screencast_property(bus, name));
+        let property = |name: &str| {
+            bus.as_ref().and_then(|bus| {
+                crate::capture::portal::portal_property(
+                    bus,
+                    "org.freedesktop.portal.ScreenCast",
+                    name,
+                )
+            })
+        };
         let (gstreamer_error, missing_elements) = match pipeline::missing_elements() {
             Ok(missing) => (None, missing),
             Err(error) => (Some(error), Vec::new()),
@@ -574,20 +579,6 @@ fn element_remediation(missing: &[&str]) -> String {
     format!("Install {}.", packages.join(" and "))
 }
 
-fn screencast_property(bus: &Connection, name: &str) -> Option<u32> {
-    let reply = bus
-        .call_method(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            Some("org.freedesktop.DBus.Properties"),
-            "Get",
-            &("org.freedesktop.portal.ScreenCast", name),
-        )
-        .ok()?;
-    let value: OwnedValue = reply.body().deserialize().ok()?;
-    u32::try_from(value).ok()
-}
-
 /// The PipeWire socket libpipewire would connect to.
 fn pipewire_socket() -> Option<PathBuf> {
     let name = env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
@@ -598,16 +589,6 @@ fn pipewire_socket() -> Option<PathBuf> {
     let directory =
         env::var_os("PIPEWIRE_RUNTIME_DIR").or_else(|| env::var_os("XDG_RUNTIME_DIR"))?;
     Some(Path::new(&directory).join(name))
-}
-
-/// Read-only probe for `capture.recording`; opens no dialog and no stream.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RecordingProbe;
-
-impl CapabilityProbe for RecordingProbe {
-    fn probe(&self) -> CapabilityReport {
-        RecordingDetection::detect().capability()
-    }
 }
 
 #[cfg(test)]

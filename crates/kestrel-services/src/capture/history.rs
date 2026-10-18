@@ -9,9 +9,7 @@ use std::{
 };
 
 use kestrel_core::CaptureConfiguration;
-use kestrel_platform::capture::{
-    CaptureMode, CaptureProvider, MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PNG_BYTES,
-};
+use kestrel_platform::capture::{CaptureMode, MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PNG_BYTES};
 
 use super::image::decode_png;
 
@@ -48,8 +46,6 @@ pub struct CaptureEntry {
     pub id: CaptureId,
     pub created_at: SystemTime,
     pub mode: CaptureMode,
-    /// Known only for captures taken in this session.
-    pub provider: Option<CaptureProvider>,
     pub edited: bool,
     pub bytes: u64,
     pub width: u32,
@@ -60,7 +56,6 @@ pub struct CaptureEntry {
 #[derive(Debug, Clone, Copy)]
 pub struct NewCapture {
     pub mode: CaptureMode,
-    pub provider: Option<CaptureProvider>,
     pub edited: bool,
     pub width: u32,
     pub height: u32,
@@ -194,7 +189,6 @@ impl CaptureHistory {
             id,
             created_at: now,
             mode: meta.mode,
-            provider: meta.provider,
             edited: meta.edited,
             bytes: png.len() as u64,
             width: meta.width,
@@ -427,7 +421,6 @@ fn load_entry(path: &Path, name: CaptureName) -> Option<CaptureEntry> {
         id: name.id,
         created_at: time_from_millis(name.created_ms)?,
         mode: name.mode,
-        provider: None,
         edited: name.edited,
         bytes,
         width,
@@ -506,7 +499,6 @@ mod tests {
     fn meta(width: u32, height: u32) -> NewCapture {
         NewCapture {
             mode: CaptureMode::Screen,
-            provider: Some(CaptureProvider::Portal),
             edited: false,
             width,
             height,
@@ -711,21 +703,12 @@ mod tests {
                 moment(2),
             )
             .unwrap();
-        let without_provider = |entries: &[CaptureEntry]| {
-            entries
-                .iter()
-                .map(|entry| CaptureEntry {
-                    provider: None,
-                    ..entry.clone()
-                })
-                .collect::<Vec<_>>()
-        };
-        let before = without_provider(history.entries());
+        let before = history.entries().to_vec();
         let highest = before.iter().map(|entry| entry.id).max().unwrap();
         drop(history);
 
         let mut reopened = CaptureHistory::open(dir, roomy()).unwrap();
-        assert_eq!(without_provider(reopened.entries()), before);
+        assert_eq!(reopened.entries(), before);
         let next = reopened.insert(&png(1, 1), meta(1, 1), moment(3)).unwrap();
         assert!(next.id > highest);
     }

@@ -166,7 +166,8 @@ impl TesseractAdapter {
         }
     }
 
-    pub fn with_executable(executable: PathBuf) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_executable(executable: PathBuf) -> Self {
         Self {
             executable: Some(executable),
         }

@@ -7,11 +7,10 @@ use kestrel_core::{
     CapabilityStatus, MAX_AUDIO_BOOST_PERCENT, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
 };
 use kestrel_platform::audio::{
-    AudioBackend, AudioDiscovery, AudioError, AudioServer, OutputDevice, PlaybackStream,
-    capability_for, capability_for_error,
+    AudioBackend, AudioDiscovery, AudioError, OutputDevice, PlaybackStream, capability_for,
+    capability_for_error,
 };
 
-pub const MIN_VOLUME_PERCENT: u8 = 0;
 /// The hard amplification cap; a policy ceiling can only be lower.
 pub const MAX_VOLUME_PERCENT: u8 = MAX_AUDIO_BOOST_PERCENT;
 
@@ -169,7 +168,6 @@ pub struct AudioReconcileOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSnapshot {
     pub availability: AudioAvailability,
-    pub server: Option<AudioServer>,
     pub outputs: Vec<OutputDevice>,
     pub streams: Vec<PlaybackStream>,
     pub inactive_streams: usize,
@@ -182,7 +180,6 @@ impl AudioSnapshot {
     fn unavailable(policy: AudioPolicy) -> Self {
         Self {
             availability: AudioAvailability::Unavailable,
-            server: None,
             outputs: Vec::new(),
             streams: Vec::new(),
             inactive_streams: 0,
@@ -704,7 +701,6 @@ impl<B: AudioBackend> AudioMixerService<B> {
         };
         AudioSnapshot {
             availability,
-            server: Some(discovery.server.clone()),
             outputs: discovery.outputs.clone(),
             streams,
             inactive_streams: discovery.streams.len() - active_count,
@@ -729,8 +725,8 @@ mod tests {
 
     use kestrel_core::{AudioDisconnectPolicy, AudioOutputSwitch};
     use kestrel_platform::audio::{
-        AudioBackend, AudioDiscovery, AudioError, AudioErrorKind, AudioServer, FEATURE_ID,
-        OutputDevice, PlaybackStream,
+        AudioBackend, AudioDiscovery, AudioError, AudioErrorKind, FEATURE_ID, OutputDevice,
+        PlaybackStream,
     };
 
     use super::{
@@ -837,9 +833,7 @@ mod tests {
             volume_percent,
             muted: false,
             is_default,
-            card_id: Some(0),
             card_name: Some("Built-in Audio".to_string()),
-            port_name: Some("analog-output".to_string()),
             port_description: Some("Headphones".to_string()),
         }
     }
@@ -851,7 +845,6 @@ mod tests {
             application_name: Some("Player".to_string()),
             application_id: Some("player".to_string()),
             media_name: None,
-            media_role: Some("music".to_string()),
             output_id,
             volume_percent: Some(volume_percent),
             volume_writable: true,
@@ -872,10 +865,7 @@ mod tests {
         streams: Vec<PlaybackStream>,
     ) -> Result<AudioDiscovery, AudioError> {
         Ok(AudioDiscovery {
-            server: AudioServer {
-                name: Some("PulseAudio (on PipeWire)".to_string()),
-                version: Some("1".to_string()),
-                protocol_version: Some(35),
+            server: kestrel_platform::audio::AudioServer {
                 default_output_name: Some(
                     outputs
                         .iter()
@@ -1457,7 +1447,6 @@ mod tests {
     #[test]
     fn outputs_are_grouped_by_owning_card_in_discovery_order() {
         let mut headset = output(6, false, 40);
-        headset.card_id = None;
         headset.card_name = None;
         let grouped = discovery(
             vec![output(3, true, 50), output(4, false, 50), headset],

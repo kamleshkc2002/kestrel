@@ -304,11 +304,6 @@ pub struct ScreenCastSession {
 }
 
 impl ScreenCastSession {
-    /// The shared stream's PipeWire node.
-    pub fn node(&self) -> u32 {
-        self.node
-    }
-
     /// An unused PipeWire remote for the next pipeline.
     fn fresh_remote(&mut self) -> Result<OwnedFd, RecordingError> {
         match self.remote.take() {
@@ -573,7 +568,7 @@ mod tests {
         let mut session = PortalScreenCast::with_bus_address(&bus.address)
             .open(RecordingSource::Area, true, &CaptureCancel::new())
             .expect("sharing succeeds");
-        assert_eq!(session.node(), 42);
+        assert_eq!(session.node, 42);
         assert!(!session.ended_by_desktop());
         {
             let observed = observed.lock().expect("observed");

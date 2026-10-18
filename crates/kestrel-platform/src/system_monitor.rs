@@ -1,7 +1,7 @@
 //! Read-only Linux system-monitor sources.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ffi::CString,
     fs,
     path::{Path, PathBuf},
@@ -14,7 +14,6 @@ use libc::statvfs;
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 
 pub const MAX_FILESYSTEMS: usize = 16;
-pub const MAX_DISK_DEVICES: usize = 16;
 pub const MAX_GPUS: usize = 8;
 pub const MAX_CPU_CORES: usize = 512;
 /// A failed NVML load is retried at most this often.
@@ -129,13 +128,6 @@ pub struct FilesystemUsage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiskCounters {
-    pub device: String,
-    pub read_bytes: u64,
-    pub written_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuReading {
     pub device: String,
     pub busy_percent: Option<u8>,
@@ -152,7 +144,6 @@ pub struct RawSystemSample {
     pub temperatures: Metric<Vec<TemperatureReading>>,
     pub power_supplies: Metric<Vec<PowerSupplyReading>>,
     pub disk_usage: Metric<Vec<FilesystemUsage>>,
-    pub disk_io: Metric<Vec<DiskCounters>>,
     pub gpu: Metric<Vec<GpuReading>>,
     pub peripherals: Metric<Vec<PeripheralBattery>>,
 }
@@ -223,7 +214,6 @@ impl ProcSysMonitor {
             temperatures: self.read_temperatures(),
             power_supplies: self.read_power_supplies(),
             disk_usage: self.read_disk_usage(),
-            disk_io: self.read_disk_io(),
             gpu: self.read_gpu(),
             peripherals: self.read_peripherals(),
         }
@@ -525,49 +515,6 @@ impl ProcSysMonitor {
         }
     }
 
-    fn read_disk_io(&self) -> Metric<Vec<DiskCounters>> {
-        let source = "/proc/diskstats";
-        let Ok(text) = read_text(&self.proc_root.join("diskstats"), source) else {
-            return Metric::Unavailable(SourceIssue::new(source, "disk statistics are unreadable"));
-        };
-        let block_root = self.sys_root.join("block");
-        let mut devices = BTreeSet::new();
-        let mut counters = Vec::new();
-        for line in text.lines() {
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            if fields.len() < 10 {
-                continue;
-            }
-            let device = fields[2];
-            if !devices.insert(device.to_owned()) || !block_root.join(device).is_dir() {
-                continue;
-            }
-            let Ok(read_sectors) = fields[5].parse::<u64>() else {
-                devices.remove(device);
-                continue;
-            };
-            let Ok(written_sectors) = fields[9].parse::<u64>() else {
-                devices.remove(device);
-                continue;
-            };
-            counters.push(DiskCounters {
-                device: device.to_owned(),
-                read_bytes: read_sectors.saturating_mul(512),
-                written_bytes: written_sectors.saturating_mul(512),
-            });
-        }
-        counters.sort_by(|left, right| left.device.cmp(&right.device));
-        counters.truncate(MAX_DISK_DEVICES);
-        if counters.is_empty() {
-            Metric::Unavailable(SourceIssue::new(
-                source,
-                "no whole-disk statistics are readable",
-            ))
-        } else {
-            Metric::Available(counters)
-        }
-    }
-
     fn read_gpu(&self) -> Metric<Vec<GpuReading>> {
         let source = "/sys/class/drm";
         let mut readings = Vec::new();
@@ -711,17 +658,15 @@ impl CapabilityProbe for ProcSysMonitor {
         .into_iter()
         .filter(|available| *available)
         .count();
-        let optional_count = [
+        let optional = [
             sample.temperatures.is_available(),
             sample.power_supplies.is_available(),
             sample.disk_usage.is_available(),
-            sample.disk_io.is_available(),
             sample.gpu.is_available(),
-        ]
-        .into_iter()
-        .filter(|available| *available)
-        .count();
-        let status = if core_count == 3 && optional_count == 5 {
+        ];
+        let optional_total = optional.len();
+        let optional_count = optional.into_iter().filter(|available| *available).count();
+        let status = if core_count == 3 && optional_count == optional_total {
             CapabilityStatus::Supported
         } else if core_count > 0 {
             CapabilityStatus::Limited {
@@ -736,7 +681,7 @@ impl CapabilityProbe for ProcSysMonitor {
             FEATURE_ID,
             status,
             format!(
-                "{core_count}/3 core and {optional_count}/5 optional monitor source families are available."
+                "{core_count}/3 core and {optional_count}/{optional_total} optional monitor source families are available."
             ),
         )
         .with_selected_backend("/proc + /sys")
@@ -767,7 +712,7 @@ impl CapabilityProbe for ProcSysMonitor {
             "per_process_metrics",
             "not_collected",
         ));
-        if core_count < 3 || optional_count < 5 {
+        if core_count < 3 || optional_count < optional_total {
             report = report.with_remediation(
                 "Unavailable metrics stay visible; verify procfs/sysfs mounts and kernel hardware drivers. NVIDIA GPU readings need a working NVML driver, and per-process metrics are not collected.",
             );
@@ -910,7 +855,6 @@ mod tests {
         fs::create_dir_all(sys_root.join("class/hwmon/hwmon7")).expect("hwmon fixture");
         fs::create_dir_all(sys_root.join("devices/platform/coretemp")).expect("device fixture");
         fs::create_dir_all(sys_root.join("class/power_supply/BAT0")).expect("power fixture");
-        fs::create_dir_all(sys_root.join("block/sda")).expect("block fixture");
         let gpu_device = sys_root.join("devices/pci0000:00/0000:00:02.0");
         fs::create_dir_all(&gpu_device).expect("GPU device fixture");
         fs::create_dir_all(sys_root.join("class/drm/card0")).expect("DRM fixture");
@@ -940,11 +884,6 @@ mod tests {
             ),
         )
         .expect("mount fixture");
-        fs::write(
-            proc_root.join("diskstats"),
-            "8 0 sda 8 0 10 0 20 0 30 0 0\nmalformed diskstats\n8 1 sda1 8 0 99 0 20 0 99 0 0\n",
-        )
-        .expect("diskstats fixture");
         let hwmon = sys_root.join("class/hwmon/hwmon7");
         fs::write(hwmon.join("name"), "coretemp\n").expect("chip name");
         fs::write(hwmon.join("temp1_input"), "42000\n").expect("temperature");
@@ -998,14 +937,6 @@ mod tests {
                 if filesystems.len() == 1
                     && filesystems[0].available_bytes <= filesystems[0].total_bytes
                     && filesystems[0].device == "/dev/test"
-        ));
-        assert!(matches!(
-            &sample.disk_io,
-            Metric::Available(disks)
-                if disks.len() == 1
-                    && disks[0].device == "sda"
-                    && disks[0].read_bytes == 10 * 512
-                    && disks[0].written_bytes == 30 * 512
         ));
         assert!(matches!(
             &sample.gpu,
@@ -1072,7 +1003,6 @@ mod tests {
         assert!(matches!(sample.temperatures, Metric::Unavailable(_)));
         assert!(matches!(sample.power_supplies, Metric::Unavailable(_)));
         assert!(matches!(sample.disk_usage, Metric::Unavailable(_)));
-        assert!(matches!(sample.disk_io, Metric::Unavailable(_)));
         assert!(matches!(sample.gpu, Metric::Unavailable(_)));
     }
 

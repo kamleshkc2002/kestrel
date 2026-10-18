@@ -1,6 +1,6 @@
 //! Audio mixer and microphone controls.
 
-use super::widgets::plain_row;
+use super::widgets::{icon_button, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
@@ -394,18 +394,6 @@ pub(super) fn build_audio_controls(
     ));
 
     container
-}
-
-fn icon_button(icon: &str, label: &str, sensitive: bool) -> gtk::Button {
-    let button = gtk::Button::builder()
-        .icon_name(icon)
-        .valign(Align::Center)
-        .sensitive(sensitive)
-        .tooltip_text(label)
-        .build();
-    button.add_css_class("flat");
-    button.update_property(&[Property::Label(label)]);
-    button
 }
 
 fn send_on_click(

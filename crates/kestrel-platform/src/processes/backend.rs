@@ -43,18 +43,6 @@ impl ProcfsProcesses {
         self
     }
 
-    pub fn new_with_roots(
-        proc_root: PathBuf,
-        cgroup_root: PathBuf,
-        passwd_file: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            proc_root,
-            cgroup_root,
-            passwd_file,
-        }
-    }
-
     fn passwd_name(&self, uid: u32, cache: &mut HashMap<u32, Option<String>>) -> Option<String> {
         if let Some(name) = cache.get(&uid) {
             return name.clone();
@@ -366,7 +354,7 @@ const KNOWN_LAUNCHERS: [&str; 6] = ["gnome", "kde", "cosmic", "flatpak", "xfce",
 /// `app[-<launcher>]-<id>[@<random>].service`. User services sit under
 /// `user@<uid>.service`; units in `session.slice` (compositor, shell) are
 /// never offered for restart because restarting them ends the session.
-pub fn parse_scope(path: &str) -> ProcessScope {
+fn parse_scope(path: &str) -> ProcessScope {
     let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if let Some((component, desktop_id)) = components
         .iter()
@@ -592,7 +580,6 @@ fn errno_error(errno: i32) -> ProcessError {
 #[derive(Debug, Clone)]
 pub struct SystemRestarter {
     systemctl: Option<PathBuf>,
-    application_roots: Option<Vec<PathBuf>>,
 }
 impl Default for SystemRestarter {
     fn default() -> Self {
@@ -606,19 +593,10 @@ impl SystemRestarter {
                 "systemctl",
                 env::var_os("PATH").as_deref(),
             ),
-            application_roots: None,
         }
     }
-    pub fn with_systemctl(mut self, path: PathBuf) -> Self {
-        self.systemctl = Some(path);
-        self
-    }
-    pub fn with_application_roots(mut self, roots: Vec<PathBuf>) -> Self {
-        self.application_roots = Some(roots);
-        self
-    }
 }
-pub fn validate_unit_name(unit: &str) -> bool {
+fn validate_unit_name(unit: &str) -> bool {
     unit.strip_suffix(".service").is_some_and(|base| {
         !base.is_empty()
             && base
@@ -683,13 +661,11 @@ impl ProcessRestarter for SystemRestarter {
                 }
             }
             RestartTarget::DesktopApp { desktop_id, .. } => {
-                let roots = self.application_roots.clone().unwrap_or_else(|| {
-                    applications::application_directories(
-                        env::var_os("XDG_DATA_HOME").as_deref(),
-                        env::var_os("XDG_DATA_DIRS").as_deref(),
-                        env::var_os("HOME").as_deref(),
-                    )
-                });
+                let roots = applications::application_directories(
+                    env::var_os("XDG_DATA_HOME").as_deref(),
+                    env::var_os("XDG_DATA_DIRS").as_deref(),
+                    env::var_os("HOME").as_deref(),
+                );
                 let Some(entry) = applications::scan_applications(&roots)
                     .into_iter()
                     .find(|entry| entry.id == *desktop_id)
@@ -721,8 +697,8 @@ impl ProcfsListeners {
         }
     }
 }
-impl ListenerSource for ProcfsListeners {
-    fn listeners(&self, limit: usize) -> Result<Vec<Listener>, ProcessError> {
+impl ProcfsListeners {
+    pub fn listeners(&self, limit: usize) -> Result<Vec<Listener>, ProcessError> {
         let mut sockets = Vec::new();
         for (file, protocol, state) in [
             ("tcp", ListenerProtocol::Tcp, "0A"),

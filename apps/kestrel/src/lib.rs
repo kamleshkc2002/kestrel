@@ -12,16 +12,12 @@ pub mod text_lines;
 mod tray_icon;
 pub mod view_model;
 
-pub use autostart::{AutostartError, DESKTOP_FILE_NAME, autostart_path, disable, enable};
-pub use command_bar::{
-    CURRENT_RANKING_SCHEMA_VERSION, LoadedRanking, RankingEntry, RankingFile, load_ranking,
-    ranking_path, save_ranking,
-};
+pub use autostart::{disable, enable};
+pub use command_bar::{load_ranking, ranking_path, save_ranking};
 pub use config::{
-    ConfigurationLoadError, ConfigurationWarning, LoadedConfiguration, configuration_path,
-    export_file, export_string, import_file, import_string, load, save,
+    ConfigurationWarning, LoadedConfiguration, configuration_path, export_file, import_file, load,
+    save,
 };
-pub use kestrel_core::QuickPanelConfiguration;
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
     CloseAction, MonitorReadout, NetworkRateUnit,
@@ -46,33 +42,20 @@ pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{
     ApplicationRuntime, ApplicationWindowDecision, FeaturePreset, run_process_action,
 };
-pub use snippets::{
-    CURRENT_SNIPPET_SCHEMA_VERSION, LoadedSnippets, SnippetFile, SnippetStoreError, load_snippets,
-    save_snippets, snippet_path,
-};
+pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
     FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayReadout, TrayReadoutSink,
 };
 pub use view_model::{
-    AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
-    ApplicationViewModel, AudioOutputGroupViewModel, AudioOutputViewModel, AudioPolicyViewModel,
-    AudioStreamViewModel, AudioViewModel, CameraChoiceViewModel, CameraViewModel,
-    CapabilityKindViewModel, CapabilityStatusViewModel, CapabilityViewModel, CaptureEntryViewModel,
-    CaptureModeViewModel, CaptureStreamViewModel, CaptureViewModel, ClipboardBoundsViewModel,
-    ClipboardItemViewModel, ClipboardPolicyViewModel, ClipboardPreviewViewModel,
-    ClipboardViewModel, CommandBarViewModel, CommandProvider, CommandProviderViewModel,
-    CommandRankingViewModel, CommandResultViewModel, ConfigurationWarningViewModel,
-    ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureLifecycleViewModel,
-    FeatureViewModel, ListenerRowViewModel, ListenersViewModel, MicrophoneInputViewModel,
-    MicrophoneViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
-    ProcessRowViewModel, ProcessesViewModel, QrRowViewModel, QuickToggleActionViewModel,
-    QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls, RecordingExportViewModel,
-    RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel,
-    RemediationViewModel, ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel,
-    ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
-    ShortcutRowViewModel, ShortcutsViewModel, SnippetBoundsViewModel, SnippetDraft,
-    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetsViewModel,
-    SpeedTestViewModel,
+    ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
+    CameraViewModel, CaptureEntryViewModel, CaptureViewModel, ClipboardItemViewModel,
+    ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
+    ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureViewModel,
+    ListenersViewModel, MicrophoneViewModel, MonitorViewModel, ProcessRowViewModel,
+    ProcessesViewModel, QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls,
+    RecordingExportViewModel, RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel,
+    ScreenToolsViewModel, ShortcutsViewModel, SnippetDraft, SnippetDraftViewModel,
+    SnippetsViewModel, SpeedTestViewModel,
 };
 
 /// Command-bar action from the window.
@@ -222,7 +205,7 @@ pub enum ClipboardLimit {
     ClearSeconds(u64),
 }
 
-/// Direction for ordered panel sections or readouts.
+/// Direction for ordered readouts, device rankings, and pinned applications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelMoveDirection {
     Up,
@@ -364,7 +347,7 @@ fn remove_entry(list: &mut Vec<String>, entry: &str) -> bool {
     list.len() != before
 }
 
-fn move_entry(list: &mut [String], entry: &str, toward: PanelMoveDirection) -> bool {
+pub fn move_entry<T: PartialEq>(list: &mut [T], entry: &T, toward: PanelMoveDirection) -> bool {
     let Some(index) = list.iter().position(|existing| existing == entry) else {
         return false;
     };

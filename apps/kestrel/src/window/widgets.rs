@@ -1,13 +1,65 @@
 //! Shared widget helpers.
 
 use adw::prelude::*;
-use gtk::{Align, Orientation};
+use gtk::{Align, Orientation, accessible::Property, gdk};
+use kestrel::text_lines::{LineDirection, move_lines};
 
 /// Blocks searches triggered by programmatic updates.
 pub(super) type SearchGuard = std::rc::Rc<std::cell::Cell<bool>>;
 
 /// Rows the sidebar search can hide, with their lowercase keywords.
 pub(super) type FilterRows = Vec<(gtk::Widget, String)>;
+
+pub(super) fn connect_line_movement(view: &gtk::TextView) {
+    let buffer = view.buffer();
+    buffer.set_enable_undo(true);
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let direction = match (key, state.contains(gdk::ModifierType::ALT_MASK)) {
+            (gdk::Key::Up, true) => LineDirection::Up,
+            (gdk::Key::Down, true) => LineDirection::Down,
+            _ => return gtk::glib::Propagation::Proceed,
+        };
+        let text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string();
+        let selection = buffer
+            .selection_bounds()
+            .map(|(start, end)| (start.offset() as usize, end.offset() as usize))
+            .unwrap_or_else(|| {
+                let cursor = buffer.cursor_position().max(0) as usize;
+                (cursor, cursor)
+            });
+        let Some(line_move) = move_lines(&text, selection, direction) else {
+            return gtk::glib::Propagation::Stop;
+        };
+
+        let mut range_start = buffer.iter_at_offset(line_move.range.0 as i32);
+        let mut range_end = buffer.iter_at_offset(line_move.range.1 as i32);
+        buffer.begin_user_action();
+        buffer.delete(&mut range_start, &mut range_end);
+        let mut insert_at = buffer.iter_at_offset(line_move.range.0 as i32);
+        buffer.insert(&mut insert_at, &line_move.replacement);
+        let new_start = buffer.iter_at_offset(line_move.selection.0 as i32);
+        let new_end = buffer.iter_at_offset(line_move.selection.1 as i32);
+        buffer.select_range(&new_start, &new_end);
+        buffer.end_user_action();
+        gtk::glib::Propagation::Stop
+    });
+    view.add_controller(keys);
+}
+
+pub(super) fn icon_button(icon: &str, label: &str, sensitive: bool) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .icon_name(icon)
+        .valign(Align::Center)
+        .sensitive(sensitive)
+        .tooltip_text(label)
+        .build();
+    button.add_css_class("flat");
+    button.update_property(&[Property::Label(label)]);
+    button
+}
 
 /// Asks for a path with the desktop's file dialog; `save` picks a destination.
 /// The dialog keeps itself alive until the user answers.

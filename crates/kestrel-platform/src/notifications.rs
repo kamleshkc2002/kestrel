@@ -5,36 +5,22 @@ use zbus::{
     zvariant::OwnedValue,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotificationErrorKind {
-    Unavailable,
-    Protocol,
-    PermissionDenied,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationError {
-    pub kind: NotificationErrorKind,
     pub message: String,
 }
 
 impl NotificationError {
     pub(crate) fn unavailable(message: impl Into<String>) -> Self {
         Self {
-            kind: NotificationErrorKind::Unavailable,
             message: message.into(),
         }
     }
 
     pub(crate) fn protocol(message: impl Into<String>) -> Self {
         Self {
-            kind: NotificationErrorKind::Protocol,
             message: message.into(),
         }
-    }
-
-    pub fn kind(&self) -> NotificationErrorKind {
-        self.kind
     }
 }
 
@@ -92,7 +78,7 @@ impl AlertNotifier for DesktopNotifier {
                 &(
                     kestrel_core::APPLICATION_NAME,
                     0u32,
-                    "battery-caution-symbolic",
+                    kestrel_core::APPLICATION_ID,
                     notification.summary.as_str(),
                     notification.body.as_str(),
                     actions,

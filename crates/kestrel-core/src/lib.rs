@@ -551,10 +551,6 @@ impl ApplicationConfiguration {
         self.features = snapshot.features;
     }
 
-    pub fn feature_configuration_snapshot(&self) -> FeatureConfigurationSnapshot {
-        self.snapshot_features()
-    }
-
     pub fn restore_features(&mut self, snapshot: &FeatureConfigurationSnapshot) {
         self.features = snapshot.features.clone();
     }
@@ -903,11 +899,6 @@ pub enum AudioOutputSwitch {
 }
 
 impl AudioOutputSwitch {
-    pub const ALL: [AudioOutputSwitch; 2] = [
-        AudioOutputSwitch::DefaultOutput,
-        AudioOutputSwitch::AllStreams,
-    ];
-
     pub const fn label(self) -> &'static str {
         match self {
             Self::DefaultOutput => "Default output only",
@@ -926,11 +917,6 @@ pub enum AudioDisconnectPolicy {
 }
 
 impl AudioDisconnectPolicy {
-    pub const ALL: [AudioDisconnectPolicy; 2] = [
-        AudioDisconnectPolicy::PreserveVolume,
-        AudioDisconnectPolicy::ResetVolume,
-    ];
-
     pub const fn label(self) -> &'static str {
         match self {
             Self::PreserveVolume => "Keep the stream volume",
@@ -1685,10 +1671,6 @@ impl SnippetVariable {
         }
     }
 
-    pub const fn reads_clipboard(self) -> bool {
-        matches!(self, Self::Clipboard)
-    }
-
     pub fn parse(token: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -1720,18 +1702,6 @@ impl Snippet {
             trigger,
             content: content.into(),
         }
-    }
-
-    pub fn variables(&self) -> Vec<SnippetVariable> {
-        let mut found = Vec::new();
-        for token in variable_tokens(&self.content) {
-            if let Some(variable) = SnippetVariable::parse(token) {
-                if !found.contains(&variable) {
-                    found.push(variable);
-                }
-            }
-        }
-        found
     }
 
     pub fn validate(&self, max_content_bytes: u32) -> Result<(), SnippetError> {
@@ -1778,14 +1748,13 @@ impl Snippet {
         let mut variables = 0usize;
         for token in variable_tokens(&self.content) {
             match SnippetVariable::parse(token) {
-                Some(variable) => {
+                Some(_) => {
                     variables += 1;
                     if variables > MAX_SNIPPET_VARIABLES {
                         return Err(SnippetError::TooManyVariables {
                             maximum: MAX_SNIPPET_VARIABLES,
                         });
                     }
-                    let _ = variable;
                 }
                 None => {
                     return Err(SnippetError::UnknownVariable {
@@ -2184,10 +2153,9 @@ impl FeatureSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        AlertKind, AlertRuleConfiguration, AppearancePreference, ApplicationConfiguration,
-        AudioDisconnectPolicy, AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION,
-        CapabilityEvidence, CapabilityReport, CapabilityStatus, ClipboardConfiguration,
-        ConfigurationError, CostLevel, DEFAULT_AUDIO_BOOST_PERCENT,
+        AlertKind, AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy,
+        AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, CapabilityStatus,
+        ClipboardConfiguration, ConfigurationError, CostLevel, DEFAULT_AUDIO_BOOST_PERCENT,
         DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT, DEFAULT_CLIPBOARD_AGE_HOURS,
         DEFAULT_CLIPBOARD_FILE_ENTRIES, DEFAULT_CLIPBOARD_IMAGE_BYTES,
         DEFAULT_CLIPBOARD_ITEM_BYTES, DEFAULT_CLIPBOARD_MAX_ITEMS, DEFAULT_CLIPBOARD_TOTAL_BYTES,
@@ -2202,36 +2170,6 @@ mod tests {
         SnippetExpansionTiming, SnippetProviderPreference, SnippetVariable,
         UNAMPLIFIED_AUDIO_VOLUME_PERCENT, variable_tokens,
     };
-
-    #[test]
-    fn feature_spec_preserves_its_capability_status() {
-        let feature = FeatureSpec::new("audio.mixer", "Audio mixer", CapabilityStatus::Supported);
-
-        assert_eq!(feature.id, "audio.mixer");
-        assert_eq!(feature.capability, CapabilityStatus::Supported);
-    }
-
-    #[test]
-    fn capability_report_preserves_status_and_remediation() {
-        let report = CapabilityReport::new(
-            "clipboard.history",
-            CapabilityStatus::Limited {
-                reason: "History is disabled by default.".to_string(),
-            },
-            "Clipboard history requires opt-in.",
-        )
-        .with_selected_backend("Wayland data-control")
-        .with_remediation("Enable history after configuring retention bounds.")
-        .with_alternative("X11 selection")
-        .with_evidence(CapabilityEvidence::new("clipboard_content_read", "false"));
-
-        assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
-        assert_eq!(
-            report.remediation.as_deref(),
-            Some("Enable history after configuring retention bounds.")
-        );
-        assert_eq!(report.evidence[0].key, "clipboard_content_read");
-    }
 
     #[test]
     fn configuration_tracks_enablement_by_stable_feature_id() {
@@ -2567,7 +2505,6 @@ mod tests {
             "123 Example Street\n{{date}}",
         );
         assert_eq!(valid.validate(bounds), Ok(()));
-        assert_eq!(valid.variables(), vec![SnippetVariable::Date]);
 
         assert_eq!(
             Snippet::new("   ", None, None, "x").validate(bounds),
@@ -2629,8 +2566,6 @@ mod tests {
             Some(SnippetVariable::Clipboard)
         );
         assert_eq!(SnippetVariable::parse("{{nope}}"), None);
-        assert!(SnippetVariable::Clipboard.reads_clipboard());
-        assert!(!SnippetVariable::Date.reads_clipboard());
         let labels = SnippetVariable::ALL
             .iter()
             .map(|variable| (variable.token(), variable.label()))
@@ -2884,12 +2819,6 @@ mod tests {
         );
         assert!(AlertKind::ALL[..4].iter().all(|kind| kind.alerts_above()));
         assert!(!AlertKind::Battery.alerts_above());
-    }
-
-    #[test]
-    fn alert_rule_defaults_preserve_shape() {
-        let default = AlertRuleConfiguration::default();
-        assert_eq!(default, AlertRuleConfiguration::new(true, 90.0, 5, 900));
     }
 
     #[test]

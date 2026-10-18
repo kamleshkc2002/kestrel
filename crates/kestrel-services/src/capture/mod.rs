@@ -321,7 +321,6 @@ impl CaptureService {
         let png = encode_png(&edited).map_err(CaptureEditError::Image)?;
         let meta = NewCapture {
             mode: source.mode,
-            provider: source.provider,
             edited: true,
             width: edited.width,
             height: edited.height,
@@ -395,7 +394,7 @@ fn run_capture(
         return CapturePhase::Cancelled;
     }
     match result {
-        Ok(image) => store_capture(image, mode, backend.provider(), cancel, history),
+        Ok(image) => store_capture(image, mode, cancel, history),
         Err(error) if error.kind == CaptureErrorKind::Cancelled || cancel.is_cancelled() => {
             CapturePhase::Cancelled
         }
@@ -409,7 +408,6 @@ fn run_capture(
 fn store_capture(
     image: CapturedImage,
     mode: CaptureMode,
-    provider: CaptureProvider,
     cancel: &CaptureCancel,
     history: &Mutex<CaptureHistory>,
 ) -> CapturePhase {
@@ -424,7 +422,6 @@ fn store_capture(
     }
     let meta = NewCapture {
         mode,
-        provider: Some(provider),
         edited: false,
         width: image.width,
         height: image.height,
@@ -667,7 +664,6 @@ mod tests {
         let entry = &snapshot.entries[0];
         assert_eq!(entry.id, id);
         assert_eq!((entry.width, entry.height), (6, 4));
-        assert_eq!(entry.provider, Some(CaptureProvider::Grim));
         assert!(!entry.edited);
         assert_eq!(snapshot.total_bytes, image.png.len() as u64);
         assert_eq!(service.read_png(id).unwrap(), image.png);

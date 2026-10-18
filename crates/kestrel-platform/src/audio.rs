@@ -88,9 +88,6 @@ const IDLE_SLEEP: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioServer {
-    pub name: Option<String>,
-    pub version: Option<String>,
-    pub protocol_version: Option<u32>,
     pub default_output_name: Option<String>,
 }
 
@@ -102,12 +99,8 @@ pub struct OutputDevice {
     pub volume_percent: u8,
     pub muted: bool,
     pub is_default: bool,
-    /// Hardware card index; absent for virtual devices.
-    pub card_id: Option<u32>,
     /// Card label used to group devices.
     pub card_name: Option<String>,
-    /// Active port name, when available.
-    pub port_name: Option<String>,
     pub port_description: Option<String>,
 }
 
@@ -119,7 +112,6 @@ pub struct PlaybackStream {
     /// Identity priority: application ID, binary, application name; no title or PID.
     pub application_id: Option<String>,
     pub media_name: Option<String>,
-    pub media_role: Option<String>,
     pub output_id: u32,
     pub volume_percent: Option<u8>,
     pub volume_writable: bool,
@@ -212,68 +204,6 @@ impl PulseAudioBackend {
         }
         Ok(())
     }
-
-    fn stream_channel_count(&self, stream_id: u32) -> Result<u8, AudioError> {
-        let mut session = PulseSession::connect()?;
-        let channels = Rc::new(Cell::new(None));
-        let list_failed = Rc::new(Cell::new(false));
-        let channels_result = Rc::clone(&channels);
-        let failed_result = Rc::clone(&list_failed);
-        let operation = session.context.introspect().get_sink_input_info(
-            stream_id,
-            move |result| match result {
-                ListResult::Item(info) => channels_result.set(Some(info.volume.len())),
-                ListResult::Error => failed_result.set(true),
-                ListResult::End => {}
-            },
-        );
-        session.drive_operation(&operation)?;
-        if list_failed.get() {
-            return Err(AudioError::new(
-                AudioErrorKind::Protocol,
-                format!("failed to inspect stream {stream_id}"),
-            ));
-        }
-        channels.get().filter(|count| *count > 0).ok_or_else(|| {
-            AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("stream {stream_id} has no writable volume channels"),
-            )
-        })
-    }
-
-    fn output_channel_count(&self, output_id: u32) -> Result<u8, AudioError> {
-        let mut session = PulseSession::connect()?;
-        let channels = Rc::new(Cell::new(None));
-        let list_failed = Rc::new(Cell::new(false));
-        let channels_result = Rc::clone(&channels);
-        let failed_result = Rc::clone(&list_failed);
-        let operation =
-            session
-                .context
-                .introspect()
-                .get_sink_info_list(move |result| match result {
-                    ListResult::Item(info) if info.index == output_id => {
-                        channels_result.set(Some(info.volume.len()))
-                    }
-                    ListResult::Item(_) => {}
-                    ListResult::Error => failed_result.set(true),
-                    ListResult::End => {}
-                });
-        session.drive_operation(&operation)?;
-        if list_failed.get() {
-            return Err(AudioError::new(
-                AudioErrorKind::Protocol,
-                format!("failed to inspect output {output_id}"),
-            ));
-        }
-        channels.get().filter(|count| *count > 0).ok_or_else(|| {
-            AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("output {output_id} has no writable volume channels"),
-            )
-        })
-    }
 }
 
 impl AudioBackend for PulseAudioBackend {
@@ -283,26 +213,21 @@ impl AudioBackend for PulseAudioBackend {
 
     fn set_stream_volume(&mut self, stream_id: u32, volume_percent: u8) -> Result<(), AudioError> {
         Self::check_volume_bound(volume_percent)?;
-        let channels = self.stream_channel_count(stream_id)?;
+        let mut session = PulseSession::connect()?;
+        let channels = session.channel_count(ChannelTarget::Stream(stream_id))?;
         let volumes = channel_volumes(channels, volume_percent);
 
         let succeeded = Rc::new(Cell::new(None));
         let result = Rc::clone(&succeeded);
-        let mut session = PulseSession::connect()?;
         let operation = session.context.introspect().set_sink_input_volume(
             stream_id,
             &volumes,
             Some(Box::new(move |success| result.set(Some(success)))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected volume for stream {stream_id}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected volume for stream {stream_id}")
+        })
     }
 
     fn set_stream_mute(&mut self, stream_id: u32, muted: bool) -> Result<(), AudioError> {
@@ -315,14 +240,9 @@ impl AudioBackend for PulseAudioBackend {
             Some(Box::new(move |success| result.set(Some(success)))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected mute for stream {stream_id}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected mute for stream {stream_id}")
+        })
     }
 
     fn move_stream(&mut self, stream_id: u32, output_id: u32) -> Result<(), AudioError> {
@@ -335,38 +255,28 @@ impl AudioBackend for PulseAudioBackend {
             Some(Box::new(move |success| result.set(Some(success)))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected routing stream {stream_id} to output {output_id}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected routing stream {stream_id} to output {output_id}")
+        })
     }
 
     fn set_output_volume(&mut self, output_id: u32, volume_percent: u8) -> Result<(), AudioError> {
         Self::check_volume_bound(volume_percent)?;
-        let channels = self.output_channel_count(output_id)?;
+        let mut session = PulseSession::connect()?;
+        let channels = session.channel_count(ChannelTarget::Output(output_id))?;
         let volumes = channel_volumes(channels, volume_percent);
 
         let succeeded = Rc::new(Cell::new(None));
         let result = Rc::clone(&succeeded);
-        let mut session = PulseSession::connect()?;
         let operation = session.context.introspect().set_sink_volume_by_index(
             output_id,
             &volumes,
             Some(Box::new(move |success| result.set(Some(success)))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected volume for output {output_id}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected volume for output {output_id}")
+        })
     }
 
     fn set_output_mute(&mut self, output_id: u32, muted: bool) -> Result<(), AudioError> {
@@ -379,14 +289,9 @@ impl AudioBackend for PulseAudioBackend {
             Some(Box::new(move |success| result.set(Some(success)))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected mute for output {output_id}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected mute for output {output_id}")
+        })
     }
 
     fn set_default_output(&mut self, output_name: &str) -> Result<(), AudioError> {
@@ -398,14 +303,9 @@ impl AudioBackend for PulseAudioBackend {
             Box::new(move |success| result.set(Some(success))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected default output {output_name}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected default output {output_name}")
+        })
     }
 }
 
@@ -483,14 +383,9 @@ impl MicrophoneBackend for PulseAudioBackend {
             Some(Box::new(move |success| result.set(Some(success)))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                format!("PulseAudio rejected mute for input {input_id}"),
-            ))
-        }
+        accepted(succeeded.get(), || {
+            format!("PulseAudio rejected mute for input {input_id}")
+        })
     }
 
     fn set_default_input(&mut self, input_name: &str) -> Result<(), AudioError> {
@@ -502,15 +397,10 @@ impl MicrophoneBackend for PulseAudioBackend {
             Box::new(move |success| result.set(Some(success))),
         );
         session.drive_operation(&operation)?;
-        if succeeded.get() == Some(true) {
-            Ok(())
-        } else {
-            Err(AudioError::new(
-                AudioErrorKind::Rejected,
-                // Keep the source name out of user-visible errors.
-                "PulseAudio rejected the default input change",
-            ))
-        }
+        accepted(succeeded.get(), || {
+            // Keep the source name out of user-visible errors.
+            "PulseAudio rejected the default input change".to_string()
+        })
     }
 }
 
@@ -689,21 +579,17 @@ impl PulseSession {
         let callback_result = Rc::clone(&result);
         let operation = self.context.introspect().get_server_info(move |info| {
             *callback_result.borrow_mut() = Some(AudioServer {
-                name: info.server_name.as_deref().map(str::to_owned),
-                version: info.server_version.as_deref().map(str::to_owned),
-                protocol_version: None,
                 default_output_name: info.default_sink_name.as_deref().map(str::to_owned),
             });
         });
         self.drive_operation(&operation)?;
-        let mut server = result.borrow_mut().take().ok_or_else(|| {
+        let server = result.borrow_mut().take();
+        server.ok_or_else(|| {
             AudioError::new(
                 AudioErrorKind::Protocol,
                 "PulseAudio server information was missing",
             )
-        })?;
-        server.protocol_version = self.context.get_server_protocol_version();
-        Ok(server)
+        })
     }
 
     fn cards(&mut self) -> Result<Vec<(u32, String)>, AudioError> {
@@ -764,16 +650,10 @@ impl PulseSession {
                             .find(|(index, _)| *index == card)
                             .map(|(_, label)| label.clone())
                     });
-                    let (port_name, port_description) = info
+                    let port_description = info
                         .active_port
                         .as_ref()
-                        .map(|port| {
-                            (
-                                Some(port.name.as_deref().map(str::to_owned).unwrap_or_default()),
-                                port.description.as_deref().map(str::to_owned),
-                            )
-                        })
-                        .unwrap_or((None, None));
+                        .and_then(|port| port.description.as_deref().map(str::to_owned));
                     let is_default = callback_default.as_deref() == Some(name.as_str());
                     callback_result.borrow_mut().push(OutputDevice {
                         id: info.index,
@@ -787,9 +667,7 @@ impl PulseSession {
                         volume_percent: volume_percent(info.volume.avg()),
                         muted: info.mute,
                         is_default,
-                        card_id: info.card,
                         card_name,
-                        port_name: port_name.filter(|name| !name.is_empty()),
                         port_description,
                     });
                 }
@@ -827,7 +705,6 @@ impl PulseSession {
                             application_name: info.proplist.get_str(properties::APPLICATION_NAME),
                             application_id: application_identity(&info.proplist),
                             media_name: info.proplist.get_str(properties::MEDIA_NAME),
-                            media_role: info.proplist.get_str(properties::MEDIA_ROLE),
                             output_id: info.sink,
                             volume_percent: info
                                 .has_volume
@@ -988,6 +865,28 @@ impl PulseSession {
                 );
                 self.drive_operation(&operation)?;
             }
+            ChannelTarget::Stream(id) => {
+                let operation = self
+                    .context
+                    .introspect()
+                    .get_sink_input_info(id, move |result| match result {
+                        ListResult::Item(info) => found.set(Some(info.volume.len())),
+                        ListResult::Error => list_failed.set(true),
+                        ListResult::End => {}
+                    });
+                self.drive_operation(&operation)?;
+            }
+            ChannelTarget::Output(id) => {
+                let operation = self.context.introspect().get_sink_info_by_index(
+                    id,
+                    move |result| match result {
+                        ListResult::Item(info) => found.set(Some(info.volume.len())),
+                        ListResult::Error => list_failed.set(true),
+                        ListResult::End => {}
+                    },
+                );
+                self.drive_operation(&operation)?;
+            }
         }
         if failed.get() {
             return Err(AudioError::new(
@@ -1004,10 +903,11 @@ impl PulseSession {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
 enum ChannelTarget {
     Input(u32),
     Capture(u32),
+    Stream(u32),
+    Output(u32),
 }
 
 impl fmt::Display for ChannelTarget {
@@ -1015,6 +915,8 @@ impl fmt::Display for ChannelTarget {
         match self {
             Self::Input(id) => write!(formatter, "input {id}"),
             Self::Capture(id) => write!(formatter, "capture stream {id}"),
+            Self::Stream(id) => write!(formatter, "stream {id}"),
+            Self::Output(id) => write!(formatter, "output {id}"),
         }
     }
 }
@@ -1161,9 +1063,7 @@ mod tests {
             volume_percent: 50,
             muted: false,
             is_default: output_id == 1,
-            card_id: Some(0),
             card_name: Some("Built-in Audio".to_string()),
-            port_name: Some("analog-output".to_string()),
             port_description: Some("Headphones".to_string()),
         }
     }
@@ -1220,9 +1120,6 @@ mod tests {
     fn reachable_server_without_streams_is_limited_not_unavailable() {
         let report = capability_for_discovery(&Ok(AudioDiscovery {
             server: AudioServer {
-                name: Some("PulseAudio (on PipeWire)".to_string()),
-                version: Some("1".to_string()),
-                protocol_version: Some(35),
                 default_output_name: Some("output-1".to_string()),
             },
             outputs: vec![output(1)],

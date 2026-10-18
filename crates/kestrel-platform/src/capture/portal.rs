@@ -26,6 +26,20 @@ use crate::global_shortcuts::APPLICATION_ID;
 
 pub(crate) const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
 pub(crate) const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+
+pub(crate) fn portal_property(bus: &Connection, interface: &str, name: &str) -> Option<u32> {
+    let reply = bus
+        .call_method(
+            Some(PORTAL_BUS),
+            PORTAL_PATH,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &(interface, name),
+        )
+        .ok()?;
+    let value: OwnedValue = reply.body().deserialize().ok()?;
+    u32::try_from(value).ok()
+}
 const SCREENSHOT_INTERFACE: &str = "org.freedesktop.portal.Screenshot";
 const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const RESPONSE_MEMBER: &str = "Response";

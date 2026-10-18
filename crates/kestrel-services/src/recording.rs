@@ -19,9 +19,9 @@ use std::time::{Duration, Instant, SystemTime};
 use kestrel_platform::capture::CaptureCancel;
 use kestrel_platform::recording::{
     AudioTrack, CaptureSession, CropRegion, RecordingBackend, RecordingError, RecordingErrorKind,
-    RecordingEvent, RecordingPlan, RecordingSource, TakeEditor, VideoFrame, available_space,
+    RecordingEvent, RecordingPlan, RecordingSource, TakeEditor, available_space,
 };
-use kestrel_platform::snippets::{Clock, SystemClock};
+use kestrel_platform::snippets::SystemClock;
 
 use crate::capture::image::{Rect, RgbaImage};
 
@@ -375,14 +375,6 @@ impl RecordingService {
     pub fn take_duration(&self, path: &Path) -> Result<Duration, String> {
         self.listed(path)?;
         self.editor.duration(path).map_err(|error| error.message)
-    }
-
-    /// The frame of a listed take at `position`, for the trim preview.
-    pub fn take_frame(&self, path: &Path, position: Duration) -> Result<VideoFrame, String> {
-        self.listed(path)?;
-        self.editor
-            .frame_at(path, position)
-            .map_err(|error| error.message)
     }
 
     /// Writes `start..end` of a listed take to `destination` on the

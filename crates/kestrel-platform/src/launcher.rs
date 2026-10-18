@@ -2,13 +2,12 @@
 //! Scripts use resolved executables, no shell, timeouts, and bounded output.
 
 use std::{
-    env,
     error::Error,
     ffi::OsStr,
     fmt,
     io::Read,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
-    path::{Path, PathBuf},
+    os::unix::process::CommandExt,
+    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
@@ -31,7 +30,6 @@ pub enum ScriptErrorKind {
     SpawnFailed,
     TimedOut,
     Failed,
-    OutputTooLarge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,20 +287,6 @@ pub fn search_roots(
     matches.into_iter().map(|(_, path)| path).collect()
 }
 
-pub fn process_path() -> Option<std::ffi::OsString> {
-    env::var_os("PATH")
-}
-
-pub fn root_is_usable(root: &Path) -> bool {
-    root.is_dir() && root.metadata().map(|m| m.is_dir()).unwrap_or(false)
-}
-
-pub fn is_executable(path: &Path) -> bool {
-    path.metadata()
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -313,10 +297,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{
-        ScriptErrorKind, is_executable, read_bounded, root_is_usable, run_script, search_roots,
-    };
-
+    use super::{ScriptErrorKind, read_bounded, run_script, search_roots};
     fn script(dir: &TempDir, name: &str, body: &str) -> std::path::PathBuf {
         let path = dir.path().join(name);
         fs::write(&path, body).expect("script is written");
@@ -610,16 +591,5 @@ mod tests {
             "the entry budget bounds how many files are visited: {}",
             found.len()
         );
-    }
-
-    #[test]
-    fn roots_and_executables_are_validated() {
-        let dir = TempDir::new().expect("temp dir");
-        assert!(root_is_usable(dir.path()));
-        assert!(!root_is_usable(&dir.path().join("missing")));
-
-        let executable = script(&dir, "tool", "#!/bin/sh\nexit 0\n");
-        assert!(is_executable(&executable));
-        assert!(!is_executable(&dir.path().join("missing")));
     }
 }

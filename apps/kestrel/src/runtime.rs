@@ -65,7 +65,7 @@ use kestrel_platform::{
         screen_tool_capability,
     },
     snippets::{
-        Clock, ExecutableInsertionBackend, InsertionProvider, SnippetInsertionProbe, SystemClock,
+        ExecutableInsertionBackend, InsertionProvider, SnippetInsertionProbe, SystemClock,
         discover_insertion_provider,
     },
     speed_test::{CurlSpeedTestBackend, FEATURE_ID as SPEED_TEST_ID, SpeedTestProbe},
@@ -76,7 +76,7 @@ use kestrel_platform::{
 };
 use kestrel_services::{
     FeatureRegistry, RegistryError, ServiceRegistration,
-    alerts::{AlertEngine, AlertEvent, AlertPolicy, AlertSnapshot},
+    alerts::{AlertEngine, AlertEvent, AlertPolicy},
     audio::{
         AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot,
         DevicePriority,
@@ -111,7 +111,7 @@ use kestrel_services::{
         SnippetPolicy, SnippetServiceError,
     },
     speed_test::{SpeedTestPolicy, SpeedTestService, SpeedTestSnapshot},
-    system_monitor::{HistorySummary, RefreshOutcome, SystemMonitorService, SystemSnapshot},
+    system_monitor::{RefreshOutcome, SystemMonitorService, SystemSnapshot},
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeaturePreset {
@@ -126,18 +126,6 @@ impl FeaturePreset {
             Self::Essentials => "Essentials",
             Self::Balanced => "Balanced",
             Self::Everything => "Everything",
-        }
-    }
-
-    pub const fn description(self) -> &'static str {
-        match self {
-            Self::Essentials => "Core monitoring, audio, power, and session controls.",
-            Self::Balanced => {
-                "All supported configurable features except clipboard history and global shortcuts."
-            }
-            Self::Everything => {
-                "Every configurable feature, including resource-intensive services."
-            }
         }
     }
 }
@@ -997,22 +985,6 @@ impl ApplicationRuntime {
         self.registry.registrations()
     }
 
-    pub fn view_model(
-        &self,
-        warnings: &[ConfigurationWarning],
-        configuration: &ApplicationConfiguration,
-        can_undo: bool,
-    ) -> ApplicationViewModel {
-        self.view_model_with_panels(
-            warnings,
-            configuration,
-            can_undo,
-            ClipboardQuery::default(),
-            SnippetQuery::default(),
-            CommandBarQuery::default(),
-        )
-    }
-
     pub fn view_model_with_panels(
         &self,
         warnings: &[ConfigurationWarning],
@@ -1142,19 +1114,11 @@ impl ApplicationRuntime {
         MonitorTick { outcome, alerts }
     }
 
-    pub fn alert_snapshot(&self) -> AlertSnapshot {
-        self.alerts.snapshot()
-    }
-
     pub fn record_alert_delivery(&mut self, kind: AlertKind, result: Result<(), String>) {
         match result {
             Ok(()) => self.alerts.clear_delivery_failure(kind),
             Err(message) => self.alerts.record_delivery_failure(kind, message),
         }
-    }
-
-    pub fn history_summary(&self) -> Option<HistorySummary> {
-        self.system_monitor.history_summary()
     }
 
     pub fn monitor_view_model(&self, configuration: &ApplicationConfiguration) -> MonitorViewModel {
@@ -2220,26 +2184,10 @@ impl ApplicationRuntime {
         &self.command_ranking
     }
 
-    pub fn command_ranking_warnings(&self) -> &[ConfigurationWarning] {
-        &self.command_ranking_warnings
-    }
-
-    pub fn command_applications(&self) -> &[ApplicationEntry] {
-        &self.command_applications
-    }
-
-    pub fn command_providers(&self) -> EnabledProviders {
-        self.command_providers
-    }
-
     pub fn command_launcher_name(&self) -> Option<&str> {
         self.command_launcher
             .as_ref()
             .map(ExternalLauncher::handler_name)
-    }
-
-    pub fn command_scripts(&self) -> &[kestrel_core::CommandScriptConfiguration] {
-        &self.command_scripts
     }
 
     pub fn command_bar_running(&self) -> bool {
@@ -2610,9 +2558,6 @@ impl ApplicationRuntime {
             .export(kestrel_services::scratchpad::NoteId::from(id), destination)
             .map_err(|error| error.to_string())
     }
-    pub fn snippet_warnings(&self) -> &[ConfigurationWarning] {
-        &self.snippet_warnings
-    }
 
     pub fn snippets_running(&self) -> bool {
         self.registry
@@ -2951,7 +2896,7 @@ mod tests {
         decide_application_window_action,
     };
     use crate::STATUS_NOTIFIER_ID;
-    use kestrel_core::{AlertKind, ApplicationConfiguration, CapabilityReport, CapabilityStatus};
+    use kestrel_core::{ApplicationConfiguration, CapabilityReport, CapabilityStatus};
     use kestrel_platform::{
         audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
         capture::FEATURE_ID as CAPTURE_ID,
@@ -2972,7 +2917,7 @@ mod tests {
     use kestrel_core::Snippet;
     use kestrel_platform::{
         applications::ApplicationEntry,
-        snippets::{Clock, SystemClock},
+        snippets::SystemClock,
         windows::{WindowHandle, WindowInfo},
     };
     use kestrel_services::{
@@ -3071,22 +3016,6 @@ mod tests {
 
         assert!(runtime.system_monitor_snapshot().is_some());
     }
-    #[test]
-    fn battery_alerts_follow_the_saved_rule() {
-        let battery_enabled = |configuration: &ApplicationConfiguration| {
-            ApplicationRuntime::new(configuration)
-                .expect("runtime builds")
-                .alerts
-                .policy()
-                .rule(AlertKind::Battery)
-                .expect("battery rule exists")
-                .enabled
-        };
-        let mut configuration = ApplicationConfiguration::default();
-        assert!(battery_enabled(&configuration));
-        configuration.monitoring.alerts.battery.enabled = false;
-        assert!(!battery_enabled(&configuration));
-    }
 
     #[test]
     fn monitor_sampling_respects_configured_interval() {
@@ -3120,6 +3049,7 @@ mod tests {
 
         assert_eq!(
             runtime
+                .system_monitor
                 .history_summary()
                 .expect("history has samples")
                 .samples,

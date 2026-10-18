@@ -4,13 +4,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use kestrel_core::ProcessConfiguration;
 use kestrel_platform::processes::{
-    Ineligible, Listener, ListenerSource, MAX_LISTENERS, MAX_SCANNED_PROCESSES, ProcessError,
-    ProcessErrorKind, ProcessIdentity, ProcessRestarter, ProcessSample, ProcessScan, ProcessSignal,
-    ProcessSignaller, ProcessSource, RestartTarget,
+    Ineligible, Listener, MAX_LISTENERS, MAX_SCANNED_PROCESSES, ProcessError, ProcessErrorKind,
+    ProcessIdentity, ProcessRestarter, ProcessSample, ProcessScan, ProcessSignal, ProcessSignaller,
+    ProcessSource, ProcfsListeners, RestartTarget,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,6 @@ pub struct ProcessSnapshot {
     pub rows: Vec<ProcessRow>,
     pub total_processes: usize,
     pub truncated: bool,
-    pub sampled_at: Option<SystemTime>,
     pub error: Option<ProcessError>,
     pub stale: bool,
     pub generation: u64,
@@ -265,7 +264,6 @@ fn publish_success(shared: &InventoryShared, rows: Vec<ProcessRow>, scan: Proces
         rows,
         total_processes: scan.samples.len(),
         truncated: scan.truncated,
-        sampled_at: Some(SystemTime::now()),
         error: None,
         stale: false,
         generation: state.snapshot.generation,
@@ -276,7 +274,6 @@ fn publish_success(shared: &InventoryShared, rows: Vec<ProcessRow>, scan: Proces
     state.snapshot.rows = next.rows;
     state.snapshot.total_processes = next.total_processes;
     state.snapshot.truncated = next.truncated;
-    state.snapshot.sampled_at = next.sampled_at;
     state.snapshot.error = next.error;
     state.snapshot.stale = next.stale;
 }
@@ -614,7 +611,7 @@ impl ListenerService {
         Self::default()
     }
 
-    pub fn refresh(&mut self, source: &dyn ListenerSource, limit: usize) {
+    pub fn refresh(&mut self, source: &ProcfsListeners, limit: usize) {
         match source.listeners(limit.min(MAX_LISTENERS)) {
             Ok(mut listeners) => {
                 listeners.truncate(MAX_LISTENERS);
