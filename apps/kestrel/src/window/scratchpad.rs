@@ -5,7 +5,7 @@ use std::{
     rc::Rc,
 };
 
-use super::widgets::{choose_path, connect_line_movement, plain_row};
+use super::widgets::{choose_path, connect_line_movement, connect_list_continuation, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
@@ -191,6 +191,24 @@ impl ScratchpadPanel {
         export_button: &gtk::Button,
     ) {
         connect_line_movement(&self.editor);
+        connect_list_continuation(&self.editor);
+        // A preview checkbox flips its marker in the note; the edit saves
+        // through the buffer like typing.
+        let buffer = self.editor.buffer();
+        self.preview.connect_activate_link(move |_, uri| {
+            let Some(index) = kestrel_services::scratchpad::task_link_index(uri) else {
+                return gtk::glib::Propagation::Proceed;
+            };
+            let text = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                .to_string();
+            if let Some(toggled) = kestrel_services::scratchpad::toggle_task(&text, index) {
+                buffer.begin_user_action();
+                buffer.set_text(&toggled);
+                buffer.end_user_action();
+            }
+            gtk::glib::Propagation::Stop
+        });
         let commands = self.commands.clone();
         new_button.connect_clicked(move |_| {
             send(&commands, ScratchpadCommand::New("Untitled".to_owned()));
