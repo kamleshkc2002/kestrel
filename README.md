@@ -162,7 +162,8 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable on the Notes page.
 - Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`.
 - Alt+Up and Alt+Down move the current line or selected lines; Ctrl+Z undoes a move and restores the selection.
-- Preview renders the note's Markdown. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
+- Shift+Return continues a bulleted, numbered, or task list: the new item gets the same bullet, the next number (later numbers shift up), or an unticked `[ ]`. On an empty item it ends the list.
+- Preview renders the note's Markdown, with each `- [ ]` or `- [x]` task as a checkbox; clicking one changes only that task's marker in the note. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
 
 ### Camera preview — `camera.preview`
 

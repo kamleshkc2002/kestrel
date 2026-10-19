@@ -1,7 +1,7 @@
 //! Private, bounded tabbed scratchpad with debounced persistence.
 
 use std::{
-    fmt,
+    fmt::{self, Write as _},
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
@@ -566,11 +566,16 @@ fn clean_title(title: String) -> String {
     bounded_prefix(title.trim(), MAX_TITLE_BYTES).to_owned()
 }
 
-/// Renders bounded Markdown into escaped Pango markup.
+/// Link scheme of a task checkbox in the preview; the path is its index.
+const TASK_LINK_SCHEME: &str = "task:";
+
+/// Renders bounded Markdown into escaped Pango markup. Task checkboxes are
+/// links whose URI [`task_link_index`] reads.
 pub fn render_markdown(markdown: &str) -> String {
     let input = bounded_prefix(markdown, MAX_INPUT_BYTES);
     let mut output = String::new();
     let mut list_depth = 0usize;
+    let mut tasks = 0usize;
     for event in Parser::new_ext(input, Options::all()) {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
@@ -631,12 +636,44 @@ pub fn render_markdown(markdown: &str) -> String {
                 escape_pango(&text, &mut output);
             }
             Event::TaskListMarker(checked) => {
-                output.push_str(if checked { "☑ " } else { "☐ " })
+                // The space sits inside the link: GTK resolves a click on a
+                // glyph's right half to the position after it.
+                let _ = write!(
+                    output,
+                    "<a href=\"{TASK_LINK_SCHEME}{tasks}\"><span size=\"larger\">{}</span> </a>",
+                    if checked { "☑" } else { "☐" }
+                );
+                tasks += 1;
             }
             _ => {}
         }
     }
     output.trim_end().to_owned()
+}
+
+/// The task index a preview link names, if it is a task checkbox.
+pub fn task_link_index(uri: &str) -> Option<usize> {
+    uri.strip_prefix(TASK_LINK_SCHEME)?.parse().ok()
+}
+
+/// Flips the `index`th task checkbox, counted as the preview numbers them,
+/// and changes nothing else in the text.
+pub fn toggle_task(markdown: &str, index: usize) -> Option<String> {
+    let input = bounded_prefix(markdown, MAX_INPUT_BYTES);
+    let (_, range) = Parser::new_ext(input, Options::all())
+        .into_offset_iter()
+        .filter(|(event, _)| matches!(event, Event::TaskListMarker(_)))
+        .nth(index)?;
+    let replacement = match input.get(range.clone())? {
+        "[ ]" => "[x]",
+        "[x]" | "[X]" => "[ ]",
+        _ => return None,
+    };
+    let mut toggled = String::with_capacity(markdown.len());
+    toggled.push_str(&markdown[..range.start]);
+    toggled.push_str(replacement);
+    toggled.push_str(&markdown[range.end..]);
+    Some(toggled)
 }
 fn escape_pango(text: &str, output: &mut String) {
     for character in text.chars() {
@@ -678,6 +715,45 @@ mod tests {
         assert!(rendered.contains("<b>strong</b>"));
         assert!(rendered.contains("<u>link</u>"));
     }
+    #[test]
+    fn task_checkboxes_toggle_only_their_own_marker() {
+        let note = "- [ ] one\n- [x] two\n  lazy [ ] text\nlazier [x] line\n\n```\n- [ ] code\n```\n1. [X] three\n   - [ ] nested";
+        let rendered = render_markdown(note);
+        for index in 0..4 {
+            assert!(rendered.contains(&format!("<a href=\"task:{index}\">")));
+        }
+        assert!(
+            !rendered.contains("task:4"),
+            "continuation lines and code hold no checkbox"
+        );
+
+        assert_eq!(
+            toggle_task(note, 0).unwrap(),
+            note.replacen("- [ ] one", "- [x] one", 1)
+        );
+        assert_eq!(
+            toggle_task(note, 1).unwrap(),
+            note.replacen("- [x] two", "- [ ] two", 1)
+        );
+        assert_eq!(
+            toggle_task(note, 2).unwrap(),
+            note.replacen("1. [X]", "1. [ ]", 1)
+        );
+        assert_eq!(
+            toggle_task(note, 3).unwrap(),
+            note.replacen("   - [ ] nested", "   - [x] nested", 1)
+        );
+        assert_eq!(toggle_task(note, 4), None);
+        assert_eq!(
+            toggle_task(&toggle_task(note, 0).unwrap(), 0).unwrap(),
+            note,
+            "toggling twice restores the note"
+        );
+
+        assert_eq!(task_link_index("task:3"), Some(3));
+        assert_eq!(task_link_index("https://example.com"), None);
+    }
+
     #[test]
     fn storage_round_trip_and_bounds() {
         let dir = TempDir::new().unwrap();

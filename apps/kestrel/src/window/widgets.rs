@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use adw::prelude::*;
 use gtk::{Align, Orientation, accessible::Property, gdk, glib};
-use kestrel::text_lines::{LineDirection, move_lines};
+use kestrel::text_lines::{LineDirection, continue_list, move_lines};
 
 /// How long a spin value must stay put before it is saved. A save rebuilds the
 /// page, and a rebuild during a click left the old button repeating its step;
@@ -80,6 +80,43 @@ pub(super) fn connect_line_movement(view: &gtk::TextView) {
         let new_end = buffer.iter_at_offset(line_move.selection.1 as i32);
         buffer.select_range(&new_start, &new_end);
         buffer.end_user_action();
+        gtk::glib::Propagation::Stop
+    });
+    view.add_controller(keys);
+}
+
+/// Shift+Return continues, or on an empty item ends, the Markdown list at
+/// the cursor; elsewhere it inserts a plain new line.
+pub(super) fn connect_list_continuation(view: &gtk::TextView) {
+    let buffer = view.buffer();
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |controller, key, _, state| {
+        let shift_only = state.contains(gdk::ModifierType::SHIFT_MASK)
+            && !state.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK);
+        if !matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
+            || !shift_only
+            || buffer.has_selection()
+        {
+            return gtk::glib::Propagation::Proceed;
+        }
+        let text = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string();
+        let cursor = buffer.cursor_position().max(0) as usize;
+        let Some(continuation) = continue_list(&text, cursor) else {
+            return gtk::glib::Propagation::Proceed;
+        };
+        let mut range_start = buffer.iter_at_offset(continuation.range.0 as i32);
+        let mut range_end = buffer.iter_at_offset(continuation.range.1 as i32);
+        buffer.begin_user_action();
+        buffer.delete(&mut range_start, &mut range_end);
+        let mut insert_at = buffer.iter_at_offset(continuation.range.0 as i32);
+        buffer.insert(&mut insert_at, &continuation.replacement);
+        buffer.place_cursor(&buffer.iter_at_offset(continuation.cursor as i32));
+        buffer.end_user_action();
+        if let Some(view) = controller.widget().and_downcast::<gtk::TextView>() {
+            view.scroll_mark_onscreen(&buffer.get_insert());
+        }
         gtk::glib::Propagation::Stop
     });
     view.add_controller(keys);
