@@ -1093,9 +1093,14 @@ impl ApplicationController {
                     "{worker_name} finished in {} ms",
                     started.elapsed().as_millis()
                 );
+                // Failure text can name processes or devices; it stays in the toast.
+                if result.is_err() {
+                    log::warn!("{worker_name} failed");
+                }
                 let _ = results.send_blocking(result);
             });
         if let Err(error) = worker {
+            log::warn!("{worker_name} could not start");
             self.finish_refresh(Err(format!(
                 "Could not start the {worker_name} worker: {error}"
             )));
@@ -1198,7 +1203,6 @@ impl ApplicationController {
                 }
             }
             Err(message) => {
-                log::warn!("operation failed: {message}");
                 let view_model = self.current_view_model();
                 self.monitor_running.set(view_model.monitor.running);
                 self.clipboard_running.set(view_model.clipboard.running);
@@ -1690,6 +1694,7 @@ impl ApplicationController {
                 let _ = results.send_blocking(Ok((guard.view_model(), message)));
             });
         if let Err(error) = worker {
+            log::warn!("kestrel-process-action could not start");
             self.finish_refresh(Err(format!(
                 "Could not start the process action worker: {error}"
             )));

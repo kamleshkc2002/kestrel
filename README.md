@@ -199,7 +199,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Kestrel keeps warnings, errors, and features starting, stopping, or changing capability in `$XDG_STATE_HOME/kestrel/logs` (usually `~/.local/state/kestrel/logs`; debug builds use `kestrel-devel`). The folder is 0700 and files are 0600. A new file starts each day, or when a file reaches a quarter of the size limit.
 - Debug logging adds operation names and timings. It applies at once, and `KESTREL_LOG=debug` turns it on for one run without changing the setting.
 - Files older than the retention period are deleted at startup and every hour, and the oldest go first when the folder passes the size limit. Settings shows the folder with **Open folder** and **Clear logs**.
-- Logs never record clipboard, snippet, or note text, OCR or QR results, command-bar searches, window titles, network addresses, or paths in your home folder, and never leave the computer. When Kestrel runs from a terminal, warnings and errors also appear there.
+- Logs never record clipboard, snippet, or note text, OCR or QR results, command-bar searches, window titles, network addresses, or paths in your home folder, and never leave the computer. A failed operation is logged by name only, such as `kestrel-audio-output-switch failed`; its reason, which can name a process or device, appears only in the window. When Kestrel runs from a terminal, warnings and errors also appear there.
 
 ### Keyboard shortcuts
 
