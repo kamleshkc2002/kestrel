@@ -132,7 +132,7 @@ pub struct SensitivePattern {
     pub description: &'static str,
 }
 
-pub const SENSITIVE_PATTERNS: [SensitivePattern; 5] = [
+pub const SENSITIVE_PATTERNS: [SensitivePattern; 6] = [
     SensitivePattern {
         id: "private_key_block",
         description: "a PEM private-key block header",
@@ -153,6 +153,10 @@ pub const SENSITIVE_PATTERNS: [SensitivePattern; 5] = [
         id: "long_base64_token",
         description: "a mixed-case base64/hex run of at least 48 characters",
     },
+    SensitivePattern {
+        id: "credential_assignment",
+        description: "an assignment to a credential name, such as SECRET_KEY, api_key, or one ending in token, with a value of at least 6 characters",
+    },
 ];
 
 pub fn match_sensitive(text: &str) -> Option<&'static str> {
@@ -172,6 +176,9 @@ pub fn match_sensitive(text: &str) -> Option<&'static str> {
     }
     if has_password_assignment(text) {
         return Some(SENSITIVE_PATTERNS[3].id);
+    }
+    if has_credential_assignment(text) {
+        return Some(SENSITIVE_PATTERNS[5].id);
     }
     if has_long_mixed_token(text) {
         return Some(SENSITIVE_PATTERNS[4].id);
@@ -236,6 +243,102 @@ fn has_password_assignment(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Shortest assigned value treated as a credential, as for passwords.
+const MIN_CREDENTIAL_VALUE: usize = 6;
+
+fn has_credential_assignment(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().any(|(index, byte)| {
+        matches!(byte, b'=' | b':')
+            && is_assignment_separator(bytes, index)
+            && is_credential_name(assigned_name(&text[..index]))
+            && assigned_value(&text[index + 1..]).chars().count() >= MIN_CREDENTIAL_VALUE
+    })
+}
+
+/// Rejects comparisons (`==`, `!=`, `<=`, `>=`), paths (`::`), and URL
+/// schemes (`https://`); `:=` counts through its `=`.
+fn is_assignment_separator(bytes: &[u8], index: usize) -> bool {
+    let previous = index.checked_sub(1).map(|at| bytes[at]);
+    let next = bytes.get(index + 1).copied();
+    match bytes[index] {
+        b'=' => next != Some(b'=') && !matches!(previous, Some(b'=' | b'!' | b'<' | b'>')),
+        _ => !matches!(next, Some(b':' | b'=' | b'/')) && previous != Some(b':'),
+    }
+}
+
+/// The identifier just before a separator, past spaces, quotes, and the `:` of `:=`.
+fn assigned_name(before: &str) -> &str {
+    let trimmed = before.trim_end_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '"' | '\'' | ':')
+    });
+    let start = trimmed
+        .rfind(|character: char| {
+            !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.'))
+        })
+        .map_or(0, |at| at + 1);
+    &trimmed[start..]
+}
+
+/// The value just after a separator, without its opening quote.
+fn assigned_value(after: &str) -> &str {
+    let value = after
+        .trim_start_matches([' ', '\t'])
+        .trim_start_matches(['"', '\'']);
+    let end = value
+        .find(|character: char| {
+            character.is_whitespace() || matches!(character, '"' | '\'' | ',' | ';')
+        })
+        .unwrap_or(value.len());
+    &value[..end]
+}
+
+/// Credential names hold `secret`, `passwd`, or `passphrase`, a private or API
+/// key, or end in `token`; `max_tokens` and `token_count` stay ordinary.
+fn is_credential_name(name: &str) -> bool {
+    let words = name_words(name);
+    let pair = |first: &str, second: &str| {
+        words
+            .windows(2)
+            .any(|window| window[0] == first && window[1] == second)
+    };
+    words
+        .iter()
+        .any(|word| matches!(word.as_str(), "secret" | "passwd" | "passphrase" | "apikey"))
+        || pair("private", "key")
+        || pair("api", "key")
+        || words.last().is_some_and(|word| word == "token")
+}
+
+/// Lowercase words of an identifier split at separators, camelCase and
+/// acronym boundaries, and digit runs: `APIKey2` is `api`, `key`, `2`.
+fn name_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for part in name.split(|character: char| !character.is_ascii_alphanumeric()) {
+        let characters = part.as_bytes();
+        let mut start = 0;
+        for index in 1..characters.len() {
+            let (previous, current) = (characters[index - 1], characters[index]);
+            let next_is_lower = characters
+                .get(index + 1)
+                .is_some_and(u8::is_ascii_lowercase);
+            let boundary = (current.is_ascii_uppercase()
+                && (previous.is_ascii_lowercase()
+                    || previous.is_ascii_digit()
+                    || (previous.is_ascii_uppercase() && next_is_lower)))
+                || current.is_ascii_digit() != previous.is_ascii_digit();
+            if boundary {
+                words.push(part[start..index].to_ascii_lowercase());
+                start = index;
+            }
+        }
+        if start < part.len() {
+            words.push(part[start..].to_ascii_lowercase());
+        }
+    }
+    words
 }
 
 fn has_long_mixed_token(text: &str) -> bool {
@@ -1645,7 +1748,7 @@ mod tests {
 
     use super::{
         ClipboardCommand, ClipboardHistoryService, ClipboardLifecycle, ClipboardPolicy,
-        HistoryStore, MAX_MATCH_PREVIEW_CHARS, SENSITIVE_PATTERNS, match_sensitive, plain_text,
+        HistoryStore, MAX_MATCH_PREVIEW_CHARS, match_sensitive, plain_text,
     };
 
     const PNG_2X2: &[u8] = &[
@@ -2121,7 +2224,6 @@ mod tests {
             )),
             Some("long_base64_token")
         );
-        assert_eq!(SENSITIVE_PATTERNS.len(), 5);
 
         // 40-character SHAs remain ordinary values; longer digests are secrets.
         assert_eq!(match_sensitive(&"a1b2c3d4e5".repeat(4)), None);
@@ -2132,6 +2234,41 @@ mod tests {
 
         assert_eq!(match_sensitive("an ordinary sentence"), None);
         assert_eq!(match_sensitive(""), None);
+    }
+
+    #[test]
+    fn credential_names_are_recognised_and_ordinary_names_are_not() {
+        for text in [
+            "SECRET_KEY=django-insecure-abc123",
+            "export SECRET_KEY_BASE=9f8e7d6c5b4a",
+            "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG",
+            r#"{"secretKey": "s3cr3t-value"}"#,
+            "private_key: MIIEvQIBADANBg",
+            "GITHUB_TOKEN=ghp_abcdef123456",
+            "apiKey := \"abcdef123\"",
+        ] {
+            assert_eq!(
+                match_sensitive(text),
+                Some("credential_assignment"),
+                "{text}"
+            );
+        }
+        for text in [
+            "password_confirmation=hunter2secret",
+            "PASSWORD_2: hunter2secret",
+        ] {
+            assert!(match_sensitive(text).is_some(), "{text}");
+        }
+        for text in [
+            "max_tokens: 4096000",
+            "token_count = 1234567",
+            "if secret_key == expected_value",
+            "see https://example.com/secret_key_rotation",
+            "SECRET_KEY=",
+            "secret: true",
+        ] {
+            assert_eq!(match_sensitive(text), None, "{text}");
+        }
     }
 
     #[test]
