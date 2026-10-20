@@ -778,6 +778,7 @@ mod tests {
         let plan = EditPlan {
             crop: None,
             operations: vec![EditOperation::Redact(rect)],
+            ..EditPlan::default()
         };
         let edited = service.save_edit(source_id, &plan).unwrap();
         assert!(edited.edited);

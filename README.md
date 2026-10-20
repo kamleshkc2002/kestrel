@@ -136,7 +136,8 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Providers:** the Screenshot portal where the desktop exports it (GNOME, KDE Plasma, COSMIC): "Choose in dialog" opens the desktop's own capture UI, and "Screen" asks once for screenshot permission; `grim` with `slurp` for area selection on wlroots compositors such as Sway and Hyprland; core X11 for the focused window or the whole screen on real X11 sessions.
 - **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), also editable on the Capture page.
 - Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every file at once. Temporary files a portal leaves behind are deleted after import.
-- Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, and redacts regions; redaction overwrites the pixels with black in the saved copy, and the original capture stays until you delete it.
+- Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, spotlights areas, and redacts regions; redaction overwrites the pixels with black in the saved copy, and the original capture stays until you delete it.
+- **Spotlight:** drag one or more areas to keep them bright and dim the rest of the screenshot; overlapping spotlights are never dimmed twice. The Dim slider (10–90%, default 60%) appears while Spotlight is selected and sets the strength for every spotlight. Boxes, arrows, and highlights are never dimmed, and Undo removes the last spotlight like any other edit.
 
 ### Screen tools — `capture.text`, `capture.qr`, `capture.color`
 

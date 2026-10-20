@@ -1,4 +1,4 @@
-//! Screenshot editor: crop, redact, box, highlight, and arrow tools.
+//! Screenshot editor: crop, redact, box, highlight, spotlight, and arrow tools.
 //!
 //! Edits stay an `EditPlan` while the window is open; saving sends the plan to
 //! the capture service, which applies it to the stored pixels and keeps the
@@ -13,7 +13,8 @@ use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Orientation, accessible::Property, cairo};
 use kestrel::{
-    ApplicationCommand, CaptureId, CaptureRequest, Color, EditOperation, EditPlan, Rect, RgbaImage,
+    ApplicationCommand, CaptureId, CaptureRequest, Color, DEFAULT_SPOTLIGHT_DIM_PERCENT,
+    EditOperation, EditPlan, MAX_SPOTLIGHT_DIM_PERCENT, MIN_SPOTLIGHT_DIM_PERCENT, Rect, RgbaImage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,10 +23,11 @@ enum Tool {
     Redact,
     Box,
     Highlight,
+    Spotlight,
     Arrow,
 }
 
-const TOOLS: [(Tool, &str, &str); 5] = [
+const TOOLS: [(Tool, &str, &str); 6] = [
     (
         Tool::Redact,
         "Redact",
@@ -33,6 +35,11 @@ const TOOLS: [(Tool, &str, &str); 5] = [
     ),
     (Tool::Box, "Box", "Draw a red outline"),
     (Tool::Highlight, "Highlight", "Tint a region yellow"),
+    (
+        Tool::Spotlight,
+        "Spotlight",
+        "Dim everything outside the selected areas",
+    ),
     (Tool::Arrow, "Arrow", "Draw a red arrow"),
     (Tool::Crop, "Crop", "Keep only the selected region"),
 ];
@@ -113,6 +120,25 @@ pub fn open(
     tools.set_margin_start(12);
     tools.set_margin_end(12);
     let mut first: Option<gtk::ToggleButton> = None;
+    let dim = gtk::Scale::with_range(
+        Orientation::Horizontal,
+        f64::from(MIN_SPOTLIGHT_DIM_PERCENT),
+        f64::from(MAX_SPOTLIGHT_DIM_PERCENT),
+        5.0,
+    );
+    dim.set_value(f64::from(DEFAULT_SPOTLIGHT_DIM_PERCENT));
+    dim.set_digits(0);
+    dim.set_draw_value(true);
+    // Beside the slider, so showing it never changes the toolbar's height.
+    dim.set_value_pos(gtk::PositionType::Right);
+    dim.set_width_request(160);
+    dim.set_tooltip_text(Some("How much the area outside the spotlights is dimmed"));
+    dim.update_property(&[Property::Label("Spotlight dim strength, in percent")]);
+    let dim_label = gtk::Label::new(Some("Dim"));
+    let dim_box = gtk::Box::new(Orientation::Horizontal, 6);
+    dim_box.append(&dim_label);
+    dim_box.append(&dim);
+    show_dim(&dim_box, false);
     for (tool, label, description) in TOOLS {
         let button = gtk::ToggleButton::with_label(label);
         button.set_tooltip_text(Some(description));
@@ -125,13 +151,16 @@ pub fn open(
             }
         }
         let state = Rc::clone(&state);
+        let dim_box = dim_box.clone();
         button.connect_toggled(move |button| {
             if button.is_active() {
                 state.borrow_mut().tool = tool;
+                show_dim(&dim_box, tool == Tool::Spotlight);
             }
         });
         tools.append(&button);
     }
+    tools.append(&dim_box);
     let undo = gtk::Button::from_icon_name("edit-undo-symbolic");
     undo.set_tooltip_text(Some("Undo"));
     undo.update_property(&[Property::Label("Undo the last edit")]);
@@ -142,6 +171,8 @@ pub fn open(
     hint.add_css_class("dim-label");
     hint.set_hexpand(true);
     hint.set_xalign(1.0);
+    // The hint gives way, so the toolbar never forces the window wider.
+    hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
     tools.append(&undo);
     tools.append(&hint);
 
@@ -172,6 +203,14 @@ pub fn open(
                 height,
                 thickness,
             );
+        });
+    }
+    {
+        let state = Rc::clone(&state);
+        let area = area.clone();
+        dim.connect_value_changed(move |dim| {
+            state.borrow_mut().plan.spotlight_dim_percent = dim.value().round() as u8;
+            area.queue_draw();
         });
     }
 
@@ -274,6 +313,15 @@ pub fn open(
     window.present();
 }
 
+/// Shows the dim slider only for Spotlight while keeping its space, so the
+/// toolbar and the image never move when the tool changes.
+fn show_dim(dim_box: &gtk::Box, shown: bool) {
+    dim_box.set_opacity(if shown { 1.0 } else { 0.0 });
+    dim_box.set_sensitive(shown);
+    dim_box.set_can_target(shown);
+    dim_box.update_state(&[gtk::accessible::State::Hidden(!shown)]);
+}
+
 fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: u32) {
     let rect = Rect::normalized(from, to);
     let empty = rect.width == 0 || rect.height == 0;
@@ -303,6 +351,7 @@ fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: 
             rect,
             color: Color::YELLOW,
         },
+        Tool::Spotlight => EditOperation::Spotlight(rect),
     };
     state.plan.operations.push(operation);
     state.steps.push(Step::Operation);
@@ -411,7 +460,32 @@ fn draw_operation(context: &cairo::Context, operation: &EditOperation) -> Result
             context.close_path();
             context.fill()
         }
+        // The dim layer draws spotlights, beneath every annotation.
+        EditOperation::Spotlight(_) => Ok(()),
     }
+}
+
+/// Dims everything outside the spotlights, as `apply` does to the saved copy.
+fn draw_spotlight_dim(
+    context: &cairo::Context,
+    spotlights: &[Rect],
+    dim_percent: u8,
+    width: u32,
+    height: u32,
+) -> Result<(), cairo::Error> {
+    let dim = f64::from(dim_percent.clamp(MIN_SPOTLIGHT_DIM_PERCENT, MAX_SPOTLIGHT_DIM_PERCENT));
+    context.push_group();
+    context.set_source_rgba(0.0, 0.0, 0.0, dim / 100.0);
+    context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+    context.fill()?;
+    context.set_operator(cairo::Operator::Clear);
+    for rect in spotlights {
+        rectangle(context, *rect);
+    }
+    context.fill()?;
+    context.set_operator(cairo::Operator::Over);
+    context.pop_group_to_source()?;
+    context.paint()
 }
 
 fn draw(
@@ -427,11 +501,7 @@ fn draw(
     context.scale(viewport.scale, viewport.scale);
     context.set_source_surface(surface, 0.0, 0.0)?;
     context.paint()?;
-    for operation in &state.plan.operations {
-        draw_operation(context, operation)?;
-    }
-    let mut crop = state.plan.crop;
-    if let Some((from, to)) = state.drag {
+    let preview = state.drag.map(|(from, to)| {
         let mut preview = EditorState {
             plan: EditPlan::default(),
             steps: Vec::new(),
@@ -439,13 +509,34 @@ fn draw(
             drag: None,
         };
         commit(&mut preview, from, to, thickness);
-        if let Some(operation) = preview.plan.operations.first() {
-            draw_operation(context, operation)?;
-        }
-        if preview.plan.crop.is_some() {
-            crop = preview.plan.crop;
-        }
+        preview.plan
+    });
+    let dragged = preview
+        .as_ref()
+        .and_then(|plan| plan.operations.first().copied());
+    let spotlights: Vec<Rect> = state
+        .plan
+        .operations
+        .iter()
+        .chain(dragged.as_ref())
+        .filter_map(|operation| match operation {
+            EditOperation::Spotlight(rect) => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    if !spotlights.is_empty() {
+        draw_spotlight_dim(
+            context,
+            &spotlights,
+            state.plan.spotlight_dim_percent,
+            width,
+            height,
+        )?;
     }
+    for operation in state.plan.operations.iter().chain(dragged.as_ref()) {
+        draw_operation(context, operation)?;
+    }
+    let crop = preview.and_then(|plan| plan.crop).or(state.plan.crop);
     if let Some(crop) = crop {
         context.set_fill_rule(cairo::FillRule::EvenOdd);
         context.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
