@@ -34,7 +34,8 @@ pub use kestrel_services::camera::CameraFrameSlot;
 pub use kestrel_services::capture::{
     CaptureId,
     image::{
-        Color, DEFAULT_SPOTLIGHT_DIM_PERCENT, EditOperation, EditPlan, MAX_SPOTLIGHT_DIM_PERCENT,
+        CanvasExpansion, Color, DEFAULT_SPOTLIGHT_DIM_PERCENT, EditOperation, EditPlan,
+        MAX_CANVAS_PADDING, MAX_CANVAS_PIXELS, MAX_PASTED_IMAGES, MAX_SPOTLIGHT_DIM_PERCENT,
         MIN_SPOTLIGHT_DIM_PERCENT, Rect, RgbaImage, decode_png,
     },
 };
