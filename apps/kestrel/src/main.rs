@@ -672,6 +672,10 @@ enum ControllerOperation {
     SetScratchpadLimit(kestrel::ScratchpadLimit),
     SetLoggingSetting(kestrel::LoggingSetting),
     ClearLogs,
+    SetShortcut {
+        command: String,
+        trigger: Option<kestrel_core::ShortcutTrigger>,
+    },
     SetScreenToolsSetting(kestrel::ScreenToolsSetting),
     SetRecordingSetting(kestrel::RecordingSetting),
     RefreshProcesses,
@@ -2200,6 +2204,38 @@ impl ControllerState {
                 },
                 None => "Logging is unavailable without a home folder".to_owned(),
             },
+            ControllerOperation::SetShortcut { command, trigger } => {
+                let describe = |command: &str| {
+                    CommandLineAction::parse(command)
+                        .map_or_else(|_| command.to_owned(), |action| action.description())
+                };
+                let mut candidate = self.configuration.clone();
+                if let Err(error) = candidate.shortcuts.set_binding(&command, trigger.as_ref()) {
+                    return Err(match error {
+                        kestrel_core::ShortcutEditError::InUse { command: holder } => format!(
+                            "{} is already set for “{}”",
+                            trigger
+                                .as_ref()
+                                .map(kestrel::shortcut_label)
+                                .unwrap_or_default(),
+                            describe(&holder)
+                        ),
+                        kestrel_core::ShortcutEditError::Full => format!(
+                            "Kestrel keeps at most {} shortcuts; remove one first",
+                            kestrel_core::MAX_SHORTCUT_BINDINGS
+                        ),
+                    });
+                }
+                let message = match &trigger {
+                    Some(trigger) => format!(
+                        "{} now runs “{}”",
+                        kestrel::shortcut_label(trigger),
+                        describe(&command)
+                    ),
+                    None => format!("Removed the shortcut for “{}”", describe(&command)),
+                };
+                self.commit_configuration(candidate, config_path, message)?
+            }
             ControllerOperation::SetScratchpadLimit(limit) => {
                 let mut candidate = self.configuration.clone();
                 let message = match limit {
@@ -3162,6 +3198,11 @@ fn dispatch_commands(
                 ),
                 ApplicationCommand::ClearLogs => controller
                     .request_operation(ControllerOperation::ClearLogs, "kestrel-clear-logs"),
+                ApplicationCommand::SetShortcut { command, trigger } => controller
+                    .request_operation(
+                        ControllerOperation::SetShortcut { command, trigger },
+                        "kestrel-shortcut-setting",
+                    ),
                 ApplicationCommand::OpenLogFolder => {
                     let Some(logger) = kestrel::logging::logger() else {
                         controller.show_message("Logging is unavailable without a home folder");

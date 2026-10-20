@@ -204,7 +204,9 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 ### Keyboard shortcuts
 
-`kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, or your compositor config):
+The Shortcuts page sets keys up without editing files: **Add shortcut** picks an action and records a key combination, and each binding has Change key, Copy command, and Remove. Kestrel registers the keys itself where the desktop allows it (see [Global shortcuts](#global-shortcuts--globalshortcuts)); elsewhere the page explains how to add each one as a custom shortcut.
+
+`kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, COSMIC Settings → Input devices → Keyboard → Keyboard shortcuts → Custom shortcuts, or your compositor config); Copy command on the Shortcuts page copies the line for a binding:
 
 ```bash
 kestrel --command command-bar.open        # floating command bar
@@ -230,7 +232,7 @@ IDs cover the window, command bar, quick panel (`quick-panel.open`), clipboard q
 
 - **Default:** disabled; enabling it in the Feature Hub registers the configured bindings.
 - **Providers:** the `GlobalShortcuts` portal where the desktop exports it (KDE Plasma, GNOME 48+, Hyprland), which may ask you to confirm or change each key; `XGrabKey` on real X11 sessions, which reports a combination another client already holds. Other sessions show the feature as unsupported and point to `kestrel --command`.
-- **Configuration:** up to 32 bindings; each `trigger` needs at least one modifier (`CTRL`, `ALT`, `SHIFT`, `LOGO`) plus an XKB key name. Defaults:
+- **Configuration:** up to 32 bindings, edited on the Shortcuts page or in the configuration file; each `trigger` needs at least one modifier (`CTRL`, `ALT`, `SHIFT`, `LOGO`) plus an XKB key name, and a key or action already bound is refused. Defaults:
 
 ```toml
 [[shortcuts.bindings]]
@@ -246,7 +248,7 @@ command = "audio.output-next"
 trigger = "LOGO+ALT+o"
 ```
 
-- The window lists each binding with its state (active, waiting, in use, not registered). Disabling the feature releases the portal session or every grab.
+- The window lists each binding with its state (active, waiting, in use, not registered); a saved change registers at once. Disabling the feature releases the portal session or every grab.
 
 #### Launcher script commands
 
