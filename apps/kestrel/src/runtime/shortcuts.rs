@@ -37,6 +37,13 @@ impl ApplicationRuntime {
         })
     }
 
+    /// The capability allows registering keys, whether or not the feature runs.
+    pub fn global_shortcuts_available(&self) -> bool {
+        self.registry.registrations().any(|registration| {
+            registration.feature.id == GLOBAL_SHORTCUTS_ID && registration.available
+        })
+    }
+
     pub fn shortcut_status(&self) -> ShortcutStatus {
         self.global_shortcuts.snapshot()
     }
@@ -44,6 +51,7 @@ impl ApplicationRuntime {
     pub fn shortcuts_view_model(&self) -> ShortcutsViewModel {
         ShortcutsViewModel::from_presentation(ShortcutsPresentation {
             status: self.global_shortcuts.snapshot(),
+            available: self.global_shortcuts_available(),
             running: self.global_shortcuts_is_running(),
             configured: &self.shortcut_bindings,
             skipped: &self.shortcut_skipped,

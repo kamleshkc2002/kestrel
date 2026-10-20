@@ -596,7 +596,11 @@ impl WindowView {
         while let Some(child) = container.first_child() {
             child.unparent();
         }
-        container.append(&build_shortcuts_group(shortcuts));
+        container.append(&build_shortcuts_group(
+            shortcuts,
+            &self.window,
+            &self.commands,
+        ));
     }
 
     pub fn set_refreshing(&self, refreshing: bool) {
@@ -941,7 +945,11 @@ fn build_page(
         }
         SidebarPage::Shortcuts => {
             let shortcuts = gtk::Box::new(Orientation::Vertical, 0);
-            shortcuts.append(&build_shortcuts_group(&view_model.shortcuts));
+            shortcuts.append(&build_shortcuts_group(
+                &view_model.shortcuts,
+                window,
+                commands,
+            ));
             body.append(&shortcuts);
             build.shortcuts_container = shortcuts;
         }

@@ -111,7 +111,9 @@ pub use screen_tools::{
 };
 pub(crate) use screen_tools::{ScreenToolGate, ScreenToolsPresentation};
 pub(crate) use shortcuts::ShortcutsPresentation;
-pub use shortcuts::{ShortcutRowViewModel, ShortcutsViewModel};
+pub use shortcuts::{
+    ShortcutChoiceViewModel, ShortcutRowViewModel, ShortcutsViewModel, shortcut_label,
+};
 pub(crate) use snippets::{SNIPPETS_OFF, SnippetsPresentation};
 pub use snippets::{
     SnippetBoundsViewModel, SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel,

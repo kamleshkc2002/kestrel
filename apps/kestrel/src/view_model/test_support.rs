@@ -24,6 +24,7 @@ pub(crate) fn test_capture_presentation() -> super::CapturePresentation {
 pub(crate) fn test_shortcuts_presentation() -> ShortcutsPresentation<'static> {
     ShortcutsPresentation {
         status: kestrel_platform::global_shortcuts::ShortcutStatus::default(),
+        available: true,
         running: false,
         configured: &[],
         skipped: &[],

@@ -56,7 +56,7 @@ pub use view_model::{
     ProcessesViewModel, QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls,
     RecordingExportViewModel, RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel,
     ScreenToolsViewModel, ShortcutsViewModel, SnippetDraft, SnippetDraftViewModel,
-    SnippetsViewModel, SpeedTestViewModel,
+    SnippetsViewModel, SpeedTestViewModel, shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -505,6 +505,11 @@ pub enum ApplicationCommand {
     /// Opens the log folder in the file manager.
     OpenLogFolder,
     ClearLogs,
+    /// Sets a command ID's global shortcut, or removes it for `None`.
+    SetShortcut {
+        command: String,
+        trigger: Option<kestrel_core::ShortcutTrigger>,
+    },
     Processes(ProcessRequest),
     Camera(CameraRequest),
     Recording(RecordingRequest),

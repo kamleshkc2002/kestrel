@@ -813,6 +813,7 @@ impl ApplicationRuntime {
             },
             ShortcutsPresentation {
                 status: self.global_shortcuts.snapshot(),
+                available: self.global_shortcuts_available(),
                 running: self.global_shortcuts_is_running(),
                 configured: &self.shortcut_bindings,
                 skipped: &self.shortcut_skipped,

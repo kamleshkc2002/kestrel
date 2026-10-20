@@ -1543,6 +1543,54 @@ impl ShortcutConfiguration {
         }
         Ok(())
     }
+
+    /// Sets `command`'s trigger, adding the binding at the end if it is new,
+    /// or removes it for `None`. Other bindings keep their place.
+    pub fn set_binding(
+        &mut self,
+        command: &str,
+        trigger: Option<&ShortcutTrigger>,
+    ) -> Result<(), ShortcutEditError> {
+        let existing = self
+            .bindings
+            .iter()
+            .position(|binding| binding.command == command);
+        let Some(trigger) = trigger else {
+            if let Some(index) = existing {
+                self.bindings.remove(index);
+            }
+            return Ok(());
+        };
+        let wanted = trigger.to_string().to_ascii_lowercase();
+        if let Some(holder) = self.bindings.iter().find(|binding| {
+            binding.command != command
+                && ShortcutTrigger::parse(&binding.trigger)
+                    .is_ok_and(|held| held.to_string().to_ascii_lowercase() == wanted)
+        }) {
+            return Err(ShortcutEditError::InUse {
+                command: holder.command.clone(),
+            });
+        }
+        match existing {
+            Some(index) => self.bindings[index].trigger = trigger.to_string(),
+            None if self.bindings.len() >= MAX_SHORTCUT_BINDINGS => {
+                return Err(ShortcutEditError::Full);
+            }
+            None => self
+                .bindings
+                .push(ShortcutBinding::new(command, &trigger.to_string())),
+        }
+        Ok(())
+    }
+}
+
+/// Why [`ShortcutConfiguration::set_binding`] refused an edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShortcutEditError {
+    /// Another command already uses the trigger.
+    InUse { command: String },
+    /// The configuration already holds [`MAX_SHORTCUT_BINDINGS`] bindings.
+    Full,
 }
 
 /// User intent for the bounded, memory-only clipboard history.
@@ -2952,6 +3000,66 @@ mod tests {
             Err(ConfigurationError::TooManyShortcutBindings { .. })
         ));
     }
+    #[test]
+    fn setting_a_binding_replaces_adds_removes_and_refuses_taken_keys() {
+        let trigger = |text: &str| super::ShortcutTrigger::parse(text).unwrap();
+        let commands = |config: &super::ShortcutConfiguration| {
+            config
+                .bindings
+                .iter()
+                .map(|binding| format!("{}={}", binding.command, binding.trigger))
+                .collect::<Vec<_>>()
+        };
+        let mut config = super::ShortcutConfiguration::default();
+
+        config
+            .set_binding("microphone.toggle-mute", Some(&trigger("CTRL+ALT+F9")))
+            .unwrap();
+        config
+            .set_binding("clipboard.quick-paste", Some(&trigger("LOGO+ALT+v")))
+            .unwrap();
+        config.set_binding("window.show", None).unwrap();
+        assert_eq!(
+            commands(&config),
+            [
+                "microphone.toggle-mute=CTRL+ALT+F9",
+                "audio.output-next=LOGO+ALT+o",
+                "clipboard.quick-paste=ALT+LOGO+v",
+            ],
+            "a change keeps its place, a new binding goes last, a removal leaves the rest"
+        );
+        assert_eq!(config.validate(), Ok(()));
+
+        assert_eq!(
+            config.set_binding("app.quit", Some(&trigger("alt+logo+V"))),
+            Err(super::ShortcutEditError::InUse {
+                command: "clipboard.quick-paste".to_owned()
+            }),
+            "keys compare regardless of order and case"
+        );
+        assert_eq!(
+            config.set_binding("clipboard.quick-paste", Some(&trigger("LOGO+v"))),
+            Ok(()),
+            "a command may move to a key only it held"
+        );
+
+        let mut full = super::ShortcutConfiguration {
+            bindings: Vec::new(),
+        };
+        for index in 0..super::MAX_SHORTCUT_BINDINGS {
+            full.set_binding(
+                &format!("command.{index}"),
+                Some(&trigger(&format!("CTRL+F{}", index + 1))),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            full.set_binding("one.more", Some(&trigger("CTRL+ALT+x"))),
+            Err(super::ShortcutEditError::Full)
+        );
+        assert_eq!(full.validate(), Ok(()));
+    }
+
     #[test]
     fn quick_panel_favorites_are_bounded_shaped_and_unique() {
         let valid = super::QuickPanelConfiguration {
