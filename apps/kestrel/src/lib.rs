@@ -33,7 +33,10 @@ pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::camera::CameraFrameSlot;
 pub use kestrel_services::capture::{
     CaptureId,
-    image::{Color, EditOperation, EditPlan, Rect, RgbaImage, decode_png},
+    image::{
+        Color, DEFAULT_SPOTLIGHT_DIM_PERCENT, EditOperation, EditPlan, MAX_SPOTLIGHT_DIM_PERCENT,
+        MIN_SPOTLIGHT_DIM_PERCENT, Rect, RgbaImage, decode_png,
+    },
 };
 pub use kestrel_services::clipboard::{ClipboardCommand, ClipboardLifecycle};
 pub use kestrel_services::microphone::MicrophoneCommand;

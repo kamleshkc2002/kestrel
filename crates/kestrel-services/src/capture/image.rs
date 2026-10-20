@@ -1,4 +1,5 @@
-//! In-memory RGBA images: PNG decode/encode and edit plans (redact, shapes, crop).
+//! In-memory RGBA images: PNG decode/encode and edit plans (redact, shapes,
+//! spotlight, crop).
 
 use std::fmt;
 
@@ -9,6 +10,12 @@ const MAX_EDIT_OPERATIONS: usize = 256;
 
 /// Pixel written for redaction.
 const REDACTED_PIXEL: [u8; 4] = [0, 0, 0, 255];
+
+/// Spotlight dim strength: the share of brightness taken from areas outside
+/// every spotlight, in percent.
+pub const DEFAULT_SPOTLIGHT_DIM_PERCENT: u8 = 60;
+pub const MIN_SPOTLIGHT_DIM_PERCENT: u8 = 10;
+pub const MAX_SPOTLIGHT_DIM_PERCENT: u8 = 90;
 
 /// Non-premultiplied 8-bit RGBA pixels, row-major, within capture bounds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,13 +239,29 @@ pub enum EditOperation {
         color: Color,
         thickness: u32,
     },
+    /// A clear area in the dim that covers the rest of the image.
+    Spotlight(Rect),
 }
 
 /// Operations applied in order in source coordinates, then an optional crop.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Spotlights dim the image itself first, so annotations are never dimmed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditPlan {
     pub crop: Option<Rect>,
     pub operations: Vec<EditOperation>,
+    /// Dim strength outside the spotlights, clamped to
+    /// [`MIN_SPOTLIGHT_DIM_PERCENT`]..=[`MAX_SPOTLIGHT_DIM_PERCENT`].
+    pub spotlight_dim_percent: u8,
+}
+
+impl Default for EditPlan {
+    fn default() -> Self {
+        Self {
+            crop: None,
+            operations: Vec::new(),
+            spotlight_dim_percent: DEFAULT_SPOTLIGHT_DIM_PERCENT,
+        }
+    }
 }
 
 /// Applies `plan` to a copy of `source`.
@@ -247,6 +270,7 @@ pub fn apply(source: &RgbaImage, plan: &EditPlan) -> Result<RgbaImage, ImageErro
     if plan.operations.len() > MAX_EDIT_OPERATIONS {
         return Err(ImageError::TooManyOperations);
     }
+    dim_outside_spotlights(&mut image, plan);
     for operation in &plan.operations {
         match *operation {
             EditOperation::Redact(rect) => {
@@ -279,11 +303,46 @@ pub fn apply(source: &RgbaImage, plan: &EditPlan) -> Result<RgbaImage, ImageErro
                 color,
                 thickness,
             } => draw_arrow(&mut image, from, to, color, thickness),
+            EditOperation::Spotlight(_) => {}
         }
     }
     match plan.crop {
         Some(crop) => crop_image(&image, crop),
         None => Ok(image),
+    }
+}
+
+/// Darkens every pixel outside the union of the plan's spotlights, once.
+fn dim_outside_spotlights(image: &mut RgbaImage, plan: &EditPlan) {
+    let mut spotlights = plan
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            EditOperation::Spotlight(rect) => Some(rect.clip(image.width, image.height)),
+            _ => None,
+        })
+        .peekable();
+    if spotlights.peek().is_none() {
+        return;
+    }
+    let clear: Vec<Bounds> = spotlights.flatten().collect();
+    let kept = u16::from(
+        100 - plan
+            .spotlight_dim_percent
+            .clamp(MIN_SPOTLIGHT_DIM_PERCENT, MAX_SPOTLIGHT_DIM_PERCENT),
+    );
+    for y in 0..image.height {
+        for x in 0..image.width {
+            let lit = clear.iter().any(|bounds| {
+                (bounds.left..bounds.right).contains(&x) && (bounds.top..bounds.bottom).contains(&y)
+            });
+            if !lit {
+                let index = offset(image.width, x, y);
+                for channel in &mut image.pixels[index..index + 3] {
+                    *channel = (u16::from(*channel) * kept / 100) as u8;
+                }
+            }
+        }
     }
 }
 
@@ -457,6 +516,7 @@ mod tests {
         EditPlan {
             crop: None,
             operations: vec![EditOperation::Redact(rect)],
+            ..EditPlan::default()
         }
     }
 
@@ -536,6 +596,7 @@ mod tests {
                 width: 3,
                 height: 2,
             })],
+            ..EditPlan::default()
         };
         let cropped = apply(&source, &plan).unwrap();
         assert_eq!((cropped.width, cropped.height), (10, 10));
@@ -624,6 +685,7 @@ mod tests {
                 },
                 EditOperation::Redact(outside),
             ],
+            ..EditPlan::default()
         };
         let edited = apply(&source, &plan).unwrap();
         assert_eq!((edited.width, edited.height), (16, 12));
@@ -665,6 +727,7 @@ mod tests {
             let plan = EditPlan {
                 crop: Some(crop),
                 operations: Vec::new(),
+                ..EditPlan::default()
             };
             assert_eq!(
                 apply(&source, &plan),
@@ -686,16 +749,83 @@ mod tests {
         let at_limit = EditPlan {
             crop: None,
             operations: vec![operation; MAX_EDIT_OPERATIONS],
+            ..EditPlan::default()
         };
         assert!(apply(&source, &at_limit).is_ok());
         let over_limit = EditPlan {
             crop: None,
             operations: vec![operation; MAX_EDIT_OPERATIONS + 1],
+            ..EditPlan::default()
         };
         assert_eq!(
             apply(&source, &over_limit),
             Err(ImageError::TooManyOperations)
         );
+    }
+
+    #[test]
+    fn spotlights_dim_the_rest_once_and_leave_annotations_bright() {
+        let source = RgbaImage::new(20, 10, [200, 100, 50, 255].repeat(200)).unwrap();
+        let spot = |x, y| EditOperation::Spotlight(Rect::normalized((x, y), (x + 4, y + 4)));
+        let plan = EditPlan {
+            crop: None,
+            operations: vec![
+                // Drawn before the spotlights, outside them.
+                EditOperation::Rectangle {
+                    rect: Rect::normalized((14, 6), (20, 10)),
+                    color: Color::RED,
+                    thickness: 1,
+                },
+                spot(0, 0),
+                spot(2, 2),
+            ],
+            ..EditPlan::default()
+        };
+        let edited = apply(&source, &plan).unwrap();
+
+        assert_eq!(
+            pixel(&edited, 1, 1),
+            [200, 100, 50, 255],
+            "inside one spotlight"
+        );
+        assert_eq!(
+            pixel(&edited, 3, 3),
+            [200, 100, 50, 255],
+            "the overlap is not dimmed twice"
+        );
+        assert_eq!(
+            pixel(&edited, 5, 5),
+            [200, 100, 50, 255],
+            "inside the other"
+        );
+        assert_eq!(
+            pixel(&edited, 10, 1),
+            [80, 40, 20, 255],
+            "outside every spotlight keeps 40% at the 60% default"
+        );
+        assert_eq!(
+            pixel(&edited, 19, 9),
+            [255, 0, 0, 255],
+            "an annotation outside the spotlights is never dimmed"
+        );
+        assert_eq!(
+            source.pixels[..4],
+            [200, 100, 50, 255],
+            "the source is unchanged"
+        );
+
+        for (asked, kept) in [(0, 180), (25, 150), (100, 20)] {
+            let plan = EditPlan {
+                crop: None,
+                operations: vec![spot(0, 0)],
+                spotlight_dim_percent: asked,
+            };
+            assert_eq!(
+                pixel(&apply(&source, &plan).unwrap(), 10, 1)[0],
+                kept,
+                "dim {asked}% clamps to 10–90%"
+            );
+        }
     }
 
     #[test]
