@@ -55,6 +55,11 @@ pub enum ImageError {
     InvalidLength,
     EmptyCrop,
     TooManyOperations,
+    /// The expanded canvas exceeds [`MAX_CANVAS_PADDING`] or [`MAX_CANVAS_PIXELS`].
+    CanvasTooLarge,
+    TooManyPastes,
+    /// A paste refers to an image the plan does not hold.
+    UnknownPaste,
 }
 
 impl fmt::Display for ImageError {
@@ -69,6 +74,17 @@ impl fmt::Display for ImageError {
             Self::TooManyOperations => {
                 formatter.write_str("edit plan contains too many operations")
             }
+            Self::CanvasTooLarge => write!(
+                formatter,
+                "the canvas is too large: at most {MAX_CANVAS_PADDING} pixels per side and \
+                 {} megapixels in total",
+                MAX_CANVAS_PIXELS / (1024 * 1024)
+            ),
+            Self::TooManyPastes => write!(
+                formatter,
+                "an edit holds at most {MAX_PASTED_IMAGES} pasted images"
+            ),
+            Self::UnknownPaste => formatter.write_str("a pasted image is missing from the edit"),
         }
     }
 }
@@ -179,6 +195,15 @@ impl Rect {
             bottom: bottom as u32,
         })
     }
+
+    /// The same rectangle moved by `(dx, dy)`, saturating at the coordinate range.
+    pub fn shifted(self, dx: i32, dy: i32) -> Self {
+        Self {
+            x: self.x.saturating_add(dx),
+            y: self.y.saturating_add(dy),
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -219,6 +244,20 @@ impl Color {
         b: 0,
         a: 255,
     };
+
+    pub const WHITE: Self = Self {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    };
+
+    pub const TRANSPARENT: Self = Self {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,10 +280,53 @@ pub enum EditOperation {
     },
     /// A clear area in the dim that covers the rest of the image.
     Spotlight(Rect),
+    /// The plan's pasted image at `image`, scaled into `rect`.
+    Paste {
+        image: usize,
+        rect: Rect,
+    },
 }
 
-/// Operations applied in order in source coordinates, then an optional crop.
-/// Spotlights dim the image itself first, so annotations are never dimmed.
+/// Most space added on one side of the canvas, in pixels.
+pub const MAX_CANVAS_PADDING: u32 = 4096;
+/// Most pixels in an expanded canvas or a pasted image (256 MiB of RGBA).
+pub const MAX_CANVAS_PIXELS: u64 = 64 * 1024 * 1024;
+/// Most pasted images in one plan.
+pub const MAX_PASTED_IMAGES: usize = 16;
+
+/// Space added around the source image, filled with `background`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanvasExpansion {
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+    pub left: u32,
+    pub background: Color,
+}
+
+impl Default for CanvasExpansion {
+    fn default() -> Self {
+        Self {
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            background: Color::WHITE,
+        }
+    }
+}
+
+impl CanvasExpansion {
+    pub fn is_empty(&self) -> bool {
+        self.top == 0 && self.right == 0 && self.bottom == 0 && self.left == 0
+    }
+}
+
+/// An edit in source coordinates: space added on the left or top has
+/// negative coordinates, so resizing the canvas never moves an edit. Saving
+/// expands the canvas, draws pasted images, dims outside the spotlights,
+/// applies the annotations in order, then crops; so pasted images are dimmed
+/// with the picture and annotations never are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditPlan {
     pub crop: Option<Rect>,
@@ -252,6 +334,9 @@ pub struct EditPlan {
     /// Dim strength outside the spotlights, clamped to
     /// [`MIN_SPOTLIGHT_DIM_PERCENT`]..=[`MAX_SPOTLIGHT_DIM_PERCENT`].
     pub spotlight_dim_percent: u8,
+    pub canvas: CanvasExpansion,
+    /// Images that [`EditOperation::Paste`] refers to by index.
+    pub pasted: Vec<RgbaImage>,
 }
 
 impl Default for EditPlan {
@@ -260,26 +345,43 @@ impl Default for EditPlan {
             crop: None,
             operations: Vec::new(),
             spotlight_dim_percent: DEFAULT_SPOTLIGHT_DIM_PERCENT,
+            canvas: CanvasExpansion::default(),
+            pasted: Vec::new(),
         }
     }
 }
 
 /// Applies `plan` to a copy of `source`.
 pub fn apply(source: &RgbaImage, plan: &EditPlan) -> Result<RgbaImage, ImageError> {
-    let mut image = RgbaImage::new(source.width, source.height, source.pixels.clone())?;
     if plan.operations.len() > MAX_EDIT_OPERATIONS {
         return Err(ImageError::TooManyOperations);
     }
-    dim_outside_spotlights(&mut image, plan);
+    if plan.pasted.len() > MAX_PASTED_IMAGES {
+        return Err(ImageError::TooManyPastes);
+    }
+    let mut image = expand_canvas(source, plan.canvas)?;
+    // Padding is at most MAX_CANVAS_PADDING, so it fits an i32.
+    let (dx, dy) = (plan.canvas.left as i32, plan.canvas.top as i32);
+    let point = |(x, y): (i32, i32)| (x.saturating_add(dx), y.saturating_add(dy));
+    for operation in &plan.operations {
+        if let EditOperation::Paste { image: index, rect } = *operation {
+            let pasted = plan.pasted.get(index).ok_or(ImageError::UnknownPaste)?;
+            draw_image(&mut image, pasted, rect.shifted(dx, dy));
+        }
+    }
+    dim_outside_spotlights(&mut image, plan, dx, dy);
     for operation in &plan.operations {
         match *operation {
             EditOperation::Redact(rect) => {
+                let rect = rect.shifted(dx, dy);
                 for_each_pixel(&mut image, rect, |pixel, _| {
                     pixel.copy_from_slice(&REDACTED_PIXEL)
                 });
             }
             EditOperation::Highlight { rect, color } => {
-                for_each_pixel(&mut image, rect, |pixel, _| blend(pixel, color));
+                for_each_pixel(&mut image, rect.shifted(dx, dy), |pixel, _| {
+                    blend(pixel, color)
+                });
             }
             EditOperation::Rectangle {
                 rect,
@@ -287,7 +389,7 @@ pub fn apply(source: &RgbaImage, plan: &EditPlan) -> Result<RgbaImage, ImageErro
                 thickness,
             } => {
                 let thickness = i64::from(thickness);
-                for_each_pixel(&mut image, rect, |pixel, (x, y, bounds)| {
+                for_each_pixel(&mut image, rect.shifted(dx, dy), |pixel, (x, y, bounds)| {
                     let on_edge = i64::from(x - bounds.left) < thickness
                         || i64::from(bounds.right - 1 - x) < thickness
                         || i64::from(y - bounds.top) < thickness
@@ -302,23 +404,141 @@ pub fn apply(source: &RgbaImage, plan: &EditPlan) -> Result<RgbaImage, ImageErro
                 to,
                 color,
                 thickness,
-            } => draw_arrow(&mut image, from, to, color, thickness),
-            EditOperation::Spotlight(_) => {}
+            } => draw_arrow(&mut image, point(from), point(to), color, thickness),
+            EditOperation::Spotlight(_) | EditOperation::Paste { .. } => {}
         }
     }
     match plan.crop {
-        Some(crop) => crop_image(&image, crop),
+        Some(crop) => crop_image(&image, crop.shifted(dx, dy)),
         None => Ok(image),
     }
 }
 
+/// The source on a canvas grown by `canvas`, or a copy when nothing is added.
+fn expand_canvas(source: &RgbaImage, canvas: CanvasExpansion) -> Result<RgbaImage, ImageError> {
+    if canvas.is_empty() {
+        return RgbaImage::new(source.width, source.height, source.pixels.clone());
+    }
+    let sides = [canvas.top, canvas.right, canvas.bottom, canvas.left];
+    if sides.iter().any(|side| *side > MAX_CANVAS_PADDING) {
+        return Err(ImageError::CanvasTooLarge);
+    }
+    let width = source.width + canvas.left + canvas.right;
+    let height = source.height + canvas.top + canvas.bottom;
+    if u64::from(width) * u64::from(height) > MAX_CANVAS_PIXELS || !valid_dimensions(width, height)
+    {
+        return Err(ImageError::CanvasTooLarge);
+    }
+    let fill = canvas.background;
+    let mut pixels = [fill.r, fill.g, fill.b, fill.a].repeat(width as usize * height as usize);
+    let row = source.width as usize * 4;
+    for y in 0..source.height {
+        let from = offset(source.width, 0, y);
+        let to = offset(width, canvas.left, y + canvas.top);
+        pixels[to..to + row].copy_from_slice(&source.pixels[from..from + row]);
+    }
+    RgbaImage::new(width, height, pixels)
+}
+
+/// Draws `pasted` scaled into `rect` over what is there: bilinear when
+/// enlarging, a box average when shrinking so detail does not alias.
+fn draw_image(image: &mut RgbaImage, pasted: &RgbaImage, rect: Rect) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let scale_x = f64::from(pasted.width) / f64::from(rect.width);
+    let scale_y = f64::from(pasted.height) / f64::from(rect.height);
+    let shrinking = scale_x > 1.0 || scale_y > 1.0;
+    for_each_pixel(image, rect, |pixel, (x, y, _)| {
+        let local_x = (i64::from(x) - i64::from(rect.x)) as f64;
+        let local_y = (i64::from(y) - i64::from(rect.y)) as f64;
+        let color = if shrinking {
+            average(
+                pasted,
+                (local_x * scale_x, (local_x + 1.0) * scale_x),
+                (local_y * scale_y, (local_y + 1.0) * scale_y),
+            )
+        } else {
+            bilinear(
+                pasted,
+                (local_x + 0.5) * scale_x - 0.5,
+                (local_y + 0.5) * scale_y - 0.5,
+            )
+        };
+        blend(pixel, color);
+    });
+}
+
+/// Alpha-weighted mean colour of the pixels covering `x` and `y` ranges.
+fn average(image: &RgbaImage, x: (f64, f64), y: (f64, f64)) -> Color {
+    let span = |(start, end): (f64, f64), limit: u32| {
+        let first = (start.floor() as u32).min(limit - 1);
+        let last = (end.ceil() as u32).clamp(first + 1, limit);
+        first..last
+    };
+    let mut samples = Vec::new();
+    for row in span(y, image.height) {
+        for column in span(x, image.width) {
+            samples.push((column, row, 1.0));
+        }
+    }
+    mix(image, &samples)
+}
+
+fn bilinear(image: &RgbaImage, x: f64, y: f64) -> Color {
+    let x = x.clamp(0.0, f64::from(image.width - 1));
+    let y = y.clamp(0.0, f64::from(image.height - 1));
+    let (left, top) = (x.floor() as u32, y.floor() as u32);
+    let (right, bottom) = (
+        (left + 1).min(image.width - 1),
+        (top + 1).min(image.height - 1),
+    );
+    let (fx, fy) = (x - f64::from(left), y - f64::from(top));
+    mix(
+        image,
+        &[
+            (left, top, (1.0 - fx) * (1.0 - fy)),
+            (right, top, fx * (1.0 - fy)),
+            (left, bottom, (1.0 - fx) * fy),
+            (right, bottom, fx * fy),
+        ],
+    )
+}
+
+/// Weighted mix of pixels in premultiplied space, so transparent pixels add no colour.
+fn mix(image: &RgbaImage, samples: &[(u32, u32, f64)]) -> Color {
+    let (mut red, mut green, mut blue, mut alpha, mut total) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for &(x, y, weight) in samples {
+        let index = offset(image.width, x, y);
+        let pixel = &image.pixels[index..index + 4];
+        let opacity = f64::from(pixel[3]) / 255.0 * weight;
+        red += f64::from(pixel[0]) * opacity;
+        green += f64::from(pixel[1]) * opacity;
+        blue += f64::from(pixel[2]) * opacity;
+        alpha += opacity;
+        total += weight;
+    }
+    if alpha <= 0.0 || total <= 0.0 {
+        return Color::TRANSPARENT;
+    }
+    let channel = |value: f64| (value / alpha).round().clamp(0.0, 255.0) as u8;
+    Color {
+        r: channel(red),
+        g: channel(green),
+        b: channel(blue),
+        a: (alpha / total * 255.0).round().clamp(0.0, 255.0) as u8,
+    }
+}
+
 /// Darkens every pixel outside the union of the plan's spotlights, once.
-fn dim_outside_spotlights(image: &mut RgbaImage, plan: &EditPlan) {
+fn dim_outside_spotlights(image: &mut RgbaImage, plan: &EditPlan, dx: i32, dy: i32) {
     let mut spotlights = plan
         .operations
         .iter()
         .filter_map(|operation| match operation {
-            EditOperation::Spotlight(rect) => Some(rect.clip(image.width, image.height)),
+            EditOperation::Spotlight(rect) => {
+                Some(rect.shifted(dx, dy).clip(image.width, image.height))
+            }
             _ => None,
         })
         .peekable();
@@ -819,6 +1039,7 @@ mod tests {
                 crop: None,
                 operations: vec![spot(0, 0)],
                 spotlight_dim_percent: asked,
+                ..EditPlan::default()
             };
             assert_eq!(
                 pixel(&apply(&source, &plan).unwrap(), 10, 1)[0],
@@ -826,6 +1047,165 @@ mod tests {
                 "dim {asked}% clamps to 10–90%"
             );
         }
+    }
+
+    #[test]
+    fn the_canvas_grows_around_the_source_and_edits_stay_in_source_coordinates() {
+        let source = RgbaImage::new(2, 2, [10, 20, 30, 255].repeat(4)).unwrap();
+        let plan = EditPlan {
+            canvas: CanvasExpansion {
+                top: 1,
+                right: 2,
+                bottom: 0,
+                left: 3,
+                background: Color::WHITE,
+            },
+            // The canvas's top-left corner, left of and above the source.
+            operations: vec![EditOperation::Redact(Rect::normalized((-3, -1), (-2, 0)))],
+            ..EditPlan::default()
+        };
+        let grown = apply(&source, &plan).unwrap();
+        assert_eq!((grown.width, grown.height), (7, 3));
+        assert_eq!(
+            pixel(&grown, 0, 0),
+            [0, 0, 0, 255],
+            "a negative edit lands in the space"
+        );
+        assert_eq!(pixel(&grown, 6, 0), [255, 255, 255, 255]);
+        assert_eq!(
+            pixel(&grown, 3, 1),
+            [10, 20, 30, 255],
+            "the source sits at (3, 1)"
+        );
+        assert_eq!(pixel(&grown, 4, 2), [10, 20, 30, 255]);
+        assert_eq!(pixel(&grown, 5, 1), [255, 255, 255, 255]);
+
+        let transparent = EditPlan {
+            canvas: CanvasExpansion {
+                bottom: 1,
+                background: Color::TRANSPARENT,
+                ..CanvasExpansion::default()
+            },
+            crop: Some(Rect::normalized((0, 1), (2, 3))),
+            ..EditPlan::default()
+        };
+        let cropped = apply(&source, &transparent).unwrap();
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(pixel(&cropped, 0, 0), [10, 20, 30, 255]);
+        assert_eq!(
+            pixel(&cropped, 0, 1)[3],
+            0,
+            "the crop, in source coordinates, reaches the transparent space"
+        );
+
+        let too_wide = EditPlan {
+            canvas: CanvasExpansion {
+                left: MAX_CANVAS_PADDING + 1,
+                ..CanvasExpansion::default()
+            },
+            ..EditPlan::default()
+        };
+        assert_eq!(apply(&source, &too_wide), Err(ImageError::CanvasTooLarge));
+        let big = RgbaImage::new(8192, 8000, vec![0; 8192 * 8000 * 4]).unwrap();
+        let too_many_pixels = EditPlan {
+            canvas: CanvasExpansion {
+                bottom: 200,
+                ..CanvasExpansion::default()
+            },
+            ..EditPlan::default()
+        };
+        assert_eq!(
+            apply(&big, &too_many_pixels),
+            Err(ImageError::CanvasTooLarge),
+            "8192 × 8200 is over 64 megapixels"
+        );
+    }
+
+    #[test]
+    fn pasted_images_scale_blend_and_dim_with_the_picture() {
+        let source = RgbaImage::new(12, 6, [200, 200, 200, 255].repeat(72)).unwrap();
+        let red = RgbaImage::new(2, 2, [255, 0, 0, 255].repeat(4)).unwrap();
+        // Black and white columns: shrunk to one pixel they average to grey.
+        let stripes = RgbaImage::new(
+            4,
+            4,
+            [[0, 0, 0, 255], [255, 255, 255, 255]].concat().repeat(8),
+        )
+        .unwrap();
+        let half_clear = RgbaImage::new(1, 1, vec![0, 0, 255, 128]).unwrap();
+        let plan = EditPlan {
+            pasted: vec![red, stripes, half_clear],
+            operations: vec![
+                EditOperation::Paste {
+                    image: 0,
+                    rect: Rect::normalized((0, 0), (4, 4)),
+                },
+                EditOperation::Paste {
+                    image: 1,
+                    rect: Rect::normalized((5, 0), (6, 1)),
+                },
+                EditOperation::Paste {
+                    image: 2,
+                    rect: Rect::normalized((7, 0), (8, 1)),
+                },
+            ],
+            ..EditPlan::default()
+        };
+        let edited = apply(&source, &plan).unwrap();
+        assert_eq!(pixel(&edited, 3, 3), [255, 0, 0, 255], "enlarged two times");
+        assert_eq!(
+            pixel(&edited, 4, 4),
+            [200, 200, 200, 255],
+            "outside the paste"
+        );
+        assert_eq!(
+            pixel(&edited, 5, 0),
+            [128, 128, 128, 255],
+            "shrunk to the average"
+        );
+        assert_eq!(
+            pixel(&edited, 7, 0),
+            [99, 99, 227, 255],
+            "half-transparent blue blends over the screenshot"
+        );
+
+        let spotlit = EditPlan {
+            operations: vec![
+                EditOperation::Paste {
+                    image: 0,
+                    rect: Rect::normalized((8, 2), (12, 6)),
+                },
+                EditOperation::Spotlight(Rect::normalized((0, 0), (2, 2))),
+                EditOperation::Rectangle {
+                    rect: Rect::normalized((0, 4), (2, 6)),
+                    color: Color::RED,
+                    thickness: 1,
+                },
+            ],
+            ..plan.clone()
+        };
+        let edited = apply(&source, &spotlit).unwrap();
+        assert_eq!(
+            pixel(&edited, 10, 4),
+            [102, 0, 0, 255],
+            "the paste dims with the picture"
+        );
+        assert_eq!(
+            pixel(&edited, 0, 5),
+            [255, 0, 0, 255],
+            "the box stays bright"
+        );
+
+        let missing = EditPlan {
+            pasted: Vec::new(),
+            ..spotlit.clone()
+        };
+        assert_eq!(apply(&source, &missing), Err(ImageError::UnknownPaste));
+        let crowded = EditPlan {
+            pasted: vec![source.clone(); MAX_PASTED_IMAGES + 1],
+            ..EditPlan::default()
+        };
+        assert_eq!(apply(&source, &crowded), Err(ImageError::TooManyPastes));
     }
 
     #[test]
