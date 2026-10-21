@@ -381,7 +381,13 @@ impl FeatureViewModel {
         sentences(&need, fix)
     }
 
-    /// Everything technical, for the row's tooltip and details popover.
+    /// The switch works while the feature can run here, and to turn it off;
+    /// a feature that cannot run is never offered as something to turn on.
+    pub fn switchable(&self) -> bool {
+        self.configurable && (self.available || self.enabled)
+    }
+
+    /// Everything technical, for the row's (i) tooltip.
     pub fn details(&self) -> String {
         let status = &self.capability.status;
         let mut lines = vec![
@@ -529,6 +535,37 @@ mod tests {
                 "Grant access or use the normal window."
             ))
         );
+    }
+
+    #[test]
+    fn unavailable_features_can_be_turned_off_but_not_on() {
+        let feature = |status: CapabilityStatus, enabled: bool| {
+            let spec = FeatureSpec::new("test.feature", "Test feature", status.clone());
+            let report = CapabilityReport::new("test.feature", status, "Summary.");
+            FeatureViewModel::from(
+                &ServiceRegistration::new(spec, report, enabled).expect("matching feature IDs"),
+            )
+        };
+        let missing = || CapabilityStatus::MissingDependency {
+            name: "Tesseract".to_owned(),
+        };
+        let unsupported = || CapabilityStatus::Unsupported {
+            reason: "No keyboard backlight device was detected.".to_owned(),
+        };
+
+        assert!(feature(CapabilityStatus::Supported, false).switchable());
+        assert!(
+            !feature(unsupported(), false).switchable(),
+            "nothing to turn on"
+        );
+        assert!(!feature(missing(), false).switchable());
+        assert!(
+            feature(unsupported(), true).switchable(),
+            "a feature left on can still be turned off"
+        );
+        let mut fixed = feature(CapabilityStatus::Supported, false);
+        fixed.configurable = false;
+        assert!(!fixed.switchable(), "a fixed feature never switches");
     }
 
     #[test]

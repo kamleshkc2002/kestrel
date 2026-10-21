@@ -41,7 +41,7 @@ pub(super) fn build_feature_hub_group(
         controls.append(&details_icon(&details));
         let enabled = gtk::Switch::builder()
             .active(feature.enabled)
-            .sensitive(feature.configurable)
+            .sensitive(feature.switchable())
             .valign(Align::Center)
             .build();
         let sender = commands.clone();
