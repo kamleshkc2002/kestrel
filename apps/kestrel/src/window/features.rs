@@ -35,11 +35,10 @@ pub(super) fn build_feature_hub_group(
             .subtitle(&status)
             .subtitle_lines(2)
             .build();
-        row.set_tooltip_text(Some(&details));
         row.add_prefix(&indicator_icon(indicator));
 
         let controls = gtk::Box::new(Orientation::Horizontal, 6);
-        controls.append(&details_button(&feature.label, &details));
+        controls.append(&details_icon(&details));
         let enabled = gtk::Switch::builder()
             .active(feature.enabled)
             .sensitive(feature.configurable)
@@ -87,32 +86,14 @@ fn indicator_icon(indicator: FeatureIndicator) -> gtk::Image {
     image
 }
 
-/// An (i) button showing the row's details, for keyboard and touch users.
-fn details_button(label: &str, details: &str) -> gtk::MenuButton {
-    let text = gtk::Label::builder()
-        .label(details)
-        .wrap(true)
-        .max_width_chars(60)
-        .xalign(0.0)
-        .selectable(true)
-        // Opening the popover would otherwise focus it and select everything.
-        .focusable(false)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
-        .build();
-    let popover = gtk::Popover::new();
-    popover.set_child(Some(&text));
-    let button = gtk::MenuButton::builder()
-        .icon_name("help-about-symbolic")
-        .valign(Align::Center)
-        .tooltip_text("Details")
-        .popover(&popover)
-        .build();
-    button.add_css_class("flat");
-    button.update_property(&[Property::Label(&format!("Details for {label}"))]);
-    button
+/// An (i) icon whose tooltip holds the row's details; screen readers get
+/// them as the row's description.
+fn details_icon(details: &str) -> gtk::Image {
+    let icon = gtk::Image::from_icon_name("help-about-symbolic");
+    icon.set_valign(Align::Center);
+    icon.set_tooltip_text(Some(details));
+    icon.update_state(&[gtk::accessible::State::Hidden(true)]);
+    icon
 }
 
 pub(super) fn build_quick_toggle_group(
