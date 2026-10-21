@@ -81,9 +81,10 @@ pub use command_bar::{
     CommandRankingViewModel, CommandResultViewModel,
 };
 pub use features::{
-    CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
-    ConfirmationViewModel, FeatureLifecycleViewModel, FeatureViewModel, QuickToggleActionViewModel,
-    QuickToggleControlViewModel, QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel,
+    CapabilityKind, CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
+    ConfirmationViewModel, FeatureIndicator, FeatureLifecycleViewModel, FeatureViewModel,
+    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
+    RemediationViewModel, ResourceCostViewModel,
 };
 pub(crate) use microphone::MicrophonePresentation;
 pub use microphone::{CaptureStreamViewModel, MicrophoneInputViewModel, MicrophoneViewModel};

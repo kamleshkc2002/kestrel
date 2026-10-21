@@ -50,8 +50,10 @@ only typed application-owned preferences; it excludes clipboard content,
 runtime snapshots, credentials, and resolved executable paths.
 
 Essentials, Balanced, and Everything presets change feature enablement in one
-reversible operation. The Feature Hub reports registered, enabled, available,
-and running states separately.
+reversible operation. The Feature Hub marks each feature as running, needing
+attention (a missing dependency or permission, or a fix to apply), unavailable
+here, or off, with one line saying its state or what it needs. Hovering a
+feature, or its details button, shows its cost, polling, backend, and state.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
 Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
