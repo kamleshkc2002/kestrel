@@ -1735,16 +1735,24 @@ impl ControllerState {
                 feature_id,
                 enabled,
             } => {
+                let label = self
+                    .runtime
+                    .registrations()
+                    .find(|registration| registration.feature.id == feature_id)
+                    .map_or_else(
+                        || feature_id.clone(),
+                        |registration| registration.feature.label.to_owned(),
+                    );
                 let old = self.configuration.clone();
                 let mut candidate = old.clone();
                 if let Err(error) = candidate.set_feature_enabled(feature_id.clone(), enabled) {
-                    return Err(format!("Could not update feature {feature_id}: {error:?}"));
+                    return Err(format!("Could not change {label}: {error:?}"));
                 }
                 self.runtime
                     .apply_configuration(&candidate)
                     .map_err(|error| {
                         self.restore_configuration(old.clone());
-                        format!("Could not apply feature {feature_id}: {error:?}")
+                        format!("Could not apply the change to {label}: {error:?}")
                     })?;
                 if let Err(error) = persist(config_path, &candidate) {
                     self.restore_configuration(old);
@@ -1752,10 +1760,7 @@ impl ControllerState {
                 }
                 self.configuration = candidate;
                 self.preset_snapshot = None;
-                format!(
-                    "{feature_id} {}",
-                    if enabled { "enabled" } else { "disabled" }
-                )
+                format!("{label} is {}", if enabled { "on" } else { "off" })
             }
             ControllerOperation::ApplyPreset(preset) => {
                 let old = self.configuration.clone();

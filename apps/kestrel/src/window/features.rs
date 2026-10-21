@@ -4,7 +4,7 @@ use super::widgets::{FilterRows, icon_button, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, gdk};
-use kestrel::view_model::ShortcutChoiceViewModel;
+use kestrel::view_model::{FeatureIndicator, ShortcutChoiceViewModel};
 use kestrel::{
     ApplicationCommand, ApplicationViewModel, ConfirmationViewModel, FeatureViewModel,
     QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel,
@@ -20,16 +20,26 @@ pub(super) fn build_feature_hub_group(
 ) -> (adw::PreferencesGroup, FilterRows) {
     let group = adw::PreferencesGroup::builder()
         .title("Feature Hub")
-        .description("Every registered feature exposes enablement, lifecycle, capability, and conservative resource costs.")
+        .description(
+            "Turn features on or off. Hover a feature, or open its details, for what it costs \
+             and needs.",
+        )
         .build();
     let mut rows = FilterRows::new();
     for feature in features {
+        let indicator = feature.indicator();
+        let status = feature.status_line();
+        let details = feature.details();
         let row = plain_row()
             .title(&feature.label)
-            .subtitle(feature_hub_subtitle(feature))
-            .subtitle_lines(0)
+            .subtitle(&status)
+            .subtitle_lines(2)
             .build();
+        row.set_tooltip_text(Some(&details));
+        row.add_prefix(&indicator_icon(indicator));
+
         let controls = gtk::Box::new(Orientation::Horizontal, 6);
+        controls.append(&details_button(&feature.label, &details));
         let enabled = gtk::Switch::builder()
             .active(feature.enabled)
             .sensitive(feature.configurable)
@@ -47,69 +57,62 @@ pub(super) fn build_feature_hub_group(
         controls.append(&enabled);
         row.add_suffix(&controls);
         row.set_activatable_widget(Some(&enabled));
-        let accessible = format!(
-            "{}. Registered: {}. Enabled: {}. Available: {}. Running: {}. Configurable: {}. {}",
+        row.update_property(&[Property::Label(&format!(
+            "{}. {}. {status}",
             feature.label,
-            yes_no(feature.registered),
-            yes_no(feature.enabled),
-            yes_no(feature.available),
-            yes_no(feature.running),
-            yes_no(feature.configurable),
-            feature_hub_subtitle(feature)
-        );
-        row.update_property(&[Property::Label(&accessible)]);
+            indicator.label()
+        ))]);
+        row.update_property(&[Property::Description(&details)]);
         group.add(&row);
         rows.push((
             row.upcast(),
-            format!(
-                "{} {} {}",
-                feature.label,
-                feature.id,
-                feature_hub_subtitle(feature)
-            )
-            .to_lowercase(),
+            format!("{} {} {status} {details}", feature.label, feature.id).to_lowercase(),
         ));
     }
     (group, rows)
 }
 
-fn feature_hub_subtitle(feature: &FeatureViewModel) -> String {
-    let capability = feature
-        .capability
-        .status
-        .detail
-        .as_deref()
-        .unwrap_or(feature.capability.status.label);
-    let backend = feature
-        .capability
-        .selected_backend
-        .as_deref()
-        .map(|value| format!(" Backend: {value}."))
-        .unwrap_or_default();
-    let remediation = feature
-        .capability
-        .remediation
-        .as_ref()
-        .map(|value| format!(" Remediation: {}", value.message))
-        .unwrap_or_default();
-    format!(
-        "{}\nState: {} (registered {}, enabled {}, available {}, running {}, configurable {})\nCost: {}. Capability: {}.{}{}",
-        feature.capability.summary,
-        feature.lifecycle.label(),
-        yes_no(feature.registered),
-        yes_no(feature.enabled),
-        yes_no(feature.available),
-        yes_no(feature.running),
-        yes_no(feature.configurable),
-        feature.cost.summary(),
-        capability,
-        backend,
-        remediation
-    )
+/// The row's state icon: running, needs attention, unavailable, or off.
+fn indicator_icon(indicator: FeatureIndicator) -> gtk::Image {
+    let (icon, style) = match indicator {
+        FeatureIndicator::Running => ("emblem-ok-symbolic", "success"),
+        FeatureIndicator::NeedsAttention => ("dialog-warning-symbolic", "warning"),
+        FeatureIndicator::Unavailable => ("action-unavailable-symbolic", "error"),
+        FeatureIndicator::Off => ("system-shutdown-symbolic", "dim-label"),
+    };
+    let image = gtk::Image::from_icon_name(icon);
+    image.add_css_class(style);
+    image.set_tooltip_text(Some(indicator.label()));
+    image.update_property(&[Property::Label(indicator.label())]);
+    image
 }
 
-fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+/// An (i) button showing the row's details, for keyboard and touch users.
+fn details_button(label: &str, details: &str) -> gtk::MenuButton {
+    let text = gtk::Label::builder()
+        .label(details)
+        .wrap(true)
+        .max_width_chars(60)
+        .xalign(0.0)
+        .selectable(true)
+        // Opening the popover would otherwise focus it and select everything.
+        .focusable(false)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&text));
+    let button = gtk::MenuButton::builder()
+        .icon_name("help-about-symbolic")
+        .valign(Align::Center)
+        .tooltip_text("Details")
+        .popover(&popover)
+        .build();
+    button.add_css_class("flat");
+    button.update_property(&[Property::Label(&format!("Details for {label}"))]);
+    button
 }
 
 pub(super) fn build_quick_toggle_group(

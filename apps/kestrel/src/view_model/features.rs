@@ -264,38 +264,165 @@ pub struct CapabilityViewModel {
     pub remediation: Option<RemediationViewModel>,
 }
 
+/// Which kind of capability report a feature has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityKind {
+    Supported,
+    Limited,
+    NeedsPermission,
+    MissingDependency,
+    Unsupported,
+}
+
 /// Capability status and optional detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityStatusViewModel {
+    pub kind: CapabilityKind,
     pub label: &'static str,
     pub detail: Option<String>,
 }
 
 impl From<&CapabilityStatus> for CapabilityStatusViewModel {
     fn from(status: &CapabilityStatus) -> Self {
-        match status {
-            CapabilityStatus::Supported => Self {
-                label: "Supported",
-                detail: None,
-            },
-            CapabilityStatus::Limited { reason } => Self {
-                label: "Limited",
-                detail: Some(reason.clone()),
-            },
-            CapabilityStatus::NeedsPermission { permission } => Self {
-                label: "Needs permission",
-                detail: Some(permission_label(*permission).to_string()),
-            },
-            CapabilityStatus::MissingDependency { name } => Self {
-                label: "Missing dependency",
-                detail: Some(name.clone()),
-            },
-            CapabilityStatus::Unsupported { reason } => Self {
-                label: "Unsupported",
-                detail: Some(reason.clone()),
-            },
+        let (kind, label, detail) = match status {
+            CapabilityStatus::Supported => (CapabilityKind::Supported, "Supported", None),
+            CapabilityStatus::Limited { reason } => {
+                (CapabilityKind::Limited, "Limited", Some(reason.clone()))
+            }
+            CapabilityStatus::NeedsPermission { permission } => (
+                CapabilityKind::NeedsPermission,
+                "Needs permission",
+                Some(permission_label(*permission).to_string()),
+            ),
+            CapabilityStatus::MissingDependency { name } => (
+                CapabilityKind::MissingDependency,
+                "Missing dependency",
+                Some(name.clone()),
+            ),
+            CapabilityStatus::Unsupported { reason } => (
+                CapabilityKind::Unsupported,
+                "Unsupported",
+                Some(reason.clone()),
+            ),
+        };
+        Self {
+            kind,
+            label,
+            detail,
         }
     }
+}
+
+/// A feature's state at a glance on the Feature Hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureIndicator {
+    /// On and running.
+    Running,
+    /// Missing a dependency or permission, working partly with a fix
+    /// offered, or on but not running.
+    NeedsAttention,
+    /// This desktop cannot run it.
+    Unavailable,
+    /// Turned off, with nothing standing in its way.
+    Off,
+}
+
+impl FeatureIndicator {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::NeedsAttention => "Needs attention",
+            Self::Unavailable => "Unavailable",
+            Self::Off => "Off",
+        }
+    }
+}
+
+impl FeatureViewModel {
+    /// Missing pieces warn even while the feature is off, so they are known
+    /// before it is turned on. A partial capability warns only when it comes
+    /// with a fix; otherwise it is a plain fact such as "nothing is playing".
+    pub fn indicator(&self) -> FeatureIndicator {
+        match self.capability.status.kind {
+            CapabilityKind::Unsupported => FeatureIndicator::Unavailable,
+            CapabilityKind::MissingDependency | CapabilityKind::NeedsPermission => {
+                FeatureIndicator::NeedsAttention
+            }
+            CapabilityKind::Limited if self.capability.remediation.is_some() => {
+                FeatureIndicator::NeedsAttention
+            }
+            _ if !self.enabled => FeatureIndicator::Off,
+            _ if self.running => FeatureIndicator::Running,
+            _ => FeatureIndicator::NeedsAttention,
+        }
+    }
+
+    /// One line under the feature's name: its state, or what it needs.
+    pub fn status_line(&self) -> String {
+        let detail = self.capability.status.detail.as_deref().unwrap_or_default();
+        let fix = self
+            .capability
+            .remediation
+            .as_ref()
+            .map(|remediation| remediation.message.as_str());
+        let need = match (self.indicator(), self.capability.status.kind) {
+            (FeatureIndicator::Running, _) => return "Running".to_owned(),
+            (FeatureIndicator::Off, _) => return "Off".to_owned(),
+            (FeatureIndicator::Unavailable, _) => {
+                return sentences("Not available here", Some(detail));
+            }
+            (_, CapabilityKind::MissingDependency) => format!("Needs {detail}"),
+            (_, CapabilityKind::NeedsPermission) => {
+                format!("Needs {} permission", detail.to_lowercase())
+            }
+            (_, CapabilityKind::Limited) => format!("Works partly: {detail}"),
+            _ => "On, but not running".to_owned(),
+        };
+        sentences(&need, fix)
+    }
+
+    /// Everything technical, for the row's tooltip and details popover.
+    pub fn details(&self) -> String {
+        let status = &self.capability.status;
+        let mut lines = vec![
+            self.capability.summary.clone(),
+            format!("State: {}", self.lifecycle.label()),
+            match &status.detail {
+                Some(detail) => format!("Capability: {} ({detail})", status.label),
+                None => format!("Capability: {}", status.label),
+            },
+        ];
+        if let Some(backend) = &self.capability.selected_backend {
+            lines.push(format!("Backend: {backend}"));
+        }
+        lines.push(format!("Cost: {}", self.cost.summary()));
+        if let Some(remediation) = &self.capability.remediation {
+            lines.push(format!("{}: {}", remediation.title, remediation.message));
+        }
+        if !self.configurable {
+            lines.push("This feature cannot be turned off here.".to_owned());
+        }
+        lines.push(format!("Feature ID: {}", self.id));
+        lines.join("\n")
+    }
+}
+
+/// `first`, then `second` as its own capitalised sentence when there is one.
+fn sentences(first: &str, second: Option<&str>) -> String {
+    let Some(second) = second.map(str::trim).filter(|second| !second.is_empty()) else {
+        return first.to_owned();
+    };
+    let mut characters = second.chars();
+    let capital: String = characters
+        .next()
+        .into_iter()
+        .flat_map(char::to_uppercase)
+        .collect();
+    format!(
+        "{}. {capital}{}",
+        first.trim_end_matches('.'),
+        characters.as_str()
+    )
 }
 
 fn permission_label(permission: Permission) -> &'static str {
@@ -405,25 +532,117 @@ mod tests {
     }
 
     #[test]
-    fn maps_limited_and_missing_dependency_details() {
-        assert_eq!(
-            CapabilityStatusViewModel::from(&CapabilityStatus::Limited {
-                reason: "Only one provider is available.".to_string(),
-            }),
-            CapabilityStatusViewModel {
-                label: "Limited",
-                detail: Some("Only one provider is available.".to_string()),
+    fn feature_hub_rows_show_state_or_need_with_details_aside() {
+        let row = |status: CapabilityStatus, fix: Option<&str>, enabled: bool, running: bool| {
+            let feature = FeatureSpec::new("test.feature", "Test feature", status.clone());
+            let mut report = CapabilityReport::new("test.feature", status, "Reads the screen.")
+                .with_selected_backend("Portal");
+            if let Some(fix) = fix {
+                report = report.with_remediation(fix);
             }
+            let registration =
+                ServiceRegistration::new(feature, report, enabled).expect("matching feature IDs");
+            let mut view = FeatureViewModel::from(&registration);
+            view.running = running;
+            view
+        };
+        let shown = |view: &FeatureViewModel| (view.indicator(), view.status_line());
+
+        assert_eq!(
+            shown(&row(CapabilityStatus::Supported, None, true, true)),
+            (FeatureIndicator::Running, "Running".to_owned())
         );
         assert_eq!(
-            CapabilityStatusViewModel::from(&CapabilityStatus::MissingDependency {
-                name: "example-service".to_string(),
-            }),
-            CapabilityStatusViewModel {
-                label: "Missing dependency",
-                detail: Some("example-service".to_string()),
-            }
+            shown(&row(CapabilityStatus::Supported, None, false, false)),
+            (FeatureIndicator::Off, "Off".to_owned())
         );
+        assert_eq!(
+            shown(&row(CapabilityStatus::Supported, None, true, false)),
+            (
+                FeatureIndicator::NeedsAttention,
+                "On, but not running".to_owned()
+            )
+        );
+        assert_eq!(
+            shown(&row(
+                CapabilityStatus::MissingDependency {
+                    name: "Tesseract".to_owned()
+                },
+                Some("Install it with sudo apt install tesseract-ocr."),
+                false,
+                false
+            )),
+            (
+                FeatureIndicator::NeedsAttention,
+                "Needs Tesseract. Install it with sudo apt install tesseract-ocr.".to_owned()
+            ),
+            "a missing piece warns even while the feature is off"
+        );
+        assert_eq!(
+            shown(&row(
+                CapabilityStatus::NeedsPermission {
+                    permission: Permission::HardwareControl
+                },
+                None,
+                true,
+                false
+            )),
+            (
+                FeatureIndicator::NeedsAttention,
+                "Needs hardware control permission".to_owned()
+            )
+        );
+        assert_eq!(
+            shown(&row(
+                CapabilityStatus::Unsupported {
+                    reason: "this session exports no portal.".to_owned()
+                },
+                Some("Bind kestrel --command instead."),
+                false,
+                false
+            )),
+            (
+                FeatureIndicator::Unavailable,
+                "Not available here. This session exports no portal.".to_owned()
+            )
+        );
+        assert_eq!(
+            shown(&row(
+                CapabilityStatus::Limited {
+                    reason: "There are no active playback streams.".to_owned()
+                },
+                None,
+                true,
+                true
+            )),
+            (FeatureIndicator::Running, "Running".to_owned()),
+            "a partial capability without a fix is a plain fact"
+        );
+        assert_eq!(
+            shown(&row(
+                CapabilityStatus::Limited {
+                    reason: "no insertion provider is installed".to_owned()
+                },
+                Some("Install wtype or xdotool."),
+                true,
+                true
+            )),
+            (
+                FeatureIndicator::NeedsAttention,
+                "Works partly: no insertion provider is installed. Install wtype or xdotool."
+                    .to_owned()
+            )
+        );
+
+        let details = row(CapabilityStatus::Supported, None, true, true).details();
+        for part in [
+            "Reads the screen.",
+            "Backend: Portal",
+            "Cost: Idle:",
+            "Feature ID: test.feature",
+        ] {
+            assert!(details.contains(part), "{part:?} in {details:?}");
+        }
     }
 
     #[test]
