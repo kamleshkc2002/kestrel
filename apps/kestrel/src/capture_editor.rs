@@ -19,6 +19,7 @@ use kestrel::{
     DEFAULT_SPOTLIGHT_DIM_PERCENT, EditOperation, EditPlan, MAX_CANVAS_PADDING, MAX_CANVAS_PIXELS,
     MAX_PASTED_IMAGES, MAX_SPOTLIGHT_DIM_PERCENT, MIN_SPOTLIGHT_DIM_PERCENT, Rect, RgbaImage,
 };
+use kestrel_platform::capture::MAX_CAPTURE_DIMENSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -54,6 +55,8 @@ const HANDLE_RADIUS: f64 = 10.0;
 
 const DEFAULT_HINT: &str = "Drag on the image. Redaction replaces pixels in the saved copy.";
 const PENDING_HINT: &str = "Drag the pasted image to move it or a corner to resize it, then Place.";
+const CANVAS_TOO_LARGE_HINT: &str =
+    "The canvas is too large to save: at most 64 megapixels and 16,384 pixels per side.";
 
 /// Reaches one side of a canvas expansion.
 type CanvasSide = fn(&mut CanvasExpansion) -> &mut u32;
@@ -128,6 +131,15 @@ impl EditorState {
             width: width + canvas.left + canvas.right,
             height: height + canvas.top + canvas.bottom,
         }
+    }
+
+    /// The canvas is within the limits `apply` enforces, so saving cannot be
+    /// refused for its size after the window closes.
+    fn canvas_fits(&self, width: u32, height: u32) -> bool {
+        let canvas = self.canvas_rect(width, height);
+        u64::from(canvas.width) * u64::from(canvas.height) <= MAX_CANVAS_PIXELS
+            && canvas.width <= MAX_CAPTURE_DIMENSION
+            && canvas.height <= MAX_CAPTURE_DIMENSION
     }
 
     fn edited(&self) -> bool {
@@ -239,11 +251,14 @@ pub fn open(
     place.add_css_class("suggested-action");
     place.set_tooltip_text(Some("Keep the pasted image here (Enter)"));
     reveal(&place, false);
+    // Its own line under the toolbar, so every message stays readable; the
+    // line is always present, so a new message never moves the image.
     let hint = gtk::Label::new(Some(DEFAULT_HINT));
     hint.add_css_class("dim-label");
-    hint.set_hexpand(true);
-    hint.set_xalign(1.0);
-    // The hint gives way, so the toolbar never forces the window wider.
+    hint.set_xalign(0.0);
+    hint.set_margin_start(12);
+    hint.set_margin_end(12);
+    hint.set_margin_bottom(6);
     hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
 
     let refresh: Rc<dyn Fn()> = {
@@ -258,10 +273,17 @@ pub fn open(
         Rc::new(move || {
             let state = state.borrow();
             let pending = state.pending.is_some();
-            save.set_sensitive(state.edited());
+            let fits = state.canvas_fits(width, height);
+            save.set_sensitive(state.edited() && fits);
             undo.set_sensitive(pending || !state.steps.is_empty());
             reveal(&place, pending);
-            hint.set_text(if pending { PENDING_HINT } else { DEFAULT_HINT });
+            hint.set_text(if !fits {
+                CANVAS_TOO_LARGE_HINT
+            } else if pending {
+                PENDING_HINT
+            } else {
+                DEFAULT_HINT
+            });
             area.queue_draw();
         })
     };
@@ -322,7 +344,6 @@ pub fn open(
     tools.append(&paste);
     tools.append(&place);
     tools.append(&undo);
-    tools.append(&hint);
 
     {
         let (state, viewport) = (Rc::clone(&state), Rc::clone(&viewport));
@@ -510,6 +531,10 @@ pub fn open(
         save.connect_clicked(move |_| {
             let plan = {
                 let mut state = state.borrow_mut();
+                // The service would refuse it after the window closed.
+                if !state.canvas_fits(width, height) {
+                    return;
+                }
                 state.place();
                 state.plan.clone()
             };
@@ -524,6 +549,7 @@ pub fn open(
     let content = gtk::Box::new(Orientation::Vertical, 0);
     content.append(&header);
     content.append(&tools);
+    content.append(&hint);
     content.append(&area);
     window.set_content(Some(&content));
     window.present();
@@ -1197,6 +1223,38 @@ mod tests {
             initial_paste_rect(canvas, (400, 100)),
             rect(-30, 20, 160, 40),
             "a wide image shrinks to 80% of the canvas width"
+        );
+    }
+
+    #[test]
+    fn saving_waits_for_a_canvas_within_the_service_limits() {
+        let mut editor = EditorState::new(Tool::Box);
+        editor.plan.canvas = CanvasExpansion {
+            top: 200,
+            left: 100,
+            ..CanvasExpansion::default()
+        };
+        assert!(editor.canvas_fits(1300, 1000));
+
+        editor.plan.canvas = CanvasExpansion {
+            top: MAX_CANVAS_PADDING,
+            right: MAX_CANVAS_PADDING,
+            bottom: MAX_CANVAS_PADDING,
+            left: MAX_CANVAS_PADDING,
+            ..CanvasExpansion::default()
+        };
+        assert!(
+            !editor.canvas_fits(1300, 1000),
+            "9492 × 9192 is over 64 megapixels"
+        );
+
+        editor.plan.canvas = CanvasExpansion {
+            right: 1000,
+            ..CanvasExpansion::default()
+        };
+        assert!(
+            !editor.canvas_fits(16_000, 1),
+            "17,000 pixels wide is over the per-side limit"
         );
     }
 
