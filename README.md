@@ -53,7 +53,9 @@ Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub marks each feature as running, needing
 attention (a missing dependency or permission, or a fix to apply), unavailable
 here, or off, with one line saying its state or what it needs. Hovering a
-feature's (i) icon shows its cost, polling, backend, and state.
+feature's (i) icon shows its cost, polling, backend, and state. A feature that
+cannot run here (unsupported, or missing a dependency or permission) can be
+turned off but not on until it becomes available.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
 Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
