@@ -2,11 +2,11 @@
 
 use super::*;
 
-/// Feature-hub resource costs.
+/// What a feature costs while it is not being used: background work and how
+/// often it wakes up on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceCostViewModel {
     pub idle: CostLevel,
-    pub interaction: CostLevel,
     pub polling: CostLevel,
 }
 
@@ -14,28 +14,26 @@ impl From<ResourceCost> for ResourceCostViewModel {
     fn from(cost: ResourceCost) -> Self {
         Self {
             idle: cost.idle,
-            interaction: cost.interaction,
             polling: cost.polling,
         }
     }
 }
 
 impl ResourceCostViewModel {
-    pub fn summary(self) -> String {
-        format!(
-            "Idle: {}; interaction: {}; polling: {}",
-            cost_label(self.idle),
-            cost_label(self.interaction),
-            cost_label(self.polling)
-        )
-    }
-}
-
-fn cost_label(cost: CostLevel) -> &'static str {
-    match cost {
-        CostLevel::None => "none",
-        CostLevel::Low => "low",
-        CostLevel::Moderate => "moderate",
+    /// One plain sentence, such as "Uses a little power in the background
+    /// and wakes up often."
+    pub fn power_use(self) -> String {
+        let background = match self.idle {
+            CostLevel::None => "no",
+            CostLevel::Low => "a little",
+            CostLevel::Moderate => "some",
+        };
+        let wakes = match self.polling {
+            CostLevel::None => "never wakes up on its own",
+            CostLevel::Low => "wakes up now and then",
+            CostLevel::Moderate => "wakes up often",
+        };
+        format!("Uses {background} power in the background and {wakes}.")
     }
 }
 
@@ -401,7 +399,7 @@ impl FeatureViewModel {
         if let Some(backend) = &self.capability.selected_backend {
             lines.push(format!("Backend: {backend}"));
         }
-        lines.push(format!("Cost: {}", self.cost.summary()));
+        lines.push(self.cost.power_use());
         if let Some(remediation) = &self.capability.remediation {
             lines.push(format!("{}: {}", remediation.title, remediation.message));
         }
@@ -675,11 +673,24 @@ mod tests {
         for part in [
             "Reads the screen.",
             "Backend: Portal",
-            "Cost: Idle:",
+            "Uses no power in the background and never wakes up on its own.",
             "Feature ID: test.feature",
         ] {
             assert!(details.contains(part), "{part:?} in {details:?}");
         }
+    }
+
+    #[test]
+    fn power_use_reads_as_one_plain_sentence() {
+        let power = |idle, polling| ResourceCostViewModel { idle, polling }.power_use();
+        assert_eq!(
+            power(CostLevel::Low, CostLevel::Moderate),
+            "Uses a little power in the background and wakes up often."
+        );
+        assert_eq!(
+            power(CostLevel::Moderate, CostLevel::Low),
+            "Uses some power in the background and wakes up now and then."
+        );
     }
 
     #[test]
