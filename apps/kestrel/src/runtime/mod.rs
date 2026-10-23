@@ -164,6 +164,15 @@ pub const SNIPPETS_ID: &str = "snippets.text";
 pub const COMMAND_BAR_ID: &str = "commands.bar";
 /// Stable feature identifier for the private scratchpad.
 pub const SCRATCHPAD_ID: &str = "notes.scratchpad";
+/// Stable feature identifier for the status overlay.
+pub const OVERLAY_ID: &str = "overlay.status";
+
+/// Capabilities only the GTK side can observe, reported to the runtime.
+pub struct HostCapabilities {
+    pub status_notifier: CapabilityReport,
+    /// Whether a top-centre overlay surface can be placed.
+    pub overlay: CapabilityReport,
+}
 
 pub struct ApplicationRuntime {
     registry: FeatureRegistry,
@@ -246,17 +255,33 @@ pub struct MonitorTick {
 
 impl ApplicationRuntime {
     pub fn new(configuration: &ApplicationConfiguration) -> Result<Self, RegistryError> {
-        Self::new_with_status_notifier(
+        Self::new_with_host(
             configuration,
-            unavailable_capability("StatusNotifierItem registration was not attempted."),
+            HostCapabilities {
+                status_notifier: unavailable_capability(
+                    "StatusNotifierItem registration was not attempted.",
+                ),
+                overlay: CapabilityReport::new(
+                    OVERLAY_ID,
+                    CapabilityStatus::Unsupported {
+                        reason: "overlay placement was not checked".to_owned(),
+                    },
+                    "The status overlay needs a desktop session.",
+                )
+                .with_remediation("Kestrel's window, tray, and shortcuts work without it."),
+            },
         )
     }
 
-    /// Builds the runtime with optional tray-registration results.
-    pub fn new_with_status_notifier(
+    /// Builds the runtime with what the host observed about the tray and overlay.
+    pub fn new_with_host(
         configuration: &ApplicationConfiguration,
-        status_notifier_capability: CapabilityReport,
+        host: HostCapabilities,
     ) -> Result<Self, RegistryError> {
+        let HostCapabilities {
+            status_notifier: status_notifier_capability,
+            overlay: overlay_capability,
+        } = host;
         let mut registry = FeatureRegistry::default();
 
         let command_surface = FeatureSpec::new(
@@ -437,6 +462,17 @@ impl ApplicationRuntime {
                 CapabilityStatus::Supported,
                 "Private local scratchpad storage is available.",
             )),
+        )?;
+        let overlay = FeatureSpec::new(
+            OVERLAY_ID,
+            "Status overlay",
+            overlay_capability.status.clone(),
+        )
+        .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::None));
+        registry.register_probe(
+            overlay,
+            configuration.feature_enabled(OVERLAY_ID),
+            StaticCapabilityProbe::new(overlay_capability),
         )?;
         let global_shortcuts = FeatureSpec::new(
             GLOBAL_SHORTCUTS_ID,
@@ -1110,9 +1146,16 @@ mod tests {
             "The tray host accepted Kestrel.",
         )
         .with_selected_backend("StatusNotifierItem");
-        let mut runtime = ApplicationRuntime::new_with_status_notifier(
+        let mut runtime = ApplicationRuntime::new_with_host(
             &ApplicationConfiguration::default(),
-            report,
+            HostCapabilities {
+                status_notifier: report,
+                overlay: CapabilityReport::new(
+                    OVERLAY_ID,
+                    CapabilityStatus::Supported,
+                    "Layer-shell overlays are available.",
+                ),
+            },
         )
         .expect("runtime builds");
 

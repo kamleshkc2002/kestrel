@@ -38,7 +38,7 @@ use kestrel_core::{ApplicationConfiguration, FeatureConfigurationSnapshot};
 use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
 use kestrel_services::alerts::notification_text;
 
-use window::{FloatingSurface, QuickPanelEntry, WindowView};
+use window::{FloatingSurface, QuickPanelEntry, StatusOverlay, WindowView};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// Poll interval for mixer and microphone state, which other mixers and
@@ -671,6 +671,10 @@ enum ControllerOperation {
     SetProcessLimit(kestrel::ProcessLimit),
     SetScratchpadLimit(kestrel::ScratchpadLimit),
     SetLoggingSetting(kestrel::LoggingSetting),
+    SetOverlayModule {
+        module: kestrel::OverlayModule,
+        shown: bool,
+    },
     ClearLogs,
     SetShortcut {
         command: String,
@@ -713,6 +717,8 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     window: RefCell<Option<WindowView>>,
     floating: RefCell<Option<FloatingSurface>>,
+    /// Works with or without the main window.
+    overlay: StatusOverlay,
     refreshing: Cell<bool>,
     targeted: Cell<TargetedPanel>,
     monitoring: Cell<bool>,
@@ -808,6 +814,7 @@ impl ApplicationController {
             config_path,
             window: RefCell::new(None),
             floating: RefCell::new(None),
+            overlay: StatusOverlay::new(commands.clone()),
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
             monitoring: Cell::new(false),
@@ -1180,6 +1187,9 @@ impl ApplicationController {
                 Err(message) => surface.show_outcome(message),
             }
         }
+        if let Ok((view_model, _)) = &result {
+            self.overlay.set_view_model(view_model);
+        }
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1324,6 +1334,9 @@ impl ApplicationController {
             }
         }
         self.open_recording_area();
+        if let Some(microphone) = &microphone {
+            self.overlay.set_microphone(microphone);
+        }
         if let (Some(command_bar), Some(surface)) = (&command_bar, self.floating.borrow().as_ref())
         {
             surface.set_command_bar(command_bar);
@@ -2202,6 +2215,20 @@ impl ControllerState {
                 };
                 self.commit_configuration(candidate, config_path, message)?
             }
+            ControllerOperation::SetOverlayModule { module, shown } => {
+                let mut candidate = self.configuration.clone();
+                let name = match module {
+                    kestrel::OverlayModule::Microphone => {
+                        candidate.overlay.microphone = shown;
+                        "The muted microphone"
+                    }
+                };
+                let message = format!(
+                    "{name} {} in the status overlay",
+                    if shown { "shows" } else { "no longer shows" }
+                );
+                self.commit_configuration(candidate, config_path, message)?
+            }
             ControllerOperation::ClearLogs => match kestrel::logging::logger() {
                 Some(logger) => match logger.clear() {
                     Ok(removed) => format!("Removed {removed} log file(s)"),
@@ -2882,9 +2909,12 @@ fn main() -> glib::ExitCode {
     let (commands, command_receiver) = async_channel::unbounded();
     let status_notifier = StatusNotifierIntegration::start(commands.clone());
 
-    let mut runtime = ApplicationRuntime::new_with_status_notifier(
+    let mut runtime = ApplicationRuntime::new_with_host(
         &loaded.configuration,
-        status_notifier.capability(),
+        kestrel::HostCapabilities {
+            status_notifier: status_notifier.capability(),
+            overlay: layer_shell::overlay_capability(&layer_shell::observed_placement()),
+        },
     )
     .expect("built-in features have valid IDs");
     runtime.set_command_sender(commands.clone());
@@ -2909,6 +2939,9 @@ fn main() -> glib::ExitCode {
             tray: status_notifier.readout_sink(),
         },
     );
+    controller
+        .overlay
+        .set_view_model(&controller.current_view_model());
     let command_line_commands = commands.clone();
     install_command_actions(&application, commands);
     dispatch_commands(&application, &controller, command_receiver);
@@ -3203,6 +3236,11 @@ fn dispatch_commands(
                 ),
                 ApplicationCommand::ClearLogs => controller
                     .request_operation(ControllerOperation::ClearLogs, "kestrel-clear-logs"),
+                ApplicationCommand::SetOverlayModule { module, shown } => controller
+                    .request_operation(
+                        ControllerOperation::SetOverlayModule { module, shown },
+                        "kestrel-overlay-module",
+                    ),
                 ApplicationCommand::SetShortcut { command, trigger } => controller
                     .request_operation(
                         ControllerOperation::SetShortcut { command, trigger },

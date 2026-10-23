@@ -72,6 +72,7 @@ pub(super) fn build_settings_group(
             let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
             group.add(&io_row);
             add_logging_group(&group, view_model, window, commands, &mut filter_rows);
+            add_overlay_group(&group, view_model, commands, &mut filter_rows);
         }
     }
 
@@ -209,6 +210,64 @@ fn add_logging_group(
     ));
     logs_group.add(&files_row);
     group.add(&logs_group);
+}
+
+fn add_overlay_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let overlay = &view_model.overlay;
+    let overlay_group = adw::PreferencesGroup::builder()
+        .title("Status overlay")
+        .description(gtk::glib::markup_escape_text(&overlay.status).as_str())
+        .build();
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
+            "Microphone muted",
+            "While every microphone input is muted; click it to unmute.",
+        ),
+        (
+            overlay.modules.microphone,
+            kestrel::OverlayModule::Microphone,
+        ),
+        "status overlay microphone muted indicator",
+        commands,
+        filter_rows,
+    ));
+    group.add(&overlay_group);
+}
+
+/// One module's switch; usable only where the overlay can run.
+fn overlay_module_row(
+    overlay: &kestrel::view_model::OverlayViewModel,
+    (title, subtitle): (&str, &str),
+    (shown, module): (bool, kestrel::OverlayModule),
+    keywords: &str,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) -> adw::ActionRow {
+    let row = plain_row()
+        .title(title)
+        .subtitle(subtitle)
+        .subtitle_lines(0)
+        .sensitive(overlay.available)
+        .build();
+    let toggle = gtk::Switch::builder()
+        .active(shown)
+        .valign(Align::Center)
+        .build();
+    let sender = commands.clone();
+    toggle.connect_state_set(move |_, shown| {
+        let _ = sender.try_send(ApplicationCommand::SetOverlayModule { module, shown });
+        gtk::glib::Propagation::Proceed
+    });
+    row.add_suffix(&toggle);
+    row.set_activatable_widget(Some(&toggle));
+    filter_rows.push((row.clone().upcast(), keywords.to_owned()));
+    row
 }
 
 fn add_quick_panel_group(

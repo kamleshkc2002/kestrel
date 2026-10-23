@@ -49,6 +49,7 @@ mod command_bar;
 mod features;
 mod microphone;
 mod monitor;
+mod overlay;
 mod processes;
 mod recording;
 mod scratchpad;
@@ -94,6 +95,7 @@ pub use monitor::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
     CoreGroupViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
 };
+pub use overlay::{OverlayItem, OverlaySources, OverlayViewModel, overlay_items};
 pub use processes::{
     ListenerRowViewModel, ListenersViewModel, ProcessActionViewModel, ProcessRowViewModel,
     ProcessesViewModel,
@@ -148,6 +150,7 @@ pub struct ApplicationViewModel {
     pub close_action: kestrel_core::CloseAction,
     pub autostart: bool,
     pub logging: LoggingViewModel,
+    pub overlay: OverlayViewModel,
     pub can_undo: bool,
 }
 
@@ -242,6 +245,13 @@ impl ApplicationViewModel {
             close_action: configuration.ui.close_action,
             autostart: configuration.startup.autostart,
             logging: LoggingViewModel::new(&configuration.logging, crate::logging::logger()),
+            overlay: OverlayViewModel::new(
+                registrations
+                    .iter()
+                    .find(|registration| registration.feature.id == crate::OVERLAY_ID)
+                    .copied(),
+                configuration.overlay,
+            ),
             can_undo,
         }
     }

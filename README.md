@@ -202,6 +202,13 @@ settings together. On narrow windows the sidebar and the page take turns.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, COSMIC, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Each readout marked **Tray** in Settings (up to three) gets its own tray icon showing its label and current value; clicking it opens Kestrel, and its menu shows the full reading. Hosts that support tooltips also show the reading on hover; COSMIC shows no tray tooltips.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 
+### Status overlay — `overlay.status`
+
+- **Default:** disabled. Turn it on in the Feature Hub, and choose its modules under Settings → Status overlay.
+- A small pill at the top centre of the screen that appears only while one of its modules has something active, and disappears otherwise. It never takes the keyboard, only its own area takes the pointer, and it reserves no screen space.
+- **Microphone muted:** shown while every microphone input is muted (needs `audio.microphone`); clicking it unmutes them.
+- **Needs:** a desktop that lets apps place a layer-shell surface (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors) and a build with gtk4-layer-shell; the AppImage bundles it. Elsewhere the feature shows as unavailable with the reason, and Kestrel's window, tray, and shortcuts work as usual. It appears on the display the compositor chooses.
+
 ### Diagnostic logs
 
 - **Configuration:** `[logging] debug` (default false), `retention_days` (1–30; default 7), and `max_total_megabytes` (1–100; default 20), also editable under Settings → Diagnostic logs.
@@ -321,7 +328,9 @@ gtk4-layer-shell through pkg-config (`gtk4-layer-shell-0`). It is optional and
 not packaged on Ubuntu 24.04; build it from source (v1.3.0, Meson, installed to
 `/usr/local`) as the CI workflows do. `KESTREL_LAYER_SHELL=required` makes a
 missing library a build error and `KESTREL_LAYER_SHELL=off` skips it; a binary
-linked against it needs the library at run time.
+linked against it needs the library at run time. `scripts/install-local.sh`
+also finds a copy installed under `~/.local` (Meson `--prefix ~/.local`) and
+links it with an rpath, so the installed binary needs no extra setup.
 
 If Rust is unavailable:
 

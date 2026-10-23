@@ -505,6 +505,8 @@ pub struct ApplicationConfiguration {
     pub recording: RecordingConfiguration,
     #[serde(default)]
     pub logging: LoggingConfiguration,
+    #[serde(default)]
+    pub overlay: OverlayConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -528,6 +530,7 @@ impl Default for ApplicationConfiguration {
             scratchpad: ScratchpadConfiguration::default(),
             recording: RecordingConfiguration::default(),
             logging: LoggingConfiguration::default(),
+            overlay: OverlayConfiguration::default(),
         }
     }
 }
@@ -1203,6 +1206,20 @@ impl ScratchpadConfiguration {
             });
         }
         Ok(())
+    }
+}
+
+/// Which modules the status overlay shows while each has something active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayConfiguration {
+    /// A muted indicator while every microphone input is muted.
+    #[serde(default = "default_true")]
+    pub microphone: bool,
+}
+
+impl Default for OverlayConfiguration {
+    fn default() -> Self {
+        Self { microphone: true }
     }
 }
 
