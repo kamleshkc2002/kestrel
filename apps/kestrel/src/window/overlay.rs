@@ -36,6 +36,8 @@ struct OverlayState {
     /// Only while something is shown; dropped when empty, so a hidden
     /// overlay holds no surface.
     window: Option<gtk::Window>,
+    /// The style is added to the display once, not per window.
+    styled: bool,
 }
 
 /// Owned by the controller, so it works with the main window closed.
@@ -99,7 +101,23 @@ impl StatusOverlay {
                 window.destroy();
             }
         } else {
-            let window = state.window.get_or_insert_with(new_window);
+            if state.window.is_none() {
+                let window = new_window();
+                if !state.styled {
+                    let provider = gtk::CssProvider::new();
+                    provider.load_from_data(STYLE);
+                    gtk::style_context_add_provider_for_display(
+                        &gtk::prelude::WidgetExt::display(&window),
+                        &provider,
+                        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    );
+                    state.styled = true;
+                }
+                state.window = Some(window);
+            }
+            let Some(window) = state.window.as_ref() else {
+                return;
+            };
             window.set_child(Some(&self.content(&items)));
             window.present();
         }
@@ -229,12 +247,6 @@ fn new_window() -> gtk::Window {
         .build();
     window.add_css_class("kestrel-status-window");
     layer_shell::configure_status_window(&window, NAMESPACE);
-    let provider = gtk::CssProvider::new();
-    provider.load_from_data(STYLE);
-    gtk::style_context_add_provider_for_display(
-        &gtk::prelude::WidgetExt::display(&window),
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+
     window
 }
