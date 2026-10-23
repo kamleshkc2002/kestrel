@@ -560,7 +560,8 @@ board together.
   monitoring alerts, microphone and volume, keyboard light, and accessory
   batteries.
 - **Product shell:** install/uninstall semantics for feature modules, first-run
-  presets, honest idle/input/polling energy-cost labels, permission/capability
+  presets, honest plain-language energy labels (background use and how often a
+  feature wakes up on its own), permission/capability
   transparency, sidebar navigation with per-feature settings pages, settings search,
   import/export that excludes sensitive or machine-specific data, independent
   appearance, localization, autostart, and safe self-update/uninstall behavior.
