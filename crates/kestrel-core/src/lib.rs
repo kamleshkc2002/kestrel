@@ -1215,11 +1215,21 @@ pub struct OverlayConfiguration {
     /// A muted indicator while every microphone input is muted.
     #[serde(default = "default_true")]
     pub microphone: bool,
+    /// The running time and pause and stop controls while a recording runs.
+    #[serde(default = "default_true")]
+    pub recording: bool,
+    /// Each active monitoring alert with its reading.
+    #[serde(default = "default_true")]
+    pub alerts: bool,
 }
 
 impl Default for OverlayConfiguration {
     fn default() -> Self {
-        Self { microphone: true }
+        Self {
+            microphone: true,
+            recording: true,
+            alerts: true,
+        }
     }
 }
 

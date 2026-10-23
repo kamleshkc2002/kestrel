@@ -226,6 +226,28 @@ fn add_overlay_group(
     overlay_group.add(&overlay_module_row(
         overlay,
         (
+            "Recording",
+            "While a screen recording runs: its time, with pause and stop.",
+        ),
+        (overlay.modules.recording, kestrel::OverlayModule::Recording),
+        "status overlay recording time pause stop",
+        commands,
+        filter_rows,
+    ));
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
+            "Alerts",
+            "Each active monitoring alert with its reading; click it to open Monitoring.",
+        ),
+        (overlay.modules.alerts, kestrel::OverlayModule::Alerts),
+        "status overlay alerts monitoring cpu memory temperature",
+        commands,
+        filter_rows,
+    ));
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
             "Microphone muted",
             "While every microphone input is muted; click it to unmute.",
         ),

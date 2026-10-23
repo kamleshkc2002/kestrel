@@ -136,6 +136,8 @@ pub enum LoggingSetting {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayModule {
     Microphone,
+    Recording,
+    Alerts,
 }
 
 /// Scratchpad bound edited from Settings.
@@ -388,6 +390,8 @@ pub enum FocusTarget {
     Clipboard,
     Processes,
     Scratchpad,
+    /// The Monitoring page, where active alerts are listed.
+    Monitoring,
 }
 
 /// A process action the user can confirm.

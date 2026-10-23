@@ -439,6 +439,10 @@ impl WindowView {
                     .as_ref()
                     .is_some_and(|panel| panel.editor.grab_focus())
             }
+            FocusTarget::Monitoring => {
+                self.select_page(SidebarPage::Monitoring);
+                true
+            }
         }
     }
 

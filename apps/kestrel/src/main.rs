@@ -1337,6 +1337,12 @@ impl ApplicationController {
         if let Some(microphone) = &microphone {
             self.overlay.set_microphone(microphone);
         }
+        if let Some(recording) = &recording {
+            self.overlay.set_recording(recording);
+        }
+        if let Some(monitor) = &monitor {
+            self.overlay.set_alerts(&monitor.alerts);
+        }
         if let (Some(command_bar), Some(surface)) = (&command_bar, self.floating.borrow().as_ref())
         {
             surface.set_command_bar(command_bar);
@@ -1472,6 +1478,7 @@ impl ApplicationController {
             (result, guard.runtime.recording_view_model())
         };
         self.recording_running.set(recording.running);
+        self.overlay.set_recording(&recording);
         if !recording.choosing_area {
             self.recording_area_open.set(false);
         }
@@ -2221,6 +2228,14 @@ impl ControllerState {
                     kestrel::OverlayModule::Microphone => {
                         candidate.overlay.microphone = shown;
                         "The muted microphone"
+                    }
+                    kestrel::OverlayModule::Recording => {
+                        candidate.overlay.recording = shown;
+                        "A running recording"
+                    }
+                    kestrel::OverlayModule::Alerts => {
+                        candidate.overlay.alerts = shown;
+                        "Active alerts"
                     }
                 };
                 let message = format!(
