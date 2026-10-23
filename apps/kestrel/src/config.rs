@@ -852,14 +852,10 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         return;
     };
     let modules = &mut loaded.configuration.overlay;
-    for (key, shown, name) in [
-        (
-            "microphone",
-            &mut modules.microphone,
-            "microphone indicator",
-        ),
-        ("recording", &mut modules.recording, "recording controls"),
-        ("alerts", &mut modules.alerts, "alerts"),
+    for (key, shown) in [
+        ("microphone", &mut modules.microphone),
+        ("recording", &mut modules.recording),
+        ("alerts", &mut modules.alerts),
     ] {
         let Some(value) = table.get(key) else {
             continue;
@@ -868,7 +864,7 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
             Ok(value) => *shown = value,
             Err(_) => loaded.warnings.push(warning(
                 &format!("overlay.{key}"),
-                format!("Must be true or false; the {name} stay on."),
+                "Must be true or false; the default was retained.",
             )),
         }
     }

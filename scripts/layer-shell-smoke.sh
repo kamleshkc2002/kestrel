@@ -32,10 +32,15 @@ trap cleanup EXIT
 
 mkdir -p "$work/run" "$work/data" "$work/cache" "$work/state"
 chmod 700 "$work/run"
-# Release builds read kestrel/, debug builds kestrel-devel/.
+# Release builds read kestrel/, debug builds kestrel-devel/. A memory alert at
+# 1% fires on the first sample, so the status overlay has something to show.
 for profile in kestrel kestrel-devel; do
   mkdir -p "$work/config/$profile"
-  printf 'schema_version = 3\n[features."commands.bar"]\nenabled = true\n' \
+  printf '%s\n' 'schema_version = 3' \
+    '[features."commands.bar"]' 'enabled = true' \
+    '[features."system.monitor"]' 'enabled = true' \
+    '[features."overlay.status"]' 'enabled = true' \
+    '[monitoring.alerts.memory]' 'enabled = true' 'threshold = 1.0' 'sustain_samples = 1' \
     >"$work/config/$profile/config.toml"
 done
 printf 'xwayland disable\n' >"$work/sway.conf"
@@ -103,7 +108,9 @@ dbus-run-session --config-file="$work/bus.conf" -- bash -c '
   done
   timeout 20 "$KESTREL_SMOKE_BINARY" --command command-bar.open || true
   for _ in $(seq 1 30); do
-    grep -Eq "zwlr_layer_shell_v1[@#][0-9]+\.get_layer_surface\(" "$log" && break
+    grep -Eq "zwlr_layer_shell_v1[@#][0-9]+\.get_layer_surface\(.*\"kestrel-command-bar\"" "$log" &&
+      grep -Eq "zwlr_layer_shell_v1[@#][0-9]+\.get_layer_surface\(.*\"kestrel-status\"" "$log" &&
+      break
     sleep 0.5
   done
   kill "$kestrel_pid" 2>/dev/null || true
@@ -124,3 +131,17 @@ if ! grep -Eq 'zwlr_layer_shell_v1[@#][0-9]+\.get_layer_surface\(.*"kestrel-comm
   exit 1
 fi
 printf 'Command bar opened as a wlr-layer-shell overlay on headless Sway\n'
+
+# The status overlay is a top-layer surface (2) that never takes the keyboard.
+status_surface="$(grep -Eo 'get_layer_surface\(new id zwlr_layer_surface_v1[@#][0-9]+, wl_surface[@#][0-9]+, [a-z0-9_@#]+, 2, "kestrel-status"\)' \
+  "$work/kestrel.log" | head -n 1 | grep -Eo 'zwlr_layer_surface_v1[@#][0-9]+' || true)"
+if [ -z "$status_surface" ]; then
+  printf 'The status overlay did not become a top-layer layer-shell surface.\n' >&2
+  grep -E 'zwlr_layer_shell|zwlr_layer_surface' "$work/kestrel.log" | head -n 10 >&2 || true
+  exit 1
+fi
+if grep -Eq "${status_surface}\.set_keyboard_interactivity\([1-9]" "$work/kestrel.log"; then
+  printf 'The status overlay asked for keyboard input.\n' >&2
+  exit 1
+fi
+printf 'Status overlay opened as a top-layer overlay without keyboard input\n'

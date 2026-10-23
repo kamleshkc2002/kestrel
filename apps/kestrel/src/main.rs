@@ -1187,54 +1187,41 @@ impl ApplicationController {
                 Err(message) => surface.show_outcome(message),
             }
         }
-        if let Ok((view_model, _)) = &result {
-            self.overlay.set_view_model(view_model);
-        }
+        // Polling, the overlay, and the colour scheme follow every result,
+        // including those from the tray or command bar with no window open.
+        let (view_model, message) = match result {
+            Ok((view_model, message)) => (view_model, (!message.is_empty()).then_some(message)),
+            Err(message) => (self.current_view_model(), Some(message)),
+        };
+        apply_color_scheme(view_model.appearance);
+        self.track_running(&view_model);
+        self.overlay.set_view_model(&view_model);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
         };
         view.set_refreshing(false);
-        match result {
-            Ok((view_model, message)) => {
-                apply_color_scheme(view_model.appearance);
-                self.monitor_running.set(view_model.monitor.running);
-                self.clipboard_running.set(view_model.clipboard.running);
-                self.microphone_running.set(view_model.microphone.running);
-                self.audio_mixer_running.set(view_model.audio.running);
-                self.speed_test_running.set(view_model.speed_test.running);
-                self.shortcuts_running.set(view_model.shortcuts.running);
-                self.capture_running.set(view_model.capture.running);
-                self.processes_running.set(view_model.processes.running);
-                self.listeners_running.set(view_model.listeners.running);
-                self.screen_tools_running
-                    .set(view_model.screen_tools.available);
-                self.camera_running.set(view_model.camera.running);
-                self.recording_running.set(view_model.recording.running);
-                apply_targeted_panel(view, &view_model, targeted);
-                if !message.is_empty() {
-                    view.show_message(&message);
-                }
-            }
-            Err(message) => {
-                let view_model = self.current_view_model();
-                self.monitor_running.set(view_model.monitor.running);
-                self.clipboard_running.set(view_model.clipboard.running);
-                self.microphone_running.set(view_model.microphone.running);
-                self.audio_mixer_running.set(view_model.audio.running);
-                self.speed_test_running.set(view_model.speed_test.running);
-                self.shortcuts_running.set(view_model.shortcuts.running);
-                self.capture_running.set(view_model.capture.running);
-                self.processes_running.set(view_model.processes.running);
-                self.listeners_running.set(view_model.listeners.running);
-                self.screen_tools_running
-                    .set(view_model.screen_tools.available);
-                self.camera_running.set(view_model.camera.running);
-                self.recording_running.set(view_model.recording.running);
-                apply_targeted_panel(view, &view_model, targeted);
-                view.show_message(&message);
-            }
+        apply_targeted_panel(view, &view_model, targeted);
+        if let Some(message) = message {
+            view.show_message(&message);
         }
+    }
+
+    /// Records which features run, which decides what each tick polls.
+    fn track_running(&self, view_model: &ApplicationViewModel) {
+        self.monitor_running.set(view_model.monitor.running);
+        self.clipboard_running.set(view_model.clipboard.running);
+        self.microphone_running.set(view_model.microphone.running);
+        self.audio_mixer_running.set(view_model.audio.running);
+        self.speed_test_running.set(view_model.speed_test.running);
+        self.shortcuts_running.set(view_model.shortcuts.running);
+        self.capture_running.set(view_model.capture.running);
+        self.processes_running.set(view_model.processes.running);
+        self.listeners_running.set(view_model.listeners.running);
+        self.screen_tools_running
+            .set(view_model.screen_tools.available);
+        self.camera_running.set(view_model.camera.running);
+        self.recording_running.set(view_model.recording.running);
     }
 
     fn request_tick(&self) {
