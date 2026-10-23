@@ -851,12 +851,24 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         ));
         return;
     };
-    if let Some(value) = table.get("microphone") {
+    let modules = &mut loaded.configuration.overlay;
+    for (key, shown, name) in [
+        (
+            "microphone",
+            &mut modules.microphone,
+            "microphone indicator",
+        ),
+        ("recording", &mut modules.recording, "recording controls"),
+        ("alerts", &mut modules.alerts, "alerts"),
+    ] {
+        let Some(value) = table.get(key) else {
+            continue;
+        };
         match bool::deserialize(value.clone()) {
-            Ok(shown) => loaded.configuration.overlay.microphone = shown,
+            Ok(value) => *shown = value,
             Err(_) => loaded.warnings.push(warning(
-                "overlay.microphone",
-                "Must be true or false; the microphone indicator stays on.",
+                &format!("overlay.{key}"),
+                format!("Must be true or false; the {name} stay on."),
             )),
         }
     }
@@ -1718,15 +1730,21 @@ autostart = true
 
     #[test]
     fn overlay_modules_parse_and_a_malformed_one_keeps_its_default() {
-        let loaded = parse("schema_version = 3\n[overlay]\nmicrophone = false\n")
-            .expect("document itself is valid TOML");
-        assert!(!loaded.configuration.overlay.microphone);
-        assert!(loaded.warnings.is_empty());
-
-        let loaded = parse("schema_version = 3\n[overlay]\nmicrophone = \"no\"\n")
-            .expect("document itself is valid TOML");
-        assert!(loaded.configuration.overlay.microphone);
-        assert_eq!(loaded.warnings[0].feature_id, "overlay.microphone");
+        let loaded = parse(
+            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\n",
+        )
+        .expect("document itself is valid TOML");
+        let overlay = loaded.configuration.overlay;
+        assert!(!overlay.microphone && !overlay.alerts);
+        assert!(overlay.recording, "a malformed value keeps its default");
+        assert_eq!(
+            loaded
+                .warnings
+                .iter()
+                .map(|warning| warning.feature_id.as_str())
+                .collect::<Vec<_>>(),
+            ["overlay.recording"]
+        );
     }
 
     #[test]

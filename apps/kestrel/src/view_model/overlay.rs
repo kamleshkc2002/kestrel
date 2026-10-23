@@ -2,9 +2,13 @@
 
 use super::*;
 
-/// One thing the status overlay shows.
+/// One thing the status overlay shows, in display order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverlayItem {
+    /// A recording runs; the clock keeps time between updates.
+    Recording { paused: bool, clock: RecordingClock },
+    /// An active monitoring alert; clicking it opens the Monitoring page.
+    Alert { message: String },
     /// Every microphone input is muted; clicking it unmutes them.
     MicrophoneMuted,
 }
@@ -51,6 +55,8 @@ impl OverlayViewModel {
 
 /// The latest state the overlay's modules read.
 pub struct OverlaySources<'a> {
+    pub recording: Option<&'a RecordingViewModel>,
+    pub alerts: Option<&'a [ActiveAlertViewModel]>,
     pub microphone: Option<&'a MicrophoneViewModel>,
 }
 
@@ -60,10 +66,30 @@ pub fn overlay_items(overlay: &OverlayViewModel, sources: &OverlaySources<'_>) -
     if !overlay.running {
         return items;
     }
+    let modules = overlay.modules;
+    if let Some(recording) = sources.recording.filter(|_| modules.recording) {
+        if let RecordingControls::Recording { paused } = recording.controls {
+            items.push(OverlayItem::Recording {
+                paused,
+                clock: recording.clock.unwrap_or_default(),
+            });
+        }
+    }
+    if modules.alerts {
+        items.extend(
+            sources
+                .alerts
+                .unwrap_or_default()
+                .iter()
+                .map(|alert| OverlayItem::Alert {
+                    message: alert.message.clone(),
+                }),
+        );
+    }
     let all_muted = sources
         .microphone
         .is_some_and(|microphone| microphone.running && microphone.muted == Some(true));
-    if overlay.modules.microphone && all_muted {
+    if modules.microphone && all_muted {
         items.push(OverlayItem::MicrophoneMuted);
     }
     items
@@ -105,6 +131,8 @@ mod tests {
             overlay_items(
                 overlay,
                 &OverlaySources {
+                    recording: None,
+                    alerts: None,
                     microphone: Some(&microphone(muted)),
                 },
             )
@@ -125,8 +153,74 @@ mod tests {
         assert!(shown(&module_off, Some(true)).is_empty());
         assert!(shown(&overlay(CapabilityStatus::Supported, false), Some(true)).is_empty());
         assert!(
-            overlay_items(&running, &OverlaySources { microphone: None }).is_empty(),
+            overlay_items(
+                &running,
+                &OverlaySources {
+                    recording: None,
+                    alerts: None,
+                    microphone: None,
+                }
+            )
+            .is_empty(),
             "no microphone state yet shows nothing"
+        );
+    }
+
+    #[test]
+    fn recordings_and_alerts_show_in_order_while_active_and_their_module_is_on() {
+        let running = overlay(CapabilityStatus::Supported, true);
+        let recording = |controls| RecordingViewModel {
+            running: true,
+            controls,
+            ..RecordingViewModel::default()
+        };
+        let alerts = [ActiveAlertViewModel {
+            label: "CPU",
+            message: "CPU is 95%".to_owned(),
+        }];
+        let shown = |overlay: &OverlayViewModel, controls| {
+            overlay_items(
+                overlay,
+                &OverlaySources {
+                    recording: Some(&recording(controls)),
+                    alerts: Some(&alerts),
+                    microphone: Some(&microphone(Some(true))),
+                },
+            )
+        };
+
+        assert_eq!(
+            shown(&running, RecordingControls::Recording { paused: true }),
+            [
+                OverlayItem::Recording {
+                    paused: true,
+                    clock: RecordingClock::default()
+                },
+                OverlayItem::Alert {
+                    message: "CPU is 95%".to_owned()
+                },
+                OverlayItem::MicrophoneMuted,
+            ]
+        );
+        for idle in [
+            RecordingControls::Setup,
+            RecordingControls::Waiting,
+            RecordingControls::Stopping,
+        ] {
+            assert!(
+                !shown(&running, idle)
+                    .iter()
+                    .any(|item| matches!(item, OverlayItem::Recording { .. })),
+                "{idle:?} has no running time to show"
+            );
+        }
+
+        let mut modules_off = running.clone();
+        modules_off.modules.recording = false;
+        modules_off.modules.alerts = false;
+        assert_eq!(
+            shown(&modules_off, RecordingControls::Recording { paused: false }),
+            [OverlayItem::MicrophoneMuted]
         );
     }
 
