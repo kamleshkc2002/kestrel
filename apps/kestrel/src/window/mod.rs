@@ -8,6 +8,7 @@ mod command_bar;
 mod features;
 mod floating;
 mod monitor;
+mod overlay;
 mod processes;
 mod recording;
 mod scratchpad;
@@ -49,6 +50,7 @@ use std::{
 use widgets::{FilterRows, configure_wrapping_label};
 
 pub use floating::{FloatingSurface, QuickPanelEntry};
+pub use overlay::StatusOverlay;
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;

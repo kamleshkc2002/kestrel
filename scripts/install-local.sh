@@ -8,6 +8,8 @@
 #
 # Settings and data in ~/.config/kestrel and ~/.local/share/kestrel stay.
 # Debug builds use their own ID and kestrel-devel folders alongside this copy.
+# A gtk4-layer-shell installed under the prefix (for the command bar and status
+# overlay) is linked with an rpath, so the installed binary finds it.
 
 set -euo pipefail
 
@@ -51,6 +53,11 @@ case "${1:-}" in
     ;;
 esac
 
+layer_shell_lib="$prefix/lib/x86_64-linux-gnu"
+if [ -f "$layer_shell_lib/pkgconfig/gtk4-layer-shell-0.pc" ]; then
+  export PKG_CONFIG_PATH="$layer_shell_lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$layer_shell_lib"
+fi
 cargo build --release --locked -p kestrel --manifest-path "$repository/Cargo.toml"
 
 # Replacing the file lets a running copy keep its binary.

@@ -45,7 +45,8 @@ pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{
-    ApplicationRuntime, ApplicationWindowDecision, FeaturePreset, run_process_action,
+    ApplicationRuntime, ApplicationWindowDecision, FeaturePreset, HostCapabilities, OVERLAY_ID,
+    run_process_action,
 };
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
@@ -129,6 +130,12 @@ pub enum LoggingSetting {
     Debug(bool),
     RetentionDays(u32),
     MaxTotalMegabytes(u32),
+}
+
+/// A status overlay module switched on the Settings page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayModule {
+    Microphone,
 }
 
 /// Scratchpad bound edited from Settings.
@@ -506,6 +513,11 @@ pub enum ApplicationCommand {
     SetProcessLimit(ProcessLimit),
     SetScratchpadLimit(ScratchpadLimit),
     SetLoggingSetting(LoggingSetting),
+    /// Shows or hides one status overlay module.
+    SetOverlayModule {
+        module: OverlayModule,
+        shown: bool,
+    },
     /// Opens the log folder in the file manager.
     OpenLogFolder,
     ClearLogs,

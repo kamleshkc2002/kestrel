@@ -55,7 +55,9 @@ fn wayland_display() -> bool {
 mod ffi {
     use std::os::raw::{c_char, c_int, c_uint, c_void};
 
+    pub const LAYER_TOP: c_int = 2;
     pub const LAYER_OVERLAY: c_int = 3;
+    pub const KEYBOARD_MODE_NONE: c_int = 0;
     pub const KEYBOARD_MODE_EXCLUSIVE: c_int = 1;
     pub const EDGE_TOP: c_int = 2;
 
@@ -86,6 +88,31 @@ pub fn observed_placement() -> SurfacePlacement {
     choose_placement(false, wayland_display(), None)
 }
 
+/// The status overlay's capability for `placement`: it needs a layer-shell
+/// surface, and every other entry point keeps working without one.
+pub fn overlay_capability(placement: &SurfacePlacement) -> kestrel_core::CapabilityReport {
+    use kestrel_core::{CapabilityReport, CapabilityStatus};
+    match placement {
+        SurfacePlacement::LayerShell { protocol_version } => CapabilityReport::new(
+            kestrel::OVERLAY_ID,
+            CapabilityStatus::Supported,
+            "The status overlay can sit at the top centre of the screen.",
+        )
+        .with_selected_backend(format!("wlr-layer-shell protocol {protocol_version}")),
+        SurfacePlacement::Window { reason } => CapabilityReport::new(
+            kestrel::OVERLAY_ID,
+            CapabilityStatus::Unsupported {
+                reason: (*reason).to_owned(),
+            },
+            "The status overlay needs a desktop that lets apps place a layer-shell surface.",
+        )
+        .with_remediation(
+            "COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots desktops support it; \
+             Kestrel's window, tray, and shortcuts work without it.",
+        ),
+    }
+}
+
 /// Makes `window` a keyboard-exclusive overlay anchored to the top edge.
 /// Call before the window is mapped, and only after `observed_placement`
 /// reported layer-shell.
@@ -111,6 +138,32 @@ pub fn configure_window(window: &gtk::Window, namespace: &str) {
 
 #[cfg(not(kestrel_layer_shell))]
 pub fn configure_window(_window: &gtk::Window, _namespace: &str) {}
+
+/// Makes `window` a status overlay at the top centre: above normal windows,
+/// never taking the keyboard, with input confined to its own surface. Same
+/// preconditions as [`configure_window`].
+#[cfg(kestrel_layer_shell)]
+pub fn configure_status_window(window: &gtk::Window, namespace: &str) {
+    use gtk::glib::object::ObjectType;
+    use std::ffi::CString;
+
+    let Ok(namespace) = CString::new(namespace) else {
+        return;
+    };
+    let window = window.as_ptr().cast::<std::os::raw::c_void>();
+    // SAFETY: `window` is a live, unmapped GtkWindow and `namespace` outlives the call.
+    unsafe {
+        ffi::gtk_layer_init_for_window(window);
+        ffi::gtk_layer_set_layer(window, ffi::LAYER_TOP);
+        ffi::gtk_layer_set_keyboard_mode(window, ffi::KEYBOARD_MODE_NONE);
+        ffi::gtk_layer_set_anchor(window, ffi::EDGE_TOP, 1);
+        ffi::gtk_layer_set_margin(window, ffi::EDGE_TOP, 8);
+        ffi::gtk_layer_set_namespace(window, namespace.as_ptr());
+    }
+}
+
+#[cfg(not(kestrel_layer_shell))]
+pub fn configure_status_window(_window: &gtk::Window, _namespace: &str) {}
 
 #[cfg(test)]
 mod tests {

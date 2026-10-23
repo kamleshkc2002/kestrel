@@ -128,7 +128,7 @@ Difficulty legend: ✅ straightforward · 🟡 moderate/partial · 🔶 hard or 
 | Mouse and keyboard shaping | 🟡/🔶 | libinput settings, compositor APIs, XInput/XTest, guarded uinput | `input-remapper`, `xremap` |
 | Focus-follows-mouse / app lifecycle guards | 🔶 | X11 EWMH or compositor-specific window identity and control | WM-native rules |
 | Process inspector / termination | ✅/🟡 | `/proc`, pidfds, cgroups, systemd user units | `Mission Center`, `btop` |
-| Feature hub, presets, energy disclosure | ✅ | Kestrel registry, configuration, measured/static cost metadata | n/a |
+| Feature hub, presets, energy disclosure | ✅ | Kestrel registry, configuration, static cost metadata | n/a |
 
 Net: the high-value, low-risk core (monitor, audio, clipboard, toggles, screenshots,
 snippets) is all clean. The advanced desktop features (window control via Accessibility,

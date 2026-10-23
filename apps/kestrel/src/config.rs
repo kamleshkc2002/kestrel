@@ -217,6 +217,7 @@ fn parse_current(document: toml::Table) -> Result<LoadedConfiguration, Configura
     parse_command_bar(&mut loaded, document.get("command_bar"));
     parse_quick_panel(&mut loaded, document.get("quick_panel"));
     parse_logging(&mut loaded, document.get("logging"));
+    parse_overlay(&mut loaded, document.get("overlay"));
     retire_battery_alerts_toggle(&mut loaded);
     Ok(loaded)
 }
@@ -839,6 +840,26 @@ fn parse_logging(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         }
     }
     loaded.warnings.extend(warnings);
+}
+
+fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
+    let Some(value) = value else { return };
+    let Some(table) = value.as_table() else {
+        loaded.warnings.push(warning(
+            "overlay",
+            "The overlay value must be a TOML table.",
+        ));
+        return;
+    };
+    if let Some(value) = table.get("microphone") {
+        match bool::deserialize(value.clone()) {
+            Ok(shown) => loaded.configuration.overlay.microphone = shown,
+            Err(_) => loaded.warnings.push(warning(
+                "overlay.microphone",
+                "Must be true or false; the microphone indicator stays on.",
+            )),
+        }
+    }
 }
 
 fn parse_scratchpad(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -1693,6 +1714,19 @@ autostart = true
                 .collect::<Vec<_>>(),
             vec!["logging.retention_days"]
         );
+    }
+
+    #[test]
+    fn overlay_modules_parse_and_a_malformed_one_keeps_its_default() {
+        let loaded = parse("schema_version = 3\n[overlay]\nmicrophone = false\n")
+            .expect("document itself is valid TOML");
+        assert!(!loaded.configuration.overlay.microphone);
+        assert!(loaded.warnings.is_empty());
+
+        let loaded = parse("schema_version = 3\n[overlay]\nmicrophone = \"no\"\n")
+            .expect("document itself is valid TOML");
+        assert!(loaded.configuration.overlay.microphone);
+        assert_eq!(loaded.warnings[0].feature_id, "overlay.microphone");
     }
 
     #[test]
