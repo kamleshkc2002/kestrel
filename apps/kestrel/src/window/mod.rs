@@ -418,6 +418,10 @@ impl WindowView {
     pub fn focus(&self, target: FocusTarget) -> bool {
         match target {
             FocusTarget::QuickPanel | FocusTarget::CommandBar => false,
+            FocusTarget::Capture => {
+                self.select_page(SidebarPage::Capture);
+                true
+            }
             FocusTarget::Clipboard => {
                 self.select_page(SidebarPage::Clipboard);
                 self.clipboard_panel

@@ -1102,6 +1102,26 @@ impl SpeedTestConfiguration {
     }
 }
 
+/// Follow-up performed after a successful screenshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureAfterScreenshot {
+    #[default]
+    Notify,
+    Edit,
+    Nothing,
+}
+
+impl CaptureAfterScreenshot {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Notify => "Show a notification",
+            Self::Edit => "Open the editor",
+            Self::Nothing => "Do nothing",
+        }
+    }
+}
+
 /// Bounds for the recent-capture history; every limit is at least one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureConfiguration {
@@ -1111,6 +1131,8 @@ pub struct CaptureConfiguration {
     pub max_total_megabytes: u32,
     #[serde(default = "default_capture_max_age_hours")]
     pub max_age_hours: u32,
+    #[serde(default)]
+    pub after_screenshot: CaptureAfterScreenshot,
 }
 
 fn default_capture_max_entries() -> u32 {
@@ -1131,6 +1153,7 @@ impl Default for CaptureConfiguration {
             max_entries: DEFAULT_CAPTURE_MAX_ENTRIES,
             max_total_megabytes: DEFAULT_CAPTURE_MAX_TOTAL_MEGABYTES,
             max_age_hours: DEFAULT_CAPTURE_MAX_AGE_HOURS,
+            after_screenshot: CaptureAfterScreenshot::default(),
         }
     }
 }

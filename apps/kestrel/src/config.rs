@@ -5,22 +5,23 @@ use std::{
 
 use kestrel_core::{
     AlertKind, AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy,
-    AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, ConfigurationError,
-    FeatureConfiguration, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
-    MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CAPTURE_MAX_AGE_HOURS,
-    MAX_CAPTURE_MAX_ENTRIES, MAX_CAPTURE_MAX_TOTAL_MEGABYTES, MAX_CLIPBOARD_AGE_HOURS,
-    MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
-    MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES, MAX_COMMAND_FILE_ROOTS,
-    MAX_COMMAND_RESULTS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
-    MAX_QUICK_PANEL_FAVORITES, MAX_SNIPPET_CLIPBOARD_BYTES, MAX_SNIPPET_CONTENT_BYTES,
-    MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SPEED_TEST_DOWNLOAD_MEGABYTES,
-    MAX_SPEED_TEST_TIMEOUT_SECONDS, MAX_SPEED_TEST_UPLOAD_MEGABYTES,
-    MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES,
-    MIN_COMMAND_RESULTS, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
-    MIN_SNIPPET_CONTENT_BYTES, MIN_SNIPPET_INSERT_TIMEOUT_MILLIS,
-    MIN_SPEED_TEST_DOWNLOAD_MEGABYTES, MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout,
-    SnippetExpansionTiming, SnippetProviderPreference, StartupConfiguration,
-    UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
+    AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, CaptureAfterScreenshot,
+    ConfigurationError, FeatureConfiguration, MAX_ALERT_COOLDOWN_SECONDS,
+    MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT,
+    MAX_CAPTURE_MAX_AGE_HOURS, MAX_CAPTURE_MAX_ENTRIES, MAX_CAPTURE_MAX_TOTAL_MEGABYTES,
+    MAX_CLIPBOARD_AGE_HOURS, MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES,
+    MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES,
+    MAX_COMMAND_FILE_ROOTS, MAX_COMMAND_RESULTS, MAX_MONITOR_HISTORY_SAMPLES,
+    MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_QUICK_PANEL_FAVORITES, MAX_SNIPPET_CLIPBOARD_BYTES,
+    MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS,
+    MAX_SPEED_TEST_DOWNLOAD_MEGABYTES, MAX_SPEED_TEST_TIMEOUT_SECONDS,
+    MAX_SPEED_TEST_UPLOAD_MEGABYTES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS,
+    MIN_ALERT_SUSTAIN_SAMPLES, MIN_CLIPBOARD_ITEM_BYTES, MIN_COMMAND_RESULTS,
+    MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES, MIN_SNIPPET_CONTENT_BYTES,
+    MIN_SNIPPET_INSERT_TIMEOUT_MILLIS, MIN_SPEED_TEST_DOWNLOAD_MEGABYTES,
+    MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout, SnippetExpansionTiming,
+    SnippetProviderPreference, StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
+    validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -778,6 +779,15 @@ fn parse_capture(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         "hours",
         &mut limits.max_age_hours,
     );
+    if let Some(after_screenshot) = capture.get("after_screenshot") {
+        match CaptureAfterScreenshot::deserialize(after_screenshot.clone()) {
+            Ok(after_screenshot) => limits.after_screenshot = after_screenshot,
+            Err(_) => loaded.warnings.push(warning(
+                "capture.after_screenshot",
+                "Must be \"notify\", \"edit\", or \"nothing\"; the default was retained.",
+            )),
+        }
+    }
     loaded.configuration.capture = limits;
 }
 
@@ -2119,6 +2129,29 @@ max_age_hours = 721
         let exported = export_string(&loaded.configuration).expect("configuration exports");
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.capture, loaded.configuration.capture);
+    }
+
+    #[test]
+    fn malformed_capture_follow_up_keeps_notify_default() {
+        let loaded = parse(
+            r#"
+schema_version = 3
+[capture]
+after_screenshot = "later"
+"#,
+        )
+        .expect("document itself is valid TOML");
+        assert_eq!(
+            loaded.configuration.capture.after_screenshot,
+            kestrel_core::CaptureAfterScreenshot::Notify
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "capture.after_screenshot"
+                    && warning.reason.contains("default was retained"))
+        );
     }
 
     #[test]

@@ -20,8 +20,8 @@ pub use config::{
     save,
 };
 pub use kestrel_core::{
-    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
-    CloseAction, MonitorReadout, NetworkRateUnit,
+    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
+    CaptureAfterScreenshot, ClipboardLayout, CloseAction, MonitorReadout, NetworkRateUnit,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -115,6 +115,12 @@ pub enum CaptureLimit {
     MaxEntries(u32),
     MaxTotalMegabytes(u32),
     MaxAgeHours(u32),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureFollowUpAction {
+    Open,
+    Edit,
+    Copy,
 }
 
 /// Process inspector setting edited from Settings.
@@ -388,6 +394,7 @@ pub enum FocusTarget {
     CommandBar,
     QuickPanel,
     Clipboard,
+    Capture,
     Processes,
     Scratchpad,
     /// The Monitoring page, where active alerts are listed.
@@ -514,6 +521,7 @@ pub enum ApplicationCommand {
     SetClipboardLayout(ClipboardLayout),
     SetClipboardLimit(ClipboardLimit),
     SetCaptureLimit(CaptureLimit),
+    SetCaptureAfterScreenshot(CaptureAfterScreenshot),
     SetProcessLimit(ProcessLimit),
     SetScratchpadLimit(ScratchpadLimit),
     SetLoggingSetting(LoggingSetting),
@@ -565,6 +573,10 @@ pub enum ApplicationCommand {
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
     Capture(CaptureRequest),
+    CaptureFollowUp {
+        id: CaptureId,
+        action: CaptureFollowUpAction,
+    },
     Quit,
 }
 

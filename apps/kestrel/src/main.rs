@@ -5,6 +5,7 @@ mod window;
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, Mutex},
@@ -35,7 +36,9 @@ use kestrel::{
     FocusTarget,
 };
 use kestrel_core::{ApplicationConfiguration, FeatureConfigurationSnapshot};
-use kestrel_platform::notifications::{AlertNotification, AlertNotifier, DesktopNotifier};
+use kestrel_platform::notifications::{
+    AlertNotification, AlertNotifier, CaptureNotificationAction, DesktopNotifier, NotificationEvent,
+};
 use kestrel_services::alerts::notification_text;
 
 use window::{FloatingSurface, QuickPanelEntry, StatusOverlay, WindowView};
@@ -56,6 +59,8 @@ struct TickUpdate {
     speed_test: Option<SpeedTestViewModel>,
     shortcuts: Option<ShortcutsViewModel>,
     capture: Option<kestrel::CaptureViewModel>,
+    capture_notification: Option<(CaptureId, u32)>,
+    capture_follow_up: Option<(CaptureId, kestrel::CaptureAfterScreenshot)>,
     processes: Option<kestrel::ProcessesViewModel>,
     listeners: Option<kestrel::ListenersViewModel>,
     screen_tools: Option<kestrel::ScreenToolsViewModel>,
@@ -85,6 +90,7 @@ struct ControllerState {
     speed_test_generation: u64,
     shortcut_generation: u64,
     capture_generation: u64,
+    last_capture_follow_up: Option<CaptureId>,
     process_query: String,
     process_generation: u64,
     listener_generation: u64,
@@ -352,10 +358,21 @@ impl ControllerState {
     }
 }
 
+fn capture_follow_up_decision<T: Copy + PartialEq>(
+    captured: Option<T>,
+    last_handled: Option<T>,
+    after: kestrel::CaptureAfterScreenshot,
+) -> Option<(T, kestrel::CaptureAfterScreenshot)> {
+    captured
+        .filter(|id| last_handled != Some(*id))
+        .map(|id| (id, after))
+}
+
 /// Samples state and notifies while the controller lock is released.
 fn run_tick(
     state: &SharedState,
     notifier: &dyn AlertNotifier,
+    capture_notifier: &DesktopNotifier,
     tray: Option<&kestrel::TrayReadoutSink>,
     observed_at: Duration,
     audio_due: bool,
@@ -369,6 +386,8 @@ fn run_tick(
         speed_test,
         shortcuts,
         capture,
+        capture_to_notify,
+        capture_follow_up,
         processes,
         listeners,
         screen_tools,
@@ -402,7 +421,27 @@ fn run_tick(
             guard.runtime.shortcuts_view_model()
         });
         guard.runtime.prune_captures();
-        let generation = guard.runtime.capture_snapshot().generation;
+        let snapshot = guard.runtime.capture_snapshot();
+        let captured = match &snapshot.phase {
+            kestrel_services::capture::CapturePhase::Captured { id } => Some(*id),
+            _ => None,
+        };
+        let decision = capture_follow_up_decision(
+            captured,
+            guard.last_capture_follow_up,
+            guard.configuration.capture.after_screenshot,
+        );
+        if let Some((id, _)) = decision {
+            guard.last_capture_follow_up = Some(id);
+        }
+        let (capture_to_notify, capture_follow_up) = match decision {
+            Some((id, kestrel::CaptureAfterScreenshot::Notify)) => (Some(id), None),
+            Some((id, kestrel::CaptureAfterScreenshot::Edit)) => {
+                (None, Some((id, kestrel::CaptureAfterScreenshot::Edit)))
+            }
+            Some((_, kestrel::CaptureAfterScreenshot::Nothing)) | None => (None, None),
+        };
+        let generation = snapshot.generation;
         let capture = (generation != guard.capture_generation).then(|| {
             guard.capture_generation = generation;
             guard.runtime.capture_view_model()
@@ -445,6 +484,8 @@ fn run_tick(
             speed_test,
             shortcuts,
             capture,
+            capture_to_notify,
+            capture_follow_up,
             processes,
             listeners,
             screen_tools,
@@ -456,6 +497,12 @@ fn run_tick(
     if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
         tray.publish(&monitor.tray);
     }
+    let capture_notification = capture_to_notify.and_then(|id| {
+        capture_notifier
+            .notify_capture()
+            .ok()
+            .map(|notification_id| (id, notification_id))
+    });
     let (clipboard, command_bar) = clipboard_tick_update(state);
     TickUpdate {
         monitor,
@@ -466,6 +513,8 @@ fn run_tick(
         speed_test,
         shortcuts,
         capture,
+        capture_notification,
+        capture_follow_up,
         processes,
         listeners,
         screen_tools,
@@ -668,6 +717,7 @@ enum ControllerOperation {
     SetClipboardLayout(kestrel::ClipboardLayout),
     SetClipboardLimit(kestrel::ClipboardLimit),
     SetCaptureLimit(kestrel::CaptureLimit),
+    SetCaptureAfterScreenshot(kestrel::CaptureAfterScreenshot),
     SetProcessLimit(kestrel::ProcessLimit),
     SetScratchpadLimit(kestrel::ScratchpadLimit),
     SetLoggingSetting(kestrel::LoggingSetting),
@@ -709,6 +759,7 @@ struct ControllerContext {
     tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
+    capture_notifier: Arc<DesktopNotifier>,
     tray: Option<kestrel::TrayReadoutSink>,
 }
 
@@ -748,6 +799,8 @@ struct ApplicationController {
     /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
+    capture_notifier: Arc<DesktopNotifier>,
+    notification_captures: RefCell<HashMap<u32, CaptureId>>,
     tray: Option<kestrel::TrayReadoutSink>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
@@ -768,6 +821,7 @@ impl ApplicationController {
             tick_results,
             commands,
             notifier,
+            capture_notifier,
             tray,
         } = context;
         let monitor_running = runtime.monitor_is_running();
@@ -799,6 +853,7 @@ impl ApplicationController {
                 speed_test_generation: 0,
                 shortcut_generation: 0,
                 capture_generation: 0,
+                last_capture_follow_up: None,
                 process_query: String::new(),
                 process_generation: 0,
                 listener_generation: 0,
@@ -838,6 +893,8 @@ impl ApplicationController {
             audio_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
+            capture_notifier,
+            notification_captures: RefCell::new(HashMap::new()),
             tray,
             activation_token: RefCell::new(None),
             refresh_results,
@@ -1053,7 +1110,7 @@ impl ApplicationController {
         view.show_message(&message);
     }
 
-    fn edit_capture(&self, id: CaptureId) {
+    fn open_capture_editor(&self, id: CaptureId) {
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1064,6 +1121,20 @@ impl ApplicationController {
         {
             Ok(image) => capture_editor::open(&view.window, id, image, self.commands.clone()),
             Err(error) => view.show_message(&error),
+        }
+    }
+
+    fn handle_capture_follow_up(
+        self: &Rc<Self>,
+        application: &adw::Application,
+        id: CaptureId,
+        action: CaptureNotificationAction,
+    ) {
+        self.focus(application, FocusTarget::Capture);
+        match action {
+            CaptureNotificationAction::Open => {}
+            CaptureNotificationAction::Edit => self.open_capture_editor(id),
+            CaptureNotificationAction::Copy => self.copy_capture(id),
         }
     }
 
@@ -1263,6 +1334,7 @@ impl ApplicationController {
         }
         let state = Arc::clone(&self.state);
         let notifier = Arc::clone(&self.notifier);
+        let capture_notifier = Arc::clone(&self.capture_notifier);
         let tray = self.tray.clone();
         let results = self.tick_results.clone();
         let observed_at = self.monitor_started_at.elapsed();
@@ -1272,6 +1344,7 @@ impl ApplicationController {
                 let update = run_tick(
                     &state,
                     notifier.as_ref(),
+                    capture_notifier.as_ref(),
                     tray.as_ref(),
                     observed_at,
                     audio_due,
@@ -1295,12 +1368,51 @@ impl ApplicationController {
             speed_test,
             shortcuts,
             capture,
+            capture_notification,
+            capture_follow_up,
             processes,
             listeners,
             screen_tools,
             camera,
             recording,
         } = update;
+        if let Some((id, notification_id)) = capture_notification {
+            self.notification_captures
+                .borrow_mut()
+                .insert(notification_id, id);
+        }
+        for event in self.capture_notifier.take_events() {
+            match event {
+                NotificationEvent::ActionInvoked {
+                    notification_id,
+                    action,
+                } => {
+                    if let Some(id) = self.notification_captures.borrow().get(&notification_id) {
+                        let action = match action {
+                            CaptureNotificationAction::Open => kestrel::CaptureFollowUpAction::Open,
+                            CaptureNotificationAction::Edit => kestrel::CaptureFollowUpAction::Edit,
+                            CaptureNotificationAction::Copy => kestrel::CaptureFollowUpAction::Copy,
+                        };
+                        let _ = self
+                            .commands
+                            .try_send(ApplicationCommand::CaptureFollowUp { id: *id, action });
+                    }
+                }
+                NotificationEvent::NotificationClosed { notification_id } => {
+                    self.notification_captures
+                        .borrow_mut()
+                        .remove(&notification_id);
+                }
+            }
+        }
+        if let Some((id, after)) = capture_follow_up {
+            if after == kestrel::CaptureAfterScreenshot::Edit {
+                let _ = self.commands.try_send(ApplicationCommand::CaptureFollowUp {
+                    id,
+                    action: kestrel::CaptureFollowUpAction::Edit,
+                });
+            }
+        }
         if let Some(screen_tools) = &screen_tools {
             self.screen_tools_running.set(screen_tools.available);
             self.selection_pending.set(screen_tools.selecting);
@@ -2173,6 +2285,15 @@ impl ControllerState {
                 };
                 self.commit_configuration(candidate, config_path, message)?
             }
+            ControllerOperation::SetCaptureAfterScreenshot(after) => {
+                let mut candidate = self.configuration.clone();
+                candidate.capture.after_screenshot = after;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("After a screenshot: {}", after.label()),
+                )?
+            }
             ControllerOperation::SetProcessLimit(limit) => {
                 let mut candidate = self.configuration.clone();
                 let message = match limit {
@@ -2927,7 +3048,8 @@ fn main() -> glib::ExitCode {
 
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
     let (tick_results, tick_receiver) = async_channel::unbounded();
-    let notifier: Arc<dyn AlertNotifier> = Arc::new(DesktopNotifier::new());
+    let capture_notifier = Arc::new(DesktopNotifier::new());
+    let notifier: Arc<dyn AlertNotifier> = capture_notifier.clone();
     let controller = ApplicationController::new(
         runtime,
         loaded.configuration,
@@ -2938,6 +3060,7 @@ fn main() -> glib::ExitCode {
             tick_results,
             commands: commands.clone(),
             notifier,
+            capture_notifier,
             tray: status_notifier.readout_sink(),
         },
     );
@@ -3183,6 +3306,14 @@ fn dispatch_commands(
                     "kestrel-speed-test-cancel",
                     TargetedPanel::SpeedTest,
                 ),
+                ApplicationCommand::CaptureFollowUp { id, action } => {
+                    let action = match action {
+                        kestrel::CaptureFollowUpAction::Open => CaptureNotificationAction::Open,
+                        kestrel::CaptureFollowUpAction::Edit => CaptureNotificationAction::Edit,
+                        kestrel::CaptureFollowUpAction::Copy => CaptureNotificationAction::Copy,
+                    };
+                    controller.handle_capture_follow_up(&application, id, action);
+                }
                 ApplicationCommand::Capture(request) => {
                     let operation = match request {
                         CaptureRequest::Copy(id) => {
@@ -3190,7 +3321,8 @@ fn dispatch_commands(
                             continue;
                         }
                         CaptureRequest::Edit(id) => {
-                            controller.edit_capture(id);
+                            controller.focus(&application, FocusTarget::Capture);
+                            controller.open_capture_editor(id);
                             continue;
                         }
                         CaptureRequest::Begin(mode) => CaptureOperation::Begin(mode),
@@ -3325,6 +3457,11 @@ fn dispatch_commands(
                     ControllerOperation::SetCaptureLimit(limit),
                     "kestrel-capture-limit",
                 ),
+                ApplicationCommand::SetCaptureAfterScreenshot(after) => controller
+                    .request_operation(
+                        ControllerOperation::SetCaptureAfterScreenshot(after),
+                        "kestrel-capture-after-screenshot",
+                    ),
                 ApplicationCommand::SetClipboardFilterSensitive(filter) => controller
                     .request_operation(
                         ControllerOperation::SetClipboardFilterSensitive(filter),
@@ -3444,6 +3581,32 @@ mod tests {
     use super::{load_startup_configuration, persist};
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::ApplicationConfiguration;
+
+    #[test]
+    fn capture_follow_up_runs_once_for_new_screenshot() {
+        use super::capture_follow_up_decision;
+        use kestrel::CaptureAfterScreenshot;
+
+        assert_eq!(
+            capture_follow_up_decision(Some(41u64), None, CaptureAfterScreenshot::Notify),
+            Some((41, CaptureAfterScreenshot::Notify))
+        );
+        assert_eq!(
+            capture_follow_up_decision(Some(41u64), Some(41), CaptureAfterScreenshot::Notify),
+            None
+        );
+    }
+
+    #[test]
+    fn edited_copy_does_not_retrigger_original_capture_follow_up() {
+        use super::capture_follow_up_decision;
+        use kestrel::CaptureAfterScreenshot;
+
+        assert_eq!(
+            capture_follow_up_decision(Some(42u64), Some(42), CaptureAfterScreenshot::Edit),
+            None
+        );
+    }
     #[test]
     fn monitor_readout_movement_is_bounded_and_deterministic() {
         let mut readouts = vec![MonitorReadout::Cpu, MonitorReadout::Memory];
@@ -3506,7 +3669,7 @@ mod tests {
         use async_channel::Sender;
         use kestrel::ApplicationRuntime;
         use kestrel_platform::notifications::{
-            AlertNotification, AlertNotifier, NotificationError,
+            AlertNotification, AlertNotifier, DesktopNotifier, NotificationError,
         };
         use kestrel_platform::system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID;
         use std::rc::Rc;
@@ -3539,6 +3702,7 @@ mod tests {
                     tick_results,
                     commands,
                     notifier: Arc::new(SilentNotifier),
+                    capture_notifier: Arc::new(DesktopNotifier::new()),
                     tray: None,
                 },
             )
