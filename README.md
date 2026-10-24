@@ -56,7 +56,13 @@ here, or off, with one line saying its state or what it needs. Hovering a
 feature's (i) icon shows how much power it uses in the background and how often
 it wakes up, its backend, and its state. A feature that
 cannot run here (unsupported, or missing a dependency or permission) can be
-turned off but not on until it becomes available.
+turned off but not on until it becomes available. Tools on the Capture and
+Notes pages work the same way in place: a tool that is off says what it does
+and has a Turn on button, and one that cannot run here gives its reason.
+
+The Overview page's Tools row has one-click buttons for the screenshot, screen
+tools, recording, and Scratchpad while they are on, and a link to the Feature
+Hub for the rest.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
 Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)

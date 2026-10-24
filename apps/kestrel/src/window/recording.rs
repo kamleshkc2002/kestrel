@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::widgets::plain_row;
+use super::widgets::{plain_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, glib};
@@ -42,6 +42,9 @@ pub(super) fn build_recording_group(
         .description(glib::markup_escape_text(&recording.status).as_str())
         .build();
     container.append(&group);
+    if let Some(turn_on) = &recording.turn_on {
+        group.add(&turn_on_row(turn_on, commands));
+    }
     if !recording.running {
         return container;
     }

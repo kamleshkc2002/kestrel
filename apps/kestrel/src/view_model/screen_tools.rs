@@ -21,6 +21,7 @@ pub struct ScreenToolButtonViewModel {
     pub label: &'static str,
     pub enabled: bool,
     pub reason: Option<String>,
+    pub turn_on: Option<TurnOnViewModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +71,7 @@ impl ScreenToolsViewModel {
                 label: gate.tool.label(),
                 enabled: gate.running,
                 reason: gate.reason,
+                turn_on: None,
             })
             .collect::<Vec<_>>();
         let available = buttons.iter().any(|button| button.enabled);

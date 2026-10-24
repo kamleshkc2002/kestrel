@@ -33,8 +33,10 @@ use features::{
 };
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
-    ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureViewModel,
-    FocusTarget, MicrophoneViewModel, MonitorViewModel, ShortcutsViewModel, SpeedTestViewModel,
+    ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureRequest,
+    CaptureViewModel, FocusTarget, MicrophoneViewModel, MonitorViewModel, OverviewTool,
+    OverviewToolsViewModel, RecordingRequest, RecordingSource, ScreenToolRequest,
+    ShortcutsViewModel, SpeedTestViewModel,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
@@ -263,6 +265,24 @@ impl WindowView {
             .title("Overview")
             .child(&toasts)
             .build();
+        let navigate = gtk::gio::SimpleAction::new("navigate-feature-hub", None);
+        let stack_for_tools = content_stack.clone();
+        let page_for_tools = content_page.clone();
+        let title_for_tools = title.clone();
+        let list_for_tools = sidebar_list.clone();
+        let feature_row = sidebar_rows
+            .iter()
+            .find(|(_, page)| *page == SidebarPage::FeatureHub)
+            .map(|(row, _)| row.clone());
+        navigate.connect_activate(move |_, _| {
+            stack_for_tools.set_visible_child_name(SidebarPage::FeatureHub.name());
+            page_for_tools.set_title(SidebarPage::FeatureHub.label());
+            title_for_tools.set_title(SidebarPage::FeatureHub.label());
+            if let Some(row) = &feature_row {
+                list_for_tools.select_row(Some(row));
+            }
+        });
+        window.add_action(&navigate);
         let split_view = adw::NavigationSplitView::new();
         split_view.set_sidebar(Some(&sidebar_page));
         split_view.set_content(Some(&content_page));
@@ -789,6 +809,73 @@ impl PageBuild {
     }
 }
 
+fn build_overview_tools_group(
+    tools: &OverviewToolsViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Tools")
+        .description(if tools.tools.is_empty() {
+            "Turn on tools in the Feature Hub to make them available here."
+        } else {
+            "Common tools are one click away."
+        })
+        .build();
+    let flow = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .max_children_per_line(3)
+        .min_children_per_line(1)
+        .homogeneous(false)
+        .build();
+    for tool in &tools.tools {
+        let button = gtk::Button::new();
+        button.add_css_class("flat");
+        let content = gtk::Box::new(Orientation::Horizontal, 6);
+        content.append(&gtk::Image::from_icon_name(tool.icon));
+        content.append(&gtk::Label::new(Some(tool.label)));
+        button.set_child(Some(&content));
+        button.set_tooltip_text(Some(tool.label));
+        let sender = commands.clone();
+        match tool.tool {
+            OverviewTool::Screenshot => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::Begin(None)));
+            }),
+            OverviewTool::ReadText => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::ScreenTools(ScreenToolRequest::Begin(
+                    kestrel::ScreenTool::Text,
+                )));
+            }),
+            OverviewTool::ReadQrCode => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::ScreenTools(ScreenToolRequest::Begin(
+                    kestrel::ScreenTool::Qr,
+                )));
+            }),
+            OverviewTool::PickColour => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::ScreenTools(ScreenToolRequest::Begin(
+                    kestrel::ScreenTool::Color,
+                )));
+            }),
+            OverviewTool::Record => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Recording(RecordingRequest::Start(
+                    RecordingSource::Screen,
+                )));
+            }),
+            OverviewTool::Scratchpad => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Scratchpad));
+            }),
+        };
+        flow.insert(&button, -1);
+    }
+    let more = gtk::Button::with_label("More tools in the Feature Hub");
+    more.add_css_class("flat");
+    more.set_action_name(Some("win.navigate-feature-hub"));
+    group.add(&flow);
+    group.add(&more);
+    group
+}
+
 fn build_page(
     page: SidebarPage,
     view_model: &ApplicationViewModel,
@@ -814,6 +901,10 @@ fn build_page(
         configure_wrapping_label(&description);
         description.add_css_class("dim-label");
         body.append(&description);
+        body.append(&build_overview_tools_group(
+            &view_model.overview_tools,
+            commands,
+        ));
         if !view_model.quick_toggles.is_empty() {
             body.append(&build_quick_toggle_group(
                 &view_model.quick_toggles,

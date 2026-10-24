@@ -39,6 +39,7 @@ pub struct CaptureViewModel {
     pub usage: String,
     pub storage_error: Option<String>,
     pub limits: kestrel_core::CaptureConfiguration,
+    pub turn_on: Option<TurnOnViewModel>,
 }
 
 impl CaptureViewModel {
@@ -140,6 +141,7 @@ impl CaptureViewModel {
             usage,
             storage_error: snapshot.storage_error,
             limits,
+            turn_on: None,
         }
     }
 }

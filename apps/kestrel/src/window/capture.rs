@@ -1,6 +1,6 @@
 //! Screenshot controls and recent captures.
 
-use super::widgets::{choose_path, plain_row};
+use super::widgets::{choose_path, plain_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -42,6 +42,9 @@ pub(super) fn build_capture_group(
             row.add_suffix(&cancel);
         }
         group.add(&row);
+    }
+    if let Some(turn_on) = &capture.turn_on {
+        group.add(&turn_on_row(turn_on, commands));
     }
     if let Some(error) = &capture.storage_error {
         group.add(
