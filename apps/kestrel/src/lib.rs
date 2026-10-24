@@ -184,6 +184,8 @@ pub enum CameraRequest {
 /// Screen recording action from the window or the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordingRequest {
+    /// Uses the page's preferred source, favoring a whole screen.
+    StartDefault,
     /// Asks the desktop to share this source and records it.
     Start(RecordingSource),
     /// The area view's choice; `None` records the whole frame.
@@ -592,6 +594,8 @@ pub enum CaptureRequest {
         id: CaptureId,
         destination: std::path::PathBuf,
     },
+    /// Opens the editor on the newest capture.
+    EditLatest,
     /// Opens the editor on a capture.
     Edit(CaptureId),
     /// Stores the edited image as a new capture.

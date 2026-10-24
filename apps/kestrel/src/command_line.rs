@@ -20,7 +20,10 @@ use kestrel_services::{
     microphone::MicrophoneCommand,
 };
 
-use crate::{ApplicationCommand, CaptureRequest, FeaturePreset, FocusTarget, ScreenToolRequest};
+use crate::{
+    ApplicationCommand, CaptureRequest, FeaturePreset, FocusTarget, RecordingRequest,
+    ScreenToolRequest,
+};
 
 const TOGGLE_PREFIX: &str = "toggle.";
 
@@ -44,7 +47,10 @@ pub enum CommandLineAction {
     CancelSpeedTest,
     CaptureScreenshot,
     CaptureScreen,
+    CaptureEditLast,
     ScreenTool(ScreenTool),
+    RecordingStart,
+    RecordingStop,
     WipeClipboard,
     ClearClipboardSelection,
     ApplyPreset(FeaturePreset),
@@ -52,7 +58,7 @@ pub enum CommandLineAction {
     QuickToggle(QuickToggleId),
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 26] = [
+const FIXED_ACTIONS: [CommandLineAction; 29] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::OpenQuickPanel,
@@ -70,9 +76,12 @@ const FIXED_ACTIONS: [CommandLineAction; 26] = [
     CommandLineAction::CancelSpeedTest,
     CommandLineAction::CaptureScreenshot,
     CommandLineAction::CaptureScreen,
+    CommandLineAction::CaptureEditLast,
     CommandLineAction::ScreenTool(ScreenTool::Text),
     CommandLineAction::ScreenTool(ScreenTool::Qr),
     CommandLineAction::ScreenTool(ScreenTool::Color),
+    CommandLineAction::RecordingStart,
+    CommandLineAction::RecordingStop,
     CommandLineAction::WipeClipboard,
     CommandLineAction::ClearClipboardSelection,
     CommandLineAction::ApplyPreset(FeaturePreset::Essentials),
@@ -110,7 +119,10 @@ impl CommandLineAction {
             Self::CancelSpeedTest => "speed-test.cancel",
             Self::CaptureScreenshot => "capture.screenshot",
             Self::CaptureScreen => "capture.screen",
+            Self::CaptureEditLast => "capture.edit-last",
             Self::ScreenTool(tool) => tool.feature_id(),
+            Self::RecordingStart => "recording.start",
+            Self::RecordingStop => "recording.stop",
             Self::WipeClipboard => "clipboard.wipe",
             Self::ClearClipboardSelection => "clipboard.clear-selection",
             Self::ApplyPreset(FeaturePreset::Essentials) => "preset.essentials",
@@ -143,9 +155,12 @@ impl CommandLineAction {
                 "Take a screenshot (area, window, or the desktop's dialog)".to_owned()
             }
             Self::CaptureScreen => "Capture the whole screen".to_owned(),
+            Self::CaptureEditLast => "Edit the most recent screenshot".to_owned(),
             Self::ScreenTool(ScreenTool::Text) => "Read text from part of the screen".to_owned(),
             Self::ScreenTool(ScreenTool::Qr) => "Read a QR code from the screen".to_owned(),
             Self::ScreenTool(ScreenTool::Color) => "Pick a color from the screen".to_owned(),
+            Self::RecordingStart => "Start a screen recording".to_owned(),
+            Self::RecordingStop => "Stop the current screen recording".to_owned(),
             Self::WipeClipboard => "Wipe clipboard history".to_owned(),
             Self::ClearClipboardSelection => "Clear the live clipboard selection".to_owned(),
             Self::ApplyPreset(preset) => format!("Apply the {} preset", preset.label()),
@@ -196,8 +211,13 @@ impl CommandLineAction {
                 Some(MICROPHONE_FEATURE_ID)
             }
             Self::StartSpeedTest | Self::CancelSpeedTest => Some(SPEED_TEST_ID),
-            Self::CaptureScreenshot | Self::CaptureScreen => Some(CAPTURE_ID),
+            Self::CaptureScreenshot | Self::CaptureScreen | Self::CaptureEditLast => {
+                Some(CAPTURE_ID)
+            }
             Self::ScreenTool(tool) => Some(tool.feature_id()),
+            Self::RecordingStart | Self::RecordingStop => {
+                Some(kestrel_platform::recording::FEATURE_ID)
+            }
             Self::QuickToggle(toggle) => Some(toggle.feature_id()),
         }
     }
@@ -234,9 +254,12 @@ impl CommandLineAction {
             Self::CaptureScreen => {
                 ApplicationCommand::Capture(CaptureRequest::Begin(Some(CaptureMode::Screen)))
             }
+            Self::CaptureEditLast => ApplicationCommand::Capture(CaptureRequest::EditLatest),
             Self::ScreenTool(tool) => {
                 ApplicationCommand::ScreenTools(ScreenToolRequest::Begin(tool))
             }
+            Self::RecordingStart => ApplicationCommand::Recording(RecordingRequest::StartDefault),
+            Self::RecordingStop => ApplicationCommand::Recording(RecordingRequest::Stop),
             Self::WipeClipboard => ApplicationCommand::Clipboard(ClipboardCommand::Wipe),
             Self::ClearClipboardSelection => {
                 ApplicationCommand::Clipboard(ClipboardCommand::ClearSelection)
@@ -465,6 +488,17 @@ mod tests {
                 QuickToggleId::KeepAwake
             ))
         );
+    }
+    #[test]
+    fn capture_and_recording_tool_ids_round_trip() {
+        for (id, action) in [
+            ("capture.edit-last", CommandLineAction::CaptureEditLast),
+            ("recording.start", CommandLineAction::RecordingStart),
+            ("recording.stop", CommandLineAction::RecordingStop),
+        ] {
+            assert_eq!(CommandLineAction::parse(id), Ok(action));
+            assert_eq!(action.id(), id);
+        }
     }
 
     #[test]

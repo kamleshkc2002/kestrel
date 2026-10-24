@@ -302,11 +302,25 @@ impl ControllerState {
             });
         }
 
-        if let Some(feature_id) = action.strip_prefix("toggle:") {
-            let id = kestrel_platform::quick_toggles::ALL_QUICK_TOGGLES
-                .into_iter()
-                .find(|id| id.feature_id() == feature_id)?;
-            return Some(self.flip_quick_toggle(id));
+        if let Ok(command) = CommandLineAction::parse(action) {
+            if command == CommandLineAction::CaptureEditLast {
+                let present = self
+                    .commands
+                    .try_send(ApplicationCommand::PresentWindow)
+                    .is_ok();
+                let edit = self.commands.try_send(command.to_command()).is_ok();
+                return Some(if present && edit {
+                    "capture.edit-last queued".to_owned()
+                } else {
+                    "capture.edit-last could not be queued".to_owned()
+                });
+            }
+            let queued = self.commands.try_send(command.to_command()).is_ok();
+            return Some(if queued {
+                format!("{action} queued")
+            } else {
+                format!("{action} could not be queued")
+            });
         }
 
         let command = match action {
@@ -3318,6 +3332,24 @@ fn dispatch_commands(
                     let operation = match request {
                         CaptureRequest::Copy(id) => {
                             controller.copy_capture(id);
+                            continue;
+                        }
+                        CaptureRequest::EditLatest => {
+                            controller.focus(&application, FocusTarget::Capture);
+                            let id = controller
+                                .state
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .runtime
+                                .capture_snapshot()
+                                .entries
+                                .first()
+                                .map(|entry| entry.id);
+                            if let Some(id) = id {
+                                controller.open_capture_editor(id);
+                            } else {
+                                controller.show_message("No captured screenshots are available");
+                            }
                             continue;
                         }
                         CaptureRequest::Edit(id) => {

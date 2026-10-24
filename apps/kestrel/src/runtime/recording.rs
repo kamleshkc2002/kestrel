@@ -139,6 +139,23 @@ impl ApplicationRuntime {
             );
         }
         match request {
+            RecordingRequest::StartDefault => {
+                let detection = self
+                    .recording_detection
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone()
+                    .ok_or_else(|| "Recording support has not been checked yet.".to_owned())?;
+                let source = detection
+                    .sources()
+                    .into_iter()
+                    .find(|source| *source == kestrel_platform::recording::RecordingSource::Screen)
+                    .or_else(|| detection.sources().into_iter().next())
+                    .ok_or_else(|| {
+                        "No recording source is available in this desktop session.".to_owned()
+                    })?;
+                self.recording_request(RecordingRequest::Start(source))
+            }
             RecordingRequest::Start(source) => {
                 let detection = self
                     .recording_detection
