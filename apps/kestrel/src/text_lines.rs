@@ -457,19 +457,16 @@ mod tests {
     }
 
     #[test]
-    fn cursor_moves_single_line_up() {
-        let result = move_lines("one\ntwo\nthree", (5, 5), LineDirection::Up).unwrap();
-        assert_eq!(result.range, (0, 8));
-        assert_eq!(result.replacement, "two\none\n");
-        assert_eq!(result.selection, (1, 1));
-    }
-
-    #[test]
-    fn cursor_moves_single_line_down() {
-        let result = move_lines("one\ntwo\nthree", (1, 1), LineDirection::Down).unwrap();
-        assert_eq!(result.range, (0, 8));
-        assert_eq!(result.replacement, "two\none\n");
-        assert_eq!(result.selection, (5, 5));
+    fn cursor_moves_single_line_each_direction() {
+        for (name, selection, direction, expected_selection) in [
+            ("up", (5, 5), LineDirection::Up, (1, 1)),
+            ("down", (1, 1), LineDirection::Down, (5, 5)),
+        ] {
+            let result = move_lines("one\ntwo\nthree", selection, direction).unwrap();
+            assert_eq!(result.range, (0, 8), "{name}: range");
+            assert_eq!(result.replacement, "two\none\n", "{name}: replacement");
+            assert_eq!(result.selection, expected_selection, "{name}: selection");
+        }
     }
 
     #[test]

@@ -718,17 +718,15 @@ mod tests {
 
     #[test]
     fn file_uris_decode_to_local_paths() {
-        assert_eq!(
-            file_uri_path("/tmp/a%20b%25.png"),
-            Some(PathBuf::from("/tmp/a b%.png"))
-        );
-        assert_eq!(
-            file_uri_path("localhost/tmp/x.png"),
-            Some(PathBuf::from("/tmp/x.png"))
-        );
-        assert_eq!(file_uri_path("host/tmp/x.png"), None);
-        assert_eq!(file_uri_path("/tmp/bad%2"), None);
-        assert_eq!(file_uri_path("/tmp/nul%00.png"), None);
+        for (uri, expected) in [
+            ("/tmp/a%20b%25.png", Some(PathBuf::from("/tmp/a b%.png"))),
+            ("localhost/tmp/x.png", Some(PathBuf::from("/tmp/x.png"))),
+            ("host/tmp/x.png", None),
+            ("/tmp/bad%2", None),
+            ("/tmp/nul%00.png", None),
+        ] {
+            assert_eq!(file_uri_path(uri), expected, "{uri}");
+        }
     }
 
     #[test]

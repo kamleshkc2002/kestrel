@@ -2288,18 +2288,21 @@ system_audio = true
     #[test]
     fn videos_folder_follows_user_dirs() {
         let home = Path::new("/home/user");
-        let folder = |contents: &str| videos_directory(contents, home);
-        assert_eq!(
-            folder("# comment\nXDG_VIDEOS_DIR=\"$HOME/Filme\"\n"),
-            Some(PathBuf::from("/home/user/Filme"))
-        );
-        assert_eq!(
-            folder("XDG_VIDEOS_DIR=\"/data/videos\""),
-            Some(PathBuf::from("/data/videos"))
-        );
-        assert_eq!(folder("XDG_VIDEOS_DIR=\"$HOME/\""), None, "disabled entry");
-        assert_eq!(folder("XDG_VIDEOS_DIR=\"relative\""), None);
-        assert_eq!(folder("XDG_MUSIC_DIR=\"$HOME/Music\""), None);
+        for (contents, expected) in [
+            (
+                "# comment\nXDG_VIDEOS_DIR=\"$HOME/Filme\"\n",
+                Some(PathBuf::from("/home/user/Filme")),
+            ),
+            (
+                "XDG_VIDEOS_DIR=\"/data/videos\"",
+                Some(PathBuf::from("/data/videos")),
+            ),
+            ("XDG_VIDEOS_DIR=\"$HOME/\"", None),
+            ("XDG_VIDEOS_DIR=\"relative\"", None),
+            ("XDG_MUSIC_DIR=\"$HOME/Music\"", None),
+        ] {
+            assert_eq!(videos_directory(contents, home), expected, "{contents:?}");
+        }
     }
 
     #[test]

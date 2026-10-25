@@ -1330,12 +1330,16 @@ mod tests {
 
     #[test]
     fn unit_names_require_service_suffix_and_safe_characters() {
-        assert!(validate_unit_name("org.example.Service.service"));
-        assert!(validate_unit_name("foo@bar.service"));
-        assert!(!validate_unit_name("foo"));
-        assert!(!validate_unit_name(".service"));
-        assert!(!validate_unit_name("foo/bar.service"));
-        assert!(!validate_unit_name("foo bar.service"));
+        for (name, valid) in [
+            ("org.example.Service.service", true),
+            ("foo@bar.service", true),
+            ("foo", false),
+            (".service", false),
+            ("foo/bar.service", false),
+            ("foo bar.service", false),
+        ] {
+            assert_eq!(validate_unit_name(name), valid, "{name}");
+        }
     }
 
     fn pidfd_available() -> bool {

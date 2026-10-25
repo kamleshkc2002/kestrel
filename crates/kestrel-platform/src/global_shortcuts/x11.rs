@@ -800,11 +800,15 @@ mod tests {
 
     #[test]
     fn keysym_name_lookup_covers_requested_names() {
-        assert_eq!(keysym_from_name("a"), Some(0x61));
-        assert_eq!(keysym_from_name("9"), Some(0x39));
-        assert_eq!(keysym_from_name("F24"), Some(0xffd5));
-        assert_eq!(keysym_from_name("Page_Up"), Some(0xff55));
-        assert_eq!(keysym_from_name("unknown"), None);
+        for (name, expected) in [
+            ("a", Some(0x61)),
+            ("9", Some(0x39)),
+            ("F24", Some(0xffd5)),
+            ("Page_Up", Some(0xff55)),
+            ("unknown", None),
+        ] {
+            assert_eq!(keysym_from_name(name), expected, "{name}");
+        }
     }
 
     #[test]

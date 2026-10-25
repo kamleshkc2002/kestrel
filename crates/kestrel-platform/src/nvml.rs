@@ -351,17 +351,21 @@ mod tests {
 
     #[test]
     fn init_codes_map_to_typed_unavailability() {
-        assert_eq!(map_init_code(9), NvmlUnavailable::DriverNotLoaded);
-        assert_eq!(map_init_code(18), NvmlUnavailable::VersionMismatch);
-        assert_eq!(map_init_code(4), NvmlUnavailable::NoPermission);
-        assert_eq!(map_init_code(3), NvmlUnavailable::NotSupported);
-        assert_eq!(
-            map_init_code(1234),
-            NvmlUnavailable::Failed {
-                function: "nvmlInit_v2",
-                code: 1234
-            }
-        );
+        for (code, expected) in [
+            (9, NvmlUnavailable::DriverNotLoaded),
+            (18, NvmlUnavailable::VersionMismatch),
+            (4, NvmlUnavailable::NoPermission),
+            (3, NvmlUnavailable::NotSupported),
+            (
+                1234,
+                NvmlUnavailable::Failed {
+                    function: "nvmlInit_v2",
+                    code: 1234,
+                },
+            ),
+        ] {
+            assert_eq!(map_init_code(code), expected, "NVML code {code}");
+        }
     }
 
     #[test]

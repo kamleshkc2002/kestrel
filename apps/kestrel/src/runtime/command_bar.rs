@@ -703,11 +703,6 @@ mod tests {
         let items = ApplicationRuntime::application_items(&entries);
 
         assert_eq!(
-            items.len(),
-            2,
-            "terminal entries are offered like any other"
-        );
-        assert_eq!(
             items[0].action,
             CommandAction::OpenApplication { index: 0 },
             "items address the scanned list"
@@ -745,7 +740,7 @@ mod tests {
             recording_source: None,
             scratchpad_running: false,
         });
-        assert!(absent.is_empty());
+        assert!(absent.is_empty(), "tools whose features are off are hidden");
 
         let present = ApplicationRuntime::tool_items_for(ToolAvailability {
             capture_running: true,

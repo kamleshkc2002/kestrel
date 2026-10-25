@@ -1043,31 +1043,28 @@ mod tests {
     }
 
     #[test]
-    fn hard_cap_cannot_be_raised_by_policy() {
-        let (backend, _log) = fake([standard(20), standard(20)]);
-        let result = AudioMixerService::with_policy(
-            backend,
-            AudioPolicy::default().with_boost_percent(MAX_VOLUME_PERCENT + 1),
-        );
-
-        assert_eq!(
-            result.err(),
-            Some(AudioPolicyError::BoostAboveCap {
-                requested: MAX_VOLUME_PERCENT + 1
-            })
-        );
-    }
-
-    #[test]
-    fn policy_below_unamplified_volume_is_rejected() {
-        let (backend, _log) = fake([standard(20)]);
-        let result =
-            AudioMixerService::with_policy(backend, AudioPolicy::default().with_boost_percent(99));
-
-        assert_eq!(
-            result.err(),
-            Some(AudioPolicyError::BoostBelowUnamplified { requested: 99 })
-        );
+    fn policy_rejects_invalid_boost_boundaries() {
+        for (label, requested, expected) in [
+            (
+                "above hard cap",
+                MAX_VOLUME_PERCENT + 1,
+                AudioPolicyError::BoostAboveCap {
+                    requested: MAX_VOLUME_PERCENT + 1,
+                },
+            ),
+            (
+                "below unamplified volume",
+                99,
+                AudioPolicyError::BoostBelowUnamplified { requested: 99 },
+            ),
+        ] {
+            let (backend, _log) = fake([standard(20)]);
+            let result = AudioMixerService::with_policy(
+                backend,
+                AudioPolicy::default().with_boost_percent(requested),
+            );
+            assert_eq!(result.err(), Some(expected), "{label}");
+        }
     }
 
     #[test]
@@ -1100,49 +1097,42 @@ mod tests {
     }
 
     #[test]
-    fn reset_disconnect_policy_reapplies_the_configured_volume() {
-        let before = discovery(
-            vec![output(3, true, 50), output(4, false, 50)],
-            vec![stream(7, 4, 80)],
-        );
-        let stale = discovery(vec![output(3, true, 50)], vec![stream(7, 4, 80)]);
-        let repaired = discovery(vec![output(3, true, 50)], vec![stream(7, 3, 60)]);
-        let (backend, log) = fake([before, stale, repaired]);
-        let policy = AudioPolicy {
-            disconnect_policy: AudioDisconnectPolicy::ResetVolume,
-            disconnect_volume_percent: 60,
-            ..AudioPolicy::default()
-        };
-        let mut service = AudioMixerService::with_policy(backend, policy).expect("policy is valid");
-        service.refresh().expect("initial discovery");
+    fn disconnect_policies_rehome_streams_with_or_without_volume_reset() {
+        for (label, policy, repaired_volume, expected_resets, expected_volume_calls) in [
+            (
+                "reset volume",
+                AudioPolicy {
+                    disconnect_policy: AudioDisconnectPolicy::ResetVolume,
+                    disconnect_volume_percent: 60,
+                    ..AudioPolicy::default()
+                },
+                60,
+                1,
+                vec![(7, 60)],
+            ),
+            ("preserve volume", AudioPolicy::default(), 80, 0, Vec::new()),
+        ] {
+            let before = discovery(
+                vec![output(3, true, 50), output(4, false, 50)],
+                vec![stream(7, 4, 80)],
+            );
+            let stale = discovery(vec![output(3, true, 50)], vec![stream(7, 4, 80)]);
+            let repaired = discovery(
+                vec![output(3, true, 50)],
+                vec![stream(7, 3, repaired_volume)],
+            );
+            let (backend, log) = fake([before, stale, repaired]);
+            let mut service =
+                AudioMixerService::with_policy(backend, policy).expect("policy is valid");
+            service.refresh().expect("initial discovery");
 
-        let snapshot = service.refresh().expect("device loss is reconciled");
-
-        let reconcile = snapshot.last_reconcile.clone().expect("loss recorded");
-        assert_eq!(reconcile.volume_resets, 1);
-        assert_eq!(reconcile.rehomed_streams, 1);
-        assert_eq!(log.borrow().volume_calls, vec![(7, 60)]);
-        assert_eq!(log.borrow().move_calls, vec![(7, 3)]);
-    }
-
-    #[test]
-    fn preserve_disconnect_policy_leaves_the_stream_volume_untouched() {
-        let before = discovery(
-            vec![output(3, true, 50), output(4, false, 50)],
-            vec![stream(7, 4, 80)],
-        );
-        let stale = discovery(vec![output(3, true, 50)], vec![stream(7, 4, 80)]);
-        let repaired = discovery(vec![output(3, true, 50)], vec![stream(7, 3, 80)]);
-        let (backend, log) = fake([before, stale, repaired]);
-        let mut service = AudioMixerService::new(backend);
-        service.refresh().expect("initial discovery");
-
-        let snapshot = service.refresh().expect("device loss is reconciled");
-
-        let reconcile = snapshot.last_reconcile.clone().expect("loss recorded");
-        assert_eq!(reconcile.volume_resets, 0);
-        assert_eq!(reconcile.rehomed_streams, 1);
-        assert!(log.borrow().volume_calls.is_empty());
+            let snapshot = service.refresh().expect("device loss is reconciled");
+            let reconcile = snapshot.last_reconcile.clone().expect("loss recorded");
+            assert_eq!(reconcile.volume_resets, expected_resets, "{label}");
+            assert_eq!(reconcile.rehomed_streams, 1, "{label}");
+            assert_eq!(log.borrow().volume_calls, expected_volume_calls, "{label}");
+            assert_eq!(log.borrow().move_calls, vec![(7, 3)], "{label}");
+        }
     }
 
     #[test]

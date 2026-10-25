@@ -343,25 +343,25 @@ mod tests {
     }
 
     #[test]
-    fn laptop_power_supply_is_excluded() {
-        let mut values = mouse_properties();
-        values.insert("Type".to_owned(), OwnedValue::from(2u32));
-        values.insert("PowerSupply".to_owned(), OwnedValue::from(true));
-        assert!(peripheral_from_properties("/laptop", &values).is_none());
-    }
-
-    #[test]
-    fn line_power_is_excluded() {
-        let mut values = mouse_properties();
-        values.insert("Type".to_owned(), OwnedValue::from(1u32));
-        assert!(peripheral_from_properties("/line-power", &values).is_none());
-    }
-
-    #[test]
-    fn absent_device_is_excluded() {
-        let mut values = mouse_properties();
-        values.insert("IsPresent".to_owned(), OwnedValue::from(false));
-        assert!(peripheral_from_properties("/mouse", &values).is_none());
+    fn non_peripheral_devices_are_excluded() {
+        for (path, device_type, power_supply, present) in [
+            ("/laptop", 2u32, true, true),
+            ("/line-power", 1u32, false, true),
+            ("/mouse", 5u32, false, false),
+        ] {
+            let mut values = mouse_properties();
+            values.insert("Type".to_owned(), OwnedValue::from(device_type));
+            if power_supply {
+                values.insert("PowerSupply".to_owned(), OwnedValue::from(true));
+            }
+            if !present {
+                values.insert("IsPresent".to_owned(), OwnedValue::from(false));
+            }
+            assert!(
+                peripheral_from_properties(path, &values).is_none(),
+                "{path} is not a peripheral"
+            );
+        }
     }
 
     #[test]

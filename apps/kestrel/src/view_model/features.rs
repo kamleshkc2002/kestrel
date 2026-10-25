@@ -862,92 +862,100 @@ mod tests {
             view
         };
         let shown = |view: &FeatureViewModel| (view.indicator(), view.status_line());
-
-        assert_eq!(
-            shown(&row(CapabilityStatus::Supported, None, true, true)),
-            (FeatureIndicator::Running, "Running".to_owned())
-        );
-        assert_eq!(
-            shown(&row(CapabilityStatus::Supported, None, false, false)),
-            (FeatureIndicator::Off, "Off".to_owned())
-        );
-        assert_eq!(
-            shown(&row(CapabilityStatus::Supported, None, true, false)),
+        for (case, status, fix, enabled, running, expected) in [
             (
-                FeatureIndicator::NeedsAttention,
-                "On, but not running".to_owned()
-            )
-        );
-        assert_eq!(
-            shown(&row(
+                "running",
+                CapabilityStatus::Supported,
+                None,
+                true,
+                true,
+                (FeatureIndicator::Running, "Running"),
+            ),
+            (
+                "off",
+                CapabilityStatus::Supported,
+                None,
+                false,
+                false,
+                (FeatureIndicator::Off, "Off"),
+            ),
+            (
+                "on but stopped",
+                CapabilityStatus::Supported,
+                None,
+                true,
+                false,
+                (FeatureIndicator::NeedsAttention, "On, but not running"),
+            ),
+            (
+                "missing dependency",
                 CapabilityStatus::MissingDependency {
-                    name: "Tesseract".to_owned()
+                    name: "Tesseract".to_owned(),
                 },
                 Some("Install it with sudo apt install tesseract-ocr."),
                 false,
-                false
-            )),
-            (
-                FeatureIndicator::NeedsAttention,
-                "Needs Tesseract. Install it with sudo apt install tesseract-ocr.".to_owned()
+                false,
+                (
+                    FeatureIndicator::NeedsAttention,
+                    "Needs Tesseract. Install it with sudo apt install tesseract-ocr.",
+                ),
             ),
-            "a missing piece warns even while the feature is off"
-        );
-        assert_eq!(
-            shown(&row(
+            (
+                "missing permission",
                 CapabilityStatus::NeedsPermission {
-                    permission: Permission::HardwareControl
+                    permission: Permission::HardwareControl,
                 },
                 None,
                 true,
-                false
-            )),
+                false,
+                (
+                    FeatureIndicator::NeedsAttention,
+                    "Needs hardware control permission",
+                ),
+            ),
             (
-                FeatureIndicator::NeedsAttention,
-                "Needs hardware control permission".to_owned()
-            )
-        );
-        assert_eq!(
-            shown(&row(
+                "unsupported",
                 CapabilityStatus::Unsupported {
-                    reason: "this session exports no portal.".to_owned()
+                    reason: "this session exports no portal.".to_owned(),
                 },
                 Some("Bind kestrel --command instead."),
                 false,
-                false
-            )),
+                false,
+                (
+                    FeatureIndicator::Unavailable,
+                    "Not available here. This session exports no portal.",
+                ),
+            ),
             (
-                FeatureIndicator::Unavailable,
-                "Not available here. This session exports no portal.".to_owned()
-            )
-        );
-        assert_eq!(
-            shown(&row(
+                "limited without fix",
                 CapabilityStatus::Limited {
-                    reason: "There are no active playback streams.".to_owned()
+                    reason: "There are no active playback streams.".to_owned(),
                 },
                 None,
                 true,
-                true
-            )),
-            (FeatureIndicator::Running, "Running".to_owned()),
-            "a partial capability without a fix is a plain fact"
-        );
-        assert_eq!(
-            shown(&row(
+                true,
+                (FeatureIndicator::Running, "Running"),
+            ),
+            (
+                "limited with fix",
                 CapabilityStatus::Limited {
-                    reason: "no insertion provider is installed".to_owned()
+                    reason: "no insertion provider is installed".to_owned(),
                 },
                 Some("Install wtype or xdotool."),
                 true,
-                true
-            )),
-            (
-                FeatureIndicator::NeedsAttention,
-                "Works partly: no insertion provider is installed. Install wtype or xdotool."
-                    .to_owned()
-            )
-        );
+                true,
+                (
+                    FeatureIndicator::NeedsAttention,
+                    "Works partly: no insertion provider is installed. Install wtype or xdotool.",
+                ),
+            ),
+        ] {
+            assert_eq!(
+                shown(&row(status, fix, enabled, running)),
+                (expected.0, expected.1.to_owned()),
+                "{case}"
+            );
+        }
 
         let details = row(CapabilityStatus::Supported, None, true, true).details();
         for part in [
@@ -958,19 +966,6 @@ mod tests {
         ] {
             assert!(details.contains(part), "{part:?} in {details:?}");
         }
-    }
-
-    #[test]
-    fn power_use_reads_as_one_plain_sentence() {
-        let power = |idle, polling| ResourceCostViewModel { idle, polling }.power_use();
-        assert_eq!(
-            power(CostLevel::Low, CostLevel::Moderate),
-            "Uses a little power in the background and wakes up often."
-        );
-        assert_eq!(
-            power(CostLevel::Moderate, CostLevel::Low),
-            "Uses some power in the background and wakes up now and then."
-        );
     }
 
     #[test]

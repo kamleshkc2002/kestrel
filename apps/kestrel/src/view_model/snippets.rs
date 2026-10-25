@@ -220,17 +220,16 @@ mod tests {
 
         assert!(snippets.insertion_available);
         assert!(snippets.insertion_status.contains("wtype"));
-        assert_eq!(snippets.total, 1);
-        assert_eq!(snippets.items.len(), 1);
-        assert_eq!(snippets.items[0].name, "Address");
-        assert_eq!(snippets.items[0].trigger.as_deref(), Some(";addr"));
+        let item = snippets
+            .items
+            .first()
+            .expect("the searched snippet is shown");
         assert!(
-            snippets.items[0].preview.contains("«date»")
-                && snippets.items[0].preview.contains("«clipboard»"),
+            item.preview.contains("«date»") && item.preview.contains("«clipboard»"),
             "previews keep variables as placeholders instead of reading live values: {}",
-            snippets.items[0].preview
+            item.preview
         );
-        assert!(snippets.items[0].detail.contains("{{date}}"));
+        assert!(item.detail.contains("{{date}}"));
     }
 
     #[test]

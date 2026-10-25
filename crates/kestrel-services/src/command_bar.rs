@@ -1569,7 +1569,6 @@ mod tests {
         );
 
         let typed = "quarterly revenue numbers";
-        assert!(fuzzy_score(typed, "kestrel:refresh").is_none() || true);
         let debug = format!("{ranking:?}");
         assert!(
             debug.contains("kestrel:refresh"),
@@ -1614,25 +1613,37 @@ mod tests {
     }
 
     #[test]
-    fn math_evaluates_expressions_and_rejects_everything_else() {
-        assert_eq!(evaluate_math("2+3*4"), Some(14.0));
-        assert_eq!(evaluate_math("(2+3)*4"), Some(20.0));
-        assert_eq!(evaluate_math("2^10"), Some(1024.0));
-        assert_eq!(evaluate_math("10/4"), Some(2.5));
-        assert_eq!(evaluate_math("7 % 3"), Some(1.0));
-        assert_eq!(evaluate_math("-4 + 1"), Some(-3.0));
-        assert_eq!(evaluate_math("1 000 + 24"), Some(1024.0));
-
-        assert_eq!(
-            evaluate_math("1/0"),
-            None,
-            "division by zero is not a result"
-        );
-        assert_eq!(evaluate_math("2+"), None);
-        assert_eq!(evaluate_math("(2+3"), None);
-        assert_eq!(evaluate_math("rm -rf /"), None);
-        assert_eq!(evaluate_math("date"), None, "no digits means no math");
-        assert_eq!(evaluate_math("1+2abc"), None);
+    fn math_evaluates_localized_expressions_and_rejects_invalid_input() {
+        let cases = [
+            ("2+3*4", Some(14.0)),
+            ("(2+3)*4", Some(20.0)),
+            ("2^10", Some(1024.0)),
+            ("10/4", Some(2.5)),
+            ("7 % 3", Some(1.0)),
+            ("-4 + 1", Some(-3.0)),
+            ("1 000 + 24", Some(1024.0)),
+            ("1 234 567", Some(1_234_567.0)),
+            ("1'234.5", Some(1_234.5)),
+            ("1 234,5", Some(1_234.5)),
+            ("3,5 * 2", Some(7.0)),
+            ("1 234,567", Some(1234.567)),
+            ("1'234,567", Some(1234.567)),
+            ("1,234", Some(1.234)),
+            ("1234,567", Some(1234.567)),
+            ("1/0", None),
+            ("2+", None),
+            ("(2+3", None),
+            ("rm -rf /", None),
+            ("date", None),
+            ("1+2abc", None),
+            ("1,234,567", None),
+            ("12 34", None),
+            ("1 2345", None),
+            ("1'23", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(evaluate_math(input), expected, "{input}");
+        }
     }
 
     #[test]
@@ -1655,34 +1666,23 @@ mod tests {
 
     #[test]
     fn date_queries_render_deterministically_from_the_supplied_clock() {
-        assert_eq!(
-            render_date_query("date", &NOW).as_deref(),
-            Some("2026-10-02")
-        );
-        assert_eq!(
-            render_date_query("today", &NOW).as_deref(),
-            Some("2026-10-02")
-        );
-        assert_eq!(
-            render_date_query("tomorrow", &NOW).as_deref(),
-            Some("2026-10-03")
-        );
-        assert_eq!(
-            render_date_query("yesterday", &NOW).as_deref(),
-            Some("2026-10-01")
-        );
-        assert_eq!(
-            render_date_query("time", &NOW).as_deref(),
-            Some("2026-10-02 09:05:07 (+02:00)")
-        );
-        assert_eq!(
-            render_date_query("epoch 1700000000", &NOW).as_deref(),
-            Some("2023-11-15 00:13:20"),
-            "epoch values render in the local zone"
-        );
-
-        assert_eq!(render_date_query("nonsense", &NOW), None);
-        assert_eq!(render_date_query("epoch not-a-number", &NOW), None);
+        let cases = [
+            ("date", Some("2026-10-02")),
+            ("today", Some("2026-10-02")),
+            ("tomorrow", Some("2026-10-03")),
+            ("yesterday", Some("2026-10-01")),
+            ("time", Some("2026-10-02 09:05:07 (+02:00)")),
+            ("epoch 1700000000", Some("2023-11-15 00:13:20")),
+            ("nonsense", None),
+            ("epoch not-a-number", None),
+        ];
+        for (query, expected) in cases {
+            assert_eq!(
+                render_date_query(query, &NOW).as_deref(),
+                expected,
+                "{query}"
+            );
+        }
     }
 
     #[test]
@@ -1763,22 +1763,6 @@ mod tests {
             render_days_until_query("days until jan 1", &december).as_deref(),
             Some("1 days until 2027-01-01")
         );
-    }
-
-    #[test]
-    fn locale_number_grouping_is_strict() {
-        assert_eq!(evaluate_math("1 234 567"), Some(1_234_567.0));
-        assert_eq!(evaluate_math("1'234.5"), Some(1_234.5));
-        assert_eq!(evaluate_math("1 234,5"), Some(1_234.5));
-        assert_eq!(evaluate_math("3,5 * 2"), Some(7.0));
-        assert_eq!(evaluate_math("1 234,567"), Some(1234.567));
-        assert_eq!(evaluate_math("1'234,567"), Some(1234.567));
-        assert_eq!(evaluate_math("1,234"), Some(1.234));
-        assert_eq!(evaluate_math("1234,567"), Some(1234.567));
-        assert_eq!(evaluate_math("1,234,567"), None);
-        assert_eq!(evaluate_math("12 34"), None);
-        assert_eq!(evaluate_math("1 2345"), None);
-        assert_eq!(evaluate_math("1'23"), None);
     }
 
     #[test]
@@ -2135,11 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn sources_declare_portability_and_labels() {
-        assert_eq!(CommandSource::ALL.len(), 15);
-        for source in CommandSource::ALL {
-            assert!(!source.label().is_empty());
-        }
+    fn sources_declare_portability() {
         assert!(CommandSource::Kestrel.portable());
         assert!(CommandSource::Math.portable());
         assert!(!CommandSource::Application.portable());

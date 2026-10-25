@@ -302,19 +302,14 @@ mod tests {
 
     #[test]
     fn notification_actions_parse_to_typed_follow_ups() {
-        assert_eq!(
-            parse_capture_action_key("default"),
-            Some(CaptureNotificationAction::Open)
-        );
-        assert_eq!(
-            parse_capture_action_key("edit"),
-            Some(CaptureNotificationAction::Edit)
-        );
-        assert_eq!(
-            parse_capture_action_key("copy"),
-            Some(CaptureNotificationAction::Copy)
-        );
-        assert_eq!(parse_capture_action_key("launch"), None);
+        for (key, expected) in [
+            ("default", Some(CaptureNotificationAction::Open)),
+            ("edit", Some(CaptureNotificationAction::Edit)),
+            ("copy", Some(CaptureNotificationAction::Copy)),
+            ("launch", None),
+        ] {
+            assert_eq!(parse_capture_action_key(key), expected, "{key}");
+        }
     }
 
     #[test]

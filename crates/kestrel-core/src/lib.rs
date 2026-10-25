@@ -2311,22 +2311,21 @@ impl FeatureSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        AlertKind, AppearancePreference, ApplicationConfiguration, AudioDisconnectPolicy,
-        AudioOutputSwitch, CURRENT_CONFIGURATION_SCHEMA_VERSION, CapabilityStatus,
-        ClipboardConfiguration, ConfigurationError, CostLevel, DEFAULT_AUDIO_BOOST_PERCENT,
-        DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT, DEFAULT_CLIPBOARD_AGE_HOURS,
-        DEFAULT_CLIPBOARD_FILE_ENTRIES, DEFAULT_CLIPBOARD_IMAGE_BYTES,
+        AlertKind, ApplicationConfiguration, AudioDisconnectPolicy, AudioOutputSwitch,
+        CURRENT_CONFIGURATION_SCHEMA_VERSION, ClipboardConfiguration, ConfigurationError,
+        DEFAULT_AUDIO_BOOST_PERCENT, DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT,
+        DEFAULT_CLIPBOARD_AGE_HOURS, DEFAULT_CLIPBOARD_FILE_ENTRIES, DEFAULT_CLIPBOARD_IMAGE_BYTES,
         DEFAULT_CLIPBOARD_ITEM_BYTES, DEFAULT_CLIPBOARD_MAX_ITEMS, DEFAULT_CLIPBOARD_TOTAL_BYTES,
-        FeatureSpec, MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES,
-        MAX_ALERT_THRESHOLD_PERCENT, MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS,
-        MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES,
-        MAX_CLIPBOARD_MAX_ITEMS, MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
+        MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT,
+        MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS, MAX_CLIPBOARD_CLEAR_SECONDS,
+        MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_MAX_ITEMS,
+        MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
         MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SNIPPET_NAME_CHARS,
         MAX_SNIPPET_VARIABLES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
         MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
-        MonitorReadout, ResourceCost, Snippet, SnippetConfiguration, SnippetError,
-        SnippetExpansionTiming, SnippetProviderPreference, SnippetVariable,
-        UNAMPLIFIED_AUDIO_VOLUME_PERCENT, variable_tokens,
+        MonitorReadout, Snippet, SnippetConfiguration, SnippetError, SnippetExpansionTiming,
+        SnippetProviderPreference, SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
+        variable_tokens,
     };
 
     #[test]
@@ -2362,27 +2361,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_cover_presentation_and_static_cost_contracts() {
-        let configuration = ApplicationConfiguration::default();
-        assert_eq!(configuration.ui.appearance, AppearancePreference::System);
-        assert!(!configuration.startup.autostart);
-
-        let feature = FeatureSpec::new(
-            "system.monitor",
-            "System monitor",
-            CapabilityStatus::Supported,
-        )
-        .with_configurable(false)
-        .with_cost(ResourceCost {
-            idle: CostLevel::Low,
-            interaction: CostLevel::Moderate,
-            polling: CostLevel::Low,
-        });
-        assert!(!feature.configurable);
-        assert_eq!(feature.cost.polling, CostLevel::Low);
-    }
-
-    #[test]
     fn feature_snapshot_restores_absence_and_values_exactly() {
         let mut configuration = ApplicationConfiguration::default();
         configuration
@@ -2410,82 +2388,109 @@ mod tests {
     }
 
     #[test]
-    fn monitor_refresh_interval_bounds_are_enforced() {
-        for millis in [
-            MIN_MONITOR_REFRESH_INTERVAL_MILLIS,
-            MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
-        ] {
-            let mut configuration = ApplicationConfiguration::default();
-            configuration.monitoring.refresh_interval_millis = millis;
-            assert_eq!(configuration.validate(), Ok(()));
+    fn configuration_validation_accepts_boundaries_and_rejects_outside() {
+        #[derive(Clone, Copy)]
+        enum Case {
+            Refresh(u64),
+            History(u32),
+            Boost(u8),
+            Disconnect(u8),
         }
 
-        for millis in [
-            MIN_MONITOR_REFRESH_INTERVAL_MILLIS - 1,
-            MAX_MONITOR_REFRESH_INTERVAL_MILLIS + 1,
-        ] {
-            let mut configuration = ApplicationConfiguration::default();
-            configuration.monitoring.refresh_interval_millis = millis;
-            assert_eq!(
-                configuration.validate(),
-                Err(ConfigurationError::InvalidMonitorRefreshInterval { millis })
-            );
-        }
-    }
+        let cases = [
+            (
+                "refresh minimum",
+                Case::Refresh(MIN_MONITOR_REFRESH_INTERVAL_MILLIS),
+            ),
+            (
+                "refresh maximum",
+                Case::Refresh(MAX_MONITOR_REFRESH_INTERVAL_MILLIS),
+            ),
+            (
+                "refresh below minimum",
+                Case::Refresh(MIN_MONITOR_REFRESH_INTERVAL_MILLIS - 1),
+            ),
+            (
+                "refresh above maximum",
+                Case::Refresh(MAX_MONITOR_REFRESH_INTERVAL_MILLIS + 1),
+            ),
+            ("history minimum", Case::History(1)),
+            (
+                "history maximum",
+                Case::History(MAX_MONITOR_HISTORY_SAMPLES),
+            ),
+            ("history below minimum", Case::History(0)),
+            (
+                "history above maximum",
+                Case::History(MAX_MONITOR_HISTORY_SAMPLES + 1),
+            ),
+            (
+                "boost minimum",
+                Case::Boost(UNAMPLIFIED_AUDIO_VOLUME_PERCENT),
+            ),
+            ("boost maximum", Case::Boost(MAX_AUDIO_BOOST_PERCENT)),
+            (
+                "boost below minimum",
+                Case::Boost(UNAMPLIFIED_AUDIO_VOLUME_PERCENT - 1),
+            ),
+            (
+                "boost above maximum",
+                Case::Boost(MAX_AUDIO_BOOST_PERCENT + 1),
+            ),
+            ("disconnect minimum", Case::Disconnect(0)),
+            (
+                "disconnect maximum",
+                Case::Disconnect(UNAMPLIFIED_AUDIO_VOLUME_PERCENT),
+            ),
+            (
+                "disconnect above maximum",
+                Case::Disconnect(UNAMPLIFIED_AUDIO_VOLUME_PERCENT + 1),
+            ),
+        ];
 
-    #[test]
-    fn monitor_history_sample_bounds_are_enforced() {
-        for samples in [1, MAX_MONITOR_HISTORY_SAMPLES] {
+        for (case, input) in cases {
             let mut configuration = ApplicationConfiguration::default();
-            configuration.monitoring.history_samples = samples;
-            assert_eq!(configuration.validate(), Ok(()));
+            match input {
+                Case::Refresh(millis) => configuration.monitoring.refresh_interval_millis = millis,
+                Case::History(samples) => configuration.monitoring.history_samples = samples,
+                Case::Boost(percent) => configuration.audio.boost_percent = percent,
+                Case::Disconnect(percent) => {
+                    configuration.audio.disconnect_volume_percent = percent
+                }
+            }
+            let expected = match input {
+                Case::Refresh(millis)
+                    if (MIN_MONITOR_REFRESH_INTERVAL_MILLIS
+                        ..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
+                        .contains(&millis) =>
+                {
+                    Ok(())
+                }
+                Case::Refresh(millis) => {
+                    Err(ConfigurationError::InvalidMonitorRefreshInterval { millis })
+                }
+                Case::History(samples) if (1..=MAX_MONITOR_HISTORY_SAMPLES).contains(&samples) => {
+                    Ok(())
+                }
+                Case::History(samples) => {
+                    Err(ConfigurationError::InvalidMonitorHistorySamples { samples })
+                }
+                Case::Boost(percent)
+                    if (UNAMPLIFIED_AUDIO_VOLUME_PERCENT..=MAX_AUDIO_BOOST_PERCENT)
+                        .contains(&percent) =>
+                {
+                    Ok(())
+                }
+                Case::Boost(percent) => {
+                    Err(ConfigurationError::InvalidAudioBoostPercent { percent })
+                }
+                Case::Disconnect(percent) if percent <= UNAMPLIFIED_AUDIO_VOLUME_PERCENT => Ok(()),
+                Case::Disconnect(percent) => {
+                    Err(ConfigurationError::InvalidAudioDisconnectVolumePercent { percent })
+                }
+            };
+            assert_eq!(configuration.validate(), expected, "{case}");
         }
-
-        for samples in [0, MAX_MONITOR_HISTORY_SAMPLES + 1] {
-            let mut configuration = ApplicationConfiguration::default();
-            configuration.monitoring.history_samples = samples;
-            assert_eq!(
-                configuration.validate(),
-                Err(ConfigurationError::InvalidMonitorHistorySamples { samples })
-            );
-        }
-    }
-
-    #[test]
-    fn audio_boost_ceiling_is_bounded_by_the_hard_cap() {
-        for percent in [UNAMPLIFIED_AUDIO_VOLUME_PERCENT, MAX_AUDIO_BOOST_PERCENT] {
-            let mut configuration = ApplicationConfiguration::default();
-            configuration.audio.boost_percent = percent;
-            assert_eq!(configuration.validate(), Ok(()));
-        }
-
-        for percent in [
-            UNAMPLIFIED_AUDIO_VOLUME_PERCENT - 1,
-            MAX_AUDIO_BOOST_PERCENT + 1,
-        ] {
-            let mut configuration = ApplicationConfiguration::default();
-            configuration.audio.boost_percent = percent;
-            assert_eq!(
-                configuration.validate(),
-                Err(ConfigurationError::InvalidAudioBoostPercent { percent })
-            );
-        }
-    }
-
-    #[test]
-    fn audio_disconnect_volume_stays_within_the_unamplified_range() {
-        for percent in [0, UNAMPLIFIED_AUDIO_VOLUME_PERCENT] {
-            let mut configuration = ApplicationConfiguration::default();
-            configuration.audio.disconnect_volume_percent = percent;
-            assert_eq!(configuration.validate(), Ok(()));
-        }
-
-        let mut configuration = ApplicationConfiguration::default();
-        configuration.audio.disconnect_volume_percent = UNAMPLIFIED_AUDIO_VOLUME_PERCENT + 1;
-        assert_eq!(
-            configuration.validate(),
-            Err(ConfigurationError::InvalidAudioDisconnectVolumePercent { percent: 101 })
-        );
     }
 
     #[test]

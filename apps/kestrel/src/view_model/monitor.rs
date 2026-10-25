@@ -741,21 +741,20 @@ mod tests {
 
     #[test]
     fn units_switch_at_the_rounded_boundary() {
-        assert_eq!(super::format_bytes(1023.6), "1.0 KiB");
-        assert_eq!(super::format_bytes(1023.97 * 1024.0), "1.0 MiB");
-        assert_eq!(super::format_bytes(1000.0 * 1024.0), "1000.0 KiB");
-        assert_eq!(
-            super::format_rate(125_000.0, kestrel_core::NetworkRateUnit::Bits),
-            "1.0 Mbit/s"
-        );
-        assert_eq!(
-            super::format_rate(124.9, kestrel_core::NetworkRateUnit::Bits),
-            "999 bit/s"
-        );
-        assert_eq!(
-            super::format_rate(2048.0, kestrel_core::NetworkRateUnit::Bytes),
-            "2.0 KiB/s"
-        );
+        for (value, expected) in [
+            (super::format_bytes(1023.6), "1.0 KiB"),
+            (super::format_bytes(1023.97 * 1024.0), "1.0 MiB"),
+            (super::format_bytes(1000.0 * 1024.0), "1000.0 KiB"),
+        ] {
+            assert_eq!(value, expected);
+        }
+        for (value, unit, expected) in [
+            (125_000.0, kestrel_core::NetworkRateUnit::Bits, "1.0 Mbit/s"),
+            (124.9, kestrel_core::NetworkRateUnit::Bits, "999 bit/s"),
+            (2048.0, kestrel_core::NetworkRateUnit::Bytes, "2.0 KiB/s"),
+        ] {
+            assert_eq!(super::format_rate(value, unit), expected);
+        }
     }
 
     #[test]

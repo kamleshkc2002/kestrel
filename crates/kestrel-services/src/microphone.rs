@@ -503,17 +503,17 @@ mod tests {
 
     #[test]
     fn computes_mute_states() {
-        let empty = snapshot_for_discovery(&discovery(vec![]), 0, false);
-        assert_eq!(empty.mute, MicrophoneMuteState::NoInputs);
-        let mixed = snapshot_for_discovery(
-            &discovery(vec![input(1, true, true), input(2, false, false)]),
-            0,
-            false,
-        );
-        assert_eq!(
-            mixed.mute,
-            MicrophoneMuteState::Mixed { muted: 1, total: 2 }
-        );
+        for (label, inputs, expected) in [
+            ("no inputs", vec![], MicrophoneMuteState::NoInputs),
+            (
+                "mixed inputs",
+                vec![input(1, true, true), input(2, false, false)],
+                MicrophoneMuteState::Mixed { muted: 1, total: 2 },
+            ),
+        ] {
+            let snapshot = snapshot_for_discovery(&discovery(inputs), 0, false);
+            assert_eq!(snapshot.mute, expected, "{label}");
+        }
     }
 
     #[test]

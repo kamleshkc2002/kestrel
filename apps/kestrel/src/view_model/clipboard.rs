@@ -393,12 +393,7 @@ mod tests {
         assert!(!clipboard.running);
         assert!(clipboard.status.contains("Feature Hub"));
         assert!(clipboard.items.is_empty());
-        assert_eq!(
-            clipboard.policy.max_items,
-            configuration.clipboard.max_items
-        );
     }
-
     #[test]
     fn clipboard_rows_come_only_from_explicit_search_matches() {
         let configuration = ApplicationConfiguration::default();

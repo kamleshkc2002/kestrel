@@ -2305,13 +2305,14 @@ mod tests {
 
     #[test]
     fn plain_text_strips_escape_sequences_and_trailing_whitespace() {
-        assert_eq!(
-            plain_text("\u{1b}[31mred\u{1b}[0m text  \n\n").as_str(),
-            "red text"
-        );
-        assert_eq!(plain_text("\u{1b}]0;title\u{7}body").as_str(), "body");
-        assert_eq!(plain_text("no escapes").as_str(), "no escapes");
-        assert_eq!(plain_text("µnicode ✓  ").as_str(), "µnicode ✓");
+        for (input, expected) in [
+            ("\u{1b}[31mred\u{1b}[0m text  \n\n", "red text"),
+            ("\u{1b}]0;title\u{7}body", "body"),
+            ("no escapes", "no escapes"),
+            ("µnicode ✓  ", "µnicode ✓"),
+        ] {
+            assert_eq!(plain_text(input).as_str(), expected, "{input:?}");
+        }
     }
 
     fn wait_for_items(service: &ClipboardHistoryService, expected: usize) {
