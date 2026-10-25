@@ -45,7 +45,7 @@ pub(crate) fn capability(id: QuickToggleId, root: &Path, kind: DeviceKind) -> Ca
                     "Use the display or compositor controls for external and unsupported panels."
                 }
                 DeviceKind::Keyboard => {
-                    "A light run by the keyboard's own controller keeps working with its function key; Kestrel can change only a light Linux exposes as a backlight LED."
+                    "Kestrel changes only a keyboard light that Linux exposes as a writable backlight LED, and this computer has none; use the keyboard's or laptop's own lighting controls."
                 }
             });
         }
