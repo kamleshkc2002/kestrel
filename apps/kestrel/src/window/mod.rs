@@ -16,6 +16,7 @@ mod screen_tools;
 mod settings;
 mod snippets;
 mod trim;
+mod whats_new;
 mod widgets;
 
 use adw::prelude::*;
@@ -706,21 +707,24 @@ impl SidebarSearch {
         for filter in self.filters.borrow().iter() {
             let page_named = query.is_empty() || filter.keywords.contains(query);
             let mut page_matches = page_named;
-            // A group shows while any of its searchable rows does.
+            // A group shows while any searchable row inside it does, however
+            // deeply the groups nest.
             let mut groups: Vec<(adw::PreferencesGroup, bool)> = Vec::new();
             for (row, keywords) in &filter.rows {
                 let visible = page_named || keywords.contains(query);
                 row.set_visible(visible);
                 page_matches |= visible;
-                let Some(group) = row
-                    .ancestor(adw::PreferencesGroup::static_type())
-                    .and_then(|group| group.downcast::<adw::PreferencesGroup>().ok())
-                else {
-                    continue;
-                };
-                match groups.iter_mut().find(|(known, _)| *known == group) {
-                    Some((_, any_visible)) => *any_visible |= visible,
-                    None => groups.push((group, visible)),
+                let mut enclosing = row.ancestor(adw::PreferencesGroup::static_type());
+                while let Some(group) =
+                    enclosing.and_then(|group| group.downcast::<adw::PreferencesGroup>().ok())
+                {
+                    enclosing = group
+                        .parent()
+                        .and_then(|parent| parent.ancestor(adw::PreferencesGroup::static_type()));
+                    match groups.iter_mut().find(|(known, _)| *known == group) {
+                        Some((_, any_visible)) => *any_visible |= visible,
+                        None => groups.push((group, visible)),
+                    }
                 }
             }
             for (group, any_visible) in groups {
@@ -889,6 +893,22 @@ fn build_page(
     body.set_margin_start(18);
     body.set_margin_end(18);
     if page == SidebarPage::Overview {
+        if let Some(title) = &view_model.whats_new.banner {
+            let banner = adw::Banner::builder()
+                .title(gtk::glib::markup_escape_text(title).as_str())
+                .button_label("Show")
+                .revealed(true)
+                .build();
+            let window = window.clone();
+            let notes = view_model.whats_new.clone();
+            let commands = commands.clone();
+            banner.connect_button_clicked(move |banner| {
+                banner.set_revealed(false);
+                whats_new::open_whats_new(&window, &notes);
+                let _ = commands.try_send(ApplicationCommand::MarkWhatsNewRead);
+            });
+            body.append(&banner);
+        }
         let heading = gtk::Label::new(Some(kestrel_core::APPLICATION_NAME));
         heading.add_css_class("title-1");
         heading.set_halign(Align::Start);

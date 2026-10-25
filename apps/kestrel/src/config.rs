@@ -20,8 +20,7 @@ use kestrel_core::{
     MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES, MIN_SNIPPET_CONTENT_BYTES,
     MIN_SNIPPET_INSERT_TIMEOUT_MILLIS, MIN_SPEED_TEST_DOWNLOAD_MEGABYTES,
     MIN_SPEED_TEST_TIMEOUT_SECONDS, MonitorReadout, SnippetExpansionTiming,
-    SnippetProviderPreference, StartupConfiguration, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
-    validate_feature_id,
+    SnippetProviderPreference, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, validate_feature_id,
 };
 use serde::Deserialize;
 
@@ -88,6 +87,19 @@ pub fn configuration_path() -> Option<PathBuf> {
             .join(kestrel_core::DATA_DIRECTORY_NAME)
             .join("config.toml"),
     )
+}
+
+/// `$XDG_STATE_HOME/<data directory>`, falling back to `~/.local/state`.
+pub(crate) fn state_directory() -> Option<PathBuf> {
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    Some(state_home.join(kestrel_core::DATA_DIRECTORY_NAME))
 }
 
 /// `$XDG_VIDEOS_DIR/Kestrel` from `user-dirs.dirs`, else `~/Videos/Kestrel`.
@@ -351,10 +363,19 @@ fn parse_startup(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
     };
     if let Some(autostart) = startup.get("autostart") {
         match bool::deserialize(autostart.clone()) {
-            Ok(autostart) => loaded.configuration.startup = StartupConfiguration { autostart },
+            Ok(autostart) => loaded.configuration.startup.autostart = autostart,
             Err(error) => loaded.warnings.push(warning(
                 "startup.autostart",
                 format!("Autostart preference is invalid and defaults were retained: {error}"),
+            )),
+        }
+    }
+    if let Some(whats_new) = startup.get("whats_new") {
+        match bool::deserialize(whats_new.clone()) {
+            Ok(whats_new) => loaded.configuration.startup.whats_new = whats_new,
+            Err(_) => loaded.warnings.push(warning(
+                "startup.whats_new",
+                "Must be true or false; the default was retained.",
             )),
         }
     }
@@ -1631,6 +1652,7 @@ enabled = true
             loaded.configuration.ui.appearance,
             AppearancePreference::System
         );
+        assert!(loaded.configuration.startup.whats_new);
 
         let loaded = parse(
             r#"
@@ -1699,6 +1721,7 @@ section = "feature_hub"
 visible = false
 [startup]
 autostart = true
+whats_new = false
 "#,
         )
         .expect("legacy panel sections are ignored");
@@ -1707,6 +1730,7 @@ autostart = true
             AppearancePreference::Dark
         );
         assert!(loaded.configuration.startup.autostart);
+        assert!(!loaded.configuration.startup.whats_new);
         assert!(loaded.warnings.is_empty());
     }
 
@@ -1735,21 +1759,22 @@ autostart = true
     }
 
     #[test]
-    fn overlay_modules_parse_and_a_malformed_one_keeps_its_default() {
+    fn on_off_settings_parse_and_a_malformed_one_keeps_its_default() {
         let loaded = parse(
-            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\n",
+            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\n[startup]\nwhats_new = \"no\"\n",
         )
         .expect("document itself is valid TOML");
         let overlay = loaded.configuration.overlay;
         assert!(!overlay.microphone && !overlay.alerts);
         assert!(overlay.recording, "a malformed value keeps its default");
+        assert!(loaded.configuration.startup.whats_new);
         assert_eq!(
             loaded
                 .warnings
                 .iter()
                 .map(|warning| warning.feature_id.as_str())
                 .collect::<Vec<_>>(),
-            ["overlay.recording"]
+            ["startup.whats_new", "overlay.recording"]
         );
     }
 

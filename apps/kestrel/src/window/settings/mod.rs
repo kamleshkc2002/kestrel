@@ -72,6 +72,7 @@ pub(super) fn build_settings_group(
             let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
             group.add(&io_row);
             add_logging_group(&group, view_model, window, commands, &mut filter_rows);
+            add_whats_new_group(&group, view_model, window, commands, &mut filter_rows);
             add_overlay_group(&group, view_model, commands, &mut filter_rows);
         }
     }
@@ -522,6 +523,58 @@ fn add_general_rows(
         "feature presets essentials balanced everything undo enablement".to_owned(),
     ));
     group.add(&preset_row);
+}
+
+fn add_whats_new_group(
+    group: &adw::PreferencesGroup,
+    view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) {
+    let notes_group = adw::PreferencesGroup::builder().title("What's new").build();
+    let notes = plain_row()
+        .title(format!("Kestrel {}", view_model.whats_new.version))
+        .subtitle("What changed in this release, by feature.")
+        .build();
+    let show = gtk::Button::builder()
+        .label("Show")
+        .valign(Align::Center)
+        .build();
+    let window_for_notes = window.clone();
+    let whats_new = view_model.whats_new.clone();
+    show.connect_clicked(move |_| {
+        crate::window::whats_new::open_whats_new(&window_for_notes, &whats_new);
+    });
+    notes.add_suffix(&show);
+    notes.set_activatable_widget(Some(&show));
+    filter_rows.push((
+        notes.clone().upcast(),
+        "what's new whats new release notes changes update version".to_owned(),
+    ));
+    notes_group.add(&notes);
+
+    let offer = plain_row()
+        .title("Offer what's new after updates")
+        .subtitle("Overview shows a banner once when an update changes a feature you use.")
+        .build();
+    let offer_switch = gtk::Switch::builder()
+        .active(view_model.whats_new.offered)
+        .valign(Align::Center)
+        .build();
+    let sender = commands.clone();
+    offer_switch.connect_state_set(move |_, enabled| {
+        let _ = sender.try_send(ApplicationCommand::SetWhatsNew(enabled));
+        gtk::glib::Propagation::Proceed
+    });
+    offer.add_suffix(&offer_switch);
+    offer.set_activatable_widget(Some(&offer_switch));
+    filter_rows.push((
+        offer.clone().upcast(),
+        "what's new whats new banner update release notes".to_owned(),
+    ));
+    notes_group.add(&offer);
+    group.add(&notes_group);
 }
 
 fn build_configuration_files_row(

@@ -12,6 +12,7 @@ mod status_notifier;
 pub mod text_lines;
 mod tray_icon;
 pub mod view_model;
+pub mod whats_new;
 
 pub use autostart::{disable, enable};
 pub use command_bar::{load_ranking, ranking_path, save_ranking};
@@ -62,7 +63,7 @@ pub use view_model::{
     QuickToggleViewModel, RecordingControls, RecordingExportViewModel, RecordingViewModel,
     ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel, ShortcutsViewModel,
     SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
-    shortcut_label,
+    WhatsNewSection, WhatsNewViewModel, shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -472,6 +473,10 @@ pub enum ApplicationCommand {
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),
     SetAutostart(bool),
+    /// Offer this release's notes on Overview after an update.
+    SetWhatsNew(bool),
+    /// The user opened this release's notes; record the version as seen.
+    MarkWhatsNewRead,
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
