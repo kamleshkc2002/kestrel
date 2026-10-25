@@ -54,6 +54,7 @@ pub struct SnippetsViewModel {
     pub draft: Option<SnippetDraftViewModel>,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub policy: SnippetPolicyViewModel,
+    pub turn_on: Option<TurnOnViewModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +178,7 @@ impl SnippetsViewModel {
                 .map(ConfigurationWarningViewModel::from)
                 .collect(),
             policy,
+            turn_on: None,
         }
     }
 }

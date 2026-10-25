@@ -164,6 +164,31 @@ pub(super) fn choose_path(
     }
 }
 
+/// Adds a compact in-place enable action for a switchable feature.
+pub(super) fn turn_on_row(
+    turn_on: &kestrel::TurnOnViewModel,
+    commands: &async_channel::Sender<kestrel::ApplicationCommand>,
+) -> adw::ActionRow {
+    let row = plain_row()
+        .title(&turn_on.title)
+        .subtitle(&turn_on.description)
+        .subtitle_lines(0)
+        .build();
+    let button = gtk::Button::with_label("Turn on");
+    button.add_css_class("suggested-action");
+    button.set_valign(Align::Center);
+    let feature_id = turn_on.feature_id.clone();
+    let sender = commands.clone();
+    button.connect_clicked(move |_| {
+        let _ = sender.try_send(kestrel::ApplicationCommand::SetFeatureEnabled {
+            feature_id: feature_id.clone(),
+            enabled: true,
+        });
+    });
+    row.add_suffix(&button);
+    row
+}
+
 /// Rows show runtime text (device names, clipboard previews, remediation with
 /// `<id>` or `&`). `use-markup` is cleared before any text is set; a GTK builder
 /// would apply the text first and parse it as markup once.

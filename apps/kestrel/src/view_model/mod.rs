@@ -84,8 +84,9 @@ pub use command_bar::{
 pub use features::{
     CapabilityKind, CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
     ConfirmationViewModel, FeatureIndicator, FeatureLifecycleViewModel, FeatureViewModel,
-    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
-    RemediationViewModel, ResourceCostViewModel,
+    OverviewTool, OverviewToolViewModel, OverviewToolsViewModel, QuickToggleActionViewModel,
+    QuickToggleControlViewModel, QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel,
+    TurnOnViewModel, disabled_status_for, turn_on_for,
 };
 pub(crate) use microphone::MicrophonePresentation;
 pub use microphone::{CaptureStreamViewModel, MicrophoneInputViewModel, MicrophoneViewModel};
@@ -152,6 +153,7 @@ pub struct ApplicationViewModel {
     pub logging: LoggingViewModel,
     pub overlay: OverlayViewModel,
     pub can_undo: bool,
+    pub overview_tools: OverviewToolsViewModel,
 }
 
 /// Logging settings and the log folder for the Settings page.
@@ -253,7 +255,104 @@ impl ApplicationViewModel {
                 configuration.overlay,
             ),
             can_undo,
+            overview_tools: OverviewToolsViewModel::default(),
         }
+    }
+
+    pub(crate) fn apply_tool_actions(&mut self) {
+        let features = &self.features;
+        self.capture.turn_on = turn_on_for(
+            features,
+            "capture.screenshot",
+            "Screenshots are off",
+            "Take screenshots of a window, area, or screen and keep recent captures.",
+        );
+        if let Some(status) =
+            disabled_status_for(features, "capture.screenshot", "Screenshots are off")
+        {
+            self.capture.status = status;
+        }
+        for button in &mut self.screen_tools.buttons {
+            let (feature_id, title, description) = match button.tool {
+                ScreenTool::Text => (
+                    "capture.text",
+                    "Read text is off",
+                    "Read text from a selected area of the screen.",
+                ),
+                ScreenTool::Qr => (
+                    "capture.qr",
+                    "Read QR code is off",
+                    "Read QR codes from a selected area of the screen.",
+                ),
+                ScreenTool::Color => (
+                    "capture.color",
+                    "Pick colour is off",
+                    "Pick a colour from any pixel on the screen.",
+                ),
+            };
+            button.turn_on = turn_on_for(features, feature_id, title, description);
+            if !button.enabled {
+                if let Some(status) = disabled_status_for(features, feature_id, title) {
+                    button.reason = Some(status);
+                }
+            }
+        }
+        if !self.screen_tools.available {
+            let reasons = self
+                .screen_tools
+                .buttons
+                .iter()
+                .filter(|button| !button.enabled)
+                .filter_map(|button| button.reason.as_deref())
+                .collect::<Vec<_>>();
+            if !reasons.is_empty() {
+                self.screen_tools.status = reasons.join(" ");
+            }
+        }
+        self.recording.turn_on = turn_on_for(
+            features,
+            "capture.recording",
+            "Screen recording is off",
+            "Record a screen, window, or area to a local video.",
+        );
+        if let Some(status) =
+            disabled_status_for(features, "capture.recording", "Screen recording is off")
+        {
+            self.recording.status = status;
+        }
+        self.camera.turn_on = turn_on_for(
+            features,
+            "camera.preview",
+            "Camera preview is off",
+            "Preview a connected camera without saving frames.",
+        );
+        if let Some(status) =
+            disabled_status_for(features, "camera.preview", "Camera preview is off")
+        {
+            self.camera.status = status;
+        }
+        self.snippets.turn_on = turn_on_for(
+            features,
+            "snippets.text",
+            "Text snippets are off",
+            "Store reusable text snippets and insert them quickly.",
+        );
+        if let Some(status) =
+            disabled_status_for(features, "snippets.text", "Text snippets are off")
+        {
+            self.snippets.status = status;
+        }
+        self.scratchpad.turn_on = turn_on_for(
+            features,
+            "notes.scratchpad",
+            "Scratchpad is off",
+            "Keep private notes in tabs with Markdown preview.",
+        );
+        if let Some(status) = disabled_status_for(features, "notes.scratchpad", "Scratchpad is off")
+        {
+            self.scratchpad.status = status;
+        }
+        self.overview_tools = OverviewToolsViewModel::from_features(features);
     }
 }
 

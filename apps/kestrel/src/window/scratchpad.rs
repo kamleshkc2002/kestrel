@@ -5,7 +5,9 @@ use std::{
     rc::Rc,
 };
 
-use super::widgets::{choose_path, connect_line_movement, connect_list_continuation, plain_row};
+use super::widgets::{
+    choose_path, connect_line_movement, connect_list_continuation, plain_row, turn_on_row,
+};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property};
@@ -45,6 +47,9 @@ pub(super) fn build_scratchpad_panel(
         .title("Scratchpad")
         .description("Private notes saved on this computer, with Markdown preview.")
         .build();
+    if let Some(turn_on) = &model.turn_on {
+        group.add(&turn_on_row(turn_on, commands));
+    }
     let status = plain_row().title("Scratchpad").subtitle_lines(0).build();
     group.add(&status);
 

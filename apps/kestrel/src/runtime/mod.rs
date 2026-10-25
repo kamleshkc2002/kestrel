@@ -925,6 +925,7 @@ impl ApplicationRuntime {
         model.camera = self.camera_view_model();
         model.recording = self.recording_view_model();
         model.listeners = self.listeners_view_model();
+        model.apply_tool_actions();
         model
     }
 

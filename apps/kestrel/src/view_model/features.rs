@@ -171,6 +171,136 @@ fn remediation_title(status: &CapabilityStatus) -> &'static str {
     }
 }
 
+/// A disabled feature that can be enabled from the current panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnOnViewModel {
+    pub title: String,
+    pub feature_id: String,
+    pub description: String,
+}
+
+/// A tool exposed on the Overview page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverviewTool {
+    Screenshot,
+    ReadText,
+    ReadQrCode,
+    PickColour,
+    Record,
+    Scratchpad,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverviewToolViewModel {
+    pub tool: OverviewTool,
+    pub label: &'static str,
+    pub icon: &'static str,
+    pub feature_id: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OverviewToolsViewModel {
+    pub tools: Vec<OverviewToolViewModel>,
+}
+
+impl OverviewToolsViewModel {
+    pub fn from_features(features: &[FeatureViewModel]) -> Self {
+        const TOOLS: [(OverviewTool, &str, &str, &str); 6] = [
+            (
+                OverviewTool::Screenshot,
+                "Screenshot",
+                "camera-photo-symbolic",
+                "capture.screenshot",
+            ),
+            (
+                OverviewTool::ReadText,
+                "Read text",
+                "insert-text-symbolic",
+                "capture.text",
+            ),
+            (
+                OverviewTool::ReadQrCode,
+                "Read QR code",
+                "scanner-symbolic",
+                "capture.qr",
+            ),
+            (
+                OverviewTool::PickColour,
+                "Pick colour",
+                "color-select-symbolic",
+                "capture.color",
+            ),
+            (
+                OverviewTool::Record,
+                "Record",
+                "media-record-symbolic",
+                "capture.recording",
+            ),
+            (
+                OverviewTool::Scratchpad,
+                "Scratchpad",
+                "document-edit-symbolic",
+                "notes.scratchpad",
+            ),
+        ];
+        Self {
+            tools: TOOLS
+                .into_iter()
+                .filter_map(|(tool, label, icon, feature_id)| {
+                    features
+                        .iter()
+                        .find(|feature| feature.id == feature_id)
+                        .filter(|feature| feature.enabled)
+                        .map(|_| OverviewToolViewModel {
+                            tool,
+                            label,
+                            icon,
+                            feature_id,
+                        })
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Creates an in-place enable action only for a disabled, switchable feature.
+pub fn turn_on_for(
+    features: &[FeatureViewModel],
+    feature_id: &str,
+    title: &str,
+    description: &str,
+) -> Option<TurnOnViewModel> {
+    features
+        .iter()
+        .find(|feature| feature.id == feature_id)
+        .and_then(|feature| {
+            (!feature.enabled && feature.switchable()).then(|| TurnOnViewModel {
+                title: title.to_owned(),
+                feature_id: feature.id.clone(),
+                description: description.to_owned(),
+            })
+        })
+}
+
+/// A tool's status while its feature is off: why it cannot run here, or
+/// just `off` when its Turn on button is offered.
+pub fn disabled_status_for(
+    features: &[FeatureViewModel],
+    feature_id: &str,
+    off: &str,
+) -> Option<String> {
+    features
+        .iter()
+        .find(|feature| feature.id == feature_id && !feature.enabled)
+        .map(|feature| {
+            if feature.switchable() {
+                format!("{off}.")
+            } else {
+                feature.status_line()
+            }
+        })
+}
+
 /// State for one registered feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeatureViewModel {
@@ -466,6 +596,156 @@ mod tests {
     use super::*;
     use crate::view_model::test_support::*;
     use kestrel_core::{CapabilityReport, CapabilityStatus, FeatureSpec};
+
+    #[test]
+    fn in_place_enable_actions_follow_switchability() {
+        let make = |id: &'static str, status: CapabilityStatus, enabled: bool, running: bool| {
+            let spec = FeatureSpec::new(id, id, status.clone());
+            let report = CapabilityReport::new(id, status, "Ready.");
+            let registration =
+                ServiceRegistration::new(spec, report, enabled).expect("matching feature IDs");
+            let mut view = FeatureViewModel::from(&registration);
+            view.running = running;
+            view
+        };
+        let supported_off = make(
+            "capture.screenshot",
+            CapabilityStatus::Supported,
+            false,
+            false,
+        );
+        assert_eq!(
+            turn_on_for(
+                std::slice::from_ref(&supported_off),
+                "capture.screenshot",
+                "Screenshots are off",
+                "Take screenshots."
+            )
+            .as_ref()
+            .map(|action| action.feature_id.as_str()),
+            Some("capture.screenshot")
+        );
+        let unsupported = make(
+            "capture.screenshot",
+            CapabilityStatus::Unsupported {
+                reason: "No provider.".to_owned(),
+            },
+            false,
+            false,
+        );
+        assert!(
+            turn_on_for(
+                std::slice::from_ref(&unsupported),
+                "capture.screenshot",
+                "Screenshots are off",
+                "Take screenshots."
+            )
+            .is_none()
+        );
+        let on = make(
+            "capture.screenshot",
+            CapabilityStatus::Supported,
+            true,
+            true,
+        );
+        assert!(
+            turn_on_for(
+                std::slice::from_ref(&on),
+                "capture.screenshot",
+                "Screenshots are off",
+                "Take screenshots."
+            )
+            .is_none()
+        );
+    }
+    #[test]
+    fn off_tools_show_their_reason_or_a_plain_off_status() {
+        let status = CapabilityStatus::MissingDependency {
+            name: "tesseract".to_owned(),
+        };
+        let registration = ServiceRegistration::new(
+            FeatureSpec::new("capture.text", "Read text", status.clone()),
+            CapabilityReport::new("capture.text", status, "Text recognition is unavailable."),
+            false,
+        )
+        .expect("matching feature IDs");
+        let feature = FeatureViewModel::from(&registration);
+        assert!(
+            turn_on_for(
+                std::slice::from_ref(&feature),
+                "capture.text",
+                "Read text is off",
+                "Read text."
+            )
+            .is_none()
+        );
+        let reason = disabled_status_for(
+            std::slice::from_ref(&feature),
+            "capture.text",
+            "Read text is off",
+        )
+        .expect("missing dependency has a reason");
+        assert!(reason.contains("Needs tesseract"), "{reason}");
+
+        let registration = ServiceRegistration::new(
+            FeatureSpec::new("capture.qr", "Read QR code", CapabilityStatus::Supported),
+            CapabilityReport::new("capture.qr", CapabilityStatus::Supported, "Ready."),
+            false,
+        )
+        .expect("matching feature IDs");
+        let feature = FeatureViewModel::from(&registration);
+        assert_eq!(
+            disabled_status_for(
+                std::slice::from_ref(&feature),
+                "capture.qr",
+                "Read QR code is off"
+            )
+            .as_deref(),
+            Some("Read QR code is off.")
+        );
+    }
+
+    #[test]
+    fn overview_tools_are_on_in_fixed_order() {
+        let ids = [
+            "notes.scratchpad",
+            "capture.color",
+            "capture.screenshot",
+            "capture.recording",
+            "capture.qr",
+            "capture.text",
+        ];
+        let registrations = ids
+            .into_iter()
+            .map(|id| {
+                ServiceRegistration::new(
+                    FeatureSpec::new(id, id, CapabilityStatus::Supported),
+                    CapabilityReport::new(id, CapabilityStatus::Supported, "Ready."),
+                    true,
+                )
+                .expect("matching feature IDs")
+            })
+            .collect::<Vec<_>>();
+        let features = registrations
+            .iter()
+            .map(FeatureViewModel::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            OverviewToolsViewModel::from_features(&features)
+                .tools
+                .iter()
+                .map(|tool| tool.label)
+                .collect::<Vec<_>>(),
+            [
+                "Screenshot",
+                "Read text",
+                "Read QR code",
+                "Pick colour",
+                "Record",
+                "Scratchpad"
+            ]
+        );
+    }
 
     #[test]
     fn extracts_disabled_supported_feature_without_runtime_ownership() {

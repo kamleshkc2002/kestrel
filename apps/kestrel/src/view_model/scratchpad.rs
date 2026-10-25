@@ -34,6 +34,7 @@ pub struct ScratchpadViewModel {
     pub expired: Vec<ScratchpadExpiredViewModel>,
     pub warning: Option<String>,
     pub limits: kestrel_core::ScratchpadConfiguration,
+    pub turn_on: Option<TurnOnViewModel>,
 }
 
 impl ScratchpadViewModel {
@@ -107,6 +108,7 @@ impl ScratchpadViewModel {
             expired,
             warning,
             limits: presentation.limits,
+            turn_on: None,
         }
     }
 }

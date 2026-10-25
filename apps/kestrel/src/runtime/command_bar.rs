@@ -1,6 +1,18 @@
 //! Command bar runtime features.
 
 use super::*;
+#[derive(Clone, Copy)]
+struct ToolAvailability {
+    capture_running: bool,
+    has_capture: bool,
+    text_running: bool,
+    qr_running: bool,
+    color_running: bool,
+    recording_running: bool,
+    recording_active: bool,
+    recording_source: Option<kestrel_platform::recording::RecordingSource>,
+    scratchpad_running: bool,
+}
 
 impl ApplicationRuntime {
     pub(super) fn scan_command_applications(
@@ -69,6 +81,175 @@ impl ApplicationRuntime {
             })
             .collect()
     }
+
+    fn tool_items(&self) -> Vec<CommandItem> {
+        let running = |feature_id: &str| {
+            self.registry
+                .registrations()
+                .any(|registration| registration.feature.id == feature_id && registration.running)
+        };
+        let recording_source = self
+            .recording_detection
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(RecordingDetection::sources)
+            .and_then(|sources| {
+                sources
+                    .iter()
+                    .copied()
+                    .find(|source| *source == kestrel_platform::recording::RecordingSource::Screen)
+                    .or_else(|| sources.first().copied())
+            });
+        Self::tool_items_for(ToolAvailability {
+            capture_running: running(CAPTURE_ID),
+            has_capture: !self.capture.snapshot().entries.is_empty(),
+            text_running: running("capture.text"),
+            qr_running: running("capture.qr"),
+            color_running: running("capture.color"),
+            recording_running: running(RECORDING_ID),
+            recording_active: self.recording.snapshot().phase.is_active(),
+            recording_source,
+            scratchpad_running: running(SCRATCHPAD_ID),
+        })
+    }
+
+    fn tool_items_for(availability: ToolAvailability) -> Vec<CommandItem> {
+        let ToolAvailability {
+            capture_running,
+            has_capture,
+            text_running,
+            qr_running,
+            color_running,
+            recording_running,
+            recording_active,
+            recording_source,
+            scratchpad_running,
+        } = availability;
+        let mut items = Vec::new();
+        if capture_running {
+            items.push(
+                CommandItem::new(
+                    "kestrel:capture-screenshot",
+                    CommandSource::Kestrel,
+                    "Take screenshot",
+                    "Capture an area, window, or screen",
+                    kestrel_services::command_bar::CommandAction::Kestrel(
+                        "capture.screenshot".to_owned(),
+                    ),
+                )
+                .with_keywords(["screenshot", "capture", "screen", "grab"]),
+            );
+            if has_capture {
+                items.push(
+                    CommandItem::new(
+                        "kestrel:edit-last-screenshot",
+                        CommandSource::Kestrel,
+                        "Edit last screenshot",
+                        "Open the most recent capture in the editor",
+                        kestrel_services::command_bar::CommandAction::Kestrel(
+                            "capture.edit-last".to_owned(),
+                        ),
+                    )
+                    .with_keywords([
+                        "screenshot",
+                        "capture",
+                        "edit",
+                        "latest",
+                        "last",
+                    ]),
+                );
+            }
+        }
+        for (enabled, feature_id, title, subtitle, action, keywords) in [
+            (
+                text_running,
+                "capture.text",
+                "Read text",
+                "Read text from part of the screen",
+                "capture.text",
+                &["text", "ocr", "read", "screen"][..],
+            ),
+            (
+                qr_running,
+                "capture.qr",
+                "Read QR code",
+                "Read a QR code from the screen",
+                "capture.qr",
+                &["qr", "code", "read", "scan"][..],
+            ),
+            (
+                color_running,
+                "capture.color",
+                "Pick colour",
+                "Pick a colour from the screen",
+                "capture.color",
+                &["colour", "color", "picker", "eyedropper", "screen"][..],
+            ),
+        ] {
+            if enabled {
+                items.push(
+                    CommandItem::new(
+                        format!("kestrel:{feature_id}"),
+                        CommandSource::Kestrel,
+                        title,
+                        subtitle,
+                        kestrel_services::command_bar::CommandAction::Kestrel(action.to_owned()),
+                    )
+                    .with_keywords(keywords.iter().copied()),
+                );
+            }
+        }
+        if recording_running {
+            if recording_active {
+                items.push(
+                    CommandItem::new(
+                        "kestrel:recording",
+                        CommandSource::Kestrel,
+                        "Stop recording",
+                        "Stop and save the current screen recording",
+                        kestrel_services::command_bar::CommandAction::Kestrel(
+                            "recording.stop".to_owned(),
+                        ),
+                    )
+                    .with_keywords(["recording", "screen", "video", "stop"]),
+                );
+            } else if recording_source.is_some() {
+                items.push(
+                    CommandItem::new(
+                        "kestrel:recording",
+                        CommandSource::Kestrel,
+                        "Start recording",
+                        "Record a screen, window, or area",
+                        kestrel_services::command_bar::CommandAction::Kestrel(
+                            "recording.start".to_owned(),
+                        ),
+                    )
+                    .with_keywords(["recording", "screen", "video", "start"]),
+                );
+            }
+        }
+        if scratchpad_running {
+            items.push(
+                CommandItem::new(
+                    "kestrel:scratchpad",
+                    CommandSource::Kestrel,
+                    "Open scratchpad",
+                    "Open the private scratchpad editor",
+                    kestrel_services::command_bar::CommandAction::Kestrel(
+                        "scratchpad.open".to_owned(),
+                    ),
+                )
+                .with_keywords(["scratchpad", "notes", "note", "pad"]),
+            );
+        }
+        items
+    }
+
+    fn rebuild_command_feature_items(&mut self) {
+        self.command_feature_items = Self::feature_items(&self.registry);
+        self.command_feature_items.extend(self.tool_items());
+    }
     pub(super) fn snippet_items(library: &SnippetLibrary) -> Vec<CommandItem> {
         library
             .snippets()
@@ -115,7 +296,7 @@ impl ApplicationRuntime {
             &self.command_scripts,
         );
         self.command_application_items = Self::application_items(&self.command_applications);
-        self.command_feature_items = Self::feature_items(&self.registry);
+        self.rebuild_command_feature_items();
     }
 
     pub fn command_ranking(&self) -> &CommandRanking {
@@ -238,6 +419,7 @@ impl ApplicationRuntime {
         if !self.command_bar_running() {
             return Vec::new();
         }
+        self.rebuild_command_feature_items();
         let providers = EnabledProviders {
             snippets: self.snippets_running(),
             ..self.command_providers
@@ -549,5 +731,114 @@ mod tests {
                 .expect_err("unknown index")
                 .contains("no longer available")
         );
+    }
+    #[test]
+    fn tool_results_follow_feature_and_capture_visibility() {
+        let absent = ApplicationRuntime::tool_items_for(ToolAvailability {
+            capture_running: false,
+            has_capture: false,
+            text_running: false,
+            qr_running: false,
+            color_running: false,
+            recording_running: false,
+            recording_active: false,
+            recording_source: None,
+            scratchpad_running: false,
+        });
+        assert!(absent.is_empty());
+
+        let present = ApplicationRuntime::tool_items_for(ToolAvailability {
+            capture_running: true,
+            has_capture: true,
+            text_running: true,
+            qr_running: true,
+            color_running: true,
+            recording_running: false,
+            recording_active: false,
+            recording_source: None,
+            scratchpad_running: true,
+        });
+        let ids: Vec<_> = present.iter().map(|item| item.id.as_str()).collect();
+        for id in [
+            "kestrel:capture-screenshot",
+            "kestrel:edit-last-screenshot",
+            "kestrel:capture.text",
+            "kestrel:capture.qr",
+            "kestrel:capture.color",
+            "kestrel:scratchpad",
+        ] {
+            assert!(ids.contains(&id), "missing visible tool {id}");
+        }
+        assert!(
+            present
+                .iter()
+                .find(|item| item.id == "kestrel:capture.text")
+                .is_some_and(|item| item.keywords.iter().any(|keyword| keyword == "ocr")),
+            "OCR keyword is attached to the text tool"
+        );
+    }
+
+    #[test]
+    fn edit_last_screenshot_requires_a_capture() {
+        let without_capture = ApplicationRuntime::tool_items_for(ToolAvailability {
+            capture_running: true,
+            has_capture: false,
+            text_running: false,
+            qr_running: false,
+            color_running: false,
+            recording_running: false,
+            recording_active: false,
+            recording_source: None,
+            scratchpad_running: false,
+        });
+        assert!(
+            without_capture
+                .iter()
+                .all(|item| item.id != "kestrel:edit-last-screenshot")
+        );
+        let with_capture = ApplicationRuntime::tool_items_for(ToolAvailability {
+            capture_running: true,
+            has_capture: true,
+            text_running: false,
+            qr_running: false,
+            color_running: false,
+            recording_running: false,
+            recording_active: false,
+            recording_source: None,
+            scratchpad_running: false,
+        });
+        assert!(
+            with_capture
+                .iter()
+                .any(|item| item.id == "kestrel:edit-last-screenshot")
+        );
+    }
+
+    #[test]
+    fn recording_result_reflects_idle_and_active_state() {
+        let idle = ApplicationRuntime::tool_items_for(ToolAvailability {
+            capture_running: false,
+            has_capture: false,
+            text_running: false,
+            qr_running: false,
+            color_running: false,
+            recording_running: true,
+            recording_active: false,
+            recording_source: Some(kestrel_platform::recording::RecordingSource::Screen),
+            scratchpad_running: false,
+        });
+        assert_eq!(idle[0].title, "Start recording");
+        let active = ApplicationRuntime::tool_items_for(ToolAvailability {
+            capture_running: false,
+            has_capture: false,
+            text_running: false,
+            qr_running: false,
+            color_running: false,
+            recording_running: true,
+            recording_active: true,
+            recording_source: None,
+            scratchpad_running: false,
+        });
+        assert_eq!(active[0].title, "Stop recording");
     }
 }

@@ -1,6 +1,6 @@
 //! Screen tools: read text, read QR codes, and pick colors.
 
-use super::widgets::plain_row;
+use super::widgets::{plain_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -42,16 +42,13 @@ pub(super) fn build_screen_tools_group(
         ));
     }
     group.add(&row);
-    let unavailable = tools
-        .buttons
-        .iter()
-        .filter(|button| !button.enabled)
-        .filter_map(|button| Some((button.label, button.reason.as_deref()?)));
-    if tools.available {
-        for (label, reason) in unavailable {
+    for button in tools.buttons.iter().filter(|button| !button.enabled) {
+        if let Some(turn_on) = &button.turn_on {
+            group.add(&turn_on_row(turn_on, commands));
+        } else if let Some(reason) = button.reason.as_deref() {
             group.add(
                 &plain_row()
-                    .title(format!("{label} is unavailable"))
+                    .title(format!("{} is unavailable", button.label))
                     .subtitle(reason)
                     .subtitle_lines(0)
                     .build(),

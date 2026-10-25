@@ -23,6 +23,7 @@ pub struct CameraViewModel {
     pub cameras: Vec<CameraChoiceViewModel>,
     /// A preview is opening or showing frames; Stop is offered.
     pub active: bool,
+    pub turn_on: Option<TurnOnViewModel>,
 }
 
 impl CameraViewModel {
@@ -64,6 +65,7 @@ impl CameraViewModel {
                     phase,
                     CameraPhase::Starting { .. } | CameraPhase::Previewing { .. }
                 ),
+            turn_on: None,
         }
     }
 }

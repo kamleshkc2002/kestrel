@@ -56,7 +56,13 @@ here, or off, with one line saying its state or what it needs. Hovering a
 feature's (i) icon shows how much power it uses in the background and how often
 it wakes up, its backend, and its state. A feature that
 cannot run here (unsupported, or missing a dependency or permission) can be
-turned off but not on until it becomes available.
+turned off but not on until it becomes available. Tools on the Capture and
+Notes pages work the same way in place: a tool that is off says what it does
+and has a Turn on button, and one that cannot run here gives its reason.
+
+The Overview page's Tools row has one-click buttons for the screenshot, screen
+tools, recording, and Scratchpad while they are on, and a link to the Feature
+Hub for the rest.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
 Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
@@ -115,6 +121,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default false), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default false), `enable_windows` (default false), `enable_clipboard` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds. Configurations that already list these keys keep their values.
 - Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins, never queries, window titles, or clipboard entries.
 - `kestrel --command command-bar.open` opens the bar as a floating surface without raising the main window, with the search field already focused. Up/Down or Ctrl+N/Ctrl+P select, Return runs the selection (or the first result) and shows the outcome in the bar, and Escape closes it and returns focus to the window you were in. While the feature is off, the bar shows how to turn it on.
+- Tool results include Take screenshot, Edit last screenshot when a capture exists, Read text (OCR), Read QR code, Pick colour, Start/Stop recording, and Open scratchpad. Each appears only while its feature is usable; search aliases include `capture`, `grab`, `ocr`, `scan`, `color`, `eyedropper`, and `notes`.
 - Results cover Kestrel actions, feature switches (searching a feature lists its switch first), snippets, clipboard history entries while clipboard history runs, and scripts; with their sources switched on, also applications and their desktop actions, open windows, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
 - Open windows come from COSMIC toplevel management, wlroots foreign-toplevel management (Sway, Hyprland, labwc), the generic Wayland toplevel list (listing only), or EWMH on X11. GNOME exposes no window list to applications, so window results stay off there and the provider row says why.
 - Computed answers: arithmetic (numbers may group thousands with a space or an apostrophe and use a comma or period decimal), unit conversion, dates and times, `feb 29` or `days until dec 25`, and colors in `#rrggbb`, `rgb()`, or `hsl()` notation with a swatch.
@@ -139,7 +146,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled; Balanced and Everything enable it. Nothing is captured until you press a capture button or run `kestrel --command capture.screenshot` / `capture.screen`.
 - **Providers:** the Screenshot portal where the desktop exports it (GNOME, KDE Plasma, COSMIC): "Choose in dialog" opens the desktop's own capture UI, and "Screen" asks once for screenshot permission; `grim` with `slurp` for area selection on wlroots compositors such as Sway and Hyprland; core X11 for the focused window or the whole screen on real X11 sessions.
-- **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), also editable on the Capture page.
+- **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), and `after_screenshot` (`"notify"` by default, `"edit"`, or `"nothing"`), also editable on the Capture page. Notifications offer **Edit** and **Copy** buttons when the desktop notification service supports actions; clicking the notification opens the Capture page.
 - Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every file at once. Temporary files a portal leaves behind are deleted after import.
 - Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, spotlights areas, redacts regions, adds space around the screenshot, and takes pasted images; redaction overwrites the pixels with black in the saved copy, and the original capture stays until you delete it.
 - **Spotlight:** drag one or more areas to keep them bright and dim the rest of the screenshot; overlapping spotlights are never dimmed twice. The Dim slider (10–90%, default 60%) appears while Spotlight is selected and sets the strength for every spotlight. Boxes, arrows, and highlights are never dimmed, and Undo removes the last spotlight like any other edit.
@@ -236,7 +243,7 @@ kestrel --command toggle.power.keep-awake
 kestrel --list-commands                   # every ID with a description
 ```
 
-IDs cover the window, command bar, quick panel (`quick-panel.open`), clipboard quick paste, scratchpad (`scratchpad.open`), capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`), screen tools (`capture.text`, `capture.qr`, `capture.color`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The exit status says what happened:
+IDs cover the window, command bar, quick panel (`quick-panel.open`), clipboard quick paste, scratchpad (`scratchpad.open`), capability refresh, audio output cycling, microphone mute, speed test, screenshots (`capture.screenshot`, `capture.screen`, `capture.edit-last`), screen tools (`capture.text`, `capture.qr`, `capture.color`), recording (`recording.start`, `recording.stop`), the process inspector (`processes.open`), clipboard wipe and clear, presets, and every quick toggle (`toggle.<feature-id>`). The command bar offers the same tool actions when their features are usable. The exit status says what happened:
 
 | Status | Meaning |
 |---|---|

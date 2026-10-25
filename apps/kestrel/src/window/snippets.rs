@@ -1,6 +1,6 @@
 //! Snippet library panel and editor.
 
-use super::widgets::{SearchGuard, connect_line_movement, plain_row};
+use super::widgets::{SearchGuard, connect_line_movement, plain_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Orientation, PolicyType, accessible::Property};
@@ -27,6 +27,9 @@ pub(super) fn build_snippet_panel(
              Insertion is only offered when a provider is verified.",
         )
         .build();
+    if let Some(turn_on) = &snippets.turn_on {
+        group.add(&turn_on_row(turn_on, commands));
+    }
 
     let status = gtk::Label::new(Some(&snippets.status));
     status.set_wrap(true);

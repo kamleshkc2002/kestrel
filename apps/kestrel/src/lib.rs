@@ -20,8 +20,8 @@ pub use config::{
     save,
 };
 pub use kestrel_core::{
-    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch, ClipboardLayout,
-    CloseAction, MonitorReadout, NetworkRateUnit,
+    AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
+    CaptureAfterScreenshot, ClipboardLayout, CloseAction, MonitorReadout, NetworkRateUnit,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -57,11 +57,12 @@ pub use view_model::{
     CameraViewModel, CaptureEntryViewModel, CaptureViewModel, ClipboardItemViewModel,
     ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
     ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureViewModel,
-    ListenersViewModel, MicrophoneViewModel, MonitorViewModel, ProcessRowViewModel,
-    ProcessesViewModel, QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls,
-    RecordingExportViewModel, RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel,
-    ScreenToolsViewModel, ShortcutsViewModel, SnippetDraft, SnippetDraftViewModel,
-    SnippetsViewModel, SpeedTestViewModel, shortcut_label,
+    ListenersViewModel, MicrophoneViewModel, MonitorViewModel, OverviewTool,
+    OverviewToolsViewModel, ProcessRowViewModel, ProcessesViewModel, QuickToggleControlViewModel,
+    QuickToggleViewModel, RecordingControls, RecordingExportViewModel, RecordingViewModel,
+    ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel, ShortcutsViewModel,
+    SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
+    shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -115,6 +116,12 @@ pub enum CaptureLimit {
     MaxEntries(u32),
     MaxTotalMegabytes(u32),
     MaxAgeHours(u32),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureFollowUpAction {
+    Open,
+    Edit,
+    Copy,
 }
 
 /// Process inspector setting edited from Settings.
@@ -178,6 +185,8 @@ pub enum CameraRequest {
 /// Screen recording action from the window or the command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordingRequest {
+    /// Uses the page's preferred source, favoring a whole screen.
+    StartDefault,
     /// Asks the desktop to share this source and records it.
     Start(RecordingSource),
     /// The area view's choice; `None` records the whole frame.
@@ -388,6 +397,7 @@ pub enum FocusTarget {
     CommandBar,
     QuickPanel,
     Clipboard,
+    Capture,
     Processes,
     Scratchpad,
     /// The Monitoring page, where active alerts are listed.
@@ -514,6 +524,7 @@ pub enum ApplicationCommand {
     SetClipboardLayout(ClipboardLayout),
     SetClipboardLimit(ClipboardLimit),
     SetCaptureLimit(CaptureLimit),
+    SetCaptureAfterScreenshot(CaptureAfterScreenshot),
     SetProcessLimit(ProcessLimit),
     SetScratchpadLimit(ScratchpadLimit),
     SetLoggingSetting(LoggingSetting),
@@ -565,6 +576,10 @@ pub enum ApplicationCommand {
     ImportConfiguration(std::path::PathBuf),
     ExportConfiguration(std::path::PathBuf),
     Capture(CaptureRequest),
+    CaptureFollowUp {
+        id: CaptureId,
+        action: CaptureFollowUpAction,
+    },
     Quit,
 }
 
@@ -580,6 +595,8 @@ pub enum CaptureRequest {
         id: CaptureId,
         destination: std::path::PathBuf,
     },
+    /// Opens the editor on the newest capture.
+    EditLatest,
     /// Opens the editor on a capture.
     Edit(CaptureId),
     /// Stores the edited image as a new capture.

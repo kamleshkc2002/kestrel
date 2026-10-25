@@ -2,7 +2,7 @@
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
-use super::widgets::plain_row;
+use super::widgets::{plain_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property, gdk, glib};
@@ -20,6 +20,9 @@ pub(super) fn build_camera_group(
         .title("Camera")
         .description(glib::markup_escape_text(&camera.status).as_str())
         .build();
+    if let Some(turn_on) = &camera.turn_on {
+        group.add(&turn_on_row(turn_on, commands));
+    }
     if !camera.running || camera.cameras.is_empty() {
         return group;
     }

@@ -228,8 +228,40 @@ pub(super) fn add_screenshot_limits_group(
             row.clone().upcast(),
             format!("screenshots capture {title} {subtitle}").to_lowercase(),
         ));
-        capture_group.add(&row);
     }
+    let after_options = [
+        kestrel::CaptureAfterScreenshot::Notify,
+        kestrel::CaptureAfterScreenshot::Edit,
+        kestrel::CaptureAfterScreenshot::Nothing,
+    ];
+    let after_row = adw::ComboRow::builder()
+        .title("After a screenshot")
+        .subtitle("Choose what happens when a screenshot is saved.")
+        .model(&gtk::StringList::new(
+            &after_options
+                .iter()
+                .map(|option| option.label())
+                .collect::<Vec<_>>(),
+        ))
+        .selected(
+            after_options
+                .iter()
+                .position(|option| *option == capture_limits.after_screenshot)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    after_row.update_property(&[Property::Label("After a screenshot")]);
+    let sender = commands.clone();
+    after_row.connect_selected_notify(move |row| {
+        if let Some(option) = after_options.get(row.selected() as usize) {
+            let _ = sender.try_send(ApplicationCommand::SetCaptureAfterScreenshot(*option));
+        }
+    });
+    capture_group.add(&after_row);
+    filter_rows.push((
+        after_row.clone().upcast(),
+        "screenshots capture after screenshot notification editor nothing".to_owned(),
+    ));
     group.add(&capture_group);
 }
 

@@ -108,6 +108,7 @@ pub struct RecordingViewModel {
     pub choosing_area: bool,
     /// The running or last trimmed export.
     pub export: Option<RecordingExportViewModel>,
+    pub turn_on: Option<TurnOnViewModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
