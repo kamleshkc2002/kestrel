@@ -131,6 +131,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 
 - Tests use Rust's built-in `#[test]` harness. Most live beside code in `#[cfg(test)]` modules; use snake-case behavioral names such as `counter_resets_produce_missing_rates_instead_of_underflow`.
 - Assert observable contracts: capability status, lifecycle transitions, snapshots, boundaries, privacy/redaction, cleanup, and real errors. Avoid tests of field forwarding, mock plumbing, or incidental text.
+- Cover new code by extending or adjusting an existing test of the same behaviour (a new table case, an extra assertion, a wider fixture) before adding a test; add a new test only when none fits.
 - Use trait fakes, queued deterministic samples, and `tempfile::TempDir` for `/proc`/`/sys` fixtures. Explicitly stop threaded services so workers join.
 - Ordinary tests must tolerate unavailable desktop, audio, clipboard, and logind services. Do not assume a particular session backend.
 - `cargo test --workspace --all-targets` does not prove production clipboard ownership lifecycle; that integration test is environment-gated.
