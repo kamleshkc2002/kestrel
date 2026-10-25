@@ -407,6 +407,10 @@ pub enum FocusTarget {
     Audio,
     /// The Notes page, where the snippet library leads.
     Snippets,
+    /// The speed test on the Monitoring page, scrolled into view.
+    SpeedTest,
+    /// The camera preview on the Capture page, scrolled into view.
+    Camera,
 }
 
 /// A process action the user can confirm.

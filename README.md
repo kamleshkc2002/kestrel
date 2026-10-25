@@ -62,10 +62,13 @@ and has a Turn on button, and one that cannot run here gives its reason. The
 hub lists only features that can be switched; the main window is always on and
 is not listed.
 
-The Overview page's Tools row has a one-click action for every feature that is
-on and has one (the capture tools, camera preview, scratchpad, snippets,
+The Overview page's Tools row has a one-click button for every feature that is
+on and can run here (the capture tools, camera preview, scratchpad, snippets,
 clipboard history, command bar, monitoring, a speed test, the audio mixer, and
-processes), and a link to the Feature Hub for the rest.
+processes), and a link to the Feature Hub for the rest. Each button takes you
+to its section: the capture tools open their selection view, the speed test
+starts on the Monitoring page where its progress shows, and the others open
+their page scrolled to the feature.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
 Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)

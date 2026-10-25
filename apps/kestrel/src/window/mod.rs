@@ -459,10 +459,12 @@ impl WindowView {
             }
             FocusTarget::Scratchpad => {
                 self.select_page(SidebarPage::Notes);
-                self.scratchpad_panel
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|panel| panel.editor.grab_focus())
+                let panel = self.scratchpad_panel.borrow();
+                let Some(panel) = panel.as_ref() else {
+                    return false;
+                };
+                self.reveal(SidebarPage::Notes, panel.container.clone().upcast());
+                panel.editor.grab_focus()
             }
             FocusTarget::Monitoring => {
                 self.select_page(SidebarPage::Monitoring);
@@ -476,7 +478,55 @@ impl WindowView {
                 self.select_page(SidebarPage::Notes);
                 true
             }
+            FocusTarget::SpeedTest => self.reveal_section(
+                SidebarPage::Monitoring,
+                self.speed_test_container.borrow().as_ref(),
+            ),
+            FocusTarget::Camera => self.reveal_section(
+                SidebarPage::Capture,
+                self.camera_container.borrow().as_ref(),
+            ),
         }
+    }
+
+    fn reveal_section(&self, page: SidebarPage, section: Option<&gtk::Box>) -> bool {
+        self.select_page(page);
+        let Some(section) = section else {
+            return false;
+        };
+        self.reveal(page, section.clone().upcast());
+        true
+    }
+
+    /// Scrolls `page` so `section` starts at the top. The page's viewport
+    /// never follows focus, so a section lower down needs this to be seen; a
+    /// page shown for the first time has no layout yet, so it retries briefly.
+    fn reveal(&self, page: SidebarPage, section: gtk::Widget) {
+        let Some(scrolled) = self
+            .content_stack
+            .child_by_name(page.name())
+            .and_then(|child| child.downcast::<gtk::ScrolledWindow>().ok())
+        else {
+            return;
+        };
+        let mut attempts = 0;
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(30), move || {
+            attempts += 1;
+            let content = scrolled.child().and_then(|viewport| viewport.first_child());
+            let top = content.and_then(|content| {
+                section.compute_point(&content, &gtk::graphene::Point::new(0.0, 0.0))
+            });
+            let adjustment = scrolled.vadjustment();
+            match top {
+                Some(top) if adjustment.upper() > 0.0 => {
+                    let reachable = (adjustment.upper() - adjustment.page_size()).max(0.0);
+                    adjustment.set_value(f64::from(top.y()).min(reachable));
+                    gtk::glib::ControlFlow::Break
+                }
+                _ if attempts < 20 => gtk::glib::ControlFlow::Continue,
+                _ => gtk::glib::ControlFlow::Break,
+            }
+        });
     }
 
     pub fn set_command_bar(&self, command_bar: &kestrel::CommandBarViewModel) {
@@ -878,7 +928,7 @@ fn build_overview_tools_group(
                 let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Scratchpad));
             }),
             OverviewTool::Camera => button.connect_clicked(move |_| {
-                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Capture));
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Camera));
             }),
             OverviewTool::Snippets => button.connect_clicked(move |_| {
                 let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Snippets));
@@ -892,7 +942,9 @@ fn build_overview_tools_group(
             OverviewTool::Monitoring => button.connect_clicked(move |_| {
                 let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Monitoring));
             }),
+            // Runs where its progress and result are shown.
             OverviewTool::SpeedTest => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::SpeedTest));
                 let _ = sender.try_send(ApplicationCommand::StartSpeedTest);
             }),
             OverviewTool::AudioMixer => button.connect_clicked(move |_| {
