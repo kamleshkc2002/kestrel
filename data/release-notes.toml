@@ -38,12 +38,16 @@ text = "The Shortcuts page adds, changes, and removes key bindings without editi
 
 [[change]]
 feature = "kestrel"
-text = "Tools that are off offer Turn on where you find them, and Overview lists the tools that are on."
+text = "Tools that are off offer Turn on where you find them, and Overview has a one-click action for every feature you have on."
 
 [[change]]
 feature = "kestrel"
-text = "The Feature Hub says in one line whether each feature is running, needs something, or cannot run here."
+text = "The Feature Hub says in one line whether each feature is running, needs something, or cannot run here, and lists only features you can switch."
 
 [[change]]
 feature = "kestrel"
 text = "After an update, Overview offers what changed in the features you use; Settings keeps the notes."
+
+[[change]]
+feature = "app.status-notifier"
+text = "The tray icon can be turned off in the Feature Hub, and presets leave it as you set it."
