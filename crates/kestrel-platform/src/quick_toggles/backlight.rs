@@ -33,14 +33,19 @@ pub(crate) fn capability(id: QuickToggleId, root: &Path, kind: DeviceKind) -> Ca
                 CapabilityStatus::Unsupported {
                     reason: error.message.clone(),
                 },
-                format!("{} hardware was not detected.", id.label()),
+                match kind {
+                    DeviceKind::Display => format!("{} hardware was not detected.", id.label()),
+                    DeviceKind::Keyboard => {
+                        "No keyboard light that Linux can control was found.".to_owned()
+                    }
+                },
             )
             .with_remediation(match kind {
                 DeviceKind::Display => {
                     "Use the display or compositor controls for external and unsupported panels."
                 }
                 DeviceKind::Keyboard => {
-                    "Use the keyboard firmware or desktop control when no sysfs LED is exposed."
+                    "A light run by the keyboard's own controller keeps working with its function key; Kestrel can change only a light Linux exposes as a backlight LED."
                 }
             });
         }
@@ -165,7 +170,7 @@ fn discover(root: &Path, kind: DeviceKind) -> Result<BacklightDevice, QuickToggl
 
     Err(QuickToggleError::unavailable(match kind {
         DeviceKind::Display => "no internal backlight device was detected",
-        DeviceKind::Keyboard => "no keyboard backlight device was detected",
+        DeviceKind::Keyboard => "no keyboard light is exposed to Linux as a backlight LED",
     }))
 }
 
