@@ -324,6 +324,8 @@ Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the 
 
 ## Development
 
+To propose a change, start with [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ### Prerequisites
 
 The workspace is pinned to Rust 1.98.0 by `rust-toolchain.toml`; rustup selects
