@@ -58,11 +58,14 @@ it wakes up, its backend, and its state. A feature that
 cannot run here (unsupported, or missing a dependency or permission) can be
 turned off but not on until it becomes available. Tools on the Capture and
 Notes pages work the same way in place: a tool that is off says what it does
-and has a Turn on button, and one that cannot run here gives its reason.
+and has a Turn on button, and one that cannot run here gives its reason. The
+hub lists only features that can be switched; the main window is always on and
+is not listed.
 
-The Overview page's Tools row has one-click buttons for the screenshot, screen
-tools, recording, and Scratchpad while they are on, and a link to the Feature
-Hub for the rest.
+The Overview page's Tools row has a one-click action for every feature that is
+on and has one (the capture tools, camera preview, scratchpad, snippets,
+clipboard history, command bar, monitoring, a speed test, the audio mixer, and
+processes), and a link to the Feature Hub for the rest.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
 Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
@@ -204,7 +207,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 ### Desktop integration
 
-- The normal window is always available; the tray is optional.
+- The normal window is always available; the tray is optional. Tray integration (`app.status-notifier`) is on by default and can be turned off in the Feature Hub, which removes the tray icon and readout icons at once; presets leave it as you set it.
 - The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make it quit instead. Ctrl+Q, the Quit row on the Settings page, and the tray's Quit always quit. Minimizing turns off a running camera preview.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, COSMIC, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Each readout marked **Tray** in Settings (up to three) gets its own tray icon showing its label and current value; clicking it opens Kestrel, and its menu shows the full reading. Hosts that support tooltips also show the reading on hover; COSMIC shows no tray tooltips.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.

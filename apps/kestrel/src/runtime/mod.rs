@@ -308,20 +308,20 @@ impl ApplicationRuntime {
                 .with_selected_backend("GTK/libadwaita normal window"),
             ),
         )?;
-        let status_notifier_available = matches!(
-            &status_notifier_capability.status,
-            CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
-        );
+        // On unless turned off; it runs only where a tray host exists.
+        let status_notifier_enabled = configuration
+            .features
+            .get(STATUS_NOTIFIER_ID)
+            .is_none_or(|feature| feature.enabled);
         let status_notifier = FeatureSpec::new(
             STATUS_NOTIFIER_ID,
             "Tray integration",
             status_notifier_capability.status.clone(),
         )
-        .with_configurable(false)
         .with_cost(TRAY_COST);
         registry.register_probe(
             status_notifier,
-            status_notifier_available,
+            status_notifier_enabled,
             StaticCapabilityProbe::new(status_notifier_capability),
         )?;
 
@@ -798,7 +798,10 @@ impl ApplicationRuntime {
         let configurable = self
             .registry
             .registrations()
-            .filter(|registration| registration.feature.configurable)
+            // Presets choose features to use; the tray stays as the user left it.
+            .filter(|registration| {
+                registration.feature.configurable && registration.feature.id != STATUS_NOTIFIER_ID
+            })
             .map(|registration| registration.feature.id)
             .collect::<Vec<_>>();
         for feature_id in configurable {
@@ -1064,9 +1067,10 @@ impl ApplicationRuntime {
     }
 
     fn default_enabled(feature_id: &str) -> bool {
-        ALL_QUICK_TOGGLES
-            .into_iter()
-            .any(|id| id.feature_id() == feature_id)
+        feature_id == STATUS_NOTIFIER_ID
+            || ALL_QUICK_TOGGLES
+                .into_iter()
+                .any(|id| id.feature_id() == feature_id)
     }
 
     fn preset_enabled(preset: FeaturePreset, feature_id: &str) -> bool {
@@ -1143,6 +1147,17 @@ mod tests {
                         && registration.running
                 )
         );
+        let switches = ApplicationRuntime::feature_items(&runtime.registry);
+        let has_switch = |feature_id: &str| {
+            switches
+                .iter()
+                .any(|item| item.id == format!("feature:{feature_id}"))
+        };
+        assert!(
+            !has_switch("app.command-surface"),
+            "the window is no switch"
+        );
+        assert!(has_switch(STATUS_NOTIFIER_ID), "the tray can be turned off");
         for feature_id in [AUDIO_MIXER_ID, CLIPBOARD_HISTORY_ID, STATUS_NOTIFIER_ID] {
             let registration = registrations
                 .iter()
@@ -1271,10 +1286,9 @@ mod tests {
             .expect("preset applies");
 
         assert_eq!(snapshot.features, original_features);
-        for registration in runtime
-            .registrations()
-            .filter(|registration| registration.feature.configurable)
-        {
+        for registration in runtime.registrations().filter(|registration| {
+            registration.feature.configurable && registration.feature.id != STATUS_NOTIFIER_ID
+        }) {
             let expected = matches!(
                 registration.feature.id,
                 SYSTEM_MONITOR_ID
@@ -1301,6 +1315,11 @@ mod tests {
         assert_eq!(
             configuration.features.get("feature.preserved"),
             original_features.get("feature.preserved")
+        );
+        assert_eq!(
+            configuration.features.get(STATUS_NOTIFIER_ID),
+            None,
+            "presets leave the tray as the user left it"
         );
 
         runtime

@@ -50,11 +50,26 @@ impl StatusNotifierIntegration {
         self.capability.clone()
     }
 
+    /// The capability while the tray is off: whether a tray host is running,
+    /// found without registering an item.
+    pub fn probe() -> CapabilityReport {
+        match kestrel_platform::tray_host::tray_host_present() {
+            Ok(true) => CapabilityReport::new(
+                FEATURE_ID,
+                CapabilityStatus::Supported,
+                "A desktop tray host can show Kestrel's optional tray entry.",
+            )
+            .with_selected_backend("StatusNotifierItem over the user session D-Bus"),
+            Ok(false) => unavailable_capability("no StatusNotifierItem tray host is running"),
+            Err(reason) => unavailable_capability(reason),
+        }
+    }
+
     /// Publishes monitor readouts as tray items; `None` without a tray host.
     pub fn readout_sink(&self) -> Option<TrayReadoutSink> {
         self.handle.as_ref().map(|_| TrayReadoutSink {
             sender: self.sender.clone(),
-            items: Arc::new(Mutex::new(BTreeMap::new())),
+            items: Arc::default(),
         })
     }
 }
@@ -87,7 +102,7 @@ pub struct TrayReadout {
 #[derive(Clone)]
 pub struct TrayReadoutSink {
     sender: Sender<ApplicationCommand>,
-    items: Arc<Mutex<BTreeMap<String, ReadoutItem>>>,
+    items: Arc<Mutex<ReadoutItems>>,
 }
 
 struct ReadoutItem {
@@ -95,13 +110,25 @@ struct ReadoutItem {
     readout: TrayReadout,
 }
 
+/// Readout items, and whether the tray was turned off; once closed, a
+/// publish from a tick already in flight adds nothing.
+#[derive(Default)]
+struct ReadoutItems {
+    items: BTreeMap<String, ReadoutItem>,
+    closed: bool,
+}
+
 impl TrayReadoutSink {
     /// Blocks briefly on each tray thread; call it off the GTK thread.
     pub fn publish(&self, readouts: &[TrayReadout]) {
-        let mut items = self
+        let mut guard = self
             .items
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.closed {
+            return;
+        }
+        let items = &mut guard.items;
         items.retain(|key, item| {
             let keep = readouts.iter().any(|readout| &readout.key == key);
             if !keep {
@@ -143,6 +170,18 @@ impl TrayReadoutSink {
                     }
                 }
             }
+        }
+    }
+
+    /// Removes every readout item; later publishes add nothing.
+    pub fn close(&self) {
+        let mut guard = self
+            .items
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.closed = true;
+        for item in std::mem::take(&mut guard.items).into_values() {
+            item.handle.shutdown().wait();
         }
     }
 }

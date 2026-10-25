@@ -26,7 +26,8 @@ pub(super) fn build_feature_hub_group(
         )
         .build();
     let mut rows = FilterRows::new();
-    for feature in features {
+    // A feature that cannot be turned off, such as the main window, is not a choice.
+    for feature in features.iter().filter(|feature| feature.configurable) {
         let indicator = feature.indicator();
         let status = feature.status_line();
         let details = feature.details();

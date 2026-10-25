@@ -403,6 +403,10 @@ pub enum FocusTarget {
     Scratchpad,
     /// The Monitoring page, where active alerts are listed.
     Monitoring,
+    /// The Audio page with the mixer.
+    Audio,
+    /// The Notes page, where the snippet library leads.
+    Snippets,
 }
 
 /// A process action the user can confirm.

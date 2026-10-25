@@ -776,7 +776,7 @@ struct ControllerContext {
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
-    tray: Option<kestrel::TrayReadoutSink>,
+    status_notifier: Option<StatusNotifierIntegration>,
 }
 
 struct ApplicationController {
@@ -817,7 +817,9 @@ struct ApplicationController {
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
     notification_captures: RefCell<HashMap<u32, CaptureId>>,
-    tray: Option<kestrel::TrayReadoutSink>,
+    /// The tray entry while the tray feature runs; started and stopped with it.
+    status_notifier: RefCell<Option<StatusNotifierIntegration>>,
+    tray: RefCell<Option<kestrel::TrayReadoutSink>>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
     refresh_results: Sender<RefreshResult>,
@@ -838,7 +840,7 @@ impl ApplicationController {
             commands,
             notifier,
             capture_notifier,
-            tray,
+            status_notifier,
         } = context;
         let monitor_running = runtime.monitor_is_running();
         let clipboard_running = runtime.clipboard_is_running();
@@ -911,7 +913,12 @@ impl ApplicationController {
             notifier,
             capture_notifier,
             notification_captures: RefCell::new(HashMap::new()),
-            tray,
+            tray: RefCell::new(
+                status_notifier
+                    .as_ref()
+                    .and_then(StatusNotifierIntegration::readout_sink),
+            ),
+            status_notifier: RefCell::new(status_notifier),
             activation_token: RefCell::new(None),
             refresh_results,
             tick_results,
@@ -1283,6 +1290,7 @@ impl ApplicationController {
         apply_color_scheme(view_model.appearance);
         self.track_running(&view_model);
         self.overlay.set_view_model(&view_model);
+        self.reconcile_tray(&view_model);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1292,6 +1300,44 @@ impl ApplicationController {
         if let Some(message) = message {
             view.show_message(&message);
         }
+    }
+
+    /// Starts or stops the tray entry with the tray feature.
+    fn reconcile_tray(&self, view_model: &ApplicationViewModel) {
+        let wanted = view_model
+            .features
+            .iter()
+            .any(|feature| feature.id == kestrel::STATUS_NOTIFIER_ID && feature.running);
+        let present = self.status_notifier.borrow().is_some();
+        if wanted && !present {
+            let integration = StatusNotifierIntegration::start(self.commands.clone());
+            let sink = integration.readout_sink();
+            if sink.is_none() {
+                log::warn!(
+                    target: kestrel::STATUS_NOTIFIER_ID,
+                    "The tray host did not accept the tray entry"
+                );
+            }
+            *self.tray.borrow_mut() = sink;
+            *self.status_notifier.borrow_mut() = Some(integration);
+        } else if !wanted && present {
+            let _ = self.stop_tray();
+        }
+    }
+
+    /// Removes the tray entry and its readout icons off the GTK thread.
+    fn stop_tray(&self) -> Option<thread::JoinHandle<()>> {
+        let sink = self.tray.borrow_mut().take();
+        let integration = self.status_notifier.borrow_mut().take();
+        thread::Builder::new()
+            .name("kestrel-tray-stop".to_owned())
+            .spawn(move || {
+                if let Some(sink) = sink {
+                    sink.close();
+                }
+                drop(integration);
+            })
+            .ok()
     }
 
     /// Records which features run, which decides what each tick polls.
@@ -1351,7 +1397,7 @@ impl ApplicationController {
         let state = Arc::clone(&self.state);
         let notifier = Arc::clone(&self.notifier);
         let capture_notifier = Arc::clone(&self.capture_notifier);
-        let tray = self.tray.clone();
+        let tray = self.tray.borrow().clone();
         let results = self.tick_results.clone();
         let observed_at = self.monitor_started_at.elapsed();
         let worker = thread::Builder::new()
@@ -3063,12 +3109,22 @@ fn main() -> glib::ExitCode {
     }
 
     let (commands, command_receiver) = async_channel::unbounded();
-    let status_notifier = StatusNotifierIntegration::start(commands.clone());
+    // The tray starts only when it is on; otherwise its host is only looked for.
+    let tray_on = loaded
+        .configuration
+        .features
+        .get(kestrel::STATUS_NOTIFIER_ID)
+        .is_none_or(|feature| feature.enabled);
+    let status_notifier = tray_on.then(|| StatusNotifierIntegration::start(commands.clone()));
+    let tray_capability = status_notifier.as_ref().map_or_else(
+        StatusNotifierIntegration::probe,
+        StatusNotifierIntegration::capability,
+    );
 
     let mut runtime = ApplicationRuntime::new_with_host(
         &loaded.configuration,
         kestrel::HostCapabilities {
-            status_notifier: status_notifier.capability(),
+            status_notifier: tray_capability,
             overlay: layer_shell::overlay_capability(&layer_shell::observed_placement()),
         },
     )
@@ -3095,7 +3151,7 @@ fn main() -> glib::ExitCode {
             commands: commands.clone(),
             notifier,
             capture_notifier,
-            tray: status_notifier.readout_sink(),
+            status_notifier,
         },
     );
     controller
@@ -3159,7 +3215,9 @@ fn main() -> glib::ExitCode {
     });
 
     let exit = application.run_with_args(&arguments);
-    drop(status_notifier);
+    if let Some(stopping) = controller.stop_tray() {
+        let _ = stopping.join();
+    }
     exit
 }
 
@@ -3763,7 +3821,7 @@ mod tests {
                     commands,
                     notifier: Arc::new(SilentNotifier),
                     capture_notifier: Arc::new(DesktopNotifier::new()),
-                    tray: None,
+                    status_notifier: None,
                 },
             )
         }

@@ -22,6 +22,7 @@ pub mod speed_test;
 pub mod system_monitor;
 #[cfg(test)]
 mod test_bus;
+pub mod tray_host;
 pub mod upower;
 pub mod windows;
 

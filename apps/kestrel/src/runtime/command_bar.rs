@@ -60,6 +60,7 @@ impl ApplicationRuntime {
     pub(super) fn feature_items(registry: &FeatureRegistry) -> Vec<CommandItem> {
         registry
             .registrations()
+            .filter(|registration| registration.feature.configurable)
             .map(|registration| {
                 let enabled = registration.enabled;
                 let label = registration.feature.label.to_string();
