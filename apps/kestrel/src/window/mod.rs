@@ -468,6 +468,14 @@ impl WindowView {
                 self.select_page(SidebarPage::Monitoring);
                 true
             }
+            FocusTarget::Audio => {
+                self.select_page(SidebarPage::Audio);
+                true
+            }
+            FocusTarget::Snippets => {
+                self.select_page(SidebarPage::Notes);
+                true
+            }
         }
     }
 
@@ -820,9 +828,9 @@ fn build_overview_tools_group(
     let group = adw::PreferencesGroup::builder()
         .title("Tools")
         .description(if tools.tools.is_empty() {
-            "Turn on tools in the Feature Hub to make them available here."
+            "Turn features on in the Feature Hub and their actions appear here."
         } else {
-            "Common tools are one click away."
+            "One click to the features you have on."
         })
         .build();
     let flow = gtk::FlowBox::builder()
@@ -868,6 +876,30 @@ fn build_overview_tools_group(
             }),
             OverviewTool::Scratchpad => button.connect_clicked(move |_| {
                 let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Scratchpad));
+            }),
+            OverviewTool::Camera => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Capture));
+            }),
+            OverviewTool::Snippets => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Snippets));
+            }),
+            OverviewTool::ClipboardHistory => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Clipboard));
+            }),
+            OverviewTool::CommandBar => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::CommandBar));
+            }),
+            OverviewTool::Monitoring => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Monitoring));
+            }),
+            OverviewTool::SpeedTest => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::StartSpeedTest);
+            }),
+            OverviewTool::AudioMixer => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Audio));
+            }),
+            OverviewTool::Processes => button.connect_clicked(move |_| {
+                let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Processes));
             }),
         };
         flow.insert(&button, -1);

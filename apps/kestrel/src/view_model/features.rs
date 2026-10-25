@@ -179,7 +179,7 @@ pub struct TurnOnViewModel {
     pub description: String,
 }
 
-/// A tool exposed on the Overview page.
+/// A one-click action on the Overview page for a feature that is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewTool {
     Screenshot,
@@ -187,7 +187,15 @@ pub enum OverviewTool {
     ReadQrCode,
     PickColour,
     Record,
+    Camera,
     Scratchpad,
+    Snippets,
+    ClipboardHistory,
+    CommandBar,
+    Monitoring,
+    SpeedTest,
+    AudioMixer,
+    Processes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,7 +213,7 @@ pub struct OverviewToolsViewModel {
 
 impl OverviewToolsViewModel {
     pub fn from_features(features: &[FeatureViewModel]) -> Self {
-        const TOOLS: [(OverviewTool, &str, &str, &str); 6] = [
+        const TOOLS: [(OverviewTool, &str, &str, &str); 14] = [
             (
                 OverviewTool::Screenshot,
                 "Screenshot",
@@ -237,10 +245,58 @@ impl OverviewToolsViewModel {
                 "capture.recording",
             ),
             (
+                OverviewTool::Camera,
+                "Camera preview",
+                "camera-web-symbolic",
+                "camera.preview",
+            ),
+            (
                 OverviewTool::Scratchpad,
                 "Scratchpad",
                 "document-edit-symbolic",
                 "notes.scratchpad",
+            ),
+            (
+                OverviewTool::Snippets,
+                "Snippets",
+                "text-x-generic-symbolic",
+                "snippets.text",
+            ),
+            (
+                OverviewTool::ClipboardHistory,
+                "Clipboard history",
+                "edit-paste-symbolic",
+                "clipboard.history",
+            ),
+            (
+                OverviewTool::CommandBar,
+                "Command bar",
+                "system-search-symbolic",
+                "commands.bar",
+            ),
+            (
+                OverviewTool::Monitoring,
+                "Monitoring",
+                "power-profile-performance-symbolic",
+                "system.monitor",
+            ),
+            (
+                OverviewTool::SpeedTest,
+                "Run speed test",
+                "network-transmit-receive-symbolic",
+                "network.speed_test",
+            ),
+            (
+                OverviewTool::AudioMixer,
+                "Audio mixer",
+                "audio-volume-high-symbolic",
+                "audio.mixer",
+            ),
+            (
+                OverviewTool::Processes,
+                "Processes",
+                "system-run-symbolic",
+                "system.processes",
             ),
         ];
         Self {
@@ -707,21 +763,30 @@ mod tests {
 
     #[test]
     fn overview_tools_are_on_in_fixed_order() {
-        let ids = [
-            "notes.scratchpad",
-            "capture.color",
-            "capture.screenshot",
-            "capture.recording",
-            "capture.qr",
-            "capture.text",
+        // (feature, on): shuffled, with one feature that is off.
+        let features_on = [
+            ("network.speed_test", true),
+            ("notes.scratchpad", true),
+            ("audio.mixer", true),
+            ("capture.color", true),
+            ("system.processes", false),
+            ("capture.screenshot", true),
+            ("system.monitor", true),
+            ("commands.bar", true),
+            ("capture.recording", true),
+            ("clipboard.history", true),
+            ("capture.qr", true),
+            ("camera.preview", true),
+            ("snippets.text", true),
+            ("capture.text", true),
         ];
-        let registrations = ids
+        let registrations = features_on
             .into_iter()
-            .map(|id| {
+            .map(|(id, on)| {
                 ServiceRegistration::new(
                     FeatureSpec::new(id, id, CapabilityStatus::Supported),
                     CapabilityReport::new(id, CapabilityStatus::Supported, "Ready."),
-                    true,
+                    on,
                 )
                 .expect("matching feature IDs")
             })
@@ -742,7 +807,14 @@ mod tests {
                 "Read QR code",
                 "Pick colour",
                 "Record",
-                "Scratchpad"
+                "Camera preview",
+                "Scratchpad",
+                "Snippets",
+                "Clipboard history",
+                "Command bar",
+                "Monitoring",
+                "Run speed test",
+                "Audio mixer",
             ]
         );
     }
