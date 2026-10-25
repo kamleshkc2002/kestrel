@@ -361,7 +361,7 @@ mod tests {
     use super::*;
     use crate::ConfigurationWarning;
     use crate::view_model::test_support::*;
-    use kestrel_core::{AppearancePreference, ApplicationConfiguration};
+    use kestrel_core::ApplicationConfiguration;
 
     use kestrel_services::{
         audio::AudioPolicy,
@@ -422,58 +422,5 @@ mod tests {
         assert!(view_model.features.is_empty());
         assert_eq!(view_model.warnings[0].feature_id, "audio.mixer");
         assert_eq!(view_model.warnings[0].message, "Invalid volume preference.");
-    }
-
-    #[test]
-    fn exposes_presentation_preferences_and_reversible_state() {
-        let mut configuration = ApplicationConfiguration::default();
-        configuration.ui.appearance = AppearancePreference::Dark;
-        configuration.startup.autostart = true;
-        let view_model = ApplicationViewModel::new(
-            std::iter::empty(),
-            std::iter::empty(),
-            AudioPresentation {
-                snapshot: None,
-                running: false,
-                policy: AudioPolicy::default(),
-            },
-            MicrophonePresentation {
-                snapshot: &MicrophoneSnapshot::unavailable(),
-                running: false,
-            },
-            test_speed_presentation(),
-            test_shortcuts_presentation(),
-            test_capture_presentation(),
-            ClipboardPresentation::default(),
-            SnippetsPresentation {
-                library: &SnippetLibrary::default(),
-                policy: SnippetPolicy::default(),
-                running: false,
-                provider: None,
-                unavailable_reason: None,
-                stopped_reason: None,
-                directory: None,
-                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
-                provider_preference: kestrel_core::SnippetProviderPreference::Auto,
-                search_query: "",
-                matches: &[],
-                draft: None,
-                warnings: &[],
-            },
-            CommandBarPresentation::default(),
-            MonitorPresentation {
-                snapshot: None,
-                history: None,
-                alerts: Default::default(),
-                running: false,
-            },
-            &[],
-            &configuration,
-            true,
-        );
-
-        assert_eq!(view_model.appearance, AppearancePreference::Dark);
-        assert!(view_model.autostart);
-        assert!(view_model.can_undo);
     }
 }

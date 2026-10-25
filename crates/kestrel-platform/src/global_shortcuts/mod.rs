@@ -322,23 +322,24 @@ mod tests {
 
     #[test]
     fn session_type_wins_over_display_variables() {
-        assert_eq!(
-            SessionKind::from_environment(Some("x11"), true, true),
-            SessionKind::X11
-        );
-        assert_eq!(
-            SessionKind::from_environment(None, true, true),
-            SessionKind::Wayland,
-            "Xwayland's DISPLAY does not make a Wayland session X11"
-        );
-        assert_eq!(
-            SessionKind::from_environment(None, false, true),
-            SessionKind::X11
-        );
-        assert_eq!(
-            SessionKind::from_environment(Some("tty"), false, false),
-            SessionKind::Unknown
-        );
+        for (name, desktop, x11_display, wayland, expected) in [
+            ("explicit x11", Some("x11"), true, true, SessionKind::X11),
+            ("implicit wayland", None, true, true, SessionKind::Wayland),
+            ("display only", None, false, true, SessionKind::X11),
+            (
+                "unknown desktop",
+                Some("tty"),
+                false,
+                false,
+                SessionKind::Unknown,
+            ),
+        ] {
+            assert_eq!(
+                SessionKind::from_environment(desktop, x11_display, wayland),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -348,19 +349,29 @@ mod tests {
             portal_version,
             x11_display,
         };
-        assert_eq!(
-            detection(SessionKind::X11, Some(1), true).provider(),
-            Some(ShortcutProvider::Portal)
-        );
-        assert_eq!(
-            detection(SessionKind::X11, None, true).provider(),
-            Some(ShortcutProvider::X11)
-        );
-        assert_eq!(
-            detection(SessionKind::Wayland, None, true).provider(),
-            None,
-            "Xwayland grabs are never used"
-        );
+        for (name, session, portal_version, x11_display, expected) in [
+            (
+                "portal",
+                SessionKind::X11,
+                Some(1),
+                true,
+                Some(ShortcutProvider::Portal),
+            ),
+            (
+                "x11 fallback",
+                SessionKind::X11,
+                None,
+                true,
+                Some(ShortcutProvider::X11),
+            ),
+            ("xwayland", SessionKind::Wayland, None, true, None),
+        ] {
+            assert_eq!(
+                detection(session, portal_version, x11_display).provider(),
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]

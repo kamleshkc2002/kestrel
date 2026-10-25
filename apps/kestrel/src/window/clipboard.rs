@@ -860,16 +860,21 @@ mod tests {
     use super::highlighted_markup;
 
     #[test]
-    fn highlights_escape_markup_and_bold_only_the_matches() {
-        assert_eq!(
-            highlighted_markup("a <b> & token", &[(8, 13)]),
-            "a &lt;b&gt; &amp; <b>token</b>"
-        );
-        assert_eq!(highlighted_markup("plain", &[]), "plain");
-        assert_eq!(
-            highlighted_markup("abc", &[(0, 1), (0, 2)]),
-            "<b>a</b>bc",
-            "overlapping ranges are skipped"
-        );
+    fn highlighted_markup_escapes_and_handles_ranges() {
+        for (text, ranges, expected) in [
+            (
+                "a <b> & token",
+                vec![(8, 13)],
+                "a &lt;b&gt; &amp; <b>token</b>",
+            ),
+            ("plain", vec![], "plain"),
+            ("abc", vec![(0, 1), (0, 2)], "<b>a</b>bc"),
+        ] {
+            assert_eq!(
+                highlighted_markup(text, &ranges),
+                expected,
+                "ranges: {ranges:?}"
+            );
+        }
     }
 }

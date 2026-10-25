@@ -704,23 +704,16 @@ mod tests {
     }
 
     #[test]
-    fn validates_refresh_interval_bounds() {
-        assert!(matches!(
-            SystemMonitorService::new(
-                source(Vec::new()),
-                MIN_REFRESH_INTERVAL - Duration::from_millis(1),
-                1
-            ),
-            Err(SystemMonitorConfigError::RefreshInterval(_))
-        ));
-        assert!(matches!(
-            SystemMonitorService::new(
-                source(Vec::new()),
-                MAX_REFRESH_INTERVAL + Duration::from_millis(1),
-                1
-            ),
-            Err(SystemMonitorConfigError::RefreshInterval(_))
-        ));
+    fn refresh_interval_rejects_out_of_bounds_values() {
+        for interval in [
+            MIN_REFRESH_INTERVAL - Duration::from_millis(1),
+            MAX_REFRESH_INTERVAL + Duration::from_millis(1),
+        ] {
+            assert!(matches!(
+                SystemMonitorService::new(source(Vec::new()), interval, 1),
+                Err(SystemMonitorConfigError::RefreshInterval(_))
+            ));
+        }
     }
 
     #[test]

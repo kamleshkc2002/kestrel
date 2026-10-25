@@ -524,11 +524,17 @@ mod tests {
 
     #[test]
     fn clip_text_respects_character_boundaries() {
-        assert_eq!(clip_text("abc", 8), ("abc".to_string(), false));
-        let (clipped, truncated) = clip_text("üüüü", 3);
-        assert_eq!(clipped, "ü", "clipping never splits a character");
-        assert!(truncated);
-        assert_eq!(clip_text("", 4), (String::new(), false));
+        let cases = [
+            ("abc", 8, "abc", false),
+            ("üüüü", 3, "ü", true),
+            ("", 4, "", false),
+        ];
+        for (input, max_bytes, expected, truncated) in cases {
+            assert_eq!(
+                clip_text(input, max_bytes),
+                (expected.to_string(), truncated)
+            );
+        }
     }
 
     #[test]

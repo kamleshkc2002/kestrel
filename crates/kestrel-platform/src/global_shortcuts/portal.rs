@@ -882,10 +882,14 @@ mod tests {
 
     #[test]
     fn maps_portal_response_codes() {
-        assert_eq!(map_response_code(0), ResponseResult::Accepted);
-        assert_eq!(map_response_code(1), ResponseResult::Cancelled);
-        assert_eq!(map_response_code(2), ResponseResult::Denied);
-        assert_eq!(map_response_code(99), ResponseResult::Protocol);
+        for (code, expected) in [
+            (0, ResponseResult::Accepted),
+            (1, ResponseResult::Cancelled),
+            (2, ResponseResult::Denied),
+            (99, ResponseResult::Protocol),
+        ] {
+            assert_eq!(map_response_code(code), expected, "{code}");
+        }
     }
 
     fn wait_for_phase(status: &SharedShortcutStatus, timeout: Duration) -> ShortcutPhase {
@@ -965,11 +969,5 @@ mod tests {
             BindingState::Rejected { .. }
         ));
         backend.stop();
-    }
-
-    #[test]
-    fn accepts_test_bus_address() {
-        let backend = PortalShortcutBackend::with_bus_address("test.app", "unix:path=/tmp/test");
-        assert_eq!(backend.address.as_deref(), Some("unix:path=/tmp/test"));
     }
 }

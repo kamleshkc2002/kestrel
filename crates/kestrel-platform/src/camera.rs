@@ -507,8 +507,9 @@ mod tests {
 
     #[test]
     fn corrupt_jpeg_frames_are_skipped() {
-        assert_eq!(jpeg_to_rgba(b"not a jpeg"), None);
-        assert_eq!(jpeg_to_rgba(&[0xff, 0xd8, 0xff]), None);
+        for input in [b"not a jpeg".as_slice(), &[0xff, 0xd8, 0xff][..]] {
+            assert_eq!(jpeg_to_rgba(input), None, "{input:?}");
+        }
     }
 
     /// Drops DHT segments, as webcams do in MJPEG streams.
@@ -545,10 +546,14 @@ mod tests {
     #[test]
     fn opening_errors_are_typed() {
         let error = |code| CameraError::from_io(&io::Error::from_raw_os_error(code), "x").kind;
-        assert_eq!(error(libc::ENOENT), CameraErrorKind::Unavailable);
-        assert_eq!(error(libc::EACCES), CameraErrorKind::Denied);
-        assert_eq!(error(libc::EBUSY), CameraErrorKind::Busy);
-        assert_eq!(error(libc::EIO), CameraErrorKind::Failed);
+        for (code, expected) in [
+            (libc::ENOENT, CameraErrorKind::Unavailable),
+            (libc::EACCES, CameraErrorKind::Denied),
+            (libc::EBUSY, CameraErrorKind::Busy),
+            (libc::EIO, CameraErrorKind::Failed),
+        ] {
+            assert_eq!(error(code), expected, "{code}");
+        }
         let missing = V4l2Camera
             .open(Path::new("/nonexistent/video0"))
             .err()

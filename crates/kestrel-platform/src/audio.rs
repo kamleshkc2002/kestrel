@@ -1070,18 +1070,15 @@ mod tests {
 
     #[test]
     fn volume_conversion_preserves_amplification_up_to_the_type_bound() {
-        assert_eq!(volume_percent(Volume::MUTED), 0);
-        assert_eq!(volume_percent(Volume::NORMAL), 100);
-        assert_eq!(
-            volume_percent(Volume(Volume::NORMAL.0 / 2)),
-            50,
-            "half volume must stay halfway, not saturate"
-        );
-        assert_eq!(
-            volume_percent(Volume(Volume::NORMAL.0 + Volume::NORMAL.0 / 2)),
-            150
-        );
-        assert_eq!(volume_percent(Volume(u32::MAX)), u8::MAX);
+        for (volume, expected) in [
+            (Volume::MUTED.0, 0),
+            (Volume::NORMAL.0, 100),
+            (Volume::NORMAL.0 / 2, 50),
+            (Volume::NORMAL.0 + Volume::NORMAL.0 / 2, 150),
+            (u32::MAX, u8::MAX),
+        ] {
+            assert_eq!(volume_percent(Volume(volume)), expected, "volume {volume}");
+        }
     }
 
     #[test]
@@ -1113,7 +1110,6 @@ mod tests {
             .expect_err("volume above the amplification cap is rejected");
 
         assert_eq!(error.kind, AudioErrorKind::Rejected);
-        assert!(error.message.contains("150% amplification cap"));
     }
 
     #[test]

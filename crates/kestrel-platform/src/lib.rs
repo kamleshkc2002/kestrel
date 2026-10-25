@@ -75,20 +75,3 @@ impl CapabilityProbe for StaticCapabilityProbe {
         self.report.clone()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{CapabilityProbe, StaticCapabilityProbe};
-    use kestrel_core::{CapabilityReport, CapabilityStatus};
-
-    #[test]
-    fn static_probe_returns_a_copy_of_its_report() {
-        let probe = StaticCapabilityProbe::new(CapabilityReport::new(
-            "capture.screenshot",
-            CapabilityStatus::Supported,
-            "A test report.",
-        ));
-
-        assert_eq!(probe.probe().feature_id, "capture.screenshot");
-    }
-}

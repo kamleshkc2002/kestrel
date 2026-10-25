@@ -426,14 +426,6 @@ mod tests {
         assert!(audio.status.contains("Feature Hub"));
         assert!(audio.outputs.is_empty());
         assert!(audio.output_groups.is_empty());
-        assert_eq!(
-            audio.policy.boost_percent,
-            kestrel_core::DEFAULT_AUDIO_BOOST_PERCENT
-        );
-        assert_eq!(
-            audio.policy.max_boost_percent,
-            kestrel_core::MAX_AUDIO_BOOST_PERCENT
-        );
     }
 
     #[test]

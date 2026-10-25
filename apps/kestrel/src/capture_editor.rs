@@ -1194,15 +1194,16 @@ mod tests {
     #[test]
     fn resizing_keeps_the_proportions_in_every_direction() {
         // A 4:3 image resized from a top-left anchor at (100, 100).
-        assert_eq!(
-            resized((100, 100), (140, 101), (4, 3)),
-            rect(100, 100, 40, 30)
-        );
-        assert_eq!(
-            resized((100, 100), (99, 70), (4, 3)),
-            rect(60, 70, 40, 30),
-            "the taller drag wins, up and to the left"
-        );
+        for (name, pointer, expected) in [
+            ("right", (140, 101), rect(100, 100, 40, 30)),
+            ("up and left", (99, 70), rect(60, 70, 40, 30)),
+        ] {
+            assert_eq!(
+                resized((100, 100), pointer, (4, 3)),
+                expected,
+                "{name} drag preserves the aspect ratio"
+            );
+        }
         let tiny = resized((100, 100), (101, 101), (4, 3));
         assert_eq!(
             (tiny.width, tiny.height),
@@ -1214,16 +1215,16 @@ mod tests {
     #[test]
     fn a_pasted_image_starts_centred_and_shrinks_only_to_fit() {
         let canvas = rect(-50, -10, 200, 100);
-        assert_eq!(
-            initial_paste_rect(canvas, (20, 10)),
-            rect(40, 35, 20, 10),
-            "a small image keeps its size"
-        );
-        assert_eq!(
-            initial_paste_rect(canvas, (400, 100)),
-            rect(-30, 20, 160, 40),
-            "a wide image shrinks to 80% of the canvas width"
-        );
+        for (name, size, expected) in [
+            ("small", (20, 10), rect(40, 35, 20, 10)),
+            ("wide", (400, 100), rect(-30, 20, 160, 40)),
+        ] {
+            assert_eq!(
+                initial_paste_rect(canvas, size),
+                expected,
+                "{name} image placement"
+            );
+        }
     }
 
     #[test]

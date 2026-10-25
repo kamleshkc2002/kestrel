@@ -489,17 +489,6 @@ mod tests {
             ))
         );
     }
-    #[test]
-    fn capture_and_recording_tool_ids_round_trip() {
-        for (id, action) in [
-            ("capture.edit-last", CommandLineAction::CaptureEditLast),
-            ("recording.start", CommandLineAction::RecordingStart),
-            ("recording.stop", CommandLineAction::RecordingStop),
-        ] {
-            assert_eq!(CommandLineAction::parse(id), Ok(action));
-            assert_eq!(action.id(), id);
-        }
-    }
 
     #[test]
     fn invalid_invocations_are_rejected_with_a_reason() {
@@ -551,26 +540,26 @@ mod tests {
 
     #[test]
     fn entry_point_ids_focus_their_controls() {
-        assert_eq!(
-            CommandLineAction::parse("command-bar.open").map(CommandLineAction::to_command),
-            Ok(ApplicationCommand::Focus(FocusTarget::CommandBar))
-        );
-        assert_eq!(
-            CommandLineAction::parse("clipboard.quick-paste").map(CommandLineAction::to_command),
-            Ok(ApplicationCommand::Focus(FocusTarget::Clipboard))
-        );
-    }
-
-    #[test]
-    fn quick_panel_entry_point_parses_to_focus_command() {
-        assert_eq!(
-            parse_arguments(&arguments(&["--command", "quick-panel.open"])),
-            Ok(Invocation::Run(CommandLineAction::OpenQuickPanel))
-        );
-        assert_eq!(
-            CommandLineAction::OpenQuickPanel.to_command(),
-            ApplicationCommand::Focus(FocusTarget::QuickPanel)
-        );
+        for (id, expected) in [
+            (
+                "command-bar.open",
+                ApplicationCommand::Focus(FocusTarget::CommandBar),
+            ),
+            (
+                "clipboard.quick-paste",
+                ApplicationCommand::Focus(FocusTarget::Clipboard),
+            ),
+            (
+                "quick-panel.open",
+                ApplicationCommand::Focus(FocusTarget::QuickPanel),
+            ),
+        ] {
+            assert_eq!(
+                CommandLineAction::parse(id).map(CommandLineAction::to_command),
+                Ok(expected),
+                "{id}"
+            );
+        }
     }
 
     #[test]

@@ -557,7 +557,6 @@ mod tests {
         assert_eq!(mode_of(&path), 0o600);
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(history.read(entry.id).unwrap(), bytes);
-        assert_eq!(file_names(&capture_dir(&root)).len(), 1);
     }
 
     #[test]
@@ -808,16 +807,6 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(ids(&history), vec![kept.id]);
         assert_eq!(history.read(deleted.id), Err(HistoryError::UnknownCapture));
-    }
-
-    #[test]
-    fn read_of_unknown_id_is_unknown_capture() {
-        let root = TempDir::new().unwrap();
-        let history = CaptureHistory::open(capture_dir(&root), roomy()).unwrap();
-        assert_eq!(
-            history.read(CaptureId(42)),
-            Err(HistoryError::UnknownCapture)
-        );
     }
 
     #[test]

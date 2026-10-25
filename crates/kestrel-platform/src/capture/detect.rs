@@ -451,13 +451,16 @@ mod tests {
                 .find(|item| item.key == key)
                 .map(|item| item.value.as_str())
         };
-        assert_eq!(value("grim"), Some("present"));
-        assert_eq!(value("slurp"), Some("present"));
-        assert_eq!(value("screencopy"), Some("present"));
-        assert_eq!(value("session_type"), Some("wayland"));
-        assert_eq!(value("portal_version"), Some("absent"));
+        for (key, expected) in [
+            ("grim", Some("present")),
+            ("slurp", Some("present")),
+            ("screencopy", Some("present")),
+            ("session_type", Some("wayland")),
+            ("portal_version", Some("absent")),
+        ] {
+            assert_eq!(value(key), expected, "{key}");
+        }
     }
-
     #[test]
     fn permission_entries_prefer_kestrel_then_the_host_app() {
         let entries = |pairs: &[(&str, &str)]| -> HashMap<String, Vec<String>> {
@@ -466,25 +469,26 @@ mod tests {
                 .map(|(app, value)| ((*app).to_owned(), vec![(*value).to_owned()]))
                 .collect()
         };
-        assert_eq!(
-            permission_from_entries(&HashMap::new()),
-            ScreenPermission::Unset
-        );
-        assert_eq!(
-            permission_from_entries(&entries(&[("", "yes")])),
-            ScreenPermission::Granted
-        );
-        assert_eq!(
-            permission_from_entries(&entries(&[("", "yes"), (APPLICATION_ID, "no")])),
-            ScreenPermission::Denied
-        );
-        assert_eq!(
-            permission_from_entries(&entries(&[("org.example.Other", "no")])),
-            ScreenPermission::Denied
-        );
-        assert_eq!(
-            permission_from_entries(&entries(&[("", "ask")])),
-            ScreenPermission::Unknown
-        );
+        for (name, pairs, expected) in [
+            ("empty", &[][..], ScreenPermission::Unset),
+            (
+                "host granted",
+                &[("", "yes")][..],
+                ScreenPermission::Granted,
+            ),
+            (
+                "kestrel denied",
+                &[("", "yes"), (APPLICATION_ID, "no")][..],
+                ScreenPermission::Denied,
+            ),
+            (
+                "other app denied",
+                &[("org.example.Other", "no")][..],
+                ScreenPermission::Denied,
+            ),
+            ("unknown", &[("", "ask")][..], ScreenPermission::Unknown),
+        ] {
+            assert_eq!(permission_from_entries(&entries(pairs)), expected, "{name}");
+        }
     }
 }

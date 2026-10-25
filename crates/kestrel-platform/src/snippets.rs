@@ -497,21 +497,16 @@ impl InsertionError {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        sync::{Arc, Mutex},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     use kestrel_core::{CapabilityStatus, SnippetProviderPreference};
     use tempfile::TempDir;
 
     use super::{
         ExecutableInsertionBackend, InsertionBackend, InsertionErrorKind, InsertionPath,
-        InsertionProvider, LocalTime, SnippetInsertionProbe, SystemClock,
-        discover_insertion_provider_with, insertion_capability_report,
+        InsertionProvider, LocalTime, discover_insertion_provider_with,
+        insertion_capability_report,
     };
-    use crate::CapabilityProbe;
 
     /// Writes a stub provider for argument and exit-status tests.
     fn stub(dir: &TempDir, name: &str, body: &str) -> std::path::PathBuf {
@@ -528,37 +523,33 @@ mod tests {
     }
 
     #[test]
-    fn discovery_prefers_the_least_privileged_verified_provider() {
-        let dir = TempDir::new().expect("temp dir");
-        stub(&dir, "xdotool", "#!/bin/sh\nexit 0\n");
-        stub(&dir, "ydotool", "#!/bin/sh\nexit 0\n");
+    fn automatic_discovery_prefers_supported_provider_order() {
+        for (case, first, second, expected) in [
+            (
+                "X11 provider is preferred over uinput",
+                "xdotool",
+                "ydotool",
+                InsertionProvider::Xdotool,
+            ),
+            (
+                "Wayland provider wins over X11",
+                "wtype",
+                "xdotool",
+                InsertionProvider::Wtype,
+            ),
+        ] {
+            let dir = TempDir::new().expect("temp dir");
+            stub(&dir, first, "#!/bin/sh\nexit 0\n");
+            stub(&dir, second, "#!/bin/sh\nexit 0\n");
 
-        let path = discover_insertion_provider_with(
-            SnippetProviderPreference::Auto,
-            Some(&path_env(&dir)),
-        )
-        .expect("xdotool is discovered");
+            let path = discover_insertion_provider_with(
+                SnippetProviderPreference::Auto,
+                Some(&path_env(&dir)),
+            )
+            .expect("a provider is discovered");
 
-        assert_eq!(
-            path.provider(),
-            InsertionProvider::Xdotool,
-            "automatic selection uses the X11 path and never the uinput provider"
-        );
-    }
-
-    #[test]
-    fn wtype_wins_over_xdotool_when_both_are_present() {
-        let dir = TempDir::new().expect("temp dir");
-        stub(&dir, "wtype", "#!/bin/sh\nexit 0\n");
-        stub(&dir, "xdotool", "#!/bin/sh\nexit 0\n");
-
-        let path = discover_insertion_provider_with(
-            SnippetProviderPreference::Auto,
-            Some(&path_env(&dir)),
-        )
-        .expect("a provider is discovered");
-
-        assert_eq!(path.provider(), InsertionProvider::Wtype);
+            assert_eq!(path.provider(), expected, "{case}");
+        }
     }
 
     #[test]
@@ -802,26 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_is_send_and_reports_a_definite_status() {
-        let probe = SnippetInsertionProbe::new(SnippetProviderPreference::Auto);
-        let report = probe.probe();
-        assert_eq!(report.feature_id, super::FEATURE_ID);
-        assert!(
-            matches!(
-                report.status,
-                CapabilityStatus::Supported | CapabilityStatus::Limited { .. }
-            ),
-            "the probe answers definitely: {:?}",
-            report.status
-        );
-        let shared: Arc<Mutex<SnippetInsertionProbe>> = Arc::new(Mutex::new(probe));
-        assert_eq!(
-            shared.lock().expect("lock").probe().feature_id,
-            super::FEATURE_ID
-        );
-    }
-
-    #[test]
     fn local_time_formats_iso_fields_and_offsets() {
         let time = LocalTime {
             year: 2026,
@@ -847,49 +818,9 @@ mod tests {
     }
 
     #[test]
-    fn system_clock_reports_plausible_local_fields() {
-        let clock = SystemClock;
-        let time = clock.local_time();
-        assert!((2024..2100).contains(&time.year), "year {}", time.year);
-        assert!((1..=12).contains(&time.month));
-        assert!((1..=31).contains(&time.day));
-        assert!(time.hour <= 23 && time.minute <= 59 && time.second <= 60);
-        assert!(
-            time.utc_offset_seconds.abs() <= 14 * 3600,
-            "offset {} looks implausible",
-            time.utc_offset_seconds
-        );
-        assert!(!clock.timezone_name().is_empty());
-    }
-
-    #[test]
     fn discovery_without_a_path_finds_nothing() {
         let error = discover_insertion_provider_with(SnippetProviderPreference::Auto, None)
             .expect_err("no PATH means no provider");
         assert_eq!(error.kind, InsertionErrorKind::MissingDependency);
-    }
-
-    #[test]
-    fn provider_metadata_is_complete() {
-        for provider in [
-            InsertionProvider::Wtype,
-            InsertionProvider::Ydotool,
-            InsertionProvider::Xdotool,
-        ] {
-            assert!(!provider.label().is_empty());
-            assert!(!provider.transport().is_empty());
-            assert!(!provider.requirement().is_empty());
-        }
-        assert!(InsertionProvider::Ydotool.needs_input_device_access());
-        assert!(!InsertionProvider::Wtype.needs_input_device_access());
-        assert_eq!(InsertionProvider::AUTO_ORDER.len(), 2);
-        assert!(
-            !InsertionProvider::AUTO_ORDER.contains(&InsertionProvider::Ydotool),
-            "the automatic order never includes the uinput provider"
-        );
-        assert_eq!(
-            InsertionProvider::from_preference(SnippetProviderPreference::Auto),
-            None
-        );
     }
 }

@@ -175,17 +175,16 @@ mod tests {
     }
     #[test]
     fn only_the_wider_presets_include_the_on_demand_speed_test() {
-        assert!(!ApplicationRuntime::preset_enabled(
-            FeaturePreset::Essentials,
-            SPEED_TEST_ID
-        ));
-        assert!(ApplicationRuntime::preset_enabled(
-            FeaturePreset::Balanced,
-            SPEED_TEST_ID
-        ));
-        assert!(ApplicationRuntime::preset_enabled(
-            FeaturePreset::Essentials,
-            MICROPHONE_FEATURE_ID
-        ));
+        for (preset, feature_id, expected) in [
+            (FeaturePreset::Essentials, SPEED_TEST_ID, false),
+            (FeaturePreset::Balanced, SPEED_TEST_ID, true),
+            (FeaturePreset::Essentials, MICROPHONE_FEATURE_ID, true),
+        ] {
+            assert_eq!(
+                ApplicationRuntime::preset_enabled(preset, feature_id),
+                expected,
+                "{preset:?} and {feature_id}"
+            );
+        }
     }
 }

@@ -350,19 +350,26 @@ mod tests {
 
     #[test]
     fn colors_use_the_portal_picker_only_when_it_exists() {
-        assert_eq!(
-            color_source(&detection(Some(CaptureProvider::Portal), Some(2))),
-            Some(ColorSource::Picker)
-        );
-        assert_eq!(
-            color_source(&detection(Some(CaptureProvider::Portal), Some(1))),
-            Some(ColorSource::Frame(CaptureProvider::Portal))
-        );
-        assert_eq!(
-            color_source(&detection(Some(CaptureProvider::X11), None)),
-            Some(ColorSource::Frame(CaptureProvider::X11))
-        );
-        assert_eq!(color_source(&detection(None, None)), None);
+        for (name, detection, expected) in [
+            (
+                "portal v2",
+                detection(Some(CaptureProvider::Portal), Some(2)),
+                Some(ColorSource::Picker),
+            ),
+            (
+                "portal v1",
+                detection(Some(CaptureProvider::Portal), Some(1)),
+                Some(ColorSource::Frame(CaptureProvider::Portal)),
+            ),
+            (
+                "x11",
+                detection(Some(CaptureProvider::X11), None),
+                Some(ColorSource::Frame(CaptureProvider::X11)),
+            ),
+            ("no provider", detection(None, None), None),
+        ] {
+            assert_eq!(color_source(&detection), expected, "{name}");
+        }
     }
 
     #[test]
@@ -372,24 +379,25 @@ mod tests {
         let status = |tool, detection: &CaptureDetection, tesseract| {
             screen_tool_capability(tool, detection, tesseract).status
         };
-        assert_eq!(
-            status(ScreenTool::Text, &x11, None),
-            CapabilityStatus::MissingDependency {
-                name: "tesseract".into()
-            }
-        );
-        assert_eq!(
-            status(ScreenTool::Qr, &x11, None),
-            CapabilityStatus::Supported
-        );
-        assert_eq!(
-            status(ScreenTool::Color, &x11, None),
-            CapabilityStatus::Supported
-        );
-        assert_eq!(
-            status(ScreenTool::Text, &x11, Some(tesseract)),
-            CapabilityStatus::Supported
-        );
+        for (tool, tesseract, expected) in [
+            (
+                ScreenTool::Text,
+                None,
+                CapabilityStatus::MissingDependency {
+                    name: "tesseract".into(),
+                },
+            ),
+            (ScreenTool::Qr, None, CapabilityStatus::Supported),
+            (ScreenTool::Color, None, CapabilityStatus::Supported),
+            (
+                ScreenTool::Text,
+                Some(tesseract),
+                CapabilityStatus::Supported,
+            ),
+        ] {
+            assert_eq!(status(tool, &x11, tesseract), expected, "{tool:?}");
+        }
+
         let none = detection(None, None);
         for tool in ALL_SCREEN_TOOLS {
             assert!(matches!(

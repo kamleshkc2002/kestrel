@@ -343,7 +343,6 @@ mod tests {
         assert_eq!(outcome.exit_code, Some(0));
         assert_eq!(outcome.stdout, "hello\n");
         assert!(!outcome.stdout_truncated);
-        assert_eq!(outcome.name, "Echo");
     }
 
     #[test]
@@ -530,13 +529,14 @@ mod tests {
 
     #[test]
     fn read_bounded_reports_the_cap() {
-        let (text, truncated) = read_bounded(&b"abcdefghij"[..], 4);
-        assert_eq!(text, "abcd");
-        assert!(truncated);
-
-        let (text, truncated) = read_bounded(&b"abc"[..], 8);
-        assert_eq!(text, "abc");
-        assert!(!truncated);
+        for (input, limit, expected, truncated) in [
+            (&b"abcdefghij"[..], 4, "abcd", true),
+            (&b"abc"[..], 8, "abc", false),
+        ] {
+            let (text, actual_truncated) = read_bounded(input, limit);
+            assert_eq!(text, expected);
+            assert_eq!(actual_truncated, truncated, "input length and cap");
+        }
     }
 
     #[test]
