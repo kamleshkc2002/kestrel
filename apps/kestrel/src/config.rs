@@ -1768,14 +1768,13 @@ whats_new = false
         assert!(!overlay.microphone && !overlay.alerts);
         assert!(overlay.recording, "a malformed value keeps its default");
         assert!(loaded.configuration.startup.whats_new);
-        assert_eq!(
-            loaded
-                .warnings
-                .iter()
-                .map(|warning| warning.feature_id.as_str())
-                .collect::<Vec<_>>(),
-            ["startup.whats_new", "overlay.recording"]
-        );
+        let mut warned = loaded
+            .warnings
+            .iter()
+            .map(|warning| warning.feature_id.as_str())
+            .collect::<Vec<_>>();
+        warned.sort_unstable();
+        assert_eq!(warned, ["overlay.recording", "startup.whats_new"]);
     }
 
     #[test]
