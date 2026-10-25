@@ -306,7 +306,8 @@ impl OverviewToolsViewModel {
                     features
                         .iter()
                         .find(|feature| feature.id == feature_id)
-                        .filter(|feature| feature.enabled)
+                        // A tool that cannot run here keeps its reason in the hub.
+                        .filter(|feature| feature.enabled && feature.available)
                         .map(|_| OverviewToolViewModel {
                             tool,
                             label,
@@ -763,7 +764,8 @@ mod tests {
 
     #[test]
     fn overview_tools_are_on_in_fixed_order() {
-        // (feature, on): shuffled, with one feature that is off.
+        // (feature, on): shuffled, with one feature off and Read text on but
+        // missing its dependency.
         let features_on = [
             ("network.speed_test", true),
             ("notes.scratchpad", true),
@@ -783,9 +785,16 @@ mod tests {
         let registrations = features_on
             .into_iter()
             .map(|(id, on)| {
+                let status = if id == "capture.text" {
+                    CapabilityStatus::MissingDependency {
+                        name: "tesseract".to_owned(),
+                    }
+                } else {
+                    CapabilityStatus::Supported
+                };
                 ServiceRegistration::new(
-                    FeatureSpec::new(id, id, CapabilityStatus::Supported),
-                    CapabilityReport::new(id, CapabilityStatus::Supported, "Ready."),
+                    FeatureSpec::new(id, id, status.clone()),
+                    CapabilityReport::new(id, status, "Ready."),
                     on,
                 )
                 .expect("matching feature IDs")
@@ -803,7 +812,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "Screenshot",
-                "Read text",
                 "Read QR code",
                 "Pick colour",
                 "Record",
