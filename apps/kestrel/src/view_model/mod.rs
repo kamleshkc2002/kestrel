@@ -57,6 +57,7 @@ mod screen_tools;
 mod shortcuts;
 mod snippets;
 mod speed_test;
+mod whats_new;
 
 #[cfg(test)]
 mod test_support;
@@ -125,6 +126,7 @@ pub use snippets::{
 };
 pub(crate) use speed_test::SpeedTestPresentation;
 pub use speed_test::SpeedTestViewModel;
+pub use whats_new::{WhatsNewSection, WhatsNewViewModel};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApplicationViewModel {
@@ -154,6 +156,7 @@ pub struct ApplicationViewModel {
     pub overlay: OverlayViewModel,
     pub can_undo: bool,
     pub overview_tools: OverviewToolsViewModel,
+    pub whats_new: WhatsNewViewModel,
 }
 
 /// Logging settings and the log folder for the Settings page.
@@ -256,6 +259,7 @@ impl ApplicationViewModel {
             ),
             can_undo,
             overview_tools: OverviewToolsViewModel::default(),
+            whats_new: WhatsNewViewModel::default(),
         }
     }
 

@@ -19,8 +19,9 @@ use crate::{
         ProcessesViewModel, RecordingPresentation, RecordingViewModel, ScratchpadPresentation,
         ScratchpadViewModel, ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel,
         ShortcutsPresentation, ShortcutsViewModel, SnippetQuery, SnippetsPresentation,
-        SpeedTestPresentation, SpeedTestViewModel,
+        SpeedTestPresentation, SpeedTestViewModel, WhatsNewViewModel,
     },
+    whats_new::{self, Change},
 };
 use kestrel_core::{
     AlertKind, ApplicationConfiguration, CapabilityEvidence, CapabilityReport, CapabilityStatus,
@@ -229,6 +230,10 @@ pub struct ApplicationRuntime {
     process_signalling: bool,
     /// Addresses fetched on request; dropped when hidden.
     local_addresses: Option<Result<Vec<kestrel_platform::network_addresses::LocalAddress>, String>>,
+    /// This release's notes, shipped with the build.
+    release_notes: Vec<Change>,
+    /// Overview offers the notes until they are opened.
+    whats_new_pending: bool,
     screen_tools: ScreenToolsService,
     /// Reads text from clipboard images with the screen-tools OCR settings.
     clipboard_ocr: Arc<dyn TextRecognizer>,
@@ -621,6 +626,8 @@ impl ApplicationRuntime {
             process_limits: configuration.processes,
             process_signalling: PidfdSignaller::available(),
             local_addresses: None,
+            release_notes: whats_new::shipped_changes(),
+            whats_new_pending: false,
             screen_tools: ScreenToolsService::new(ocr_recognizer(&configuration.screen_tools)),
             clipboard_ocr: ocr_recognizer(&configuration.screen_tools),
             camera: CameraPreviewService::new(Arc::new(V4l2Camera)),
@@ -926,7 +933,36 @@ impl ApplicationRuntime {
         model.recording = self.recording_view_model();
         model.listeners = self.listeners_view_model();
         model.apply_tool_actions();
+        model.whats_new = WhatsNewViewModel::new(
+            &self.release_notes,
+            self.whats_new_pending,
+            &model.features,
+            configuration,
+        );
         model
+    }
+
+    /// At startup: whether Overview offers this release's notes.
+    pub fn start_whats_new(&mut self, configuration: &ApplicationConfiguration) {
+        let path = whats_new::state_path();
+        let last = path.as_deref().and_then(whats_new::read_last_version);
+        let (pending, record) = whats_new::offer_after_update(
+            last.as_deref(),
+            whats_new::CURRENT_VERSION,
+            &self.release_notes,
+            configuration.startup.whats_new,
+            |feature| whats_new::in_use(configuration, feature),
+        );
+        self.whats_new_pending = pending;
+        if record {
+            whats_new::record_current_version(path.as_deref());
+        }
+    }
+
+    /// The notes were opened; Overview stops offering them.
+    pub fn mark_whats_new_read(&mut self) {
+        self.whats_new_pending = false;
+        whats_new::record_current_version(whats_new::state_path().as_deref());
     }
 
     fn reconcile_resources(&mut self) {
@@ -1138,6 +1174,49 @@ mod tests {
                 registration.feature.id
             );
         }
+
+        // Shipped notes name real features, and the ones in use lead.
+        let notes = whats_new::shipped_changes();
+        for change in &notes {
+            assert!(
+                change.feature == whats_new::APP_WIDE
+                    || registrations
+                        .iter()
+                        .any(|registration| registration.feature.id == change.feature),
+                "{} is a registered feature",
+                change.feature
+            );
+        }
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled("capture.screenshot", true)
+            .expect("valid feature");
+        let features = registrations
+            .iter()
+            .map(|registration| crate::view_model::FeatureViewModel::from(*registration))
+            .collect::<Vec<_>>();
+        let offered = WhatsNewViewModel::new(&notes, true, &features, &configuration);
+        let order = offered
+            .sections
+            .iter()
+            .map(|section| (section.title.as_str(), section.in_use))
+            .collect::<Vec<_>>();
+        assert_eq!(order.first(), Some(&("Kestrel", true)));
+        assert!(
+            order.windows(2).all(|pair| pair[0].1 >= pair[1].1),
+            "sections in use come first: {order:?}"
+        );
+        let screenshot = features
+            .iter()
+            .find(|feature| feature.id == "capture.screenshot")
+            .expect("registered");
+        assert!(order.contains(&(screenshot.label.as_str(), true)));
+        assert!(offered.banner.is_some());
+        assert!(
+            WhatsNewViewModel::new(&notes, false, &features, &configuration)
+                .banner
+                .is_none()
+        );
     }
     #[test]
     fn successful_status_notifier_registration_is_reported_as_running() {

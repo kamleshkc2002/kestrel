@@ -56,19 +56,7 @@ impl LogPolicy {
 
 /// `$XDG_STATE_HOME/<data directory>/logs`, falling back to `~/.local/state`.
 pub fn log_directory() -> Option<PathBuf> {
-    let state_home = std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    Some(
-        state_home
-            .join(kestrel_core::DATA_DIRECTORY_NAME)
-            .join("logs"),
-    )
+    Some(crate::config::state_directory()?.join("logs"))
 }
 
 /// Writes log lines; opens a file only when the first line arrives.

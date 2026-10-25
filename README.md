@@ -219,6 +219,12 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Each module reads the state its feature already publishes, so a module that is off, or whose feature is off, costs nothing; switch modules under Settings → Status overlay (`[overlay] recording`, `alerts`, `microphone`).
 - **Needs:** a desktop that lets apps place a layer-shell surface (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors) and a build with gtk4-layer-shell; the AppImage bundles it. Elsewhere the feature shows as unavailable with the reason, and Kestrel's window, tray, and shortcuts work as usual. It appears on the display the compositor chooses.
 
+### What's new after an update
+
+- After an update that changes a feature you have on (or Kestrel as a whole), Overview shows a banner once; **Show** lists this release's notes with your features first and the rest folded under Other changes. Updates that change nothing you use show no banner.
+- Settings → What's new reopens the notes at any time, and its switch (`[startup] whats_new`, default true) turns the banner off.
+- The notes ship inside Kestrel and are read locally. The last version you ran is kept in `$XDG_STATE_HOME/kestrel/last-version`; a first run records it without a banner.
+
 ### Diagnostic logs
 
 - **Configuration:** `[logging] debug` (default false), `retention_days` (1–30; default 7), and `max_total_megabytes` (1–100; default 20), also editable under Settings → Diagnostic logs.

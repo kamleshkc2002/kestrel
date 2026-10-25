@@ -419,10 +419,22 @@ pub struct UiConfiguration {
     pub close_action: CloseAction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartupConfiguration {
     #[serde(default)]
     pub autostart: bool,
+    /// After an update that changes a feature in use, Overview offers its notes.
+    #[serde(default = "default_true")]
+    pub whats_new: bool,
+}
+
+impl Default for StartupConfiguration {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            whats_new: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

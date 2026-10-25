@@ -691,6 +691,8 @@ enum ControllerOperation {
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),
     SetAutostart(bool),
+    SetWhatsNew(bool),
+    MarkWhatsNewRead,
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
@@ -1955,6 +1957,23 @@ impl ControllerState {
                 self.set_autostart(enabled, config_path)?;
                 format!("Autostart {}", if enabled { "enabled" } else { "disabled" })
             }
+            ControllerOperation::SetWhatsNew(enabled) => {
+                let old = self.configuration.clone();
+                self.configuration.startup.whats_new = enabled;
+                if let Err(error) = persist(config_path, &self.configuration) {
+                    self.configuration = old;
+                    return Err(format!("The what's new setting was not saved: {error}"));
+                }
+                if enabled {
+                    "Overview offers what's new after an update".to_owned()
+                } else {
+                    "Overview no longer offers what's new after an update".to_owned()
+                }
+            }
+            ControllerOperation::MarkWhatsNewRead => {
+                self.runtime.mark_whats_new_read();
+                String::new()
+            }
             ControllerOperation::SetMonitorReadoutVisible { readout, visible } => {
                 let mut candidate = self.configuration.clone();
                 if visible {
@@ -3059,6 +3078,7 @@ fn main() -> glib::ExitCode {
     runtime
         .refresh_capabilities()
         .expect("built-in capability probes are internally consistent");
+    runtime.start_whats_new(&loaded.configuration);
 
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
     let (tick_results, tick_receiver) = async_channel::unbounded();
@@ -3239,6 +3259,14 @@ fn dispatch_commands(
                 ApplicationCommand::SetAutostart(enabled) => controller.request_operation(
                     ControllerOperation::SetAutostart(enabled),
                     "kestrel-autostart-change",
+                ),
+                ApplicationCommand::SetWhatsNew(enabled) => controller.request_operation(
+                    ControllerOperation::SetWhatsNew(enabled),
+                    "kestrel-whats-new-change",
+                ),
+                ApplicationCommand::MarkWhatsNewRead => controller.request_operation(
+                    ControllerOperation::MarkWhatsNewRead,
+                    "kestrel-whats-new-read",
                 ),
                 ApplicationCommand::SetMonitorReadoutVisible { readout, visible } => controller
                     .request_operation(

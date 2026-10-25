@@ -1,0 +1,49 @@
+# What changed in this release, shown once after an update and kept under
+# Settings. Rewrite this file for each release.
+#
+# One [[change]] per user-visible change: `feature` is a registered feature ID
+# (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "overlay.status"
+text = "A status overlay at the top of the screen shows a running recording with pause and stop, active monitoring alerts, and a muted microphone, and disappears when nothing is active."
+
+[[change]]
+feature = "capture.screenshot"
+text = "After a screenshot, a notification offers Edit and Copy; Settings can open the editor straight away instead."
+
+[[change]]
+feature = "capture.screenshot"
+text = "The editor gains Spotlight, which dims everything outside the areas you choose."
+
+[[change]]
+feature = "capture.screenshot"
+text = "The editor can add space around a screenshot and place pasted images on it."
+
+[[change]]
+feature = "commands.bar"
+text = "The command bar runs the screenshot and screen tools, edits the last screenshot, starts and stops recording, and opens the scratchpad."
+
+[[change]]
+feature = "notes.scratchpad"
+text = "Shift+Return continues a bulleted, numbered, or task list, and tasks in the preview are checkboxes you can tick."
+
+[[change]]
+feature = "clipboard.history"
+text = "The sensitive filter also catches values assigned to credential names such as API keys and passwords."
+
+[[change]]
+feature = "global.shortcuts"
+text = "The Shortcuts page adds, changes, and removes key bindings without editing files."
+
+[[change]]
+feature = "kestrel"
+text = "Tools that are off offer Turn on where you find them, and Overview lists the tools that are on."
+
+[[change]]
+feature = "kestrel"
+text = "The Feature Hub says in one line whether each feature is running, needs something, or cannot run here."
+
+[[change]]
+feature = "kestrel"
+text = "After an update, Overview offers what changed in the features you use; Settings keeps the notes."
