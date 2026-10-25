@@ -439,44 +439,50 @@ impl WindowView {
     pub fn focus(&self, target: FocusTarget) -> bool {
         match target {
             FocusTarget::QuickPanel | FocusTarget::CommandBar => false,
-            FocusTarget::Capture => {
-                self.select_page(SidebarPage::Capture);
-                true
-            }
+            FocusTarget::Capture => self.reveal_section(
+                SidebarPage::Capture,
+                self.capture_container.borrow().as_ref(),
+            ),
             FocusTarget::Clipboard => {
-                self.select_page(SidebarPage::Clipboard);
-                self.clipboard_panel
-                    .borrow()
+                let panel = self.clipboard_panel.borrow();
+                self.reveal_section(
+                    SidebarPage::Clipboard,
+                    panel.as_ref().map(|panel| &panel.container),
+                ) && panel
                     .as_ref()
                     .is_some_and(|panel| panel.search.grab_focus())
             }
             FocusTarget::Processes => {
-                self.select_page(SidebarPage::Processes);
-                self.processes_panel
-                    .borrow()
+                let panel = self.processes_panel.borrow();
+                self.reveal_section(
+                    SidebarPage::Processes,
+                    panel.as_ref().map(|panel| &panel.container),
+                ) && panel
                     .as_ref()
                     .is_some_and(|panel| panel.search.grab_focus())
             }
             FocusTarget::Scratchpad => {
-                self.select_page(SidebarPage::Notes);
                 let panel = self.scratchpad_panel.borrow();
-                let Some(panel) = panel.as_ref() else {
-                    return false;
-                };
-                self.reveal(SidebarPage::Notes, panel.container.clone().upcast());
-                panel.editor.grab_focus()
+                self.reveal_section(
+                    SidebarPage::Notes,
+                    panel.as_ref().map(|panel| &panel.container),
+                ) && panel
+                    .as_ref()
+                    .is_some_and(|panel| panel.editor.grab_focus())
             }
-            FocusTarget::Monitoring => {
-                self.select_page(SidebarPage::Monitoring);
-                true
-            }
+            FocusTarget::Monitoring => self.reveal_section(
+                SidebarPage::Monitoring,
+                self.monitor_container.borrow().as_ref(),
+            ),
             FocusTarget::Audio => {
-                self.select_page(SidebarPage::Audio);
-                true
+                self.reveal_section(SidebarPage::Audio, self.audio_container.borrow().as_ref())
             }
             FocusTarget::Snippets => {
-                self.select_page(SidebarPage::Notes);
-                true
+                let panel = self.snippet_panel.borrow();
+                self.reveal_section(
+                    SidebarPage::Notes,
+                    panel.as_ref().map(|panel| &panel.container),
+                )
             }
             FocusTarget::SpeedTest => self.reveal_section(
                 SidebarPage::Monitoring,
