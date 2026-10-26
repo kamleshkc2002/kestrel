@@ -260,6 +260,45 @@ fn add_overlay_group(
         commands,
         filter_rows,
     ));
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
+            "Volume",
+            "When the output volume or mute changes: the output type, a level slider, and mute.",
+        ),
+        (overlay.modules.volume, kestrel::OverlayModule::Volume),
+        "status overlay volume output speaker mute level slider",
+        commands,
+        filter_rows,
+    ));
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
+            "Microphone level",
+            "When the microphone's mute or level changes: a fader, mute, and an editable percentage.",
+        ),
+        (
+            overlay.modules.microphone_level,
+            kestrel::OverlayModule::MicrophoneLevel,
+        ),
+        "status overlay microphone input level fader mute percentage",
+        commands,
+        filter_rows,
+    ));
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
+            "Keyboard light",
+            "When the keyboard light changes: a slider whose icon turns it off and on.",
+        ),
+        (
+            overlay.modules.keyboard_light,
+            kestrel::OverlayModule::KeyboardLight,
+        ),
+        "status overlay keyboard light backlight brightness slider",
+        commands,
+        filter_rows,
+    ));
     group.add(&overlay_group);
 }
 

@@ -2432,6 +2432,18 @@ impl ControllerState {
                         candidate.overlay.alerts = shown;
                         "Active alerts"
                     }
+                    kestrel::OverlayModule::Volume => {
+                        candidate.overlay.volume = shown;
+                        "The volume controls"
+                    }
+                    kestrel::OverlayModule::MicrophoneLevel => {
+                        candidate.overlay.microphone_level = shown;
+                        "The microphone level controls"
+                    }
+                    kestrel::OverlayModule::KeyboardLight => {
+                        candidate.overlay.keyboard_light = shown;
+                        "The keyboard light"
+                    }
                 };
                 let message = format!(
                     "{name} {} in the status overlay",

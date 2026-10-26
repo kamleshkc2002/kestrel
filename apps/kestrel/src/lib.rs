@@ -146,6 +146,9 @@ pub enum OverlayModule {
     Microphone,
     Recording,
     Alerts,
+    Volume,
+    MicrophoneLevel,
+    KeyboardLight,
 }
 
 /// Scratchpad bound edited from Settings.

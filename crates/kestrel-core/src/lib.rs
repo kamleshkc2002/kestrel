@@ -1256,6 +1256,15 @@ pub struct OverlayConfiguration {
     /// Each active monitoring alert with its reading.
     #[serde(default = "default_true")]
     pub alerts: bool,
+    /// The output type, level, and mute while the output volume or mute changes.
+    #[serde(default = "default_true")]
+    pub volume: bool,
+    /// A fader, mute, and percentage while a microphone's mute or level changes.
+    #[serde(default = "default_true")]
+    pub microphone_level: bool,
+    /// A slider whose icon toggles the keyboard light.
+    #[serde(default = "default_true")]
+    pub keyboard_light: bool,
 }
 
 impl Default for OverlayConfiguration {
@@ -1264,6 +1273,9 @@ impl Default for OverlayConfiguration {
             microphone: true,
             recording: true,
             alerts: true,
+            volume: true,
+            microphone_level: true,
+            keyboard_light: true,
         }
     }
 }
