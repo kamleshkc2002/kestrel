@@ -219,7 +219,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Status overlay — `overlay.status`
 
 - **Default:** disabled. Turn it on in the Feature Hub, and choose its modules under Settings → Status overlay.
-- A small pill at the top centre of the screen that appears only while one of its modules has something active, and disappears otherwise. It never takes the keyboard, only its own area takes the pointer, and it reserves no screen space.
+- A small pill at the top centre of the screen that appears only while one of its modules has something active, and disappears otherwise. It takes the keyboard only when you click into it, only its own area takes the pointer, and it reserves no screen space.
 - **Recording:** while a screen recording runs, its running time (or Paused) with Pause/Resume and Stop buttons.
 - **Alerts:** each active monitoring alert with its reading, such as "CPU is 95%"; clicking it opens the Monitoring page.
 - **Microphone muted:** shown while every microphone input is muted (needs `audio.microphone`); clicking it unmutes them.

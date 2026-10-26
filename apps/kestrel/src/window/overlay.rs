@@ -21,7 +21,6 @@ use kestrel::{
 };
 use kestrel_services::recording::RecordingClock;
 
-use super::widgets::on_spin_button_settled;
 use crate::layer_shell;
 
 const NAMESPACE: &str = "kestrel-status";
@@ -130,7 +129,7 @@ impl StatusOverlay {
 /// A control set that can be matched against the previous one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemLayout {
-    Recording { paused: bool },
+    Recording { paused: bool, clock: RecordingClock },
     Alert { message: String },
     Volume { output_id: u32 },
     MicrophoneLevel { input_id: u32 },
@@ -141,7 +140,10 @@ enum ItemLayout {
 impl ItemLayout {
     fn of(item: &OverlayItem) -> Self {
         match item {
-            OverlayItem::Recording { paused, .. } => Self::Recording { paused: *paused },
+            OverlayItem::Recording { paused, clock } => Self::Recording {
+                paused: *paused,
+                clock: *clock,
+            },
             OverlayItem::Alert { message } => Self::Alert {
                 message: message.clone(),
             },
@@ -276,28 +278,41 @@ fn build_pill(
     {
         let state = state.clone();
         let commands = commands.clone();
-        motion.connect_enter(move |_, _, _| {
-            if let Some(state) = state.upgrade() {
-                set_held(&state, &commands, true);
-            }
-        });
+        motion.connect_enter(move |_, _, _| defer_held(&state, &commands, true));
     }
     {
         let state = state.clone();
         let commands = commands.clone();
-        motion.connect_leave(move |_| {
-            if let Some(state) = state.upgrade() {
-                set_held(&state, &commands, false);
-            }
-        });
+        motion.connect_leave(move |_| defer_held(&state, &commands, false));
     }
     pill.add_controller(motion);
     (pill, controls)
 }
 
-fn set_held(state: &Rc<RefCell<OverlayState>>, commands: &Sender<ApplicationCommand>, held: bool) {
-    state.borrow_mut().feedback.set_held(Instant::now(), held);
-    render(state, commands);
+/// Crossing events can arrive while a render swaps the pill, so the hold
+/// waits until the render has finished.
+fn defer_held(
+    state: &Weak<RefCell<OverlayState>>,
+    commands: &Sender<ApplicationCommand>,
+    held: bool,
+) {
+    let state = state.clone();
+    let commands = commands.clone();
+    glib::idle_add_local_once(move || {
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        {
+            let mut state = state.borrow_mut();
+            state.feedback.set_held(Instant::now(), held);
+            // A click can focus the percentage only while the pointer is over
+            // the pill, so the overlay never takes the keyboard by appearing.
+            if let Some(window) = state.window.as_ref() {
+                layer_shell::set_status_keyboard(window, held);
+            }
+        }
+        render(&state, &commands);
+    });
 }
 
 #[derive(Default)]
@@ -368,6 +383,7 @@ impl VolumeControls {
             }),
         );
         container.append(&mute.button);
+        dim_while_muted(&[slider.scale.upcast_ref()], reading.muted);
         Self {
             container,
             icon,
@@ -379,6 +395,7 @@ impl VolumeControls {
     fn update(&self, reading: VolumeReading, held: bool) {
         self.icon.set_icon_name(Some(output_icon(reading.kind)));
         self.mute.update(reading.muted);
+        dim_while_muted(&[self.slider.scale.upcast_ref()], reading.muted);
         self.slider.set_max(reading.max_percent);
         if !held {
             self.slider.set_value(reading.percent);
@@ -388,146 +405,19 @@ impl VolumeControls {
 
 struct MicrophoneControls {
     container: gtk::Box,
-    icon: gtk::Image,
-    scale: gtk::Scale,
-    spin: gtk::SpinButton,
     mute: MuteControl,
-    /// A render writes both widgets.
-    updating: Rc<Cell<bool>>,
-    /// A programmatic spin write armed the settle timer.
-    spin_gate: Rc<Cell<bool>>,
-    scale_generation: Rc<Cell<u64>>,
-    /// The scale's debounce has not fired yet.
-    pending: Rc<Cell<bool>>,
-    /// The spin's settle timer has not fired yet.
-    spin_pending: Rc<Cell<bool>>,
+    slider: LevelSlider,
+    spin: gtk::SpinButton,
 }
 
 impl MicrophoneControls {
     fn new(reading: MicrophoneReading, commands: &Sender<ApplicationCommand>) -> Self {
         let container = gtk::Box::new(Orientation::Horizontal, 6);
-        let icon = gtk::Image::from_icon_name(microphone_icon(reading.muted));
-        icon.set_valign(Align::Center);
-        icon.update_property(&[Property::Label("Microphone")]);
-        container.append(&icon);
-
-        let scale = gtk::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-        configure_scale(
-            &scale,
-            reading.percent,
-            "Microphone level, 0 to 100 percent",
-        );
-        container.append(&scale);
-
-        let spin = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
-        spin.set_value(f64::from(reading.percent));
-        spin.set_numeric(true);
-        spin.set_width_chars(3);
-        spin.set_valign(Align::Center);
-        let spin_label = "Microphone level percentage";
-        spin.update_property(&[Property::Label(spin_label)]);
-        spin.set_tooltip_text(Some(spin_label));
-        container.append(&spin);
-
-        let updating = Rc::new(Cell::new(false));
-        let scale_updating = Rc::new(Cell::new(false));
-        let spin_updating = Rc::new(Cell::new(false));
-        let spin_gate = Rc::new(Cell::new(false));
-        let scale_generation = Rc::new(Cell::new(0u64));
-        let pending = Rc::new(Cell::new(false));
-        let spin_pending = Rc::new(Cell::new(false));
         let input_id = reading.input_id;
-
-        {
-            let updating = Rc::clone(&updating);
-            let scale_updating = Rc::clone(&scale_updating);
-            let spin_updating = Rc::clone(&spin_updating);
-            let spin_gate = Rc::clone(&spin_gate);
-            let scale_generation = Rc::clone(&scale_generation);
-            let pending = Rc::clone(&pending);
-            let spin = spin.clone();
-            let commands = commands.clone();
-            scale.connect_value_changed(move |scale| {
-                if updating.get() || scale_updating.get() {
-                    return;
-                }
-                let value = level_of(scale.value());
-                // Mirror the level without the spin sending its own command.
-                spin_updating.set(true);
-                spin_gate.set(true);
-                if level_of(spin.value()) != value {
-                    spin.set_value(f64::from(value));
-                }
-                spin_updating.set(false);
-                let generation = scale_generation.get().wrapping_add(1);
-                scale_generation.set(generation);
-                pending.set(true);
-                let pending = Rc::clone(&pending);
-                let scale_generation = Rc::clone(&scale_generation);
-                let commands = commands.clone();
-                glib::timeout_add_local_once(SLIDER_SETTLE, move || {
-                    if scale_generation.get() != generation {
-                        return;
-                    }
-                    pending.set(false);
-                    let _ = commands.try_send(ApplicationCommand::Microphone(
-                        MicrophoneCommand::SetInputVolume {
-                            input_id,
-                            volume_percent: value,
-                        },
-                    ));
-                });
-            });
-        }
-
-        {
-            let updating = Rc::clone(&updating);
-            let scale_updating = Rc::clone(&scale_updating);
-            let spin_updating = Rc::clone(&spin_updating);
-            let spin_gate = Rc::clone(&spin_gate);
-            let scale_generation = Rc::clone(&scale_generation);
-            let spin_pending = Rc::clone(&spin_pending);
-            let scale = scale.clone();
-            // Runs before the settle helper: a user change cancels a stale
-            // programmatic marker and mirrors the level into the scale.
-            spin.connect_value_changed(move |spin| {
-                if updating.get() || spin_updating.get() {
-                    return;
-                }
-                spin_gate.set(false);
-                spin_pending.set(true);
-                let value = level_of(spin.value());
-                scale_updating.set(true);
-                scale_generation.set(scale_generation.get().wrapping_add(1));
-                if level_of(scale.value()) != value {
-                    scale.set_value(f64::from(value));
-                }
-                scale_updating.set(false);
-            });
-        }
-
-        {
-            let spin_gate = Rc::clone(&spin_gate);
-            let spin_pending = Rc::clone(&spin_pending);
-            let commands = commands.clone();
-            on_spin_button_settled(&spin, move |value| {
-                spin_pending.set(false);
-                if spin_gate.replace(false) {
-                    return;
-                }
-                let _ = commands.try_send(ApplicationCommand::Microphone(
-                    MicrophoneCommand::SetInputVolume {
-                        input_id,
-                        volume_percent: level_of(value),
-                    },
-                ));
-            });
-        }
-
         let mute = MuteControl::new(
             reading.muted,
             (
-                "microphone-sensitivity-high-symbolic",
+                "audio-input-microphone-symbolic",
                 "microphone-sensitivity-muted-symbolic",
             ),
             ("Mute microphone", "Unmute microphone"),
@@ -537,41 +427,55 @@ impl MicrophoneControls {
             }),
         );
         container.append(&mute.button);
-
+        let slider = LevelSlider::new(
+            100,
+            reading.percent,
+            "Microphone level, 0 to 100 percent",
+            commands,
+            Rc::new(move |volume_percent| {
+                ApplicationCommand::Microphone(MicrophoneCommand::SetInputVolume {
+                    input_id,
+                    volume_percent,
+                })
+            }),
+        );
+        container.append(&slider.scale);
+        // Sharing the scale's adjustment keeps both in step, and a typed
+        // percentage goes out through the slider's debounce.
+        let spin = gtk::SpinButton::new(Some(&slider.scale.adjustment()), 1.0, 0);
+        spin.set_numeric(true);
+        spin.set_width_chars(3);
+        spin.set_valign(Align::Center);
+        let spin_label = "Microphone level percentage";
+        spin.update_property(&[Property::Label(spin_label)]);
+        spin.set_tooltip_text(Some(spin_label));
+        container.append(&spin);
+        dim_while_muted(
+            &[slider.scale.upcast_ref(), spin.upcast_ref()],
+            reading.muted,
+        );
         Self {
             container,
-            icon,
-            scale,
-            spin,
             mute,
-            updating,
-            spin_gate,
-            scale_generation,
-            pending,
-            spin_pending,
+            slider,
+            spin,
         }
     }
 
     fn update(&self, reading: MicrophoneReading, held: bool) {
-        self.icon
-            .set_icon_name(Some(microphone_icon(reading.muted)));
         self.mute.update(reading.muted);
-        // Leave the value alone while the pointer holds the pill or a change
-        // is still on its way to the mixer.
-        if held || self.pending.get() || self.spin_pending.get() || self.spin.has_focus() {
-            return;
+        dim_while_muted(
+            &[self.slider.scale.upcast_ref(), self.spin.upcast_ref()],
+            reading.muted,
+        );
+        // A percentage being typed keeps its text until it is entered.
+        let typing = self
+            .spin
+            .state_flags()
+            .contains(gtk::StateFlags::FOCUS_WITHIN);
+        if !held && !typing {
+            self.slider.set_value(reading.percent);
         }
-        self.updating.set(true);
-        self.scale_generation
-            .set(self.scale_generation.get().wrapping_add(1));
-        if level_of(self.scale.value()) != reading.percent {
-            self.scale.set_value(f64::from(reading.percent));
-        }
-        if level_of(self.spin.value()) != reading.percent {
-            self.spin_gate.set(true);
-            self.spin.set_value(f64::from(reading.percent));
-        }
-        self.updating.set(false);
     }
 }
 
@@ -615,11 +519,14 @@ impl KeyboardLightControls {
     }
 }
 
-fn microphone_icon(muted: bool) -> &'static str {
-    if muted {
-        "microphone-sensitivity-muted-symbolic"
-    } else {
-        "audio-input-microphone-symbolic"
+/// A muted output or input dims its level, so the state reads at a glance.
+fn dim_while_muted(widgets: &[&gtk::Widget], muted: bool) {
+    for widget in widgets {
+        if muted {
+            widget.add_css_class("dim-label");
+        } else {
+            widget.remove_css_class("dim-label");
+        }
     }
 }
 

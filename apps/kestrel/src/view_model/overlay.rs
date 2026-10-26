@@ -126,16 +126,17 @@ impl ControlFeedback {
             return;
         }
         self.held = held;
-        if !held {
-            let deadline = Some(now + CONTROL_FEEDBACK);
-            for slot in [
-                &mut self.volume_deadline,
-                &mut self.microphone_deadline,
-                &mut self.keyboard_light_deadline,
-            ] {
-                if slot.is_some() {
-                    *slot = deadline;
-                }
+        let slots = [
+            &mut self.volume_deadline,
+            &mut self.microphone_deadline,
+            &mut self.keyboard_light_deadline,
+        ];
+        for slot in slots {
+            if held {
+                // Only controls on screen stay; expired ones are forgotten.
+                *slot = slot.filter(|deadline| now < *deadline);
+            } else if slot.is_some() {
+                *slot = Some(now + CONTROL_FEEDBACK);
             }
         }
     }
@@ -148,7 +149,7 @@ impl ControlFeedback {
     /// Only the controls currently shown, with their latest readings.
     pub fn shown(&self, now: Instant) -> ControlReadings {
         let visible = |deadline: Option<Instant>| {
-            self.held || deadline.is_some_and(|deadline| now < deadline)
+            deadline.is_some_and(|deadline| self.held || now < deadline)
         };
         ControlReadings {
             volume: self
@@ -681,6 +682,15 @@ mod tests {
                 .volume
                 .is_some()
         );
+        let later = released + CONTROL_FEEDBACK;
+        feedback.set_held(later, true);
+        assert_eq!(
+            feedback.shown(later).volume,
+            None,
+            "holding never brings back a hidden control"
+        );
+        feedback.set_held(later, false);
+        assert_eq!(feedback.next_expiry(later), None);
 
         feedback.observe(released, ControlReadings::default());
         assert_eq!(
