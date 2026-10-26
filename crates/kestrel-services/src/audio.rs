@@ -777,7 +777,7 @@ mod tests {
     use kestrel_core::{AudioDisconnectPolicy, AudioOutputSwitch};
     use kestrel_platform::audio::{
         AudioBackend, AudioDiscovery, AudioError, AudioErrorKind, FEATURE_ID, OutputDevice,
-        PlaybackStream,
+        OutputKind, PlaybackStream,
     };
 
     use super::{
@@ -886,6 +886,7 @@ mod tests {
             is_default,
             card_name: Some("Built-in Audio".to_string()),
             port_description: Some("Headphones".to_string()),
+            kind: OutputKind::Unknown,
         }
     }
 

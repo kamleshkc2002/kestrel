@@ -1,6 +1,7 @@
 //! Audio mixer and output presentation.
 
 use super::*;
+use kestrel_platform::audio::OutputKind;
 
 pub(crate) struct AudioPresentation<'a> {
     pub snapshot: Option<&'a AudioSnapshot>,
@@ -97,6 +98,7 @@ pub struct AudioOutputViewModel {
     pub is_default: bool,
     pub volume_percent: u8,
     pub muted: bool,
+    pub kind: OutputKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,6 +190,7 @@ impl AudioViewModel {
                 is_default: output.is_default,
                 volume_percent: output.volume_percent,
                 muted: output.muted,
+                kind: output.kind,
             })
             .collect::<Vec<_>>();
         let output_groups = snapshot
@@ -205,6 +208,7 @@ impl AudioViewModel {
                         is_default: output.is_default,
                         volume_percent: output.volume_percent,
                         muted: output.muted,
+                        kind: output.kind,
                     })
                     .collect(),
             })
@@ -334,6 +338,17 @@ fn audio_message(snapshot: &AudioSnapshot) -> Option<String> {
         parts.push(text);
     }
     (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// Symbolic icon representing an output class.
+pub fn output_icon(kind: OutputKind) -> &'static str {
+    match kind {
+        OutputKind::Speakers => "audio-speakers-symbolic",
+        OutputKind::Headphones => "audio-headphones-symbolic",
+        OutputKind::Display => "video-display-symbolic",
+        OutputKind::Bluetooth => "bluetooth-active-symbolic",
+        OutputKind::Unknown => "audio-card-symbolic",
+    }
 }
 
 fn audio_output_detail(output: &kestrel_platform::audio::OutputDevice) -> String {
@@ -498,6 +513,10 @@ mod tests {
                 .contains("Default output")
         );
         assert!(audio.output_groups[0].outputs[1].detail.contains("Muted"));
+        assert_eq!(
+            audio.output_groups[0].outputs[0].kind,
+            OutputKind::Headphones
+        );
         assert_eq!(
             audio
                 .streams

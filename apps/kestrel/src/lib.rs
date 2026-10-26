@@ -58,12 +58,12 @@ pub use view_model::{
     CameraViewModel, CaptureEntryViewModel, CaptureViewModel, ClipboardItemViewModel,
     ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
     ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureViewModel,
-    ListenersViewModel, MicrophoneViewModel, MonitorViewModel, OverviewTool,
+    ListenersViewModel, MicrophoneViewModel, MonitorViewModel, OutputKind, OverviewTool,
     OverviewToolsViewModel, ProcessRowViewModel, ProcessesViewModel, QuickToggleControlViewModel,
     QuickToggleViewModel, RecordingControls, RecordingExportViewModel, RecordingViewModel,
     ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel, ShortcutsViewModel,
     SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
-    WhatsNewSection, WhatsNewViewModel, shortcut_label,
+    WhatsNewSection, WhatsNewViewModel, output_icon, shortcut_label,
 };
 
 /// Command-bar action from the window.
