@@ -51,7 +51,7 @@ pub struct QuickToggleViewModel {
 }
 
 impl QuickToggleViewModel {
-    pub(super) fn from_snapshot(
+    pub(crate) fn from_snapshot(
         snapshot: &QuickToggleSnapshot,
         registration: Option<&ServiceRegistration>,
     ) -> Self {

@@ -31,4 +31,26 @@ impl ApplicationRuntime {
             .registrations()
             .any(|registration| registration.feature.id == id.feature_id() && registration.running)
     }
+
+    /// Re-reads the keyboard light; returns its view model when the reading changed.
+    pub fn refresh_keyboard_light(&mut self) -> Option<QuickToggleViewModel> {
+        let id = QuickToggleId::KeyboardLight;
+        if !self.quick_toggle_is_running(id) {
+            return None;
+        }
+        let before = self
+            .quick_toggles
+            .snapshots()
+            .find(|snapshot| snapshot.id == id)
+            .cloned();
+        let after = self.quick_toggles.refresh(id).clone();
+        if before.as_ref() == Some(&after) {
+            return None;
+        }
+        let registration = self
+            .registry
+            .registrations()
+            .find(|registration| registration.feature.id == id.feature_id());
+        Some(QuickToggleViewModel::from_snapshot(&after, registration))
+    }
 }

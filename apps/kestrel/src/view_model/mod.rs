@@ -98,7 +98,10 @@ pub use monitor::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
     CoreGroupViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
 };
-pub use overlay::{OverlayItem, OverlaySources, OverlayViewModel, overlay_items};
+pub use overlay::{
+    CONTROL_FEEDBACK, ControlFeedback, ControlReadings, MicrophoneReading, OverlayItem,
+    OverlaySources, OverlayViewModel, VolumeReading, overlay_items,
+};
 pub use processes::{
     ListenerRowViewModel, ListenersViewModel, ProcessActionViewModel, ProcessRowViewModel,
     ProcessesViewModel,
