@@ -887,6 +887,9 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         ("microphone", &mut modules.microphone),
         ("recording", &mut modules.recording),
         ("alerts", &mut modules.alerts),
+        ("volume", &mut modules.volume),
+        ("microphone_level", &mut modules.microphone_level),
+        ("keyboard_light", &mut modules.keyboard_light),
     ] {
         let Some(value) = table.get(key) else {
             continue;
@@ -1761,12 +1764,16 @@ whats_new = false
     #[test]
     fn on_off_settings_parse_and_a_malformed_one_keeps_its_default() {
         let loaded = parse(
-            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\n[startup]\nwhats_new = \"no\"\n",
+            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\nvolume = false\nmicrophone_level = \"no\"\nkeyboard_light = true\n[startup]\nwhats_new = \"no\"\n",
         )
         .expect("document itself is valid TOML");
         let overlay = loaded.configuration.overlay;
-        assert!(!overlay.microphone && !overlay.alerts);
-        assert!(overlay.recording, "a malformed value keeps its default");
+        assert!(!overlay.microphone && !overlay.alerts && !overlay.volume);
+        assert!(overlay.keyboard_light);
+        assert!(
+            overlay.recording && overlay.microphone_level,
+            "a malformed value keeps its default"
+        );
         assert!(loaded.configuration.startup.whats_new);
         let mut warned = loaded
             .warnings
@@ -1774,7 +1781,14 @@ whats_new = false
             .map(|warning| warning.feature_id.as_str())
             .collect::<Vec<_>>();
         warned.sort_unstable();
-        assert_eq!(warned, ["overlay.recording", "startup.whats_new"]);
+        assert_eq!(
+            warned,
+            [
+                "overlay.microphone_level",
+                "overlay.recording",
+                "startup.whats_new"
+            ]
+        );
     }
 
     #[test]
