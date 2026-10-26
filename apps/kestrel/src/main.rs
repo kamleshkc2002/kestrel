@@ -2430,19 +2430,19 @@ impl ControllerState {
                     }
                     kestrel::OverlayModule::Alerts => {
                         candidate.overlay.alerts = shown;
-                        "Active alerts"
+                        "The alerts module"
                     }
                     kestrel::OverlayModule::Volume => {
                         candidate.overlay.volume = shown;
-                        "The volume controls"
+                        "The volume control"
                     }
                     kestrel::OverlayModule::MicrophoneLevel => {
                         candidate.overlay.microphone_level = shown;
-                        "The microphone level controls"
+                        "The microphone level control"
                     }
                     kestrel::OverlayModule::KeyboardLight => {
                         candidate.overlay.keyboard_light = shown;
-                        "The keyboard light"
+                        "The keyboard light control"
                     }
                 };
                 let message = format!(
