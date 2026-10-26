@@ -47,8 +47,18 @@ const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// Poll interval for mixer and microphone state, which other mixers and
 /// hardware keys change externally.
 const AUDIO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// Poll interval while the overlay shows a control, so external changes appear
+/// soon after they happen.
+const AUDIO_FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
+/// Which deferred reads this tick performs.
+#[derive(Debug, Clone, Copy, Default)]
+struct TickDue {
+    audio: bool,
+    listeners: bool,
+    keyboard_light: bool,
+}
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
     clipboard: Option<ClipboardViewModel>,
@@ -66,6 +76,7 @@ struct TickUpdate {
     screen_tools: Option<kestrel::ScreenToolsViewModel>,
     camera: Option<kestrel::CameraViewModel>,
     recording: Option<kestrel::RecordingViewModel>,
+    keyboard_light: Option<kestrel::QuickToggleViewModel>,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -389,8 +400,7 @@ fn run_tick(
     capture_notifier: &DesktopNotifier,
     tray: Option<&kestrel::TrayReadoutSink>,
     observed_at: Duration,
-    audio_due: bool,
-    listeners_due: bool,
+    due: TickDue,
 ) -> TickUpdate {
     let (
         updated,
@@ -407,22 +417,27 @@ fn run_tick(
         screen_tools,
         camera,
         recording,
+        keyboard_light,
     ) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tick = guard.runtime.sample_monitor(observed_at);
         let controller = &mut *guard;
-        let audio = (audio_due && controller.runtime.refresh_audio_mixer()).then(|| {
+        let audio = (due.audio && controller.runtime.refresh_audio_mixer()).then(|| {
             controller
                 .runtime
                 .audio_view_model(&controller.configuration.audio)
         });
-        let microphone = (audio_due && controller.runtime.refresh_microphone()).then(|| {
+        let microphone = (due.audio && controller.runtime.refresh_microphone()).then(|| {
             controller
                 .runtime
                 .microphone_view_model(&controller.configuration.audio)
         });
+        let keyboard_light = due
+            .keyboard_light
+            .then(|| controller.runtime.refresh_keyboard_light())
+            .flatten();
         let generation = guard.runtime.speed_test_snapshot().generation;
         let speed_test = (generation != guard.speed_test_generation).then(|| {
             guard.speed_test_generation = generation;
@@ -465,7 +480,7 @@ fn run_tick(
             guard.process_generation = process_generation;
             guard.runtime.processes_view_model(&guard.process_query)
         });
-        let listeners = if listeners_due && guard.runtime.listeners_is_running() {
+        let listeners = if due.listeners && guard.runtime.listeners_is_running() {
             let _ = guard.runtime.refresh_listeners();
             let generation = guard.runtime.listener_generation();
             (generation != guard.listener_generation).then(|| {
@@ -505,6 +520,7 @@ fn run_tick(
             screen_tools,
             camera,
             recording,
+            keyboard_light,
         )
     };
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
@@ -534,6 +550,7 @@ fn run_tick(
         screen_tools,
         camera,
         recording,
+        keyboard_light,
     }
 }
 
@@ -802,6 +819,10 @@ struct ApplicationController {
     screen_tools_running: Cell<bool>,
     camera_running: Cell<bool>,
     recording_running: Cell<bool>,
+    /// The status overlay runs; its modules then poll for control feedback.
+    overlay_running: Cell<bool>,
+    overlay_modules: Cell<kestrel_core::OverlayConfiguration>,
+    keyboard_light_running: Cell<bool>,
     /// A selection view is open; at most one at a time.
     selection_open: Cell<bool>,
     /// A frame waits for a selection view.
@@ -812,6 +833,8 @@ struct ApplicationController {
     monitor_started_at: Instant,
     /// Bounds audio backend polling to its interval.
     audio_last_refresh: Cell<Instant>,
+    /// Bounds the keyboard light poll to the feedback interval.
+    keyboard_light_last_refresh: Cell<Instant>,
     /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
@@ -856,6 +879,14 @@ impl ApplicationController {
             .any(|tool| runtime.screen_tool_is_running(tool));
         let camera_running = runtime.camera_is_running();
         let recording_running = runtime.recording_is_running();
+        let overlay_running = runtime.registrations().any(|registration| {
+            registration.feature.id == kestrel::OVERLAY_ID && registration.running
+        });
+        let keyboard_light_running = runtime.registrations().any(|registration| {
+            registration.feature.id == kestrel::QuickToggleId::KeyboardLight.feature_id()
+                && registration.running
+        });
+        let overlay_modules = configuration.overlay;
         let state_commands = commands.clone();
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
@@ -903,12 +934,16 @@ impl ApplicationController {
             screen_tools_running: Cell::new(screen_tools_running),
             camera_running: Cell::new(camera_running),
             recording_running: Cell::new(recording_running),
+            overlay_running: Cell::new(overlay_running),
+            overlay_modules: Cell::new(overlay_modules),
+            keyboard_light_running: Cell::new(keyboard_light_running),
             selection_open: Cell::new(false),
             selection_pending: Cell::new(None),
             recording_area_open: Cell::new(false),
             listener_last_refresh: Cell::new(Instant::now()),
             monitor_started_at: Instant::now(),
             audio_last_refresh: Cell::new(Instant::now()),
+            keyboard_light_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
             capture_notifier,
@@ -1363,23 +1398,47 @@ impl ApplicationController {
             .set(view_model.screen_tools.available);
         self.camera_running.set(view_model.camera.running);
         self.recording_running.set(view_model.recording.running);
+        self.overlay_running.set(view_model.overlay.running);
+        self.overlay_modules.set(view_model.overlay.modules);
+        self.keyboard_light_running
+            .set(view_model.features.iter().any(|feature| {
+                feature.id == kestrel::QuickToggleId::KeyboardLight.feature_id() && feature.running
+            }));
     }
 
     fn request_tick(&self) {
         if self.refreshing.get() || self.monitoring.replace(true) {
             return;
         }
+        let now = Instant::now();
+        let overlay_modules = self.overlay_modules.get();
+        let overlay_feedback = self.overlay_running.get()
+            && (overlay_modules.volume || overlay_modules.microphone_level);
         // Hardware keys, other mixers, and device hotplug change audio externally.
         let audio_due = (self.microphone_running.get() || self.audio_mixer_running.get()) && {
-            let now = Instant::now();
-            let due = now.duration_since(self.audio_last_refresh.get()) >= AUDIO_REFRESH_INTERVAL;
+            let interval = if overlay_feedback {
+                AUDIO_FEEDBACK_INTERVAL
+            } else {
+                AUDIO_REFRESH_INTERVAL
+            };
+            let due = now.duration_since(self.audio_last_refresh.get()) >= interval;
             if due {
                 self.audio_last_refresh.set(now);
             }
             due
         };
+        let keyboard_light_due = self.overlay_running.get()
+            && overlay_modules.keyboard_light
+            && self.keyboard_light_running.get()
+            && {
+                let due = now.duration_since(self.keyboard_light_last_refresh.get())
+                    >= AUDIO_FEEDBACK_INTERVAL;
+                if due {
+                    self.keyboard_light_last_refresh.set(now);
+                }
+                due
+            };
         let listeners_due = self.listeners_running.get() && {
-            let now = Instant::now();
             let due =
                 now.duration_since(self.listener_last_refresh.get()) >= Duration::from_secs(2);
             if due {
@@ -1398,6 +1457,7 @@ impl ApplicationController {
             && !self.camera_running.get()
             && !self.recording_running.get()
             && !audio_due
+            && !keyboard_light_due
         {
             self.monitoring.set(false);
             return;
@@ -1408,6 +1468,11 @@ impl ApplicationController {
         let tray = self.tray.borrow().clone();
         let results = self.tick_results.clone();
         let observed_at = self.monitor_started_at.elapsed();
+        let due = TickDue {
+            audio: audio_due,
+            listeners: listeners_due,
+            keyboard_light: keyboard_light_due,
+        };
         let worker = thread::Builder::new()
             .name("kestrel-tick".to_owned())
             .spawn(move || {
@@ -1417,8 +1482,7 @@ impl ApplicationController {
                     capture_notifier.as_ref(),
                     tray.as_ref(),
                     observed_at,
-                    audio_due,
-                    listeners_due,
+                    due,
                 );
                 let _ = results.send_blocking(update);
             });
@@ -1445,6 +1509,7 @@ impl ApplicationController {
             screen_tools,
             camera,
             recording,
+            keyboard_light,
         } = update;
         if let Some((id, notification_id)) = capture_notification {
             self.notification_captures
@@ -1505,6 +1570,12 @@ impl ApplicationController {
         self.open_recording_area();
         if let Some(microphone) = &microphone {
             self.overlay.set_microphone(microphone);
+        }
+        if let Some(audio) = &audio {
+            self.overlay.set_audio(audio);
+        }
+        if let Some(keyboard_light) = &keyboard_light {
+            self.overlay.set_keyboard_light(keyboard_light);
         }
         if let Some(recording) = &recording {
             self.overlay.set_recording(recording);
@@ -2430,7 +2501,19 @@ impl ControllerState {
                     }
                     kestrel::OverlayModule::Alerts => {
                         candidate.overlay.alerts = shown;
-                        "Active alerts"
+                        "The alerts module"
+                    }
+                    kestrel::OverlayModule::Volume => {
+                        candidate.overlay.volume = shown;
+                        "The volume control"
+                    }
+                    kestrel::OverlayModule::MicrophoneLevel => {
+                        candidate.overlay.microphone_level = shown;
+                        "The microphone level control"
+                    }
+                    kestrel::OverlayModule::KeyboardLight => {
+                        candidate.overlay.keyboard_light = shown;
+                        "The keyboard light control"
                     }
                 };
                 let message = format!(

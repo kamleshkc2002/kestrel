@@ -59,6 +59,7 @@ mod ffi {
     pub const LAYER_OVERLAY: c_int = 3;
     pub const KEYBOARD_MODE_NONE: c_int = 0;
     pub const KEYBOARD_MODE_EXCLUSIVE: c_int = 1;
+    pub const KEYBOARD_MODE_ON_DEMAND: c_int = 2;
     pub const EDGE_TOP: c_int = 2;
 
     unsafe extern "C" {
@@ -140,8 +141,9 @@ pub fn configure_window(window: &gtk::Window, namespace: &str) {
 pub fn configure_window(_window: &gtk::Window, _namespace: &str) {}
 
 /// Makes `window` a status overlay at the top centre: above normal windows,
-/// never taking the keyboard, with input confined to its own surface. Same
-/// preconditions as [`configure_window`].
+/// taking the keyboard only while [`set_status_keyboard`] allows it, with
+/// input confined to its own surface. Same preconditions as
+/// [`configure_window`].
 #[cfg(kestrel_layer_shell)]
 pub fn configure_status_window(window: &gtk::Window, namespace: &str) {
     use gtk::glib::object::ObjectType;
@@ -164,6 +166,27 @@ pub fn configure_status_window(window: &gtk::Window, namespace: &str) {
 
 #[cfg(not(kestrel_layer_shell))]
 pub fn configure_status_window(_window: &gtk::Window, _namespace: &str) {}
+
+/// Lets a click give the status overlay keyboard focus while `on_demand`;
+/// otherwise it never takes the keyboard. `window` must have been set up by
+/// [`configure_status_window`].
+#[cfg(kestrel_layer_shell)]
+pub fn set_status_keyboard(window: &gtk::Window, on_demand: bool) {
+    use gtk::glib::object::ObjectType;
+
+    let mode = if on_demand {
+        ffi::KEYBOARD_MODE_ON_DEMAND
+    } else {
+        ffi::KEYBOARD_MODE_NONE
+    };
+    // SAFETY: `window` is a live GtkWindow initialized as a layer surface.
+    unsafe {
+        ffi::gtk_layer_set_keyboard_mode(window.as_ptr().cast::<std::os::raw::c_void>(), mode);
+    }
+}
+
+#[cfg(not(kestrel_layer_shell))]
+pub fn set_status_keyboard(_window: &gtk::Window, _on_demand: bool) {}
 
 #[cfg(test)]
 mod tests {

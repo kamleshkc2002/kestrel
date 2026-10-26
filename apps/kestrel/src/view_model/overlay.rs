@@ -1,6 +1,209 @@
 //! Status overlay presentation.
 
+use std::time::{Duration, Instant};
+
 use super::*;
+
+/// How long a control shows after its value changes.
+pub const CONTROL_FEEDBACK: Duration = Duration::from_secs(3);
+
+/// The active output's level and mute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeReading {
+    pub output_id: u32,
+    pub kind: OutputKind,
+    pub percent: u8,
+    pub muted: bool,
+    pub max_percent: u8,
+}
+
+/// The default input's level and mute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MicrophoneReading {
+    pub input_id: u32,
+    pub percent: u8,
+    pub muted: bool,
+}
+
+/// What each control reads; a field stays empty while its backend cannot change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlReadings {
+    pub volume: Option<VolumeReading>,
+    pub microphone: Option<MicrophoneReading>,
+    pub keyboard_light: Option<u8>,
+}
+
+impl ControlReadings {
+    pub fn read(
+        audio: Option<&AudioViewModel>,
+        microphone: Option<&MicrophoneViewModel>,
+        keyboard_light: Option<&QuickToggleViewModel>,
+    ) -> Self {
+        let volume = audio.and_then(|audio| {
+            if !audio.running {
+                return None;
+            }
+            let output = audio
+                .outputs
+                .iter()
+                .find(|output| Some(output.id) == audio.default_output_id)?;
+            Some(VolumeReading {
+                output_id: output.id,
+                kind: output.kind,
+                percent: output.volume_percent,
+                muted: output.muted,
+                max_percent: audio.boost_ceiling_percent.max(100),
+            })
+        });
+        let microphone = microphone.and_then(|microphone| {
+            if !microphone.running {
+                return None;
+            }
+            let input = microphone
+                .inputs
+                .iter()
+                .find(|input| Some(input.id) == microphone.default_input_id)?;
+            Some(MicrophoneReading {
+                input_id: input.id,
+                percent: microphone.default_input_volume?,
+                muted: input.muted,
+            })
+        });
+        let keyboard_light = keyboard_light.and_then(|toggle| {
+            if !toggle.available {
+                return None;
+            }
+            match toggle.control.as_ref()? {
+                QuickToggleControlViewModel::Level { percentage } => Some(*percentage),
+                _ => None,
+            }
+        });
+        Self {
+            volume,
+            microphone,
+            keyboard_light,
+        }
+    }
+}
+
+/// Shows a control for a while after its reading changes.
+#[derive(Default)]
+pub struct ControlFeedback {
+    readings: ControlReadings,
+    volume_deadline: Option<Instant>,
+    microphone_deadline: Option<Instant>,
+    keyboard_light_deadline: Option<Instant>,
+    held: bool,
+}
+
+impl ControlFeedback {
+    /// Records new readings, showing each control whose value changed.
+    pub fn observe(&mut self, now: Instant, readings: ControlReadings) {
+        observe_change(
+            self.readings.volume,
+            readings.volume,
+            now,
+            &mut self.volume_deadline,
+        );
+        observe_change(
+            self.readings.microphone,
+            readings.microphone,
+            now,
+            &mut self.microphone_deadline,
+        );
+        observe_change(
+            self.readings.keyboard_light,
+            readings.keyboard_light,
+            now,
+            &mut self.keyboard_light_deadline,
+        );
+        self.readings = readings;
+    }
+
+    /// Holds shown controls on screen while the pointer is over the overlay.
+    pub fn set_held(&mut self, now: Instant, held: bool) {
+        if self.held == held {
+            return;
+        }
+        self.held = held;
+        let slots = [
+            &mut self.volume_deadline,
+            &mut self.microphone_deadline,
+            &mut self.keyboard_light_deadline,
+        ];
+        for slot in slots {
+            if held {
+                // Only controls on screen stay; expired ones are forgotten.
+                *slot = slot.filter(|deadline| now < *deadline);
+            } else if slot.is_some() {
+                *slot = Some(now + CONTROL_FEEDBACK);
+            }
+        }
+    }
+
+    /// Whether a control held by the pointer never expires.
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+
+    /// Only the controls currently shown, with their latest readings.
+    pub fn shown(&self, now: Instant) -> ControlReadings {
+        let visible = |deadline: Option<Instant>| {
+            deadline.is_some_and(|deadline| self.held || now < deadline)
+        };
+        ControlReadings {
+            volume: self
+                .readings
+                .volume
+                .filter(|_| visible(self.volume_deadline)),
+            microphone: self
+                .readings
+                .microphone
+                .filter(|_| visible(self.microphone_deadline)),
+            keyboard_light: self
+                .readings
+                .keyboard_light
+                .filter(|_| visible(self.keyboard_light_deadline)),
+        }
+    }
+
+    /// The earliest deadline still ahead; no timer is needed while held.
+    pub fn next_expiry(&self, now: Instant) -> Option<Instant> {
+        if self.held {
+            return None;
+        }
+        [
+            self.readings.volume.map(|_| self.volume_deadline),
+            self.readings.microphone.map(|_| self.microphone_deadline),
+            self.readings
+                .keyboard_light
+                .map(|_| self.keyboard_light_deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|deadline| *deadline > now)
+        .min()
+    }
+}
+
+fn observe_change<T: PartialEq + Copy>(
+    previous: Option<T>,
+    current: Option<T>,
+    now: Instant,
+    deadline: &mut Option<Instant>,
+) {
+    match (previous, current) {
+        // A changed value starts the countdown; a control already on screen
+        // keeps its own.
+        (Some(previous), Some(current)) if previous != current => {
+            *deadline = Some(now + CONTROL_FEEDBACK);
+        }
+        (_, None) => *deadline = None,
+        // The first reading after a gap is a baseline, not a change.
+        _ => {}
+    }
+}
 
 /// One thing the status overlay shows, in display order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +212,12 @@ pub enum OverlayItem {
     Recording { paused: bool, clock: RecordingClock },
     /// An active monitoring alert; clicking it opens the Monitoring page.
     Alert { message: String },
+    /// The output's type, level, and mute.
+    Volume(VolumeReading),
+    /// The default input's level and mute.
+    MicrophoneLevel(MicrophoneReading),
+    /// The keyboard light's level.
+    KeyboardLight { percent: u8 },
     /// Every microphone input is muted; clicking it unmutes them.
     MicrophoneMuted,
 }
@@ -58,6 +267,8 @@ pub struct OverlaySources<'a> {
     pub recording: Option<&'a RecordingViewModel>,
     pub alerts: Option<&'a [ActiveAlertViewModel]>,
     pub microphone: Option<&'a MicrophoneViewModel>,
+    /// The controls currently shown.
+    pub controls: ControlReadings,
 }
 
 /// What the overlay shows, in order; empty while it is off, so it hides.
@@ -86,10 +297,27 @@ pub fn overlay_items(overlay: &OverlayViewModel, sources: &OverlaySources<'_>) -
                 }),
         );
     }
+    if let Some(volume) = sources.controls.volume.filter(|_| modules.volume) {
+        items.push(OverlayItem::Volume(volume));
+    }
+    let microphone_level = sources
+        .controls
+        .microphone
+        .filter(|_| modules.microphone_level);
+    if let Some(microphone) = microphone_level {
+        items.push(OverlayItem::MicrophoneLevel(microphone));
+    }
+    if let Some(percent) = sources
+        .controls
+        .keyboard_light
+        .filter(|_| modules.keyboard_light)
+    {
+        items.push(OverlayItem::KeyboardLight { percent });
+    }
     let all_muted = sources
         .microphone
         .is_some_and(|microphone| microphone.running && microphone.muted == Some(true));
-    if modules.microphone && all_muted {
+    if modules.microphone && all_muted && microphone_level.is_none() {
         items.push(OverlayItem::MicrophoneMuted);
     }
     items
@@ -125,6 +353,115 @@ mod tests {
         }
     }
 
+    fn output(id: u32, volume_percent: u8, muted: bool) -> AudioOutputViewModel {
+        AudioOutputViewModel {
+            id,
+            title: format!("Output {id}"),
+            name: format!("output-{id}"),
+            detail: String::new(),
+            is_default: true,
+            volume_percent,
+            muted,
+            kind: OutputKind::Headphones,
+        }
+    }
+
+    fn audio(default_output_id: Option<u32>, running: bool) -> AudioViewModel {
+        AudioViewModel {
+            running,
+            status: String::new(),
+            message: None,
+            boost_ceiling_percent: 130,
+            max_boost_percent: kestrel_core::MAX_AUDIO_BOOST_PERCENT,
+            output_groups: Vec::new(),
+            outputs: vec![output(3, 75, false)],
+            streams: Vec::new(),
+            default_output_id,
+            inactive_streams: 0,
+            policy: AudioPolicyViewModel {
+                boost_percent: 130,
+                max_boost_percent: kestrel_core::MAX_AUDIO_BOOST_PERCENT,
+                move_all_streams: false,
+                output_switch_label: "",
+                reset_volume_on_disconnect: false,
+                disconnect_policy_label: "",
+                disconnect_volume_percent: 100,
+                include_inactive_streams: false,
+            },
+            output_priority: DevicePriorityViewModel::default(),
+        }
+    }
+
+    fn keyboard_light(available: bool, percentage: u8) -> QuickToggleViewModel {
+        QuickToggleViewModel {
+            id: crate::QuickToggleId::KeyboardLight,
+            feature_id: crate::QuickToggleId::KeyboardLight.feature_id(),
+            label: "Keyboard light",
+            requirement: "",
+            available,
+            detail: String::new(),
+            source: "",
+            control: Some(QuickToggleControlViewModel::Level { percentage }),
+            error: None,
+        }
+    }
+
+    fn input(id: u32, muted: bool) -> MicrophoneInputViewModel {
+        MicrophoneInputViewModel {
+            id,
+            label: format!("Input {id}"),
+            muted,
+            is_default: true,
+        }
+    }
+
+    fn microphone_with_level(
+        running: bool,
+        input_id: Option<u32>,
+        volume: Option<u8>,
+        muted: bool,
+    ) -> MicrophoneViewModel {
+        MicrophoneViewModel {
+            running,
+            inputs: input_id
+                .map(|id| vec![input(id, muted)])
+                .unwrap_or_default(),
+            default_input_id: input_id,
+            default_input_volume: volume,
+            ..microphone(Some(muted))
+        }
+    }
+
+    fn readings(
+        volume: Option<VolumeReading>,
+        microphone_reading: Option<MicrophoneReading>,
+        keyboard_light: Option<u8>,
+    ) -> ControlReadings {
+        ControlReadings {
+            volume,
+            microphone: microphone_reading,
+            keyboard_light,
+        }
+    }
+
+    fn sample_volume(percent: u8) -> VolumeReading {
+        VolumeReading {
+            output_id: 3,
+            kind: OutputKind::Headphones,
+            percent,
+            muted: false,
+            max_percent: 130,
+        }
+    }
+
+    fn sample_microphone(percent: u8) -> MicrophoneReading {
+        MicrophoneReading {
+            input_id: 1,
+            percent,
+            muted: false,
+        }
+    }
+
     #[test]
     fn the_overlay_shows_a_muted_microphone_only_while_it_runs_and_everything_is_muted() {
         let shown = |overlay: &OverlayViewModel, muted| {
@@ -134,6 +471,7 @@ mod tests {
                     recording: None,
                     alerts: None,
                     microphone: Some(&microphone(muted)),
+                    controls: ControlReadings::default(),
                 },
             )
         };
@@ -159,10 +497,41 @@ mod tests {
                     recording: None,
                     alerts: None,
                     microphone: None,
+                    controls: ControlReadings::default(),
                 }
             )
             .is_empty(),
             "no microphone state yet shows nothing"
+        );
+
+        let muted_but_shown = overlay_items(
+            &running,
+            &OverlaySources {
+                recording: None,
+                alerts: None,
+                microphone: Some(&microphone(Some(true))),
+                controls: readings(None, Some(sample_microphone(20)), None),
+            },
+        );
+        assert_eq!(
+            muted_but_shown,
+            [OverlayItem::MicrophoneLevel(sample_microphone(20))],
+            "the fader shows the mute state, so the chip stays out"
+        );
+        let mut level_off = running.clone();
+        level_off.modules.microphone_level = false;
+        assert_eq!(
+            overlay_items(
+                &level_off,
+                &OverlaySources {
+                    recording: None,
+                    alerts: None,
+                    microphone: Some(&microphone(Some(true))),
+                    controls: readings(None, Some(sample_microphone(20)), None),
+                },
+            ),
+            [OverlayItem::MicrophoneMuted],
+            "a hidden level module does not hide the chip"
         );
     }
 
@@ -178,19 +547,28 @@ mod tests {
             label: "CPU",
             message: "CPU is 95%".to_owned(),
         }];
-        let shown = |overlay: &OverlayViewModel, controls| {
+        let controls = readings(
+            Some(sample_volume(40)),
+            Some(sample_microphone(20)),
+            Some(70),
+        );
+        let shown = |overlay: &OverlayViewModel,
+                     recording_controls: RecordingControls,
+                     readings: ControlReadings| {
             overlay_items(
                 overlay,
                 &OverlaySources {
-                    recording: Some(&recording(controls)),
+                    recording: Some(&recording(recording_controls)),
                     alerts: Some(&alerts),
                     microphone: Some(&microphone(Some(true))),
+                    controls: readings,
                 },
             )
         };
+        let playing = RecordingControls::Recording { paused: true };
 
         assert_eq!(
-            shown(&running, RecordingControls::Recording { paused: true }),
+            shown(&running, playing, controls),
             [
                 OverlayItem::Recording {
                     paused: true,
@@ -199,8 +577,11 @@ mod tests {
                 OverlayItem::Alert {
                     message: "CPU is 95%".to_owned()
                 },
-                OverlayItem::MicrophoneMuted,
-            ]
+                OverlayItem::Volume(sample_volume(40)),
+                OverlayItem::MicrophoneLevel(sample_microphone(20)),
+                OverlayItem::KeyboardLight { percent: 70 },
+            ],
+            "the fader replaces the muted chip"
         );
         for idle in [
             RecordingControls::Setup,
@@ -208,7 +589,7 @@ mod tests {
             RecordingControls::Stopping,
         ] {
             assert!(
-                !shown(&running, idle)
+                !shown(&running, idle, controls)
                     .iter()
                     .any(|item| matches!(item, OverlayItem::Recording { .. })),
                 "{idle:?} has no running time to show"
@@ -218,9 +599,192 @@ mod tests {
         let mut modules_off = running.clone();
         modules_off.modules.recording = false;
         modules_off.modules.alerts = false;
+        modules_off.modules.microphone = false;
         assert_eq!(
-            shown(&modules_off, RecordingControls::Recording { paused: false }),
-            [OverlayItem::MicrophoneMuted]
+            shown(&modules_off, playing, controls),
+            [
+                OverlayItem::Volume(sample_volume(40)),
+                OverlayItem::MicrophoneLevel(sample_microphone(20)),
+                OverlayItem::KeyboardLight { percent: 70 },
+            ]
+        );
+
+        let mut controls_off = running.clone();
+        controls_off.modules.volume = false;
+        controls_off.modules.microphone_level = false;
+        controls_off.modules.keyboard_light = false;
+        assert_eq!(
+            shown(&controls_off, playing, controls),
+            [
+                OverlayItem::Recording {
+                    paused: true,
+                    clock: RecordingClock::default()
+                },
+                OverlayItem::Alert {
+                    message: "CPU is 95%".to_owned()
+                },
+                OverlayItem::MicrophoneMuted,
+            ],
+            "each control needs its own module"
+        );
+    }
+
+    #[test]
+    fn control_feedback_shows_a_change_for_a_while_and_never_the_first_reading() {
+        let started = Instant::now();
+        let mut feedback = ControlFeedback::default();
+        let first = readings(Some(sample_volume(40)), None, None);
+
+        feedback.observe(started, first);
+        assert_eq!(
+            feedback.shown(started),
+            ControlReadings::default(),
+            "the first reading is a baseline"
+        );
+        assert_eq!(feedback.next_expiry(started), None);
+
+        let changed = started + Duration::from_secs(1);
+        feedback.observe(changed, readings(Some(sample_volume(50)), None, None));
+        assert_eq!(
+            feedback.shown(changed).volume,
+            Some(sample_volume(50)),
+            "a change shows the control"
+        );
+        let expiry = changed + CONTROL_FEEDBACK;
+        assert_eq!(feedback.next_expiry(changed), Some(expiry));
+        assert!(
+            feedback
+                .shown(expiry - Duration::from_millis(1))
+                .volume
+                .is_some(),
+            "the control stays until its deadline"
+        );
+        assert_eq!(feedback.shown(expiry).volume, None, "then it hides");
+
+        let held_at = changed + Duration::from_secs(1);
+        feedback.set_held(held_at, true);
+        assert_eq!(feedback.next_expiry(held_at), None);
+        assert_eq!(
+            feedback.shown(expiry + Duration::from_secs(10)).volume,
+            Some(sample_volume(50)),
+            "holding keeps it on screen"
+        );
+        let released = expiry + Duration::from_secs(20);
+        feedback.set_held(released, false);
+        assert_eq!(
+            feedback.next_expiry(released),
+            Some(released + CONTROL_FEEDBACK),
+            "release restarts the countdown"
+        );
+        assert!(
+            feedback
+                .shown(released + CONTROL_FEEDBACK - Duration::from_millis(1))
+                .volume
+                .is_some()
+        );
+        let later = released + CONTROL_FEEDBACK;
+        feedback.set_held(later, true);
+        assert_eq!(
+            feedback.shown(later).volume,
+            None,
+            "holding never brings back a hidden control"
+        );
+        feedback.set_held(later, false);
+        assert_eq!(feedback.next_expiry(later), None);
+
+        feedback.observe(released, ControlReadings::default());
+        assert_eq!(
+            feedback.shown(released),
+            ControlReadings::default(),
+            "a missing reading hides at once"
+        );
+        assert_eq!(feedback.next_expiry(released), None);
+
+        feedback.observe(
+            released + Duration::from_secs(1),
+            readings(None, None, Some(30)),
+        );
+        assert_eq!(
+            feedback.shown(released + Duration::from_secs(1)),
+            ControlReadings::default(),
+            "the first keyboard light reading never shows"
+        );
+        // Read gating: a control needs a running backend and a known default.
+        assert_eq!(
+            ControlReadings::read(None, None, None),
+            ControlReadings::default()
+        );
+
+        assert_eq!(
+            ControlReadings::read(
+                Some(&audio(Some(3), false)),
+                Some(&microphone_with_level(false, Some(1), Some(50), false)),
+                Some(&keyboard_light(false, 60)),
+            ),
+            ControlReadings::default(),
+            "a stopped mixer and an unavailable toggle expose nothing"
+        );
+
+        assert_eq!(
+            ControlReadings::read(Some(&audio(None, true)), None, None).volume,
+            None,
+            "no default output, no control"
+        );
+        assert_eq!(
+            ControlReadings::read(Some(&audio(Some(9), true)), None, None).volume,
+            None,
+            "the default must be one of the outputs"
+        );
+        let volume = ControlReadings::read(Some(&audio(Some(3), true)), None, None).volume;
+        assert_eq!(
+            volume,
+            Some(VolumeReading {
+                output_id: 3,
+                kind: OutputKind::Headphones,
+                percent: 75,
+                muted: false,
+                max_percent: 130,
+            })
+        );
+
+        let microphone_reading = ControlReadings::read(
+            None,
+            Some(&microphone_with_level(true, Some(1), Some(50), true)),
+            None,
+        )
+        .microphone;
+        assert_eq!(
+            microphone_reading,
+            Some(MicrophoneReading {
+                input_id: 1,
+                percent: 50,
+                muted: true,
+            })
+        );
+        assert_eq!(
+            ControlReadings::read(
+                None,
+                Some(&microphone_with_level(true, Some(1), None, false)),
+                None
+            )
+            .microphone,
+            None,
+            "no level reading, no fader"
+        );
+        assert_eq!(
+            ControlReadings::read(
+                None,
+                Some(&microphone_with_level(true, None, Some(50), false)),
+                None
+            )
+            .microphone,
+            None,
+            "no default input, no fader"
+        );
+
+        assert_eq!(
+            ControlReadings::read(None, None, Some(&keyboard_light(true, 60))).keyboard_light,
+            Some(60)
         );
     }
 

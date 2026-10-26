@@ -91,6 +91,64 @@ pub struct AudioServer {
     pub default_output_name: Option<String>,
 }
 
+/// Physical class of a playback output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputKind {
+    Speakers,
+    Headphones,
+    Display,
+    Bluetooth,
+    #[default]
+    Unknown,
+}
+
+/// Classifies a sink from its bus, form factor, and active port.
+pub fn output_kind(
+    form_factor: Option<&str>,
+    bus: Option<&str>,
+    port_name: Option<&str>,
+) -> OutputKind {
+    if bus.is_some_and(|bus| bus.eq_ignore_ascii_case("bluetooth")) {
+        return OutputKind::Bluetooth;
+    }
+    let port_name = port_name.unwrap_or_default();
+    let port_has = |needles: &[&str]| {
+        needles
+            .iter()
+            .any(|needle| contains_folded(port_name, needle))
+    };
+    if port_has(&["hdmi", "displayport"]) {
+        return OutputKind::Display;
+    }
+    let form_factor = form_factor.unwrap_or_default();
+    let form_factor_is = |needles: &[&str]| {
+        needles
+            .iter()
+            .any(|needle| form_factor.eq_ignore_ascii_case(needle))
+    };
+    if form_factor_is(&["headphone", "headset"]) || port_has(&["headphone", "headset"]) {
+        return OutputKind::Headphones;
+    }
+    if form_factor_is(&["tv"]) {
+        return OutputKind::Display;
+    }
+    if form_factor_is(&["speaker", "internal"]) || port_has(&["speaker"]) {
+        return OutputKind::Speakers;
+    }
+    OutputKind::Unknown
+}
+
+/// Case-insensitive ASCII containment without allocating.
+fn contains_folded(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {
     pub id: u32,
@@ -102,6 +160,7 @@ pub struct OutputDevice {
     /// Card label used to group devices.
     pub card_name: Option<String>,
     pub port_description: Option<String>,
+    pub kind: OutputKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -654,6 +713,15 @@ impl PulseSession {
                         .active_port
                         .as_ref()
                         .and_then(|port| port.description.as_deref().map(str::to_owned));
+                    let form_factor = info.proplist.get_str(properties::DEVICE_FORM_FACTOR);
+                    let bus = info.proplist.get_str(properties::DEVICE_BUS);
+                    let kind = output_kind(
+                        form_factor.as_deref(),
+                        bus.as_deref(),
+                        info.active_port
+                            .as_ref()
+                            .and_then(|port| port.name.as_deref()),
+                    );
                     let is_default = callback_default.as_deref() == Some(name.as_str());
                     callback_result.borrow_mut().push(OutputDevice {
                         id: info.index,
@@ -669,6 +737,7 @@ impl PulseSession {
                         is_default,
                         card_name,
                         port_description,
+                        kind,
                     });
                 }
                 ListResult::Error => callback_failed.set(true),
@@ -1049,8 +1118,8 @@ pub fn capability_for_error(error: &AudioError) -> CapabilityReport {
 mod tests {
     use super::{
         AudioBackend, AudioDiscovery, AudioErrorKind, AudioServer, InputDevice, InputDiscovery,
-        OutputDevice, PulseAudioBackend, capability_for_discovery, channel_volumes,
-        microphone_capability_for, microphone_capability_for_error, volume_percent,
+        OutputDevice, OutputKind, PulseAudioBackend, capability_for_discovery, channel_volumes,
+        microphone_capability_for, microphone_capability_for_error, output_kind, volume_percent,
     };
     use kestrel_core::{CapabilityStatus, MAX_AUDIO_BOOST_PERCENT};
     use libpulse_binding::volume::Volume;
@@ -1065,6 +1134,47 @@ mod tests {
             is_default: output_id == 1,
             card_name: Some("Built-in Audio".to_string()),
             port_description: Some("Headphones".to_string()),
+            kind: OutputKind::Unknown,
+        }
+    }
+
+    #[test]
+    fn output_kind_classifies_bus_form_factor_and_port() {
+        for (form_factor, bus, port, expected) in [
+            (
+                Some("headphones"),
+                Some("bluetooth"),
+                Some("analog-output"),
+                OutputKind::Bluetooth,
+            ),
+            (None, Some("BLUETOOTH"), None, OutputKind::Bluetooth),
+            (
+                Some("speaker"),
+                None,
+                Some("hdmi-output-0"),
+                OutputKind::Display,
+            ),
+            (
+                Some("speaker"),
+                None,
+                Some("DisplayPort-1"),
+                OutputKind::Display,
+            ),
+            (Some("headphone"), None, None, OutputKind::Headphones),
+            (Some("HEADSET"), None, None, OutputKind::Headphones),
+            (None, None, Some("front-headphone"), OutputKind::Headphones),
+            (Some("tv"), None, None, OutputKind::Display),
+            (Some("speaker"), None, None, OutputKind::Speakers),
+            (Some("internal"), None, None, OutputKind::Speakers),
+            (None, None, Some("analog-speaker"), OutputKind::Speakers),
+            (None, None, None, OutputKind::Unknown),
+            (Some("car"), Some("usb"), Some("aux"), OutputKind::Unknown),
+        ] {
+            assert_eq!(
+                output_kind(form_factor, bus, port),
+                expected,
+                "form_factor {form_factor:?} bus {bus:?} port {port:?}"
+            );
         }
     }
 

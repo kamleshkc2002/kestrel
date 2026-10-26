@@ -1,7 +1,7 @@
 //! Shared view-model test fixtures.
 
 use super::*;
-use kestrel_platform::audio::{OutputDevice, PlaybackStream};
+use kestrel_platform::audio::{OutputDevice, OutputKind, PlaybackStream};
 use kestrel_platform::clipboard::{ClipboardEntryKind, ClipboardKindSupport};
 use kestrel_services::audio::{AudioAvailability, AudioReconcileOutcome, AudioSnapshot};
 use kestrel_services::clipboard::{ClipboardItemMetadata, ClipboardMatch, ClipboardSnapshot};
@@ -63,6 +63,7 @@ pub(crate) fn audio_output(
         is_default,
         card_name: Some("Built-in Audio".to_string()),
         port_description: Some("Headphones".to_string()),
+        kind: OutputKind::Headphones,
     }
 }
 

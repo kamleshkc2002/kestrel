@@ -65,7 +65,7 @@ mod test_support;
 pub(crate) use audio::AudioPresentation;
 pub use audio::{
     AudioOutputGroupViewModel, AudioOutputViewModel, AudioPolicyViewModel, AudioStreamViewModel,
-    AudioViewModel, DevicePriorityViewModel, PriorityDeviceViewModel,
+    AudioViewModel, DevicePriorityViewModel, PriorityDeviceViewModel, output_icon,
 };
 pub(crate) use camera::CameraPresentation;
 pub use camera::{CameraChoiceViewModel, CameraViewModel};
@@ -89,6 +89,7 @@ pub use features::{
     QuickToggleControlViewModel, QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel,
     TurnOnViewModel, disabled_status_for, turn_on_for,
 };
+pub use kestrel_platform::audio::OutputKind;
 pub(crate) use microphone::MicrophonePresentation;
 pub use microphone::{CaptureStreamViewModel, MicrophoneInputViewModel, MicrophoneViewModel};
 pub(crate) use monitor::MonitorPresentation;
@@ -97,7 +98,10 @@ pub use monitor::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
     CoreGroupViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
 };
-pub use overlay::{OverlayItem, OverlaySources, OverlayViewModel, overlay_items};
+pub use overlay::{
+    CONTROL_FEEDBACK, ControlFeedback, ControlReadings, MicrophoneReading, OverlayItem,
+    OverlaySources, OverlayViewModel, VolumeReading, overlay_items,
+};
 pub use processes::{
     ListenerRowViewModel, ListenersViewModel, ProcessActionViewModel, ProcessRowViewModel,
     ProcessesViewModel,
