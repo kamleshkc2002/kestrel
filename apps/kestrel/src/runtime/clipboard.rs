@@ -61,6 +61,15 @@ impl ApplicationRuntime {
         Ok(characters)
     }
 
+    /// The recognizer the screenshot editor uses to find text, or why it
+    /// cannot: the same Tesseract settings as the screen tools.
+    pub fn editor_text_recognizer(&self) -> Result<Arc<dyn TextRecognizer>, String> {
+        match TesseractAdapter::discover().executable() {
+            Some(_) => Ok(Arc::clone(&self.clipboard_ocr)),
+            None => Err("Install Tesseract (the tesseract-ocr package) to find text.".to_owned()),
+        }
+    }
+
     /// Returns retained-item metadata while keeping contents private.
     pub fn clipboard_snapshot(&self) -> ClipboardSnapshot {
         self.clipboard_history.latest()

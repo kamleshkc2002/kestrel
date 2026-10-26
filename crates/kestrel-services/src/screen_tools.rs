@@ -14,7 +14,7 @@ use std::time::Duration;
 use kestrel_platform::capture::{
     CaptureBackend, CaptureCancel, CaptureError, CaptureErrorKind, CaptureMode, PortalColorPicker,
 };
-use kestrel_platform::screen_tools::{ScreenTool, TesseractAdapter};
+use kestrel_platform::screen_tools::{ScreenTool, TesseractAdapter, WordBox};
 
 use crate::capture::Rect;
 use crate::capture::image::{RgbaImage, crop_image, decode_png, encode_png};
@@ -144,6 +144,8 @@ impl ColorPicker for PortalColorPicker {
 /// Local text recognition for one PNG.
 pub trait TextRecognizer: Send + Sync {
     fn recognize(&self, png: &[u8], cancel: &CaptureCancel) -> Result<String, CaptureError>;
+    /// Where each recognized word is, in the PNG's pixels.
+    fn word_boxes(&self, png: &[u8], cancel: &CaptureCancel) -> Result<Vec<WordBox>, CaptureError>;
 }
 
 /// Tesseract with configured language and time limit.
@@ -157,6 +159,11 @@ impl TextRecognizer for TesseractRecognizer {
     fn recognize(&self, png: &[u8], cancel: &CaptureCancel) -> Result<String, CaptureError> {
         self.adapter
             .recognize(png, &self.language, self.timeout, cancel)
+    }
+
+    fn word_boxes(&self, png: &[u8], cancel: &CaptureCancel) -> Result<Vec<WordBox>, CaptureError> {
+        self.adapter
+            .word_boxes(png, &self.language, self.timeout, cancel)
     }
 }
 
@@ -587,6 +594,10 @@ mod tests {
         fn recognize(&self, png: &[u8], _: &CaptureCancel) -> Result<String, CaptureError> {
             let image = decode_png(png).expect("valid png");
             Ok(format!("{}x{}", image.width, image.height))
+        }
+
+        fn word_boxes(&self, _: &[u8], _: &CaptureCancel) -> Result<Vec<WordBox>, CaptureError> {
+            Ok(Vec::new())
         }
     }
 

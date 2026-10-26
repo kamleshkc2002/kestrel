@@ -1142,7 +1142,15 @@ impl ApplicationController {
             .capture_png(id)
             .and_then(|png| kestrel::decode_png(&png).map_err(|error| error.to_string()))
         {
-            Ok(image) => capture_editor::open(&view.window, id, image, self.commands.clone()),
+            Ok(image) => {
+                let text = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .runtime
+                    .editor_text_recognizer();
+                capture_editor::open(&view.window, id, image, text, self.commands.clone());
+            }
             Err(error) => view.show_message(&error),
         }
     }
