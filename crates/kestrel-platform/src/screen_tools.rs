@@ -21,6 +21,19 @@ pub const COLOR_FEATURE_ID: &str = "capture.color";
 
 /// Largest recognized text kept from one OCR run.
 pub const MAX_OCR_OUTPUT_BYTES: usize = 256 * 1024;
+/// Largest word-position table kept from one OCR run: one row per word, so a
+/// long scrolling capture keeps every line.
+pub const MAX_OCR_TABLE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Where Tesseract found one word, in the pixels of the image it read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WordBox {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// The first portal version with `PickColor`.
 const PICK_COLOR_PORTAL_VERSION: u32 = 2;
 
@@ -185,6 +198,40 @@ impl TesseractAdapter {
         timeout: Duration,
         cancel: &CaptureCancel,
     ) -> Result<String, CaptureError> {
+        let stdout = self.run(png, language, &[], MAX_OCR_OUTPUT_BYTES, timeout, cancel)?;
+        Ok(String::from_utf8_lossy(&stdout)
+            .trim_end_matches(['\n', '\r', ' ', '\u{c}'])
+            .to_owned())
+    }
+
+    /// Where every recognized word in one PNG is, from Tesseract's table output.
+    pub fn word_boxes(
+        &self,
+        png: &[u8],
+        language: &str,
+        timeout: Duration,
+        cancel: &CaptureCancel,
+    ) -> Result<Vec<WordBox>, CaptureError> {
+        let stdout = self.run(
+            png,
+            language,
+            &["tsv"],
+            MAX_OCR_TABLE_BYTES,
+            timeout,
+            cancel,
+        )?;
+        Ok(parse_word_boxes(&String::from_utf8_lossy(&stdout)))
+    }
+
+    fn run(
+        &self,
+        png: &[u8],
+        language: &str,
+        output: &[&str],
+        limit: usize,
+        timeout: Duration,
+        cancel: &CaptureCancel,
+    ) -> Result<Vec<u8>, CaptureError> {
         let executable = self.executable.as_deref().ok_or_else(|| {
             CaptureError::new(CaptureErrorKind::Unavailable, "Tesseract is not installed.")
         })?;
@@ -194,12 +241,14 @@ impl TesseractAdapter {
                 "The OCR language setting is invalid.",
             ));
         }
-        let output = run_bounded(
+        let mut arguments = vec!["stdin", "stdout", "-l", language];
+        arguments.extend_from_slice(output);
+        let result = run_bounded(
             executable,
-            &["stdin", "stdout", "-l", language],
+            &arguments,
             Some(png.to_vec()),
             timeout,
-            MAX_OCR_OUTPUT_BYTES,
+            limit,
             cancel,
         )
         .map_err(|error| match error.kind {
@@ -213,7 +262,7 @@ impl TesseractAdapter {
             ),
             _ => error,
         })?;
-        if !output.status.success() {
+        if !result.status.success() {
             return Err(CaptureError::new(
                 CaptureErrorKind::Failed,
                 format!(
@@ -222,10 +271,51 @@ impl TesseractAdapter {
                 ),
             ));
         }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .trim_end_matches(['\n', '\r', ' ', '\u{c}'])
-            .to_owned())
+        Ok(result.stdout)
     }
+}
+
+/// Word rows (level 5) with text and a confidence from Tesseract's TSV:
+/// `level page block par line word left top width height conf text`.
+fn parse_word_boxes(table: &str) -> Vec<WordBox> {
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|row| {
+            let columns = row.split('\t').collect::<Vec<_>>();
+            let [
+                level,
+                _,
+                _,
+                _,
+                _,
+                _,
+                left,
+                top,
+                width,
+                height,
+                confidence,
+                text,
+            ] = columns[..]
+            else {
+                return None;
+            };
+            let number = |value: &str| value.trim().parse::<u32>().ok();
+            let found = level == "5"
+                && !text.trim().is_empty()
+                && confidence
+                    .trim()
+                    .parse::<f32>()
+                    .is_ok_and(|value| value >= 0.0);
+            let word = WordBox {
+                left: number(left)?,
+                top: number(top)?,
+                width: number(width)?,
+                height: number(height)?,
+            };
+            (found && word.width > 0 && word.height > 0).then_some(word)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -268,6 +358,45 @@ mod tests {
         assert_eq!(
             fs::read_to_string(log).expect("args").trim(),
             "stdin stdout -l eng"
+        );
+
+        // Word positions come from the table output: only word rows with
+        // text and a confidence count, whatever the line or block.
+        let dir = TempDir::new().expect("temp dir");
+        let log = dir.path().join("args");
+        let table = [
+            "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+            "1\t1\t0\t0\t0\t0\t0\t0\t400\t300\t-1\t",
+            "4\t1\t1\t1\t1\t0\t10\t20\t120\t14\t-1\t",
+            "5\t1\t1\t1\t1\t1\t10\t20\t50\t14\t96.1\tsecret",
+            "5\t1\t1\t1\t1\t2\t64\t20\t66\t14\t91.0\ttoken",
+            "5\t1\t1\t1\t1\t3\t140\t20\t9\t14\t0\t ",
+            "5\t1\t2\t1\t9\t1\t10\t2900\t40\t14\t88.5\tlast",
+        ]
+        .join("\\n");
+        let tesseract = script(
+            &dir,
+            &format!(
+                "echo \"$@\" > '{}'; cat >/dev/null; printf '{table}\\n'",
+                log.display()
+            ),
+        );
+        let words = TesseractAdapter::with_executable(tesseract)
+            .word_boxes(b"png", "eng", Duration::from_secs(5), &CaptureCancel::new())
+            .expect("words found");
+        let word = |left, top, width| WordBox {
+            left,
+            top,
+            width,
+            height: 14,
+        };
+        assert_eq!(
+            words,
+            [word(10, 20, 50), word(64, 20, 66), word(10, 2900, 40)]
+        );
+        assert_eq!(
+            fs::read_to_string(log).expect("args").trim(),
+            "stdin stdout -l eng tsv"
         );
     }
 

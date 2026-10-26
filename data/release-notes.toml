@@ -21,6 +21,10 @@ feature = "capture.screenshot"
 text = "The editor can add space around a screenshot and place pasted images on it."
 
 [[change]]
+feature = "capture.screenshot"
+text = "Redact can erase an area into its background instead of blacking it out, and Text only hides just the words it finds in an area."
+
+[[change]]
 feature = "commands.bar"
 text = "The command bar runs the screenshot and screen tools, edits the last screenshot, starts and stops recording, and opens the scratchpad."
 

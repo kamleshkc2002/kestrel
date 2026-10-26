@@ -777,7 +777,10 @@ mod tests {
         };
         let plan = EditPlan {
             crop: None,
-            operations: vec![EditOperation::Redact(rect)],
+            operations: vec![EditOperation::Redact {
+                rect,
+                color: Color::BLACK,
+            }],
             ..EditPlan::default()
         };
         let edited = service.save_edit(source_id, &plan).unwrap();

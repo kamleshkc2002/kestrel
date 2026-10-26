@@ -9,6 +9,8 @@
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    sync::Arc,
+    thread,
 };
 
 use adw::prelude::*;
@@ -19,7 +21,10 @@ use kestrel::{
     DEFAULT_SPOTLIGHT_DIM_PERCENT, EditOperation, EditPlan, MAX_CANVAS_PADDING, MAX_CANVAS_PIXELS,
     MAX_PASTED_IMAGES, MAX_SPOTLIGHT_DIM_PERCENT, MIN_SPOTLIGHT_DIM_PERCENT, Rect, RgbaImage,
 };
-use kestrel_platform::capture::MAX_CAPTURE_DIMENSION;
+use kestrel_platform::capture::{CaptureCancel, MAX_CAPTURE_DIMENSION};
+use kestrel_platform::screen_tools::WordBox;
+use kestrel_services::capture::image::{border_colour, crop_image, encode_png};
+use kestrel_services::screen_tools::TextRecognizer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -32,11 +37,7 @@ enum Tool {
 }
 
 const TOOLS: [(Tool, &str, &str); 6] = [
-    (
-        Tool::Redact,
-        "Redact",
-        "Paint over a region with solid black",
-    ),
+    (Tool::Redact, "Redact", "Hide a region with an opaque fill"),
     (Tool::Box, "Box", "Draw a red outline"),
     (Tool::Highlight, "Highlight", "Tint a region yellow"),
     (
@@ -47,6 +48,28 @@ const TOOLS: [(Tool, &str, &str); 6] = [
     (Tool::Arrow, "Arrow", "Draw a red arrow"),
     (Tool::Crop, "Crop", "Keep only the selected region"),
 ];
+
+/// How Redact hides an area; both are opaque, uniform fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RedactStyle {
+    BlackBox,
+    /// The colour around the area, so the content looks removed.
+    Erase,
+}
+
+const REDACT_STYLES: [(RedactStyle, &str); 2] = [
+    (RedactStyle::BlackBox, "Black box"),
+    (RedactStyle::Erase, "Erase"),
+];
+
+thread_local! {
+    /// The Redact choices, kept while Kestrel runs.
+    static REDACT_STYLE: Cell<RedactStyle> = const { Cell::new(RedactStyle::BlackBox) };
+    static TEXT_ONLY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Space kept around each recognized word, in source pixels.
+const WORD_PADDING: u32 = 2;
 
 /// Shortest side a pasted image can be resized to, in source pixels.
 const MIN_PASTE_SIDE: f64 = 8.0;
@@ -78,6 +101,8 @@ const BACKGROUNDS: [(&str, Color); 3] = [
 
 enum Step {
     Operation,
+    /// Several redactions added at once, such as every word in an area.
+    Operations(usize),
     Crop(Option<Rect>),
     Canvas(CanvasExpansion),
 }
@@ -107,6 +132,7 @@ struct EditorState {
     drag: Option<((i32, i32), (i32, i32))>,
     pending: Option<PendingPaste>,
     adjust: Option<Adjust>,
+    redact_style: RedactStyle,
 }
 
 impl EditorState {
@@ -119,7 +145,29 @@ impl EditorState {
             drag: None,
             pending: None,
             adjust: None,
+            redact_style: REDACT_STYLE.with(Cell::get),
         }
+    }
+
+    /// The fill that hides `rect` in the current style.
+    fn redaction(&self, rect: Rect, source: &RgbaImage) -> EditOperation {
+        let color = match self.redact_style {
+            RedactStyle::BlackBox => Color::BLACK,
+            RedactStyle::Erase => border_colour(source, rect),
+        };
+        EditOperation::Redact { rect, color }
+    }
+
+    /// Hides each of `rects` in the current style, as one undo step.
+    fn add_redactions(&mut self, rects: &[Rect], source: &RgbaImage) {
+        if rects.is_empty() {
+            return;
+        }
+        for &rect in rects {
+            let operation = self.redaction(rect, source);
+            self.plan.operations.push(operation);
+        }
+        self.steps.push(Step::Operations(rects.len()));
     }
 
     /// The canvas in source coordinates.
@@ -178,6 +226,10 @@ impl EditorState {
                     self.pasted_surfaces.truncate(image);
                 }
             }
+            Some(Step::Operations(count)) => {
+                let kept = self.plan.operations.len().saturating_sub(count);
+                self.plan.operations.truncate(kept);
+            }
             Some(Step::Crop(previous)) => self.plan.crop = previous,
             Some(Step::Canvas(previous)) => self.plan.canvas = previous,
             None => {}
@@ -205,6 +257,7 @@ pub fn open(
     parent: &adw::ApplicationWindow,
     id: CaptureId,
     image: RgbaImage,
+    text: Result<Arc<dyn TextRecognizer>, String>,
     commands: Sender<ApplicationCommand>,
 ) {
     let Some(surface) = surface_from(&image) else {
@@ -212,6 +265,7 @@ pub fn open(
     };
     let width = image.width;
     let height = image.height;
+    let source = Arc::new(image);
     let thickness = (width.max(height) / 400).max(3);
     let state = Rc::new(RefCell::new(EditorState::new(Tool::Redact)));
     let viewport = Rc::new(Cell::new(Viewport {
@@ -310,7 +364,15 @@ pub fn open(
     let dim_box = gtk::Box::new(Orientation::Horizontal, 6);
     dim_box.append(&gtk::Label::new(Some("Dim")));
     dim_box.append(&dim);
-    reveal(&dim_box, false);
+    let redact_box = redact_options(&state, text.as_ref().err());
+    // One slot, sized for the larger, shows the selected tool's options, so
+    // switching tools never moves the toolbar.
+    let options = gtk::Stack::new();
+    options.set_hhomogeneous(true);
+    options.add_named(&gtk::Box::new(Orientation::Horizontal, 0), Some("none"));
+    options.add_named(&dim_box, Some("dim"));
+    options.add_named(&redact_box, Some("redact"));
+    options.set_visible_child_name("redact");
     let mut first: Option<gtk::ToggleButton> = None;
     for (tool, label, description) in TOOLS {
         let button = gtk::ToggleButton::with_label(label);
@@ -323,7 +385,7 @@ pub fn open(
                 first = Some(button.clone());
             }
         }
-        let (state, dim_box, refresh) = (Rc::clone(&state), dim_box.clone(), Rc::clone(&refresh));
+        let (state, options, refresh) = (Rc::clone(&state), options.clone(), Rc::clone(&refresh));
         button.connect_toggled(move |button| {
             if button.is_active() {
                 {
@@ -331,13 +393,17 @@ pub fn open(
                     state.tool = tool;
                     state.place();
                 }
-                reveal(&dim_box, tool == Tool::Spotlight);
+                options.set_visible_child_name(match tool {
+                    Tool::Spotlight => "dim",
+                    Tool::Redact => "redact",
+                    _ => "none",
+                });
                 refresh();
             }
         });
         tools.append(&button);
     }
-    tools.append(&dim_box);
+    tools.append(&options);
     tools.append(&canvas_button(&state, &refresh));
     let paste = gtk::Button::with_label("Paste image");
     paste.set_tooltip_text(Some("Paste the image on the clipboard (Ctrl+V)"));
@@ -347,6 +413,7 @@ pub fn open(
 
     {
         let (state, viewport) = (Rc::clone(&state), Rc::clone(&viewport));
+        let source = Arc::clone(&source);
         area.set_draw_func(move |_, context, area_width, area_height| {
             let state = state.borrow();
             let canvas = state.canvas_rect(width, height);
@@ -361,7 +428,14 @@ pub fn open(
                     - f64::from(canvas.y) * scale,
             };
             viewport.set(current);
-            let _ = draw(context, &surface, current, &state, canvas, thickness);
+            let _ = draw(
+                context,
+                (&surface, &source),
+                current,
+                &state,
+                canvas,
+                thickness,
+            );
         });
     }
     {
@@ -417,18 +491,100 @@ pub fn open(
             area.queue_draw();
         });
     }
+    let cancel_text = CaptureCancel::new();
+    let find_text: Rc<dyn Fn(Rect)> = {
+        let (state, hint, refresh, source, cancel_text) = (
+            Rc::clone(&state),
+            hint.clone(),
+            Rc::clone(&refresh),
+            Arc::clone(&source),
+            cancel_text.clone(),
+        );
+        let busy = Rc::new(Cell::new(false));
+        Rc::new(move |area: Rect| {
+            let Ok(recognizer) = text.as_ref().map(Arc::clone) else {
+                return;
+            };
+            if busy.replace(true) {
+                hint.set_text("Still finding text in the last area.");
+                return;
+            }
+            hint.set_text("Finding text…");
+            let (sender, receiver) = async_channel::bounded(1);
+            let (image, cancel) = (Arc::clone(&source), cancel_text.clone());
+            let spawned = thread::Builder::new()
+                .name("kestrel-editor-ocr".to_owned())
+                .spawn(move || {
+                    let words = crop_image(&image, area)
+                        .map_err(|error| error.to_string())
+                        .and_then(|crop| encode_png(&crop).map_err(|error| error.to_string()))
+                        .and_then(|png| {
+                            recognizer
+                                .word_boxes(&png, &cancel)
+                                .map_err(|error| error.message)
+                        });
+                    let _ = sender.send_blocking(words);
+                });
+            if spawned.is_err() {
+                busy.set(false);
+                hint.set_text("Text could not be read.");
+                return;
+            }
+            let (state, hint, refresh, source, busy) = (
+                Rc::clone(&state),
+                hint.clone(),
+                Rc::clone(&refresh),
+                Arc::clone(&source),
+                Rc::clone(&busy),
+            );
+            glib::spawn_future_local(async move {
+                let result = receiver.recv().await;
+                busy.set(false);
+                let message = match result {
+                    Ok(Ok(words)) => {
+                        let rects = word_rects(area, (width, height), &words);
+                        state.borrow_mut().add_redactions(&rects, &source);
+                        refresh();
+                        match rects.len() {
+                            0 => "No text was found in that area.".to_owned(),
+                            1 => "Hid 1 word.".to_owned(),
+                            count => format!("Hid {count} words."),
+                        }
+                    }
+                    Ok(Err(message)) => message,
+                    Err(_) => return,
+                };
+                hint.set_text(&message);
+            });
+        })
+    };
     {
-        let (state, refresh) = (Rc::clone(&state), Rc::clone(&refresh));
+        let (state, refresh, find_text) = (
+            Rc::clone(&state),
+            Rc::clone(&refresh),
+            Rc::clone(&find_text),
+        );
+        let source = Arc::clone(&source);
         drag.connect_drag_end(move |_, _, _| {
+            let mut text_area = None;
             {
                 let mut state = state.borrow_mut();
                 if state.adjust.take().is_none() {
                     if let Some((from, to)) = state.drag.take() {
-                        commit(&mut state, from, to, thickness);
+                        let area = Rect::normalized(from, to);
+                        let text_only = state.tool == Tool::Redact && TEXT_ONLY.with(Cell::get);
+                        if text_only && area.width > 0 && area.height > 0 {
+                            text_area = Some(area);
+                        } else {
+                            commit(&mut state, from, to, thickness, &source);
+                        }
                     }
                 }
             }
             refresh();
+            if let Some(area) = text_area {
+                find_text(area);
+            }
         });
     }
     area.add_controller(drag);
@@ -526,6 +682,10 @@ pub fn open(
         let window = window.clone();
         cancel.connect_clicked(move |_| window.close());
     }
+    window.connect_close_request(move |_| {
+        cancel_text.cancel();
+        glib::Propagation::Proceed
+    });
     {
         let (window, state) = (window.clone(), Rc::clone(&state));
         save.connect_clicked(move |_| {
@@ -553,6 +713,52 @@ pub fn open(
     content.append(&area);
     window.set_content(Some(&content));
     window.present();
+}
+
+/// Redact's style menu and Text only switch. Both choices are kept while
+/// Kestrel runs; without Tesseract the switch is off and says why.
+fn redact_options(state: &Rc<RefCell<EditorState>>, no_text: Option<&String>) -> gtk::Box {
+    let options = gtk::Box::new(Orientation::Horizontal, 6);
+    let labels = REDACT_STYLES.map(|(_, label)| label);
+    let style = gtk::DropDown::from_strings(&labels);
+    style.set_tooltip_text(Some("How Redact hides an area"));
+    style.update_property(&[Property::Label("Redaction style")]);
+    let current = state.borrow().redact_style;
+    if let Some(index) = REDACT_STYLES
+        .iter()
+        .position(|(style, _)| *style == current)
+    {
+        style.set_selected(index as u32);
+    }
+    {
+        let state = Rc::clone(state);
+        style.connect_selected_notify(move |style| {
+            if let Some((chosen, _)) = REDACT_STYLES.get(style.selected() as usize) {
+                state.borrow_mut().redact_style = *chosen;
+                REDACT_STYLE.with(|remembered| remembered.set(*chosen));
+            }
+        });
+    }
+    let text_only = gtk::CheckButton::with_label("Text only");
+    match no_text {
+        Some(reason) => {
+            text_only.set_sensitive(false);
+            text_only.set_tooltip_text(Some(reason));
+            TEXT_ONLY.with(|remembered| remembered.set(false));
+        }
+        None => {
+            text_only.set_active(TEXT_ONLY.with(Cell::get));
+            text_only.set_tooltip_text(Some(
+                "Hide only the words found in the area, read on this computer",
+            ));
+        }
+    }
+    text_only.connect_toggled(|text_only| {
+        TEXT_ONLY.with(|remembered| remembered.set(text_only.is_active()));
+    });
+    options.append(&style);
+    options.append(&text_only);
+    options
 }
 
 /// The Canvas button and its panel: space per side and the background.
@@ -820,7 +1026,42 @@ fn initial_paste_rect(canvas: Rect, size: (u32, u32)) -> Rect {
     }
 }
 
-fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: u32) {
+/// The areas that hide each recognized word: `words` are in the pixels of the
+/// part of `area` inside an image of `size`, and each gets a little padding
+/// without leaving `area`.
+fn word_rects(area: Rect, size: (u32, u32), words: &[WordBox]) -> Vec<Rect> {
+    let origin = (area.x.max(0), area.y.max(0));
+    let right = (i64::from(area.x) + i64::from(area.width)).min(i64::from(size.0));
+    let bottom = (i64::from(area.y) + i64::from(area.height)).min(i64::from(size.1));
+    let pad = i64::from(WORD_PADDING);
+    words
+        .iter()
+        .filter_map(|word| {
+            let left = (i64::from(origin.0) + i64::from(word.left) - pad).max(i64::from(origin.0));
+            let top = (i64::from(origin.1) + i64::from(word.top) - pad).max(i64::from(origin.1));
+            let word_right =
+                (i64::from(origin.0) + i64::from(word.left) + i64::from(word.width) + pad)
+                    .min(right);
+            let word_bottom =
+                (i64::from(origin.1) + i64::from(word.top) + i64::from(word.height) + pad)
+                    .min(bottom);
+            (word_right > left && word_bottom > top).then(|| Rect {
+                x: left as i32,
+                y: top as i32,
+                width: (word_right - left) as u32,
+                height: (word_bottom - top) as u32,
+            })
+        })
+        .collect()
+}
+
+fn commit(
+    state: &mut EditorState,
+    from: (i32, i32),
+    to: (i32, i32),
+    thickness: u32,
+    source: &RgbaImage,
+) {
     let rect = Rect::normalized(from, to);
     let empty = rect.width == 0 || rect.height == 0;
     let operation = match state.tool {
@@ -839,7 +1080,7 @@ fn commit(state: &mut EditorState, from: (i32, i32), to: (i32, i32), thickness: 
             thickness,
         },
         _ if empty => return,
-        Tool::Redact => EditOperation::Redact(rect),
+        Tool::Redact => state.redaction(rect, source),
         Tool::Box => EditOperation::Rectangle {
             rect,
             color: Color::RED,
@@ -904,8 +1145,8 @@ fn rectangle(context: &cairo::Context, rect: Rect) {
 
 fn draw_operation(context: &cairo::Context, operation: &EditOperation) -> Result<(), cairo::Error> {
     match *operation {
-        EditOperation::Redact(rect) => {
-            set_color(context, Color::BLACK);
+        EditOperation::Redact { rect, color } => {
+            set_color(context, Color { a: 255, ..color });
             rectangle(context, rect);
             context.fill()
         }
@@ -1060,7 +1301,7 @@ fn draw_handles(context: &cairo::Context, rect: Rect, scale: f64) -> Result<(), 
 
 fn draw(
     context: &cairo::Context,
-    surface: &cairo::ImageSurface,
+    (surface, source): (&cairo::ImageSurface, &RgbaImage),
     viewport: Viewport,
     state: &EditorState,
     canvas: Rect,
@@ -1089,7 +1330,12 @@ fn draw(
     }
     let preview = state.drag.map(|(from, to)| {
         let mut preview = EditorState::new(state.tool);
-        commit(&mut preview, from, to, thickness);
+        preview.redact_style = state.redact_style;
+        if state.tool == Tool::Redact && TEXT_ONLY.with(Cell::get) {
+            // Only the words inside get hidden, so the area shows as an outline.
+            preview.tool = Tool::Box;
+        }
+        commit(&mut preview, from, to, thickness, source);
         preview.plan
     });
     let dragged = preview
@@ -1150,18 +1396,58 @@ mod tests {
 
     #[test]
     fn drags_become_plan_entries_in_any_direction_and_empty_drags_are_dropped() {
+        // A plain grey image: Erase fills with the grey around the area.
+        let source = RgbaImage::new(60, 40, [90, 90, 90, 255].repeat(60 * 40)).unwrap();
+        let grey = Color {
+            r: 90,
+            g: 90,
+            b: 90,
+            a: 255,
+        };
         let mut editor = EditorState::new(Tool::Redact);
-        commit(&mut editor, (40, 30), (10, 5), 3);
-        commit(&mut editor, (7, 7), (7, 20), 3);
+        editor.redact_style = RedactStyle::BlackBox;
+        commit(&mut editor, (40, 30), (10, 5), 3, &source);
+        commit(&mut editor, (7, 7), (7, 20), 3, &source);
+        editor.redact_style = RedactStyle::Erase;
+        commit(&mut editor, (50, 2), (55, 6), 3, &source);
         assert_eq!(
             editor.plan.operations,
-            vec![EditOperation::Redact(rect(10, 5, 30, 25))]
+            vec![
+                EditOperation::Redact {
+                    rect: rect(10, 5, 30, 25),
+                    color: Color::BLACK,
+                },
+                EditOperation::Redact {
+                    rect: rect(50, 2, 5, 4),
+                    color: grey,
+                },
+            ]
+        );
+
+        // Text only: each word becomes its own padded area, clipped to the
+        // dragged area, and the whole batch undoes in one step.
+        let area = rect(-5, 10, 40, 20);
+        let word = |left, top, width, height| WordBox {
+            left,
+            top,
+            width,
+            height,
+        };
+        let words = word_rects(area, (60, 40), &[word(1, 1, 10, 8), word(30, 15, 9, 9)]);
+        assert_eq!(words, [rect(0, 10, 13, 11), rect(28, 23, 7, 7)]);
+        editor.add_redactions(&words, &source);
+        assert_eq!(editor.plan.operations.len(), 4);
+        editor.undo();
+        assert_eq!(
+            editor.plan.operations.len(),
+            2,
+            "one undo removes every word"
         );
 
         editor.tool = Tool::Crop;
-        commit(&mut editor, (0, 0), (5, 5), 3);
-        commit(&mut editor, (1, 1), (9, 9), 3);
-        assert_eq!(editor.steps.len(), 3);
+        commit(&mut editor, (0, 0), (5, 5), 3, &source);
+        commit(&mut editor, (1, 1), (9, 9), 3, &source);
+        assert_eq!(editor.steps.len(), 4);
         let Some(Step::Crop(previous)) = editor.steps.pop() else {
             panic!("the last step is a crop");
         };

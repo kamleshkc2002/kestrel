@@ -8,9 +8,6 @@ use kestrel_platform::capture::MAX_CAPTURE_DIMENSION;
 /// Maximum operations in one edit plan.
 const MAX_EDIT_OPERATIONS: usize = 256;
 
-/// Pixel written for redaction.
-const REDACTED_PIXEL: [u8; 4] = [0, 0, 0, 255];
-
 /// Spotlight dim strength: the share of brightness taken from areas outside
 /// every spotlight, in percent.
 pub const DEFAULT_SPOTLIGHT_DIM_PERCENT: u8 = 60;
@@ -262,7 +259,12 @@ impl Color {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditOperation {
-    Redact(Rect),
+    /// An opaque, uniform fill: whatever `color`'s alpha, nothing of the
+    /// pixels underneath survives.
+    Redact {
+        rect: Rect,
+        color: Color,
+    },
     Rectangle {
         rect: Rect,
         color: Color,
@@ -372,10 +374,10 @@ pub fn apply(source: &RgbaImage, plan: &EditPlan) -> Result<RgbaImage, ImageErro
     dim_outside_spotlights(&mut image, plan, dx, dy);
     for operation in &plan.operations {
         match *operation {
-            EditOperation::Redact(rect) => {
-                let rect = rect.shifted(dx, dy);
-                for_each_pixel(&mut image, rect, |pixel, _| {
-                    pixel.copy_from_slice(&REDACTED_PIXEL)
+            EditOperation::Redact { rect, color } => {
+                let fill = [color.r, color.g, color.b, 255];
+                for_each_pixel(&mut image, rect.shifted(dx, dy), |pixel, _| {
+                    pixel.copy_from_slice(&fill)
                 });
             }
             EditOperation::Highlight { rect, color } => {
@@ -624,6 +626,49 @@ pub fn crop_image(image: &RgbaImage, crop: Rect) -> Result<RgbaImage, ImageError
     RgbaImage::new(width, height, pixels)
 }
 
+/// The average colour of the one-pixel ring just outside `rect`, within the
+/// image: an Erase fill that blends into a plain background. Black when no
+/// ring pixel is inside the image.
+pub fn border_colour(image: &RgbaImage, rect: Rect) -> Color {
+    let ring = Rect {
+        x: rect.x.saturating_sub(1),
+        y: rect.y.saturating_sub(1),
+        width: rect.width.saturating_add(2),
+        height: rect.height.saturating_add(2),
+    };
+    let Some(outer) = ring.clip(image.width, image.height) else {
+        return Color::BLACK;
+    };
+    let inner = rect.clip(image.width, image.height);
+    let mut sums = [0u64; 3];
+    let mut count = 0u64;
+    for y in outer.top..outer.bottom {
+        for x in outer.left..outer.right {
+            let inside = inner.is_some_and(|inner| {
+                (inner.left..inner.right).contains(&x) && (inner.top..inner.bottom).contains(&y)
+            });
+            if inside {
+                continue;
+            }
+            let index = offset(image.width, x, y);
+            for (sum, value) in sums.iter_mut().zip(&image.pixels[index..index + 3]) {
+                *sum += u64::from(*value);
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Color::BLACK;
+    }
+    let average = |sum: u64| (sum / count) as u8;
+    Color {
+        r: average(sums[0]),
+        g: average(sums[1]),
+        b: average(sums[2]),
+        a: 255,
+    }
+}
+
 /// Arrow with a filled head.
 fn draw_arrow(
     image: &mut RgbaImage,
@@ -717,6 +762,9 @@ mod tests {
 
     use super::*;
 
+    /// What a black-box redaction writes.
+    const REDACTED_PIXEL: [u8; 4] = [0, 0, 0, 255];
+
     /// Every pixel distinct and none black: `[x, y, 0x80, 255]`.
     fn unique_image(width: u32, height: u32) -> RgbaImage {
         let pixels = (0..height)
@@ -733,9 +781,13 @@ mod tests {
     }
 
     fn redact(rect: Rect) -> EditPlan {
+        redact_with(rect, Color::BLACK)
+    }
+
+    fn redact_with(rect: Rect, color: Color) -> EditPlan {
         EditPlan {
             crop: None,
-            operations: vec![EditOperation::Redact(rect)],
+            operations: vec![EditOperation::Redact { rect, color }],
             ..EditPlan::default()
         }
     }
@@ -778,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn redaction_is_opaque_black_and_no_original_pixel_survives_png_roundtrip() {
+    fn redaction_is_opaque_and_no_original_pixel_survives_png_roundtrip() {
         let source = unique_image(32, 24);
         let rect = Rect {
             x: 5,
@@ -786,23 +838,72 @@ mod tests {
             width: 10,
             height: 8,
         };
-        let edited = apply(&source, &redact(rect)).unwrap();
-        for y in 3..11 {
-            for x in 5..15 {
-                assert_eq!(pixel(&edited, x, y), REDACTED_PIXEL, "pixel ({x}, {y})");
-            }
-        }
+        let ring = border_colour(&source, rect);
+        // (case, fill colour, expected pixel)
+        let fills = [
+            ("black box", Color::BLACK, [0, 0, 0, 255]),
+            ("erase", ring, [ring.r, ring.g, ring.b, 255]),
+            (
+                "a translucent colour is written opaque",
+                Color {
+                    r: 200,
+                    g: 100,
+                    b: 50,
+                    a: 10,
+                },
+                [200, 100, 50, 255],
+            ),
+        ];
         let secret: HashSet<[u8; 4]> = (3..11)
             .flat_map(|y| (5..15).map(move |x| (x, y)))
             .map(|(x, y)| pixel(&source, x, y))
             .collect();
-        let decoded = decode_png(&encode_png(&edited).unwrap()).unwrap();
-        assert_eq!(decoded, edited);
-        for rgba in decoded.pixels.as_chunks::<4>().0 {
-            assert!(!secret.contains(rgba), "redacted pixel {rgba:?} survived");
+        for (case, color, expected) in fills {
+            let edited = apply(&source, &redact_with(rect, color)).unwrap();
+            for y in 3..11 {
+                for x in 5..15 {
+                    assert_eq!(pixel(&edited, x, y), expected, "{case}: pixel ({x}, {y})");
+                }
+            }
+            let decoded = decode_png(&encode_png(&edited).unwrap()).unwrap();
+            assert_eq!(decoded, edited, "{case}");
+            // The area is one colour, proven above; any other original pixel
+            // from inside it would be a leak.
+            for rgba in decoded.pixels.as_chunks::<4>().0 {
+                assert!(
+                    *rgba == expected || !secret.contains(rgba),
+                    "{case}: redacted pixel {rgba:?} survived"
+                );
+            }
+            assert_eq!(pixel(&decoded, 4, 3), pixel(&source, 4, 3), "{case}");
+            assert_eq!(pixel(&decoded, 15, 10), pixel(&source, 15, 10), "{case}");
         }
-        assert_eq!(pixel(&decoded, 4, 3), pixel(&source, 4, 3));
-        assert_eq!(pixel(&decoded, 15, 10), pixel(&source, 15, 10));
+
+        // Erase takes the colour around the area: a plain background makes
+        // the area vanish, and an area with nothing around it falls back to black.
+        let plain = RgbaImage::new(6, 6, [30, 60, 90, 255].repeat(36)).unwrap();
+        let inside = Rect {
+            x: 2,
+            y: 2,
+            width: 2,
+            height: 2,
+        };
+        assert_eq!(
+            border_colour(&plain, inside),
+            Color {
+                r: 30,
+                g: 60,
+                b: 90,
+                a: 255
+            }
+        );
+        let everything = Rect {
+            x: 0,
+            y: 0,
+            width: 6,
+            height: 6,
+        };
+        assert_eq!(border_colour(&plain, everything), Color::BLACK);
     }
 
     #[test]
@@ -810,12 +911,15 @@ mod tests {
         let source = unique_image(20, 20);
         let plan = EditPlan {
             crop: Some(Rect::normalized((12, 13), (2, 3))),
-            operations: vec![EditOperation::Redact(Rect {
-                x: 4,
-                y: 5,
-                width: 3,
-                height: 2,
-            })],
+            operations: vec![EditOperation::Redact {
+                rect: Rect {
+                    x: 4,
+                    y: 5,
+                    width: 3,
+                    height: 2,
+                },
+                color: Color::BLACK,
+            }],
             ..EditPlan::default()
         };
         let cropped = apply(&source, &plan).unwrap();
@@ -903,7 +1007,10 @@ mod tests {
                     color: Color::RED,
                     thickness: 4,
                 },
-                EditOperation::Redact(outside),
+                EditOperation::Redact {
+                    rect: outside,
+                    color: Color::BLACK,
+                },
             ],
             ..EditPlan::default()
         };
@@ -960,12 +1067,15 @@ mod tests {
     #[test]
     fn plans_over_the_operation_limit_are_rejected() {
         let source = unique_image(4, 4);
-        let operation = EditOperation::Redact(Rect {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-        });
+        let operation = EditOperation::Redact {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            color: Color::BLACK,
+        };
         let at_limit = EditPlan {
             crop: None,
             operations: vec![operation; MAX_EDIT_OPERATIONS],
@@ -1061,7 +1171,10 @@ mod tests {
                 background: Color::WHITE,
             },
             // The canvas's top-left corner, left of and above the source.
-            operations: vec![EditOperation::Redact(Rect::normalized((-3, -1), (-2, 0)))],
+            operations: vec![EditOperation::Redact {
+                rect: Rect::normalized((-3, -1), (-2, 0)),
+                color: Color::BLACK,
+            }],
             ..EditPlan::default()
         };
         let grown = apply(&source, &plan).unwrap();
