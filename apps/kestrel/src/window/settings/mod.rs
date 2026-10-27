@@ -246,6 +246,76 @@ fn add_overlay_group(
         commands,
         filter_rows,
     ));
+    let accessory_subtitle = if !view_model.monitor.running {
+        "Needs System monitor, which reads accessory batteries."
+    } else {
+        view_model
+            .monitor
+            .accessories
+            .unavailable
+            .as_deref()
+            .unwrap_or(
+                "While a device runs low, and briefly when one connects or starts or stops \
+                 charging.",
+            )
+    };
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        ("Accessory batteries", accessory_subtitle),
+        (
+            overlay.modules.accessories,
+            kestrel::OverlayModule::Accessories,
+        ),
+        "status overlay accessory batteries battery mouse keyboard headset low",
+        commands,
+        filter_rows,
+    ));
+    let levels = (
+        overlay.modules.accessory_warning,
+        overlay.modules.accessory_critical,
+    );
+    for (title, subtitle, (minimum, maximum), value, keywords, pair) in [
+        (
+            "Warning level",
+            "Accessories at or below this percentage show as low, in amber.",
+            (5, kestrel_core::MAX_ACCESSORY_WARNING_LEVEL),
+            levels.0,
+            "battery accessory mouse keyboard headset low warning level",
+            (|level: u8, (_, critical): (u8, u8)| (level, critical))
+                as fn(u8, (u8, u8)) -> (u8, u8),
+        ),
+        (
+            "Critical level",
+            "Accessories at or below this percentage show as critically low, in red.",
+            (
+                kestrel_core::MIN_ACCESSORY_CRITICAL_LEVEL,
+                kestrel_core::MAX_ACCESSORY_CRITICAL_LEVEL,
+            ),
+            levels.1,
+            "battery accessory mouse keyboard headset low critical level",
+            (|level: u8, (warning, _): (u8, u8)| (warning, level)) as fn(u8, (u8, u8)) -> (u8, u8),
+        ),
+    ] {
+        let row = adw::SpinRow::with_range(f64::from(minimum), f64::from(maximum), 1.0);
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_value(f64::from(value));
+        row.set_numeric(true);
+        let percent = gtk::Label::new(Some("%"));
+        percent.set_valign(Align::Center);
+        row.add_suffix(&percent);
+        let sender = commands.clone();
+        on_spin_row_settled(&row, move |value| {
+            let level = (value as u8).clamp(minimum, maximum);
+            let (warning, critical) = pair(level, levels);
+            let _ = sender.try_send(ApplicationCommand::SetAccessoryLevels { warning, critical });
+        });
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("{keywords} {title} {subtitle}"),
+        ));
+        overlay_group.add(&row);
+    }
     overlay_group.add(&overlay_module_row(
         overlay,
         (

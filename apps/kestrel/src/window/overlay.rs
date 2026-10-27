@@ -12,11 +12,12 @@ use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, glib};
 use kestrel::{
     ApplicationCommand, ApplicationViewModel, AudioCommand, AudioViewModel, FocusTarget,
-    MicrophoneCommand, MicrophoneViewModel, QuickToggleCommand, QuickToggleId, QuickToggleMutation,
-    QuickToggleViewModel, RecordingRequest, RecordingViewModel, output_icon,
+    MicrophoneCommand, MicrophoneViewModel, PeripheralKind, QuickToggleCommand, QuickToggleId,
+    QuickToggleMutation, QuickToggleViewModel, RecordingRequest, RecordingViewModel, output_icon,
     view_model::{
-        ActiveAlertViewModel, ControlFeedback, ControlReadings, MicrophoneReading, OverlayItem,
-        OverlaySources, OverlayViewModel, VolumeReading, format_clock, overlay_items,
+        AccessoryLevel, AccessoryReading, ActiveAlertViewModel, ControlFeedback, ControlReadings,
+        MicrophoneReading, MonitorViewModel, OverlayItem, OverlaySources, OverlayViewModel,
+        VolumeReading, accessory_icon, format_clock, overlay_items,
     },
 };
 use kestrel_services::recording::RecordingClock;
@@ -40,6 +41,7 @@ struct OverlayState {
     overlay: Option<OverlayViewModel>,
     recording: Option<RecordingViewModel>,
     alerts: Option<Vec<ActiveAlertViewModel>>,
+    accessories: Option<Vec<AccessoryReading>>,
     microphone: Option<MicrophoneViewModel>,
     audio: Option<AudioViewModel>,
     keyboard_light: Option<QuickToggleViewModel>,
@@ -75,6 +77,7 @@ impl StatusOverlay {
             state.overlay = Some(view_model.overlay.clone());
             state.recording = Some(view_model.recording.clone());
             state.alerts = Some(view_model.monitor.alerts.clone());
+            state.accessories = AccessoryReading::read(Some(&view_model.monitor));
             state.microphone = Some(view_model.microphone.clone());
             state.audio = Some(view_model.audio.clone());
             state.keyboard_light = view_model
@@ -91,8 +94,12 @@ impl StatusOverlay {
         self.observe();
     }
 
-    pub fn set_alerts(&self, alerts: &[ActiveAlertViewModel]) {
-        self.state.borrow_mut().alerts = Some(alerts.to_vec());
+    pub fn set_monitor(&self, monitor: &MonitorViewModel) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.alerts = Some(monitor.alerts.clone());
+            state.accessories = AccessoryReading::read(Some(monitor));
+        }
         self.observe();
     }
 
@@ -120,7 +127,10 @@ impl StatusOverlay {
                 state.microphone.as_ref(),
                 state.keyboard_light.as_ref(),
             );
-            state.feedback.observe(Instant::now(), readings);
+            let now = Instant::now();
+            let accessories = state.accessories.clone();
+            state.feedback.observe(now, readings);
+            state.feedback.observe_accessories(now, accessories);
         }
         render(&self.state, &self.commands);
     }
@@ -129,10 +139,25 @@ impl StatusOverlay {
 /// A control set that can be matched against the previous one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ItemLayout {
-    Recording { paused: bool, clock: RecordingClock },
-    Alert { message: String },
-    Volume { output_id: u32 },
-    MicrophoneLevel { input_id: u32 },
+    Recording {
+        paused: bool,
+        clock: RecordingClock,
+    },
+    Alert {
+        message: String,
+    },
+    Accessory {
+        id: String,
+        percent: u8,
+        charging: bool,
+        level: AccessoryLevel,
+    },
+    Volume {
+        output_id: u32,
+    },
+    MicrophoneLevel {
+        input_id: u32,
+    },
     KeyboardLight,
     MicrophoneMuted,
 }
@@ -146,6 +171,18 @@ impl ItemLayout {
             },
             OverlayItem::Alert { message } => Self::Alert {
                 message: message.clone(),
+            },
+            OverlayItem::Accessory {
+                id,
+                percent,
+                charging,
+                level,
+                ..
+            } => Self::Accessory {
+                id: id.clone(),
+                percent: *percent,
+                charging: *charging,
+                level: *level,
             },
             OverlayItem::Volume(reading) => Self::Volume {
                 output_id: reading.output_id,
@@ -164,15 +201,20 @@ fn render(state: &Rc<RefCell<OverlayState>>, commands: &Sender<ApplicationComman
     let items = {
         let state = state.borrow();
         match state.overlay.as_ref() {
-            Some(overlay) => overlay_items(
-                overlay,
-                &OverlaySources {
-                    recording: state.recording.as_ref(),
-                    alerts: state.alerts.as_deref(),
-                    microphone: state.microphone.as_ref(),
-                    controls: state.feedback.shown(now),
-                },
-            ),
+            Some(overlay) => {
+                let shown_accessories = state.feedback.shown_accessories(now);
+                overlay_items(
+                    overlay,
+                    &OverlaySources {
+                        recording: state.recording.as_ref(),
+                        alerts: state.alerts.as_deref(),
+                        microphone: state.microphone.as_ref(),
+                        accessories: state.accessories.as_deref(),
+                        shown_accessories: &shown_accessories,
+                        controls: state.feedback.shown(now),
+                    },
+                )
+            }
             None => Vec::new(),
         }
     };
@@ -256,6 +298,15 @@ fn build_pill(
                 pill.append(&recording_item(*paused, *clock, commands));
             }
             OverlayItem::Alert { message } => pill.append(&alert_item(message, commands)),
+            OverlayItem::Accessory {
+                kind,
+                percent,
+                charging,
+                level,
+                ..
+            } => pill.append(&accessory_item(
+                *kind, *percent, *charging, *level, commands,
+            )),
             OverlayItem::Volume(reading) => {
                 let volume = VolumeControls::new(*reading, commands);
                 pill.append(&volume.container);
@@ -792,6 +843,50 @@ fn request_button(
     let commands = commands.clone();
     button.connect_clicked(move |_| {
         let _ = commands.try_send(ApplicationCommand::Recording(request.clone()));
+    });
+    button
+}
+
+/// An accessory's battery, amber while low and red while critical.
+fn accessory_item(
+    kind: PeripheralKind,
+    percent: u8,
+    charging: bool,
+    level: AccessoryLevel,
+    commands: &Sender<ApplicationCommand>,
+) -> gtk::Button {
+    let content = gtk::Box::new(Orientation::Horizontal, 6);
+    let icon = gtk::Image::from_icon_name(accessory_icon(kind));
+    icon.set_valign(Align::Center);
+    content.append(&icon);
+    if charging {
+        content.append(&gtk::Image::from_icon_name(
+            "battery-level-100-charged-symbolic",
+        ));
+    }
+    let value = gtk::Label::new(Some(&format!("{percent}%")));
+    value.add_css_class("numeric");
+    value.set_valign(Align::Center);
+    let (suffix, class) = match level {
+        AccessoryLevel::Warning => (", low", Some("warning")),
+        AccessoryLevel::Critical => (", critically low", Some("error")),
+        AccessoryLevel::Normal => ("", None),
+    };
+    if let Some(class) = class {
+        value.add_css_class(class);
+    }
+    content.append(&value);
+    let label = format!("{} battery {percent} percent{suffix}", kind.label());
+    let button = gtk::Button::builder()
+        .child(&content)
+        .valign(Align::Center)
+        .tooltip_text("Open Monitoring")
+        .build();
+    button.add_css_class("flat");
+    button.update_property(&[Property::Label(&label)]);
+    let commands = commands.clone();
+    button.connect_clicked(move |_| {
+        let _ = commands.try_send(ApplicationCommand::Focus(FocusTarget::Monitoring));
     });
     button
 }

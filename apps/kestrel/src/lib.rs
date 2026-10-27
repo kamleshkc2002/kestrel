@@ -30,6 +30,7 @@ pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_platform::recording::{AudioTrack, RecordingSource};
 pub use kestrel_platform::screen_tools::{ALL_SCREEN_TOOLS, ScreenTool};
+pub use kestrel_platform::upower::{PeripheralCharge, PeripheralKind};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::camera::CameraFrameSlot;
 pub use kestrel_services::capture::{
@@ -149,6 +150,7 @@ pub enum OverlayModule {
     Volume,
     MicrophoneLevel,
     KeyboardLight,
+    Accessories,
 }
 
 /// Scratchpad bound edited from Settings.
@@ -548,6 +550,11 @@ pub enum ApplicationCommand {
     SetOverlayModule {
         module: OverlayModule,
         shown: bool,
+    },
+    /// Sets both accessory battery levels together.
+    SetAccessoryLevels {
+        warning: u8,
+        critical: u8,
     },
     /// Opens the log folder in the file manager.
     OpenLogFolder,

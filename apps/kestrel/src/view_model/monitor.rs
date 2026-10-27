@@ -1,6 +1,7 @@
 //! System monitor presentation and readouts.
 
 use super::*;
+use kestrel_platform::upower::{PeripheralCharge, PeripheralKind};
 
 pub(crate) struct MonitorPresentation<'a> {
     pub snapshot: Option<&'a SystemSnapshot>,
@@ -45,9 +46,13 @@ pub struct AccessoriesViewModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessoryViewModel {
+    /// The hashed UPower identity, never a serial.
+    pub id: String,
+    pub kind: PeripheralKind,
     pub title: String,
     pub detail: String,
     pub percent: Option<u8>,
+    pub charge: PeripheralCharge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,12 +314,13 @@ fn core_groups(snapshot: &SystemSnapshot) -> Vec<CoreGroupViewModel> {
 }
 
 fn accessories(snapshot: &SystemSnapshot) -> AccessoriesViewModel {
-    use kestrel_platform::upower::PeripheralCharge;
     AccessoriesViewModel {
         rows: snapshot
             .peripherals
             .iter()
             .map(|peripheral| AccessoryViewModel {
+                id: peripheral.id.clone(),
+                kind: peripheral.kind,
                 title: match &peripheral.model {
                     Some(model) => format!("{} · {model}", peripheral.kind.label()),
                     None => peripheral.kind.label().to_owned(),
@@ -327,6 +333,7 @@ fn accessories(snapshot: &SystemSnapshot) -> AccessoriesViewModel {
                 }
                 .to_owned(),
                 percent: peripheral.percentage,
+                charge: peripheral.charge,
             })
             .collect(),
         unavailable: snapshot
@@ -334,6 +341,22 @@ fn accessories(snapshot: &SystemSnapshot) -> AccessoriesViewModel {
             .iter()
             .find(|issue| issue.source == "UPower")
             .map(|issue| issue.reason.clone()),
+    }
+}
+
+/// The icon for an accessory's kind.
+pub fn accessory_icon(kind: PeripheralKind) -> &'static str {
+    match kind {
+        PeripheralKind::Mouse => "input-mouse-symbolic",
+        PeripheralKind::Keyboard => "input-keyboard-symbolic",
+        PeripheralKind::Headset => "audio-headset-symbolic",
+        PeripheralKind::Headphones => "audio-headphones-symbolic",
+        PeripheralKind::Speakers => "audio-speakers-symbolic",
+        PeripheralKind::GamingInput => "input-gaming-symbolic",
+        PeripheralKind::Pen | PeripheralKind::Tablet => "input-tablet-symbolic",
+        PeripheralKind::Touchpad => "input-touchpad-symbolic",
+        PeripheralKind::Phone => "phone-symbolic",
+        PeripheralKind::Other => "battery-symbolic",
     }
 }
 

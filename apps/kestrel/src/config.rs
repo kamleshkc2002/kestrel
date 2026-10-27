@@ -890,6 +890,7 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         ("volume", &mut modules.volume),
         ("microphone_level", &mut modules.microphone_level),
         ("keyboard_light", &mut modules.keyboard_light),
+        ("accessories", &mut modules.accessories),
     ] {
         let Some(value) = table.get(key) else {
             continue;
@@ -899,6 +900,30 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
             Err(_) => loaded.warnings.push(warning(
                 &format!("overlay.{key}"),
                 "Must be true or false; the default was retained.",
+            )),
+        }
+    }
+    if table.contains_key("accessory_warning") || table.contains_key("accessory_critical") {
+        let level = |key: &str, default: u8| {
+            table
+                .get(key)
+                .map_or(Some(default), |value| u8::deserialize(value.clone()).ok())
+        };
+        let warning_level = level("accessory_warning", modules.accessory_warning);
+        let critical_level = level("accessory_critical", modules.accessory_critical);
+        match (warning_level, critical_level) {
+            (Some(warning_level), Some(critical_level))
+                if kestrel_core::accessory_levels_valid(critical_level, warning_level) =>
+            {
+                modules.accessory_warning = warning_level;
+                modules.accessory_critical = critical_level;
+            }
+            _ => loaded.warnings.push(warning(
+                "overlay.accessory_levels",
+                concat!(
+                    "Must be whole numbers from 1 to 50 with the critical level below ",
+                    "the warning level; the defaults were retained."
+                ),
             )),
         }
     }
@@ -1764,15 +1789,19 @@ whats_new = false
     #[test]
     fn on_off_settings_parse_and_a_malformed_one_keeps_its_default() {
         let loaded = parse(
-            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\nvolume = false\nmicrophone_level = \"no\"\nkeyboard_light = true\n[startup]\nwhats_new = \"no\"\n",
+            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\nvolume = false\nmicrophone_level = \"no\"\nkeyboard_light = true\naccessories = false\naccessory_warning = 35\naccessory_critical = 15\n[startup]\nwhats_new = \"no\"\n",
         )
         .expect("document itself is valid TOML");
         let overlay = loaded.configuration.overlay;
-        assert!(!overlay.microphone && !overlay.alerts && !overlay.volume);
+        assert!(!overlay.microphone && !overlay.alerts && !overlay.volume && !overlay.accessories);
         assert!(overlay.keyboard_light);
         assert!(
             overlay.recording && overlay.microphone_level,
             "a malformed value keeps its default"
+        );
+        assert_eq!(
+            (overlay.accessory_warning, overlay.accessory_critical),
+            (35, 15)
         );
         assert!(loaded.configuration.startup.whats_new);
         let mut warned = loaded
@@ -1788,6 +1817,28 @@ whats_new = false
                 "overlay.recording",
                 "startup.whats_new"
             ]
+        );
+
+        let inverted = parse(
+            "schema_version = 3\n[overlay]\naccessory_warning = 5\naccessory_critical = 12\n",
+        )
+        .expect("document itself is valid TOML");
+        let overlay = inverted.configuration.overlay;
+        assert_eq!(
+            (overlay.accessory_warning, overlay.accessory_critical),
+            (
+                kestrel_core::DEFAULT_ACCESSORY_WARNING_LEVEL,
+                kestrel_core::DEFAULT_ACCESSORY_CRITICAL_LEVEL
+            ),
+            "an inverted pair keeps both defaults"
+        );
+        assert_eq!(
+            inverted
+                .warnings
+                .iter()
+                .map(|warning| warning.feature_id.as_str())
+                .collect::<Vec<_>>(),
+            ["overlay.accessory_levels"]
         );
     }
 

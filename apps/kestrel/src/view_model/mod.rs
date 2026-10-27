@@ -97,10 +97,12 @@ use monitor::format_bytes;
 pub use monitor::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
     CoreGroupViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
+    accessory_icon,
 };
 pub use overlay::{
-    CONTROL_FEEDBACK, ControlFeedback, ControlReadings, MicrophoneReading, OverlayItem,
-    OverlaySources, OverlayViewModel, VolumeReading, overlay_items,
+    AccessoryLevel, AccessoryReading, CONTROL_FEEDBACK, ControlFeedback, ControlReadings,
+    MicrophoneReading, OverlayItem, OverlaySources, OverlayViewModel, VolumeReading,
+    accessory_level, overlay_items,
 };
 pub use processes::{
     ListenerRowViewModel, ListenersViewModel, ProcessActionViewModel, ProcessRowViewModel,

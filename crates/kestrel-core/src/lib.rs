@@ -604,6 +604,7 @@ impl ApplicationConfiguration {
         self.recording.validate()?;
         self.logging.validate()?;
         self.command_bar.validate()?;
+        self.overlay.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
         if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
@@ -1244,6 +1245,24 @@ impl ScratchpadConfiguration {
     }
 }
 
+/// The lowest percentage the critical accessory level may take.
+pub const MIN_ACCESSORY_CRITICAL_LEVEL: u8 = 1;
+/// The highest percentage the warning accessory level may take.
+pub const MAX_ACCESSORY_WARNING_LEVEL: u8 = 50;
+/// The highest critical level, one below the warning ceiling.
+pub const MAX_ACCESSORY_CRITICAL_LEVEL: u8 = MAX_ACCESSORY_WARNING_LEVEL - 1;
+/// The warning level shown while no configuration is loaded.
+pub const DEFAULT_ACCESSORY_WARNING_LEVEL: u8 = 20;
+/// The critical level shown while no configuration is loaded.
+pub const DEFAULT_ACCESSORY_CRITICAL_LEVEL: u8 = 10;
+
+/// Whether the accessory levels are bounded and ordered.
+pub fn accessory_levels_valid(critical: u8, warning: u8) -> bool {
+    (MIN_ACCESSORY_CRITICAL_LEVEL..=MAX_ACCESSORY_CRITICAL_LEVEL).contains(&critical)
+        && warning <= MAX_ACCESSORY_WARNING_LEVEL
+        && critical < warning
+}
+
 /// Which modules the status overlay shows while each has something active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayConfiguration {
@@ -1265,6 +1284,23 @@ pub struct OverlayConfiguration {
     /// A slider whose icon toggles the keyboard light.
     #[serde(default = "default_true")]
     pub keyboard_light: bool,
+    /// Low batteries and brief connections of accessories.
+    #[serde(default = "default_true")]
+    pub accessories: bool,
+    /// The percentage at or below which an accessory reads as low.
+    #[serde(default = "default_accessory_warning")]
+    pub accessory_warning: u8,
+    /// The percentage at or below which an accessory reads as critical.
+    #[serde(default = "default_accessory_critical")]
+    pub accessory_critical: u8,
+}
+
+fn default_accessory_warning() -> u8 {
+    DEFAULT_ACCESSORY_WARNING_LEVEL
+}
+
+fn default_accessory_critical() -> u8 {
+    DEFAULT_ACCESSORY_CRITICAL_LEVEL
 }
 
 impl Default for OverlayConfiguration {
@@ -1276,7 +1312,22 @@ impl Default for OverlayConfiguration {
             volume: true,
             microphone_level: true,
             keyboard_light: true,
+            accessories: true,
+            accessory_warning: DEFAULT_ACCESSORY_WARNING_LEVEL,
+            accessory_critical: DEFAULT_ACCESSORY_CRITICAL_LEVEL,
         }
+    }
+}
+
+impl OverlayConfiguration {
+    pub fn validate(&self) -> Result<(), ConfigurationError> {
+        if !accessory_levels_valid(self.accessory_critical, self.accessory_warning) {
+            return Err(ConfigurationError::InvalidAccessoryLevels {
+                warning: self.accessory_warning,
+                critical: self.accessory_critical,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -2226,6 +2277,7 @@ pub enum ConfigurationError {
     TooManyQuickPanelFavorites { favorites: usize },
     InvalidQuickPanelFavorite { favorite: String },
     DuplicateQuickPanelFavorite { favorite: String },
+    InvalidAccessoryLevels { warning: u8, critical: u8 },
 }
 
 // Validation rejects non-finite thresholds.
