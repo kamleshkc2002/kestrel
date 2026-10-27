@@ -344,6 +344,16 @@ fn accessories(snapshot: &SystemSnapshot) -> AccessoriesViewModel {
     }
 }
 
+/// What the accessory batteries module needs to show a device.
+pub fn accessory_module_status(monitor: &MonitorViewModel) -> &str {
+    if !monitor.running {
+        return "Needs System monitor, which reads accessory batteries.";
+    }
+    monitor.accessories.unavailable.as_deref().unwrap_or(
+        "While a device runs low, and briefly when one connects or starts or stops charging.",
+    )
+}
+
 /// The icon for an accessory's kind.
 pub fn accessory_icon(kind: PeripheralKind) -> &'static str {
     match kind {
@@ -901,6 +911,32 @@ mod tests {
             "BAT0 · On external power, charging paused"
         );
         assert_eq!(monitor.local_addresses, None, "addresses need a request");
+
+        let module_status = |running, snapshot: &SystemSnapshot| {
+            let monitor = MonitorViewModel::from_configuration(
+                &configuration,
+                MonitorPresentation {
+                    snapshot: Some(snapshot),
+                    history: None,
+                    alerts: Default::default(),
+                    running,
+                },
+            );
+            accessory_module_status(&monitor).to_owned()
+        };
+        let mut without_upower = snapshot.clone();
+        without_upower
+            .issues
+            .push(kestrel_platform::system_monitor::SourceIssue {
+                source: "UPower".to_owned(),
+                reason: "UPower is not running.".to_owned(),
+            });
+        let normal = module_status(true, &snapshot);
+        let needs_monitor = module_status(false, &snapshot);
+        let unavailable = module_status(true, &without_upower);
+        assert_eq!(unavailable, "UPower is not running.");
+        assert_ne!(normal, needs_monitor);
+        assert_ne!(normal, unavailable);
     }
 
     #[test]

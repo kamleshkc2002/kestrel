@@ -97,7 +97,7 @@ use monitor::format_bytes;
 pub use monitor::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
     CoreGroupViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,
-    accessory_icon,
+    accessory_icon, accessory_module_status,
 };
 pub use overlay::{
     AccessoryLevel, AccessoryReading, CONTROL_FEEDBACK, ControlFeedback, ControlReadings,
