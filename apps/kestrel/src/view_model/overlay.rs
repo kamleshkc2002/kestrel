@@ -2,6 +2,8 @@
 
 use std::time::{Duration, Instant};
 
+use kestrel_platform::upower::{PeripheralCharge, PeripheralKind};
+
 use super::*;
 
 /// How long a control shows after its value changes.
@@ -86,6 +88,67 @@ impl ControlReadings {
     }
 }
 
+/// One accessory's battery, with its kind and charge state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessoryReading {
+    /// The hashed UPower identity, never a serial.
+    pub id: String,
+    pub kind: PeripheralKind,
+    pub percent: u8,
+    pub charging: bool,
+}
+
+impl AccessoryReading {
+    /// The latest readings; `None` while they cannot be read.
+    pub fn read(monitor: Option<&MonitorViewModel>) -> Option<Vec<AccessoryReading>> {
+        let monitor = monitor?;
+        if !monitor.running || monitor.accessories.unavailable.is_some() {
+            return None;
+        }
+        Some(
+            monitor
+                .accessories
+                .rows
+                .iter()
+                .filter_map(|row| {
+                    Some(Self {
+                        id: row.id.clone(),
+                        kind: row.kind,
+                        percent: row.percent?,
+                        charging: row.charge == PeripheralCharge::Charging,
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// How urgent an accessory's battery reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessoryLevel {
+    Normal,
+    Warning,
+    Critical,
+}
+
+/// The level a reading reads: a charging device never reads low.
+pub fn accessory_level(
+    percent: u8,
+    charging: bool,
+    configuration: &kestrel_core::OverlayConfiguration,
+) -> AccessoryLevel {
+    if charging {
+        return AccessoryLevel::Normal;
+    }
+    if percent <= configuration.accessory_critical {
+        AccessoryLevel::Critical
+    } else if percent <= configuration.accessory_warning {
+        AccessoryLevel::Warning
+    } else {
+        AccessoryLevel::Normal
+    }
+}
+
 /// Shows a control for a while after its reading changes.
 #[derive(Default)]
 pub struct ControlFeedback {
@@ -93,6 +156,9 @@ pub struct ControlFeedback {
     volume_deadline: Option<Instant>,
     microphone_deadline: Option<Instant>,
     keyboard_light_deadline: Option<Instant>,
+    accessories: Vec<AccessoryReading>,
+    accessory_deadlines: Vec<(String, Instant)>,
+    accessories_seen: bool,
     held: bool,
 }
 
@@ -120,6 +186,43 @@ impl ControlFeedback {
         self.readings = readings;
     }
 
+    /// Records accessory readings, showing each new or newly charging one.
+    pub fn observe_accessories(&mut self, now: Instant, readings: Option<Vec<AccessoryReading>>) {
+        let Some(readings) = readings else {
+            // A missing reading hides every accessory at once.
+            self.accessories.clear();
+            self.accessory_deadlines.clear();
+            self.accessories_seen = false;
+            return;
+        };
+        if !self.accessories_seen {
+            // The first reading after a gap only sets the baseline.
+            self.accessories = readings;
+            self.accessories_seen = true;
+            self.accessory_deadlines.clear();
+            return;
+        }
+        let previous = std::mem::take(&mut self.accessories);
+        let deadlines = std::mem::take(&mut self.accessory_deadlines);
+        for reading in &readings {
+            let deadline = match previous.iter().find(|previous| previous.id == reading.id) {
+                Some(previous) if previous.charging != reading.charging => {
+                    Some(now + CONTROL_FEEDBACK)
+                }
+                Some(_) => deadlines
+                    .iter()
+                    .find(|(id, _)| *id == reading.id)
+                    .map(|(_, deadline)| *deadline),
+                None => Some(now + CONTROL_FEEDBACK),
+            };
+            if let Some(deadline) = deadline {
+                self.accessory_deadlines
+                    .push((reading.id.clone(), deadline));
+            }
+        }
+        self.accessories = readings;
+    }
+
     /// Holds shown controls on screen while the pointer is over the overlay.
     pub fn set_held(&mut self, now: Instant, held: bool) {
         if self.held == held {
@@ -137,6 +240,14 @@ impl ControlFeedback {
                 *slot = slot.filter(|deadline| now < *deadline);
             } else if slot.is_some() {
                 *slot = Some(now + CONTROL_FEEDBACK);
+            }
+        }
+        if held {
+            self.accessory_deadlines
+                .retain(|(_, deadline)| now < *deadline);
+        } else {
+            for (_, deadline) in &mut self.accessory_deadlines {
+                *deadline = now + CONTROL_FEEDBACK;
             }
         }
     }
@@ -167,12 +278,25 @@ impl ControlFeedback {
         }
     }
 
+    /// The accessories a change still shows.
+    pub fn shown_accessories(&self, now: Instant) -> Vec<AccessoryReading> {
+        self.accessories
+            .iter()
+            .filter(|reading| {
+                self.accessory_deadlines
+                    .iter()
+                    .any(|(id, deadline)| *id == reading.id && (self.held || now < *deadline))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// The earliest deadline still ahead; no timer is needed while held.
     pub fn next_expiry(&self, now: Instant) -> Option<Instant> {
         if self.held {
             return None;
         }
-        [
+        let controls = [
             self.readings.volume.map(|_| self.volume_deadline),
             self.readings.microphone.map(|_| self.microphone_deadline),
             self.readings
@@ -181,9 +305,15 @@ impl ControlFeedback {
         ]
         .into_iter()
         .flatten()
-        .flatten()
-        .filter(|deadline| *deadline > now)
-        .min()
+        .flatten();
+        let accessories = self
+            .accessory_deadlines
+            .iter()
+            .map(|(_, deadline)| *deadline);
+        controls
+            .chain(accessories)
+            .filter(|deadline| *deadline > now)
+            .min()
     }
 }
 
@@ -212,6 +342,14 @@ pub enum OverlayItem {
     Recording { paused: bool, clock: RecordingClock },
     /// An active monitoring alert; clicking it opens the Monitoring page.
     Alert { message: String },
+    /// An accessory's battery, with its level and charge state.
+    Accessory {
+        id: String,
+        kind: PeripheralKind,
+        percent: u8,
+        charging: bool,
+        level: AccessoryLevel,
+    },
     /// The output's type, level, and mute.
     Volume(VolumeReading),
     /// The default input's level and mute.
@@ -267,6 +405,10 @@ pub struct OverlaySources<'a> {
     pub recording: Option<&'a RecordingViewModel>,
     pub alerts: Option<&'a [ActiveAlertViewModel]>,
     pub microphone: Option<&'a MicrophoneViewModel>,
+    /// Accessory batteries; `None` while they cannot be read.
+    pub accessories: Option<&'a [AccessoryReading]>,
+    /// Accessories a change still shows.
+    pub shown_accessories: &'a [AccessoryReading],
     /// The controls currently shown.
     pub controls: ControlReadings,
 }
@@ -296,6 +438,25 @@ pub fn overlay_items(overlay: &OverlayViewModel, sources: &OverlaySources<'_>) -
                     message: alert.message.clone(),
                 }),
         );
+    }
+    if modules.accessories {
+        for reading in sources.accessories.unwrap_or_default() {
+            let level = accessory_level(reading.percent, reading.charging, &modules);
+            let shown = level != AccessoryLevel::Normal
+                || sources
+                    .shown_accessories
+                    .iter()
+                    .any(|shown| shown.id == reading.id);
+            if shown {
+                items.push(OverlayItem::Accessory {
+                    id: reading.id.clone(),
+                    kind: reading.kind,
+                    percent: reading.percent,
+                    charging: reading.charging,
+                    level,
+                });
+            }
+        }
     }
     if let Some(volume) = sources.controls.volume.filter(|_| modules.volume) {
         items.push(OverlayItem::Volume(volume));
@@ -462,6 +623,15 @@ mod tests {
         }
     }
 
+    fn accessory(id: &str, kind: PeripheralKind, percent: u8, charging: bool) -> AccessoryReading {
+        AccessoryReading {
+            id: id.to_owned(),
+            kind,
+            percent,
+            charging,
+        }
+    }
+
     #[test]
     fn the_overlay_shows_a_muted_microphone_only_while_it_runs_and_everything_is_muted() {
         let shown = |overlay: &OverlayViewModel, muted| {
@@ -471,6 +641,8 @@ mod tests {
                     recording: None,
                     alerts: None,
                     microphone: Some(&microphone(muted)),
+                    accessories: None,
+                    shown_accessories: &[],
                     controls: ControlReadings::default(),
                 },
             )
@@ -497,6 +669,8 @@ mod tests {
                     recording: None,
                     alerts: None,
                     microphone: None,
+                    accessories: None,
+                    shown_accessories: &[],
                     controls: ControlReadings::default(),
                 }
             )
@@ -510,6 +684,8 @@ mod tests {
                 recording: None,
                 alerts: None,
                 microphone: Some(&microphone(Some(true))),
+                accessories: None,
+                shown_accessories: &[],
                 controls: readings(None, Some(sample_microphone(20)), None),
             },
         );
@@ -527,6 +703,8 @@ mod tests {
                     recording: None,
                     alerts: None,
                     microphone: Some(&microphone(Some(true))),
+                    accessories: None,
+                    shown_accessories: &[],
                     controls: readings(None, Some(sample_microphone(20)), None),
                 },
             ),
@@ -547,6 +725,16 @@ mod tests {
             label: "CPU",
             message: "CPU is 95%".to_owned(),
         }];
+        let battery = [
+            accessory("mouse", PeripheralKind::Mouse, 15, false),
+            accessory("keyboard", PeripheralKind::Keyboard, 8, false),
+            accessory("headset", PeripheralKind::Headset, 5, true),
+            accessory("phone", PeripheralKind::Phone, 80, false),
+        ];
+        let changed = [
+            accessory("mouse", PeripheralKind::Mouse, 15, false),
+            accessory("phone", PeripheralKind::Phone, 80, false),
+        ];
         let controls = readings(
             Some(sample_volume(40)),
             Some(sample_microphone(20)),
@@ -561,6 +749,8 @@ mod tests {
                     recording: Some(&recording(recording_controls)),
                     alerts: Some(&alerts),
                     microphone: Some(&microphone(Some(true))),
+                    accessories: Some(&battery),
+                    shown_accessories: &changed,
                     controls: readings,
                 },
             )
@@ -577,11 +767,38 @@ mod tests {
                 OverlayItem::Alert {
                     message: "CPU is 95%".to_owned()
                 },
+                OverlayItem::Accessory {
+                    id: "mouse".to_owned(),
+                    kind: PeripheralKind::Mouse,
+                    percent: 15,
+                    charging: false,
+                    level: AccessoryLevel::Warning,
+                },
+                OverlayItem::Accessory {
+                    id: "keyboard".to_owned(),
+                    kind: PeripheralKind::Keyboard,
+                    percent: 8,
+                    charging: false,
+                    level: AccessoryLevel::Critical,
+                },
+                OverlayItem::Accessory {
+                    id: "phone".to_owned(),
+                    kind: PeripheralKind::Phone,
+                    percent: 80,
+                    charging: false,
+                    level: AccessoryLevel::Normal,
+                },
                 OverlayItem::Volume(sample_volume(40)),
                 OverlayItem::MicrophoneLevel(sample_microphone(20)),
                 OverlayItem::KeyboardLight { percent: 70 },
             ],
             "the fader replaces the muted chip"
+        );
+        assert!(
+            !shown(&running, playing, controls)
+                .iter()
+                .any(|item| matches!(item, OverlayItem::Accessory { id, .. } if id == "headset")),
+            "a charging accessory never reads low"
         );
         for idle in [
             RecordingControls::Setup,
@@ -600,13 +817,15 @@ mod tests {
         modules_off.modules.recording = false;
         modules_off.modules.alerts = false;
         modules_off.modules.microphone = false;
+        modules_off.modules.accessories = false;
         assert_eq!(
             shown(&modules_off, playing, controls),
             [
                 OverlayItem::Volume(sample_volume(40)),
                 OverlayItem::MicrophoneLevel(sample_microphone(20)),
                 OverlayItem::KeyboardLight { percent: 70 },
-            ]
+            ],
+            "each module hides on its own"
         );
 
         let mut controls_off = running.clone();
@@ -622,6 +841,27 @@ mod tests {
                 },
                 OverlayItem::Alert {
                     message: "CPU is 95%".to_owned()
+                },
+                OverlayItem::Accessory {
+                    id: "mouse".to_owned(),
+                    kind: PeripheralKind::Mouse,
+                    percent: 15,
+                    charging: false,
+                    level: AccessoryLevel::Warning,
+                },
+                OverlayItem::Accessory {
+                    id: "keyboard".to_owned(),
+                    kind: PeripheralKind::Keyboard,
+                    percent: 8,
+                    charging: false,
+                    level: AccessoryLevel::Critical,
+                },
+                OverlayItem::Accessory {
+                    id: "phone".to_owned(),
+                    kind: PeripheralKind::Phone,
+                    percent: 80,
+                    charging: false,
+                    level: AccessoryLevel::Normal,
                 },
                 OverlayItem::MicrophoneMuted,
             ],
@@ -786,6 +1026,157 @@ mod tests {
             ControlReadings::read(None, None, Some(&keyboard_light(true, 60))).keyboard_light,
             Some(60)
         );
+
+        // Accessory batteries: a baseline, then connects, charge changes, and
+        // removals, with the pointer hold covering them too.
+        let battery = |entries: &[(&str, bool)]| {
+            entries
+                .iter()
+                .map(|(id, charging)| accessory(id, PeripheralKind::Mouse, 20, *charging))
+                .collect::<Vec<_>>()
+        };
+        let ids = |shown: Vec<AccessoryReading>| {
+            shown
+                .into_iter()
+                .map(|reading| reading.id)
+                .collect::<Vec<_>>()
+        };
+        let mut feedback = ControlFeedback::default();
+        let baseline = released + Duration::from_secs(2);
+        feedback.observe_accessories(baseline, Some(battery(&[("a", false)])));
+        assert!(
+            feedback.shown_accessories(baseline).is_empty(),
+            "the first accessory reading is a baseline"
+        );
+        assert_eq!(feedback.next_expiry(baseline), None);
+
+        let connected = baseline + Duration::from_secs(1);
+        feedback.observe_accessories(connected, Some(battery(&[("a", false), ("b", false)])));
+        assert_eq!(ids(feedback.shown_accessories(connected)), ["b"]);
+        assert_eq!(
+            feedback.next_expiry(connected),
+            Some(connected + CONTROL_FEEDBACK)
+        );
+        assert!(
+            feedback
+                .shown_accessories(connected + CONTROL_FEEDBACK)
+                .is_empty()
+        );
+
+        let flipped = connected + CONTROL_FEEDBACK + Duration::from_secs(1);
+        feedback.observe_accessories(flipped, Some(battery(&[("a", true), ("b", false)])));
+        assert_eq!(ids(feedback.shown_accessories(flipped)), ["a"]);
+
+        let removed = flipped + Duration::from_secs(1);
+        feedback.observe_accessories(removed, Some(battery(&[("b", false)])));
+        assert!(
+            feedback.shown_accessories(removed).is_empty(),
+            "a vanished accessory is forgotten"
+        );
+        assert_eq!(feedback.next_expiry(removed), None);
+
+        let hold = removed + Duration::from_secs(1);
+        feedback.observe_accessories(hold, Some(battery(&[("b", true), ("a", false)])));
+        assert_eq!(ids(feedback.shown_accessories(hold)), ["b", "a"]);
+        feedback.set_held(hold, true);
+        assert_eq!(feedback.next_expiry(hold), None);
+        assert_eq!(
+            ids(feedback.shown_accessories(hold + Duration::from_secs(60))),
+            ["b", "a"],
+            "holding keeps shown accessories on screen"
+        );
+        let freed = hold + Duration::from_secs(60);
+        feedback.set_held(freed, false);
+        assert_eq!(feedback.next_expiry(freed), Some(freed + CONTROL_FEEDBACK));
+        feedback.set_held(freed + CONTROL_FEEDBACK + Duration::from_secs(1), true);
+        assert!(
+            feedback
+                .shown_accessories(freed + CONTROL_FEEDBACK + Duration::from_secs(1))
+                .is_empty(),
+            "holding never brings back a hidden accessory"
+        );
+        feedback.set_held(freed + CONTROL_FEEDBACK + Duration::from_secs(1), false);
+
+        feedback.observe_accessories(freed, None);
+        assert!(
+            feedback.shown_accessories(freed).is_empty(),
+            "a missing reading hides every accessory"
+        );
+        assert_eq!(feedback.next_expiry(freed), None);
+
+        // Read gating: the monitor must run and UPower must answer.
+        let row = |percent| AccessoryViewModel {
+            id: "a".to_owned(),
+            kind: PeripheralKind::Mouse,
+            title: String::new(),
+            detail: String::new(),
+            percent,
+            charge: PeripheralCharge::Discharging,
+        };
+        let monitor = |running, rows, unavailable: Option<&str>| MonitorViewModel {
+            running,
+            status: String::new(),
+            readouts: Vec::new(),
+            readout_settings: Vec::new(),
+            alerts: Vec::new(),
+            delivery_failures: Vec::new(),
+            alert_rules: Vec::new(),
+            cores: None,
+            accessories: AccessoriesViewModel {
+                rows,
+                unavailable: unavailable.map(str::to_owned),
+            },
+            local_addresses: None,
+            network_rate_unit: kestrel_core::NetworkRateUnit::Bytes,
+            per_core_cpu: false,
+            tray: Vec::new(),
+        };
+        assert_eq!(AccessoryReading::read(None), None);
+        assert_eq!(
+            AccessoryReading::read(Some(&monitor(false, vec![row(Some(20))], None))),
+            None,
+            "a stopped monitor reads nothing"
+        );
+        assert_eq!(
+            AccessoryReading::read(Some(&monitor(true, vec![row(Some(20))], Some("no UPower")))),
+            None,
+            "a provider issue reads nothing"
+        );
+        assert_eq!(
+            AccessoryReading::read(Some(&monitor(true, vec![row(None)], None))),
+            Some(Vec::new()),
+            "an unknown percentage has no reading"
+        );
+        assert_eq!(
+            AccessoryReading::read(Some(&monitor(true, vec![row(Some(20))], None))),
+            Some(vec![accessory("a", PeripheralKind::Mouse, 20, false)])
+        );
+    }
+
+    #[test]
+    fn accessory_levels_follow_the_configured_thresholds() {
+        use AccessoryLevel::{Critical, Normal, Warning};
+        let configuration = OverlayConfiguration {
+            accessory_warning: 30,
+            accessory_critical: 15,
+            ..OverlayConfiguration::default()
+        };
+        for (percent, charging, expected) in [
+            (0, false, Critical),
+            (15, false, Critical),
+            (16, false, Warning),
+            (30, false, Warning),
+            (31, false, Normal),
+            (5, false, Critical),
+            (5, true, Normal),
+            (80, true, Normal),
+        ] {
+            assert_eq!(
+                accessory_level(percent, charging, &configuration),
+                expected,
+                "{percent}% charging={charging}"
+            );
+        }
     }
 
     #[test]

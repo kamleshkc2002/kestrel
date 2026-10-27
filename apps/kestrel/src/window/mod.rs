@@ -37,7 +37,7 @@ use kestrel::{
     ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureRequest,
     CaptureViewModel, FocusTarget, MicrophoneViewModel, MonitorViewModel, OverviewTool,
     OverviewToolsViewModel, RecordingRequest, RecordingSource, ScreenToolRequest,
-    ShortcutsViewModel, SpeedTestViewModel,
+    ShortcutsViewModel, SpeedTestViewModel, view_model::accessory_module_status,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
@@ -166,6 +166,8 @@ pub struct WindowView {
     command_panel: std::cell::RefCell<Option<CommandPanel>>,
     processes_panel: std::cell::RefCell<Option<ProcessesPanel>>,
     scratchpad_panel: std::cell::RefCell<Option<ScratchpadPanel>>,
+    /// The Settings row whose subtitle follows the monitor's provider state.
+    accessory_row: std::cell::RefCell<Option<adw::ActionRow>>,
 }
 
 impl WindowView {
@@ -345,6 +347,7 @@ impl WindowView {
             processes_panel: std::cell::RefCell::new(build.processes_panel),
             scratchpad_panel: std::cell::RefCell::new(build.scratchpad_panel),
             command_panel: std::cell::RefCell::new(build.command_panel),
+            accessory_row: std::cell::RefCell::new(build.accessory_row),
         }
     }
 
@@ -415,7 +418,8 @@ impl WindowView {
             }
             SidebarPage::CommandBar => *self.command_panel.borrow_mut() = build.command_panel,
             SidebarPage::Processes => *self.processes_panel.borrow_mut() = build.processes_panel,
-            SidebarPage::Overview | SidebarPage::FeatureHub | SidebarPage::Settings => {}
+            SidebarPage::Settings => *self.accessory_row.borrow_mut() = build.accessory_row,
+            SidebarPage::Overview | SidebarPage::FeatureHub => {}
         }
     }
 
@@ -580,6 +584,9 @@ impl WindowView {
     }
 
     pub fn set_monitor(&self, monitor: &MonitorViewModel) {
+        if let Some(row) = self.accessory_row.borrow().as_ref() {
+            row.set_subtitle(accessory_module_status(monitor));
+        }
         let Some(container) = self.monitor_container.borrow().as_ref().cloned() else {
             return;
         };
@@ -730,6 +737,8 @@ struct PageBuild {
     processes_panel: Option<ProcessesPanel>,
     command_panel: Option<CommandPanel>,
     scratchpad_panel: Option<ScratchpadPanel>,
+    /// The accessory batteries row, updated from monitor ticks.
+    accessory_row: Option<adw::ActionRow>,
     filter_rows: FilterRows,
 }
 
@@ -828,6 +837,7 @@ impl Default for PageBuild {
             processes_panel: None,
             command_panel: None,
             scratchpad_panel: None,
+            accessory_row: None,
             filter_rows: FilterRows::new(),
         }
     }
@@ -874,6 +884,7 @@ impl PageBuild {
         self.processes_panel = self.processes_panel.take().or(other.processes_panel);
         self.command_panel = self.command_panel.take().or(other.command_panel);
         self.scratchpad_panel = self.scratchpad_panel.take().or(other.scratchpad_panel);
+        self.accessory_row = self.accessory_row.take().or(other.accessory_row);
     }
 }
 
@@ -1251,9 +1262,10 @@ fn append_settings(
     commands: &Sender<ApplicationCommand>,
     page: SettingsPage,
 ) {
-    let (group, rows) = build_settings_group(view_model, window, commands, page);
+    let (group, rows, accessory_row) = build_settings_group(view_model, window, commands, page);
     body.append(&group);
     build.filter_rows.extend(rows);
+    build.accessory_row = accessory_row;
 }
 
 /// Names a query can use for the whole page; row keywords match single rows.

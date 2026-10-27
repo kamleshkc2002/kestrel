@@ -226,8 +226,9 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Volume:** after the active output's volume or mute changes, its type, a level slider, and mute; needs `audio.mixer`.
 - **Microphone level:** after the default input's mute or level changes, a fader, mute, and an editable percentage; needs `audio.microphone`.
 - **Keyboard light:** after the keyboard light changes, a slider whose icon turns it off and on; needs the Keyboard light quick toggle.
+- **Accessory batteries:** while a mouse, keyboard, headset, or other accessory that isn't charging runs at or below the warning level, its icon and percentage in amber, or in red at the critical level; a device also shows briefly when it connects or starts or stops charging. Needs System monitor and UPower, and never shows a device's name.
 - These controls show for 3 seconds after a change and stay while the pointer is over the overlay. Changes made elsewhere, including from hardware keys or another mixer, are noticed within half a second.
-- Each module reads the state its feature already publishes, so a module that is off, or whose feature is off, costs nothing; switch modules under Settings → Status overlay (`[overlay] recording`, `alerts`, `microphone`, `volume`, `microphone_level`, `keyboard_light`).
+- Each module reads the state its feature already publishes, so a module that is off, or whose feature is off, costs nothing; switch modules under Settings → Status overlay (`[overlay] recording`, `alerts`, `microphone`, `volume`, `microphone_level`, `keyboard_light`, `accessories`, plus `accessory_warning` and `accessory_critical` for its levels, default 20 and 10).
 - **Needs:** a desktop that lets apps place a layer-shell surface (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors) and a build with gtk4-layer-shell; the AppImage bundles it. Elsewhere the feature shows as unavailable with the reason, and Kestrel's window, tray, and shortcuts work as usual. It appears on the display the compositor chooses.
 
 ### What's new after an update

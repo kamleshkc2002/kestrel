@@ -13,6 +13,10 @@ feature = "overlay.status"
 text = "The status overlay can briefly show volume, microphone, and keyboard light controls when they change."
 
 [[change]]
+feature = "overlay.status"
+text = "The status overlay warns when a mouse, keyboard, headset, or other accessory runs low, and shows one briefly when it connects or starts charging."
+
+[[change]]
 feature = "capture.screenshot"
 text = "After a screenshot, a notification offers Edit and Copy; Settings can open the editor straight away instead."
 

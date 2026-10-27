@@ -758,6 +758,10 @@ enum ControllerOperation {
         module: kestrel::OverlayModule,
         shown: bool,
     },
+    SetAccessoryLevels {
+        warning: u8,
+        critical: u8,
+    },
     ClearLogs,
     SetShortcut {
         command: String,
@@ -1581,7 +1585,7 @@ impl ApplicationController {
             self.overlay.set_recording(recording);
         }
         if let Some(monitor) = &monitor {
-            self.overlay.set_alerts(&monitor.alerts);
+            self.overlay.set_monitor(monitor);
         }
         if let (Some(command_bar), Some(surface)) = (&command_bar, self.floating.borrow().as_ref())
         {
@@ -2515,12 +2519,31 @@ impl ControllerState {
                         candidate.overlay.keyboard_light = shown;
                         "The keyboard light control"
                     }
+                    kestrel::OverlayModule::Accessories => {
+                        candidate.overlay.accessories = shown;
+                        "The accessory batteries module"
+                    }
                 };
                 let message = format!(
                     "{name} {} in the status overlay",
                     if shown { "shows" } else { "no longer shows" }
                 );
                 self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetAccessoryLevels { warning, critical } => {
+                if !kestrel_core::accessory_levels_valid(critical, warning) {
+                    return Err(
+                        "The critical level must be lower than the warning level".to_owned()
+                    );
+                }
+                let mut candidate = self.configuration.clone();
+                candidate.overlay.accessory_warning = warning;
+                candidate.overlay.accessory_critical = critical;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    "Accessory battery levels updated".to_owned(),
+                )?
             }
             ControllerOperation::ClearLogs => match kestrel::logging::logger() {
                 Some(logger) => match logger.clear() {
@@ -3583,6 +3606,11 @@ fn dispatch_commands(
                     .request_operation(
                         ControllerOperation::SetOverlayModule { module, shown },
                         "kestrel-overlay-module",
+                    ),
+                ApplicationCommand::SetAccessoryLevels { warning, critical } => controller
+                    .request_operation(
+                        ControllerOperation::SetAccessoryLevels { warning, critical },
+                        "kestrel-accessory-levels",
                     ),
                 ApplicationCommand::SetShortcut { command, trigger } => controller
                     .request_operation(

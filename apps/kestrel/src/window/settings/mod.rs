@@ -10,7 +10,7 @@ use crate::window::widgets::{
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation};
-use kestrel::{ApplicationCommand, ApplicationViewModel};
+use kestrel::{ApplicationCommand, ApplicationViewModel, view_model::accessory_module_status};
 use kestrel_core::{AppearancePreference, CloseAction};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,7 +32,7 @@ pub(super) fn build_settings_group(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     page: SettingsPage,
-) -> (adw::PreferencesGroup, FilterRows) {
+) -> (adw::PreferencesGroup, FilterRows, Option<adw::ActionRow>) {
     // Feature pages show their nested groups' own titles; the Settings page
     // adds its app-wide rows directly.
     let group = adw::PreferencesGroup::new();
@@ -40,6 +40,7 @@ pub(super) fn build_settings_group(
         group.set_title("General");
     }
     let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
+    let mut accessory_row = None;
 
     match page {
         SettingsPage::Monitoring => {
@@ -73,14 +74,14 @@ pub(super) fn build_settings_group(
             group.add(&io_row);
             add_logging_group(&group, view_model, window, commands, &mut filter_rows);
             add_whats_new_group(&group, view_model, window, commands, &mut filter_rows);
-            add_overlay_group(&group, view_model, commands, &mut filter_rows);
+            accessory_row = add_overlay_group(&group, view_model, commands, &mut filter_rows);
         }
     }
 
     for (_, keywords) in &mut filter_rows {
         *keywords = keywords.to_lowercase();
     }
-    (group, filter_rows)
+    (group, filter_rows, accessory_row)
 }
 
 fn add_logging_group(
@@ -218,7 +219,7 @@ fn add_overlay_group(
     view_model: &ApplicationViewModel,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) {
+) -> Option<adw::ActionRow> {
     let overlay = &view_model.overlay;
     let overlay_group = adw::PreferencesGroup::builder()
         .title("Status overlay")
@@ -246,6 +247,67 @@ fn add_overlay_group(
         commands,
         filter_rows,
     ));
+    let accessory_row = overlay_module_row(
+        overlay,
+        (
+            "Accessory batteries",
+            accessory_module_status(&view_model.monitor),
+        ),
+        (
+            overlay.modules.accessories,
+            kestrel::OverlayModule::Accessories,
+        ),
+        "status overlay accessory batteries battery mouse keyboard headset low",
+        commands,
+        filter_rows,
+    );
+    overlay_group.add(&accessory_row);
+    let levels = (
+        overlay.modules.accessory_warning,
+        overlay.modules.accessory_critical,
+    );
+    for (title, subtitle, (minimum, maximum), value, keywords, pair) in [
+        (
+            "Warning level",
+            "Accessories at or below this percentage show as low, in amber.",
+            (5, kestrel_core::MAX_ACCESSORY_WARNING_LEVEL),
+            levels.0,
+            "battery accessory mouse keyboard headset low warning level",
+            (|level: u8, (_, critical): (u8, u8)| (level, critical))
+                as fn(u8, (u8, u8)) -> (u8, u8),
+        ),
+        (
+            "Critical level",
+            "Accessories at or below this percentage show as critically low, in red.",
+            (
+                kestrel_core::MIN_ACCESSORY_CRITICAL_LEVEL,
+                kestrel_core::MAX_ACCESSORY_CRITICAL_LEVEL,
+            ),
+            levels.1,
+            "battery accessory mouse keyboard headset low critical level",
+            (|level: u8, (warning, _): (u8, u8)| (warning, level)) as fn(u8, (u8, u8)) -> (u8, u8),
+        ),
+    ] {
+        let row = adw::SpinRow::with_range(f64::from(minimum), f64::from(maximum), 1.0);
+        row.set_title(title);
+        row.set_subtitle(subtitle);
+        row.set_value(f64::from(value));
+        row.set_numeric(true);
+        let percent = gtk::Label::new(Some("%"));
+        percent.set_valign(Align::Center);
+        row.add_suffix(&percent);
+        let sender = commands.clone();
+        on_spin_row_settled(&row, move |value| {
+            let level = (value as u8).clamp(minimum, maximum);
+            let (warning, critical) = pair(level, levels);
+            let _ = sender.try_send(ApplicationCommand::SetAccessoryLevels { warning, critical });
+        });
+        filter_rows.push((
+            row.clone().upcast(),
+            format!("{keywords} {title} {subtitle}"),
+        ));
+        overlay_group.add(&row);
+    }
     overlay_group.add(&overlay_module_row(
         overlay,
         (
@@ -300,6 +362,7 @@ fn add_overlay_group(
         filter_rows,
     ));
     group.add(&overlay_group);
+    Some(accessory_row)
 }
 
 /// One module's switch; usable only where the overlay can run.
