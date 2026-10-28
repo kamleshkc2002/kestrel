@@ -139,7 +139,11 @@ impl ApplicationRuntime {
         {
             return false;
         }
-        let applications = if self.audio_mixer_is_running() {
+        // The mixer hides idle streams unless asked to keep them; a paused
+        // application must still be pickable, so then read the server directly.
+        let applications = if self.audio_mixer_is_running()
+            && self.audio_mixer.policy().include_inactive_streams
+        {
             Self::applications_from_streams(self.audio_mixer.latest().streams.iter())
         } else {
             match PulseAudioBackend::new().discover() {
@@ -154,16 +158,13 @@ impl ApplicationRuntime {
         true
     }
 
-    /// The applications with playback streams, deduplicated by identity and
-    /// sorted by label.
+    /// The applications with playback streams, including paused ones,
+    /// deduplicated by identity and sorted by label.
     fn applications_from_streams<'a>(
         streams: impl Iterator<Item = &'a kestrel_platform::audio::PlaybackStream>,
     ) -> Vec<RecordingApplicationViewModel> {
         let mut applications: Vec<RecordingApplicationViewModel> = Vec::new();
         for stream in streams {
-            if stream.corked {
-                continue;
-            }
             let Some(identity) = stream.application_id.clone() else {
                 continue;
             };
@@ -335,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn offered_applications_have_ids_deduplicated_labels_and_sort_order() {
+    fn offered_applications_include_paused_streams_and_deduplicate() {
         use kestrel_platform::audio::PlaybackStream;
         let stream = |id: u32, identity: &str, name: Option<&str>, corked: bool| PlaybackStream {
             id,
@@ -365,6 +366,7 @@ mod tests {
             offered,
             [
                 ("zeta", "Aurora"),
+                ("idle", "Idle"),
                 ("alpha", "alpha"),
                 ("nameless", "nameless")
             ]
