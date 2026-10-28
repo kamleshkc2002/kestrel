@@ -2673,7 +2673,7 @@ impl ControllerState {
                         let message = if application.is_some() {
                             "System audio records one application"
                         } else {
-                            "System audio records everything this computer plays"
+                            "System audio records all apps"
                         };
                         candidate.recording.system_audio_app = application;
                         message.to_owned()

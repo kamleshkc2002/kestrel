@@ -29,7 +29,7 @@ pub struct RecordingApplicationViewModel {
 /// One choice for what the System track records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingSoundOptionViewModel {
-    /// `None` records everything this computer plays.
+    /// `None` records all apps.
     pub identity: Option<String>,
     pub label: String,
 }
@@ -303,7 +303,7 @@ impl RecordingViewModel {
 }
 
 /// Label of the whole output in the System audio choice.
-const EVERYTHING_LABEL: &str = "Everything this computer plays";
+const ALL_APPS_LABEL: &str = "All apps";
 
 fn sound_view(
     settings: &kestrel_core::RecordingConfiguration,
@@ -313,7 +313,7 @@ fn sound_view(
 ) -> RecordingSoundViewModel {
     let mut options = vec![RecordingSoundOptionViewModel {
         identity: None,
-        label: EVERYTHING_LABEL.to_owned(),
+        label: ALL_APPS_LABEL.to_owned(),
     }];
     options.extend(
         applications
@@ -451,10 +451,7 @@ mod tests {
             assert!(setup.tracks_offered[0].available);
             assert_eq!(setup.takes[0].detail, "3.0 MiB · 1:15");
             // The choice exists but stays off with System audio.
-            assert_eq!(
-                setup.sound.options[0].label,
-                "Everything this computer plays"
-            );
+            assert_eq!(setup.sound.options[0].label, "All apps");
             assert_eq!(setup.sound.options.len(), 1);
             assert_eq!(setup.sound.selected, 0);
             assert!(!setup.sound.sensitive);
