@@ -13,14 +13,19 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
 use super::{
-    AREA_ELEMENT, AUDIO_ELEMENTS, ActiveRecording, AudioTrack, RecordingError, RecordingErrorKind,
-    RecordingEvent, RecordingPlan, RecordingSource, VIDEO_ELEMENTS, VideoFrame,
+    APPLICATION_AUDIO_ELEMENTS, AREA_ELEMENT, AUDIO_ELEMENTS, ActiveRecording, AudioTrack,
+    RecordingError, RecordingErrorKind, RecordingEvent, RecordingPlan, RecordingSource,
+    SystemAudioSource, VIDEO_ELEMENTS, VideoFrame,
 };
 
 /// How long finishing may take to flush encoders and write the index.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 /// Buffered media per branch before frames are dropped.
 const QUEUE_TIME: Duration = Duration::from_secs(2);
+/// How often the chosen application's streams are listed again.
+const APPLICATION_REFRESH: Duration = Duration::from_secs(1);
+/// How long removing a stream may wait for its branch to detach.
+const BRANCH_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 const AUDIO_RATE: i32 = 48_000;
 const AUDIO_BITRATE: i32 = 128_000;
 /// Keyframe spacing, so takes can be trimmed and seeked.
@@ -35,18 +40,28 @@ pub(super) fn init() -> Result<(), String> {
 /// Needed elements absent from the GStreamer registry.
 pub(crate) fn missing_elements() -> Result<Vec<&'static str>, String> {
     init()?;
-    Ok(VIDEO_ELEMENTS
+    let mut missing = Vec::new();
+    for element in VIDEO_ELEMENTS
         .iter()
         .chain(std::iter::once(&AREA_ELEMENT))
         .chain(AUDIO_ELEMENTS.iter())
+        .chain(APPLICATION_AUDIO_ELEMENTS.iter())
         .copied()
-        .filter(|element| gst::ElementFactory::find(element).is_none())
-        .collect())
+    {
+        if gst::ElementFactory::find(element).is_none() && !missing.contains(&element) {
+            missing.push(element);
+        }
+    }
+    Ok(missing)
 }
 
 /// Why `source` with `audio` cannot be recorded here, checked before asking
 /// the desktop to share anything.
-pub fn gstreamer_missing(source: RecordingSource, audio: &[AudioTrack]) -> Option<RecordingError> {
+pub fn gstreamer_missing(
+    source: RecordingSource,
+    audio: &[AudioTrack],
+    system_audio: &SystemAudioSource,
+) -> Option<RecordingError> {
     let missing = match missing_elements() {
         Ok(missing) => missing,
         Err(error) => {
@@ -56,14 +71,19 @@ pub fn gstreamer_missing(source: RecordingSource, audio: &[AudioTrack]) -> Optio
             ));
         }
     };
+    let application = matches!(system_audio, SystemAudioSource::Application { .. })
+        && audio.contains(&AudioTrack::System);
     let needed = VIDEO_ELEMENTS
         .iter()
         .chain((source == RecordingSource::Area).then_some(&AREA_ELEMENT))
-        .chain(AUDIO_ELEMENTS.iter().filter(|_| !audio.is_empty()));
-    let absent: Vec<&str> = needed
-        .copied()
-        .filter(|element| missing.contains(element))
-        .collect();
+        .chain(AUDIO_ELEMENTS.iter().filter(|_| !audio.is_empty()))
+        .chain(APPLICATION_AUDIO_ELEMENTS.iter().filter(|_| application));
+    let mut absent: Vec<&str> = Vec::new();
+    for element in needed.copied().filter(|element| missing.contains(element)) {
+        if !absent.contains(&element) {
+            absent.push(element);
+        }
+    }
     (!absent.is_empty()).then(|| {
         RecordingError::new(
             RecordingErrorKind::Unavailable,
@@ -274,6 +294,181 @@ fn pulse_source(track: AudioTrack) -> Result<gst::Element, RecordingError> {
     Ok(source)
 }
 
+/// Lists the playback streams of the application being recorded.
+trait ApplicationStreams: Send {
+    /// Stream indices, which equal the PipeWire object serials.
+    fn streams(&mut self, identity: &str) -> Result<Vec<u32>, ()>;
+}
+
+struct PulseStreams;
+
+impl ApplicationStreams for PulseStreams {
+    fn streams(&mut self, identity: &str) -> Result<Vec<u32>, ()> {
+        crate::audio::application_streams(identity).map_err(|_| ())
+    }
+}
+
+/// Builds the capture source of one application stream.
+type StreamSourceFactory = dyn Fn(u32) -> Result<gst::Element, RecordingError> + Send;
+
+fn pipewire_stream(serial: u32) -> Result<gst::Element, RecordingError> {
+    let source = element("pipewiresrc")?;
+    source.set_property("target-object", serial.to_string());
+    source.set_property("do-timestamp", true);
+    Ok(source)
+}
+
+/// One captured stream, mixed into the System track.
+struct ApplicationStream {
+    serial: u32,
+    branch: gst::Bin,
+    mixer_pad: gst::Pad,
+}
+
+/// The branch set behind an application System track.
+struct ApplicationAudio {
+    identity: String,
+    /// Holds the mixer, the silence source, and every stream branch.
+    bin: gst::Bin,
+    mixer: gst::Element,
+    streams: Vec<ApplicationStream>,
+    playing: bool,
+    checked: Instant,
+    discovery: Box<dyn ApplicationStreams>,
+    source: Box<StreamSourceFactory>,
+}
+
+impl ApplicationAudio {
+    /// Lists the application's streams and reconciles branches; the detached
+    /// branches and the playing state when it changed.
+    fn refresh(&mut self) -> (Vec<gst::Bin>, Option<bool>) {
+        if self.checked.elapsed() < APPLICATION_REFRESH {
+            return (Vec::new(), None);
+        }
+        self.checked = Instant::now();
+        let Ok(found) = self.discovery.streams(&self.identity) else {
+            return (Vec::new(), None);
+        };
+        let current: Vec<u32> = self.streams.iter().map(|stream| stream.serial).collect();
+        let (added, removed) = stream_changes(&current, &found);
+        let mut detached = Vec::new();
+        for serial in removed {
+            detached.extend(self.remove(serial));
+        }
+        for serial in added {
+            let _ = self.add(serial);
+        }
+        let playing = !self.streams.is_empty();
+        let change = if playing == self.playing {
+            None
+        } else {
+            self.playing = playing;
+            Some(playing)
+        };
+        (detached, change)
+    }
+
+    fn add(&mut self, serial: u32) -> Result<(), RecordingError> {
+        let source = (self.source)(serial)?;
+        let queue = leaky_queue()?;
+        let convert = element("audioconvert")?;
+        let resample = element("audioresample")?;
+        let filter = caps_filter(audio_caps())?;
+        let branch = gst::Bin::with_name(&format!("stream-{serial}"));
+        branch
+            .add_many([&source, &queue, &convert, &resample, &filter])
+            .map_err(|_| stream_failed())?;
+        link_all(&[&source, &queue, &convert, &resample, &filter])?;
+        let output = filter.static_pad("src").ok_or_else(stream_failed)?;
+        let ghost = gst::GhostPad::with_target(&output).map_err(|_| stream_failed())?;
+        branch.add_pad(&ghost).map_err(|_| stream_failed())?;
+        if self.bin.add(&branch).is_err() {
+            return Err(stream_failed());
+        }
+        let Some(mixer_pad) = self.mixer.request_pad_simple("sink_%u") else {
+            let _ = self.bin.remove(&branch);
+            return Err(stream_failed());
+        };
+        if ghost.link(&mixer_pad).is_err() {
+            self.mixer.release_request_pad(&mixer_pad);
+            let _ = self.bin.remove(&branch);
+            return Err(stream_failed());
+        }
+        let _ = branch.sync_state_with_parent();
+        self.streams.push(ApplicationStream {
+            serial,
+            branch,
+            mixer_pad,
+        });
+        Ok(())
+    }
+
+    /// Detaches one stream's branch and returns it.
+    fn remove(&mut self, serial: u32) -> Option<gst::Bin> {
+        let index = self
+            .streams
+            .iter()
+            .position(|stream| stream.serial == serial)?;
+        let stream = self.streams.remove(index);
+        let mixer = self.mixer.clone();
+        let mixer_pad = stream.mixer_pad.clone();
+        let fallback_pad = stream.mixer_pad.clone();
+        let branch = stream.branch.clone();
+        let Some(output) = branch.static_pad("src") else {
+            return Some(stream.branch);
+        };
+        let (detached, done) = std::sync::mpsc::sync_channel(1);
+        let probe = output.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, move |pad, _| {
+            let _ = pad.unlink(&mixer_pad);
+            mixer.release_request_pad(&mixer_pad);
+            let _ = detached.try_send(());
+            gst::PadProbeReturn::Remove
+        });
+        if done.recv_timeout(BRANCH_RELEASE_TIMEOUT).is_err() {
+            if let Some(probe) = probe {
+                output.remove_probe(probe);
+            }
+            let _ = branch.set_state(gst::State::Null);
+            let _ = output.unlink(&fallback_pad);
+            self.mixer.release_request_pad(&fallback_pad);
+        }
+        let _ = branch.set_state(gst::State::Null);
+        let _ = self.bin.remove(&branch);
+        Some(branch)
+    }
+}
+
+/// Serials to add and remove to turn `current` into `found`.
+fn stream_changes(current: &[u32], found: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let mut added = Vec::new();
+    for serial in found {
+        if !current.contains(serial) && !added.contains(serial) {
+            added.push(*serial);
+        }
+    }
+    let mut removed = Vec::new();
+    for serial in current {
+        if !found.contains(serial) && !removed.contains(serial) {
+            removed.push(*serial);
+        }
+    }
+    (added, removed)
+}
+
+fn stream_failed() -> RecordingError {
+    RecordingError::new(
+        RecordingErrorKind::Failed,
+        "Building an application audio stream failed.",
+    )
+}
+
+fn audio_caps() -> gst::Caps {
+    gst::Caps::builder("audio/x-raw")
+        .field("rate", AUDIO_RATE)
+        .field("channels", 2)
+        .build()
+}
+
 struct Track {
     track: AudioTrack,
     bin: gst::Bin,
@@ -306,6 +501,8 @@ pub(crate) struct GstRecording {
     video_gate: gst::Pad,
     video_source: gst::Element,
     tracks: Vec<Track>,
+    /// The System track's application streams, when recording one.
+    application: Option<ApplicationAudio>,
     /// Failed tracks, whose late errors are ignored.
     dropped: Vec<gst::Bin>,
     /// Events found while starting, delivered by `poll`.
@@ -332,6 +529,22 @@ impl GstRecording {
         input: VideoInput,
         plan: &RecordingPlan,
         audio: &AudioSourceFactory,
+    ) -> Result<Self, RecordingError> {
+        Self::start_with_streams(
+            input,
+            plan,
+            audio,
+            Box::new(PulseStreams),
+            Box::new(pipewire_stream),
+        )
+    }
+
+    fn start_with_streams(
+        input: VideoInput,
+        plan: &RecordingPlan,
+        audio: &AudioSourceFactory,
+        discovery: Box<dyn ApplicationStreams>,
+        stream_source: Box<StreamSourceFactory>,
     ) -> Result<Self, RecordingError> {
         init().map_err(|error| RecordingError::new(RecordingErrorKind::Unavailable, error))?;
         let build_failed =
@@ -421,8 +634,39 @@ impl GstRecording {
             .ok_or_else(build_failed)?;
 
         let mut tracks = Vec::new();
+        let mut identity = match &plan.system_audio {
+            SystemAudioSource::Application { identity }
+                if plan.audio.contains(&AudioTrack::System) =>
+            {
+                Some(identity.clone())
+            }
+            _ => None,
+        };
+        let mut discovery = Some(discovery);
+        let mut stream_source = Some(stream_source);
+        let mut application = None;
         for track in &plan.audio {
+            if *track == AudioTrack::System {
+                if let Some(identity) = identity.take() {
+                    let (built, state) = application_track(
+                        &pipeline,
+                        &mux,
+                        identity,
+                        discovery.take().unwrap_or_else(|| Box::new(PulseStreams)),
+                        stream_source
+                            .take()
+                            .unwrap_or_else(|| Box::new(pipewire_stream)),
+                    )?;
+                    tracks.push(built);
+                    application = Some(state);
+                    continue;
+                }
+            }
             tracks.push(audio_track(&pipeline, &mux, *track, audio)?);
+        }
+        let mut pending = Vec::new();
+        if application.is_some() {
+            pending.push(RecordingEvent::ApplicationAudio { playing: false });
         }
         let mut recording = Self {
             pipeline,
@@ -431,8 +675,9 @@ impl GstRecording {
             video_gate,
             video_source: source,
             tracks,
+            application,
             dropped: Vec::new(),
-            pending: Vec::new(),
+            pending,
             pause: None,
             paused_total: gst::ClockTime::ZERO,
             ended: false,
@@ -458,10 +703,19 @@ impl GstRecording {
                     "The recorder did not start.",
                 ));
             };
-            let Some(index) = source.and_then(|source| self.track_of(&source)) else {
+            let Some(source) = source else {
+                return Err(error);
+            };
+            if self.drop_stream(&source) {
+                continue;
+            }
+            let Some(index) = self.track_of(&source) else {
                 return Err(error);
             };
             let track = self.tracks.remove(index);
+            if track.track == AudioTrack::System {
+                self.application = None;
+            }
             let _ = self.pipeline.remove(&track.bin);
             if let Some(mux) = track.mux_pad.parent_element() {
                 mux.release_request_pad(&track.mux_pad);
@@ -494,6 +748,9 @@ impl GstRecording {
     /// the muxer blocked behind it, so the pipeline is asked for PLAYING again.
     fn drop_track(&mut self, index: usize) -> AudioTrack {
         let track = self.tracks.remove(index);
+        if track.track == AudioTrack::System {
+            self.application = None;
+        }
         if track.produced.load(std::sync::atomic::Ordering::Acquire) {
             track.entry.send_event(gst::event::Eos::new());
             let _ = self.pipeline.set_state(gst::State::Playing);
@@ -530,6 +787,50 @@ impl GstRecording {
     fn is_video(&self, source: &gst::Object) -> bool {
         source == self.video_source.upcast_ref::<gst::Object>()
     }
+
+    /// Lists the chosen application's streams again, when due.
+    fn refresh_application(&mut self) -> Option<RecordingEvent> {
+        let (detached, playing) = self.application.as_mut()?.refresh();
+        self.dropped.extend(detached);
+        playing.map(|playing| RecordingEvent::ApplicationAudio { playing })
+    }
+
+    /// Removes the branch `source` belongs to; whether it did.
+    fn drop_stream(&mut self, source: &gst::Object) -> bool {
+        let Some(application) = self.application.as_ref() else {
+            return false;
+        };
+        let Some(serial) = application
+            .streams
+            .iter()
+            .find(|stream| {
+                source.has_as_ancestor(stream.branch.upcast_ref::<gst::Object>())
+                    || source == stream.branch.upcast_ref::<gst::Object>()
+            })
+            .map(|stream| stream.serial)
+        else {
+            return false;
+        };
+        if let Some(branch) = self
+            .application
+            .as_mut()
+            .and_then(|application| application.remove(serial))
+        {
+            self.dropped.push(branch);
+        }
+        true
+    }
+
+    /// The playing change since it was last reported.
+    fn application_event(&mut self) -> Option<RecordingEvent> {
+        let application = self.application.as_mut()?;
+        let playing = !application.streams.is_empty();
+        if playing == application.playing {
+            return None;
+        }
+        application.playing = playing;
+        Some(RecordingEvent::ApplicationAudio { playing })
+    }
 }
 
 /// Bits per second for VP8 at the plan's size and rate, within 1–12 Mbit/s.
@@ -546,6 +847,66 @@ fn audio_track(
     track: AudioTrack,
     audio: &AudioSourceFactory,
 ) -> Result<Track, RecordingError> {
+    build_audio_track(pipeline, mux, track, audio(track)?)
+}
+
+/// An application System track: a mixer fed by a silence source and one
+/// branch per captured stream.
+fn application_track(
+    pipeline: &gst::Pipeline,
+    mux: &gst::Element,
+    identity: String,
+    discovery: Box<dyn ApplicationStreams>,
+    source: Box<StreamSourceFactory>,
+) -> Result<(Track, ApplicationAudio), RecordingError> {
+    let app_bin = gst::Bin::with_name("app-audio");
+    let mixer = element("audiomixer")?;
+    let silence = element("audiotestsrc")?;
+    silence.set_property_from_str("wave", "silence");
+    silence.set_property("is-live", true);
+    let silence_caps = caps_filter(audio_caps())?;
+    app_bin
+        .add_many([&mixer, &silence, &silence_caps])
+        .map_err(|_| stream_failed())?;
+    link_all(&[&silence, &silence_caps])?;
+    let silence_pad = mixer
+        .request_pad_simple("sink_%u")
+        .ok_or_else(stream_failed)?;
+    silence_caps
+        .static_pad("src")
+        .ok_or_else(stream_failed)?
+        .link(&silence_pad)
+        .map_err(|_| stream_failed())?;
+    let mixer_src = mixer.static_pad("src").ok_or_else(stream_failed)?;
+    let ghost = gst::GhostPad::with_target(&mixer_src).map_err(|_| stream_failed())?;
+    app_bin.add_pad(&ghost).map_err(|_| stream_failed())?;
+    let checked = Instant::now()
+        .checked_sub(APPLICATION_REFRESH)
+        .unwrap_or_else(Instant::now);
+    let app_source: gst::Element = app_bin.clone().upcast();
+    let track = build_audio_track(pipeline, mux, AudioTrack::System, app_source)?;
+    Ok((
+        track,
+        ApplicationAudio {
+            identity,
+            bin: app_bin,
+            mixer,
+            streams: Vec::new(),
+            playing: false,
+            checked,
+            discovery,
+            source,
+        },
+    ))
+}
+
+/// Wraps `source` in the queue → convert → resample → caps → encoder chain.
+fn build_audio_track(
+    pipeline: &gst::Pipeline,
+    mux: &gst::Element,
+    track: AudioTrack,
+    source: gst::Element,
+) -> Result<Track, RecordingError> {
     let failed = || {
         RecordingError::new(
             RecordingErrorKind::Failed,
@@ -556,16 +917,10 @@ fn audio_track(
         "track-{}",
         track.label().to_lowercase().replace(' ', "-")
     ));
-    let source = audio(track)?;
     let queue = leaky_queue()?;
     let convert = element("audioconvert")?;
     let resample = element("audioresample")?;
-    let filter = caps_filter(
-        gst::Caps::builder("audio/x-raw")
-            .field("rate", AUDIO_RATE)
-            .field("channels", 2)
-            .build(),
-    )?;
+    let filter = caps_filter(audio_caps())?;
     let encoder = element("opusenc")?;
     encoder.set_property("bitrate", AUDIO_BITRATE);
     let chain = [&source, &queue, &convert, &resample, &filter, &encoder];
@@ -647,6 +1002,9 @@ impl ActiveRecording for GstRecording {
         if !self.pending.is_empty() {
             return Some(self.pending.remove(0));
         }
+        if let Some(event) = self.refresh_application() {
+            return Some(event);
+        }
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -656,6 +1014,14 @@ impl ActiveRecording for GstRecording {
             )?;
             match message.view() {
                 gst::MessageView::Eos(_) => {
+                    if let Some(source) = message.src() {
+                        if self.drop_stream(source) {
+                            if let Some(event) = self.application_event() {
+                                return Some(event);
+                            }
+                            continue;
+                        }
+                    }
                     self.ended = true;
                     return Some(RecordingEvent::SourceEnded);
                 }
@@ -665,6 +1031,12 @@ impl ActiveRecording for GstRecording {
                         return Some(RecordingEvent::Failed(classified));
                     };
                     if self.is_dropped(source) {
+                        continue;
+                    }
+                    if self.drop_stream(source) {
+                        if let Some(event) = self.application_event() {
+                            return Some(event);
+                        }
                         continue;
                     }
                     if let Some(index) = self.track_of(source) {
@@ -798,6 +1170,7 @@ pub(super) mod tests {
             crop: None,
             framerate: 15,
             audio,
+            system_audio: SystemAudioSource::Output,
         }
     }
 
@@ -811,6 +1184,47 @@ pub(super) mod tests {
         gst::parse::bin_from_description(description, true)
             .map(|bin| bin.upcast())
             .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test source"))
+    }
+
+    /// Application stream sources: a tone that keeps playing, or one that
+    /// fails after a few buffers.
+    fn test_stream(_serial: u32) -> Result<gst::Element, RecordingError> {
+        gst::parse::bin_from_description("audiotestsrc is-live=true", true)
+            .map(|bin| bin.upcast())
+            .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test stream"))
+    }
+
+    fn failing_stream(_serial: u32) -> Result<gst::Element, RecordingError> {
+        gst::parse::bin_from_description("audiotestsrc is-live=true ! identity error-after=5", true)
+            .map(|bin| bin.upcast())
+            .map_err(|_| RecordingError::new(RecordingErrorKind::Failed, "test stream"))
+    }
+
+    struct NoStreams;
+
+    impl ApplicationStreams for NoStreams {
+        fn streams(&mut self, _identity: &str) -> Result<Vec<u32>, ()> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Lists one scripted result per call, repeating the last.
+    struct ScriptedStreams {
+        lists: Vec<Vec<u32>>,
+        calls: usize,
+    }
+
+    impl ApplicationStreams for ScriptedStreams {
+        fn streams(&mut self, _identity: &str) -> Result<Vec<u32>, ()> {
+            let list = self
+                .lists
+                .get(self.calls)
+                .or_else(|| self.lists.last())
+                .cloned()
+                .unwrap_or_default();
+            self.calls += 1;
+            Ok(list)
+        }
     }
 
     /// Waits until `track` has fed the muxer. A failing Microphone queues its
@@ -883,20 +1297,102 @@ pub(super) mod tests {
 
     #[test]
     fn finishing_writes_a_playable_webm_with_each_track() {
-        if !ready(&["matroskademux", "fakesink"]) {
+        if !ready(&["matroskademux", "fakesink", "audiomixer"]) {
             return;
         }
         let directory = TempDir::new().expect("temp dir");
-        let plan = plan(&directory, vec![AudioTrack::System]);
+        let mut plan = plan(&directory, vec![AudioTrack::System]);
+        plan.system_audio = SystemAudioSource::Application {
+            identity: "test-application".to_owned(),
+        };
         let mut recording = Box::new(
-            GstRecording::start_with(VideoInput::Test, &plan, &test_audio)
-                .expect("recording starts"),
+            GstRecording::start_with_streams(
+                VideoInput::Test,
+                &plan,
+                &test_audio,
+                Box::new(NoStreams),
+                Box::new(test_stream),
+            )
+            .expect("recording starts"),
         );
-        assert_eq!(recording.poll(Duration::from_millis(600)), None);
+        assert_eq!(
+            recording.poll(Duration::from_millis(600)),
+            Some(RecordingEvent::ApplicationAudio { playing: false }),
+            "the track starts while the application plays nothing"
+        );
+        assert_eq!(recording.poll(Duration::from_millis(400)), None);
         recording.finish().expect("recording completes");
         let size = std::fs::metadata(&plan.output).expect("output").len();
         assert!(size > 1_000, "output has media ({size} bytes)");
         assert_eq!(stream_kinds(&plan.output), ["audio_0", "video_0"]);
+    }
+
+    #[test]
+    fn application_streams_join_and_leave_without_failing_the_track() {
+        if !ready(&["matroskademux", "fakesink", "audiomixer"]) {
+            return;
+        }
+        let directory = TempDir::new().expect("temp dir");
+        let mut plan = plan(&directory, vec![AudioTrack::System]);
+        plan.system_audio = SystemAudioSource::Application {
+            identity: "test-application".to_owned(),
+        };
+        let streams = ScriptedStreams {
+            lists: vec![Vec::new(), vec![9], Vec::new()],
+            calls: 0,
+        };
+        let mut recording = Box::new(
+            GstRecording::start_with_streams(
+                VideoInput::Test,
+                &plan,
+                &test_audio,
+                Box::new(streams),
+                Box::new(failing_stream),
+            )
+            .expect("recording starts"),
+        );
+        assert_eq!(
+            recording.poll(Duration::ZERO),
+            Some(RecordingEvent::ApplicationAudio { playing: false })
+        );
+        assert_eq!(recording.poll(Duration::ZERO), None, "no streams yet");
+        std::thread::sleep(APPLICATION_REFRESH);
+        assert_eq!(
+            recording.poll(Duration::from_secs(2)),
+            Some(RecordingEvent::ApplicationAudio { playing: true }),
+            "the stream joins the track"
+        );
+        assert_eq!(
+            recording.poll(Duration::from_secs(2)),
+            Some(RecordingEvent::ApplicationAudio { playing: false }),
+            "the failed branch leaves alone"
+        );
+        assert_eq!(
+            recording.poll(Duration::from_millis(400)),
+            None,
+            "the System track continues"
+        );
+        recording.finish().expect("recording completes");
+        assert_eq!(stream_kinds(&plan.output), ["audio_0", "video_0"]);
+    }
+
+    #[test]
+    fn stream_changes_report_new_removed_and_duplicate_serials() {
+        for (current, found, added, removed) in [
+            (vec![], vec![], vec![], vec![]),
+            (vec![], vec![1], vec![1], vec![]),
+            (vec![1], vec![], vec![], vec![1]),
+            (vec![1], vec![1], vec![], vec![]),
+            (vec![1, 2], vec![2, 3], vec![3], vec![1]),
+            (vec![], vec![4, 4], vec![4], vec![]),
+            (vec![4, 4], vec![], vec![], vec![4]),
+        ] {
+            assert_eq!(
+                stream_changes(&current, &found),
+                (added, removed),
+                "{current:?} -> {found:?}"
+            );
+        }
     }
 
     #[test]

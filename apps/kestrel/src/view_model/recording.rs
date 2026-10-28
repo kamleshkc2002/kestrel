@@ -327,6 +327,7 @@ mod tests {
                         TrackState {
                             track: AudioTrack::System,
                             error: None,
+                            application: None,
                         },
                         TrackState {
                             track: AudioTrack::Microphone,
@@ -334,6 +335,7 @@ mod tests {
                                 RecordingErrorKind::Unavailable,
                                 "Microphone stopped: unplugged",
                             )),
+                            application: None,
                         },
                     ],
                     paused: true,

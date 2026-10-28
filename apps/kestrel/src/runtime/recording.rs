@@ -183,6 +183,7 @@ impl ApplicationRuntime {
                     cursor: settings.cursor && detection.cursor_available(),
                     framerate: settings.framerate,
                     audio,
+                    system_audio: kestrel_platform::recording::SystemAudioSource::Output,
                 })
             }
             RecordingRequest::ChooseArea(Some(region)) => self.recording.choose_area(Some(region)),

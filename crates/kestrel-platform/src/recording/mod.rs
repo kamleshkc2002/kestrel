@@ -84,6 +84,8 @@ pub const VIDEO_ELEMENTS: [&str; 7] = [
 pub const AREA_ELEMENT: &str = "videocrop";
 /// Elements each audio track needs.
 pub const AUDIO_ELEMENTS: [&str; 4] = ["pulsesrc", "audioconvert", "audioresample", "opusenc"];
+/// Elements an application's System audio track needs.
+pub const APPLICATION_AUDIO_ELEMENTS: [&str; 3] = ["pipewiresrc", "audiomixer", "audiotestsrc"];
 
 /// What a recording captures; Area crops a monitor to a region chosen after consent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,6 +131,16 @@ impl AudioTrack {
             Self::Microphone => "@DEFAULT_SOURCE@",
         }
     }
+}
+
+/// What the System audio track captures.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SystemAudioSource {
+    /// Everything the default output plays.
+    #[default]
+    Output,
+    /// The playback streams of one application, by its audio identity.
+    Application { identity: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +231,8 @@ pub struct RecordingPlan {
     pub crop: Option<CropRegion>,
     pub framerate: u32,
     pub audio: Vec<AudioTrack>,
+    /// What the System track captures; only read when `audio` has it.
+    pub system_audio: SystemAudioSource,
 }
 
 /// Something that happened while recording.
@@ -229,6 +243,9 @@ pub enum RecordingEvent {
         track: AudioTrack,
         error: RecordingError,
     },
+    /// The chosen application is (`true`) or is not (`false`) playing into
+    /// the System track.
+    ApplicationAudio { playing: bool },
     /// The video source ended (for example, the shared window closed).
     SourceEnded,
     /// The recording cannot continue.
@@ -294,7 +311,7 @@ impl RecordingBackend for PortalRecordingBackend {
         cursor: bool,
         cancel: &CaptureCancel,
     ) -> Result<Box<dyn CaptureSession>, RecordingError> {
-        if let Some(missing) = gstreamer_missing(source, &[]) {
+        if let Some(missing) = gstreamer_missing(source, &[], &SystemAudioSource::Output) {
             return Err(missing);
         }
         Ok(Box::new(self.portal.open(source, cursor, cancel)?))
@@ -336,6 +353,8 @@ pub struct RecordingDetection {
     pub missing_elements: Vec<&'static str>,
     pub system_audio: AudioAvailability,
     pub microphone: AudioAvailability,
+    /// Whether the System track can capture one application, or why not.
+    pub application_audio: Result<(), String>,
 }
 
 impl RecordingDetection {
@@ -357,12 +376,16 @@ impl RecordingDetection {
             Err(error) => (Some(error), Vec::new()),
         };
         let mut pulse = PulseAudioBackend::new();
-        let system_audio = match pulse.discover() {
-            Ok(discovery) if discovery.server.default_output_name.is_some() => {
-                AudioAvailability::Available
-            }
-            Ok(_) => AudioAvailability::Absent,
-            Err(_) => AudioAvailability::NoServer,
+        let (server_name, system_audio) = match pulse.discover() {
+            Ok(discovery) => (
+                discovery.server.server_name,
+                if discovery.server.default_output_name.is_some() {
+                    AudioAvailability::Available
+                } else {
+                    AudioAvailability::Absent
+                },
+            ),
+            Err(_) => (None, AudioAvailability::NoServer),
         };
         let microphone = match pulse.discover_inputs() {
             Ok(discovery) if !discovery.inputs.is_empty() => AudioAvailability::Available,
@@ -375,9 +398,14 @@ impl RecordingDetection {
             cursor_modes: property("AvailableCursorModes").unwrap_or(0),
             pipewire_socket: pipewire_socket().is_some_and(|socket| socket.exists()),
             gstreamer_error,
-            missing_elements,
+            missing_elements: missing_elements.clone(),
             system_audio,
             microphone,
+            application_audio: application_audio_availability(
+                server_name.as_deref(),
+                system_audio,
+                &missing_elements,
+            ),
         }
     }
 
@@ -414,6 +442,16 @@ impl RecordingDetection {
 
     pub fn cursor_available(&self) -> bool {
         self.cursor_modes & CURSOR_EMBEDDED != 0
+    }
+
+    /// Whether the System track can record one application's playback.
+    pub fn application_audio_available(&self) -> bool {
+        self.application_audio.is_ok()
+    }
+
+    /// Why one application's playback cannot be recorded, when it cannot.
+    pub fn application_audio_reason(&self) -> Option<&str> {
+        self.application_audio.as_ref().err().map(String::as_str)
     }
 
     fn missing_video(&self) -> Vec<&'static str> {
@@ -459,6 +497,11 @@ impl RecordingDetection {
             ),
             CapabilityEvidence::new("system_audio", self.system_audio.label()),
             CapabilityEvidence::new("microphone", self.microphone.label()),
+            CapabilityEvidence::new(
+                "application_audio",
+                self.application_audio_reason()
+                    .map_or_else(|| "available".to_owned(), str::to_owned),
+            ),
         ];
         let missing_video = self.missing_video();
         let report = if self.portal_version.is_none() {
@@ -563,6 +606,27 @@ pub fn available_space(path: &Path) -> Option<u64> {
     Some((stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64))
 }
 
+/// Whether one application's playback can be recorded, and why not.
+fn application_audio_availability(
+    server_name: Option<&str>,
+    system_audio: AudioAvailability,
+    missing: &[&'static str],
+) -> Result<(), String> {
+    if !server_name.is_some_and(|name| name.contains("PipeWire")) {
+        return Err("Needs a PipeWire audio server.".to_owned());
+    }
+    if APPLICATION_AUDIO_ELEMENTS
+        .iter()
+        .any(|element| missing.contains(element))
+    {
+        return Err("Needs the GStreamer PipeWire plugin (gstreamer1.0-pipewire).".to_owned());
+    }
+    if system_audio != AudioAvailability::Available {
+        return Err("Needs an audio output.".to_owned());
+    }
+    Ok(())
+}
+
 /// Names the plugin set each missing element ships in.
 fn element_remediation(missing: &[&str]) -> String {
     let mut packages: Vec<&str> = missing
@@ -570,7 +634,9 @@ fn element_remediation(missing: &[&str]) -> String {
         .map(|element| match *element {
             "pipewiresrc" => "the GStreamer PipeWire plugin (gstreamer1.0-pipewire)",
             "videoconvert" | "videoscale" | "videorate" | "audioconvert" | "audioresample"
-            | "opusenc" => "GStreamer Base plugins (gstreamer1.0-plugins-base)",
+            | "opusenc" | "audiomixer" | "audiotestsrc" => {
+                "GStreamer Base plugins (gstreamer1.0-plugins-base)"
+            }
             _ => "GStreamer Good plugins (gstreamer1.0-plugins-good)",
         })
         .collect();
@@ -605,6 +671,7 @@ mod tests {
             missing_elements: Vec::new(),
             system_audio: AudioAvailability::Available,
             microphone: AudioAvailability::Available,
+            application_audio: Ok(()),
         };
         change(&mut detection);
         detection
@@ -675,6 +742,67 @@ mod tests {
                 .remediation
                 .expect("remediation")
                 .contains("plugins-base")
+        );
+
+        assert!(
+            application_audio_availability(
+                Some("PulseAudio (on PipeWire 1.2.0)"),
+                AudioAvailability::Available,
+                &[]
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            application_audio_availability(
+                Some("PulseAudio (on PipeWire 1.2.0)"),
+                AudioAvailability::Available,
+                &["audiomixer"]
+            ),
+            Err("Needs the GStreamer PipeWire plugin (gstreamer1.0-pipewire).".to_owned())
+        );
+        for server_name in [Some("PulseAudio (on PulseAudio 16.1)"), None] {
+            assert_eq!(
+                application_audio_availability(server_name, AudioAvailability::NoServer, &[]),
+                Err("Needs a PipeWire audio server.".to_owned())
+            );
+        }
+        assert_eq!(
+            application_audio_availability(
+                Some("PulseAudio (on PipeWire 1.2.0)"),
+                AudioAvailability::Absent,
+                &[]
+            ),
+            Err("Needs an audio output.".to_owned())
+        );
+
+        let application = detection(|d| d.application_audio = Ok(()));
+        assert!(application.application_audio_available());
+        assert_eq!(application.application_audio_reason(), None);
+        assert_eq!(
+            application
+                .capability()
+                .evidence
+                .iter()
+                .find(|evidence| evidence.key == "application_audio")
+                .map(|evidence| evidence.value.as_str()),
+            Some("available")
+        );
+        let no_server = detection(|d| {
+            d.application_audio = Err("Needs a PipeWire audio server.".to_owned());
+        });
+        assert!(!no_server.application_audio_available());
+        assert_eq!(
+            no_server.application_audio_reason(),
+            Some("Needs a PipeWire audio server.")
+        );
+        assert_eq!(
+            no_server
+                .capability()
+                .evidence
+                .iter()
+                .find(|evidence| evidence.key == "application_audio")
+                .map(|evidence| evidence.value.as_str()),
+            Some("Needs a PipeWire audio server.")
         );
     }
 }

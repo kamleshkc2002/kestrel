@@ -918,6 +918,7 @@ mod tests {
     ) -> Result<AudioDiscovery, AudioError> {
         Ok(AudioDiscovery {
             server: kestrel_platform::audio::AudioServer {
+                server_name: Some("PulseAudio".to_string()),
                 default_output_name: Some(
                     outputs
                         .iter()
