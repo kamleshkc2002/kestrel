@@ -50,6 +50,8 @@ const AUDIO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// Poll interval while the overlay shows a control, so external changes appear
 /// soon after they happen.
 const AUDIO_FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
+/// Poll interval for the applications offered to the System track.
+const RECORDING_APPS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 /// Which deferred reads this tick performs.
@@ -58,6 +60,7 @@ struct TickDue {
     audio: bool,
     listeners: bool,
     keyboard_light: bool,
+    recording_apps: bool,
 }
 struct TickUpdate {
     monitor: Option<MonitorViewModel>,
@@ -501,10 +504,13 @@ fn run_tick(
             guard.runtime.camera_view_model()
         });
         let generation = guard.runtime.recording_generation();
-        let recording = (generation != guard.recording_generation).then(|| {
-            guard.recording_generation = generation;
-            guard.runtime.recording_view_model()
-        });
+        let applications_changed =
+            due.recording_apps && guard.runtime.refresh_recording_applications();
+        let recording =
+            (generation != guard.recording_generation || applications_changed).then(|| {
+                guard.recording_generation = generation;
+                guard.runtime.recording_view_model()
+            });
         (
             tick.outcome == kestrel_services::system_monitor::RefreshOutcome::Updated,
             tick.alerts,
@@ -839,6 +845,8 @@ struct ApplicationController {
     audio_last_refresh: Cell<Instant>,
     /// Bounds the keyboard light poll to the feedback interval.
     keyboard_light_last_refresh: Cell<Instant>,
+    /// Bounds the System audio application poll to its interval.
+    recording_apps_last_refresh: Cell<Instant>,
     /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
@@ -948,6 +956,7 @@ impl ApplicationController {
             monitor_started_at: Instant::now(),
             audio_last_refresh: Cell::new(Instant::now()),
             keyboard_light_last_refresh: Cell::new(Instant::now()),
+            recording_apps_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
             capture_notifier,
@@ -1450,6 +1459,14 @@ impl ApplicationController {
             }
             due
         };
+        let recording_apps_due = self.recording_running.get() && {
+            let due = now.duration_since(self.recording_apps_last_refresh.get())
+                >= RECORDING_APPS_REFRESH_INTERVAL;
+            if due {
+                self.recording_apps_last_refresh.set(now);
+            }
+            due
+        };
         if !self.monitor_running.get()
             && !self.clipboard_running.get()
             && !self.speed_test_running.get()
@@ -1462,6 +1479,7 @@ impl ApplicationController {
             && !self.recording_running.get()
             && !audio_due
             && !keyboard_light_due
+            && !recording_apps_due
         {
             self.monitoring.set(false);
             return;
@@ -1476,6 +1494,7 @@ impl ApplicationController {
             audio: audio_due,
             listeners: listeners_due,
             keyboard_light: keyboard_light_due,
+            recording_apps: recording_apps_due,
         };
         let worker = thread::Builder::new()
             .name("kestrel-tick".to_owned())
@@ -2649,6 +2668,15 @@ impl ControllerState {
                             track.label(),
                             if enabled { "added to" } else { "left out of" }
                         )
+                    }
+                    kestrel::RecordingSetting::SystemAudioApplication(application) => {
+                        let message = if application.is_some() {
+                            "System audio records one application"
+                        } else {
+                            "System audio records all apps"
+                        };
+                        candidate.recording.system_audio_app = application;
+                        message.to_owned()
                     }
                 };
                 self.commit_configuration(candidate, config_path, message)?

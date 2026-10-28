@@ -111,7 +111,8 @@ pub use processes::{
 pub(crate) use processes::{ListenersPresentation, ProcessesPresentation};
 pub(crate) use recording::RecordingPresentation;
 pub use recording::{
-    RecordingControls, RecordingExportViewModel, RecordingTakeViewModel,
+    RecordingApplicationViewModel, RecordingControls, RecordingExportViewModel,
+    RecordingSoundOptionViewModel, RecordingSoundViewModel, RecordingTakeViewModel,
     RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel, format_clock,
 };
 pub(crate) use scratchpad::ScratchpadPresentation;

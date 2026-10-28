@@ -88,6 +88,8 @@ const IDLE_SLEEP: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioServer {
+    /// Name the server reports, which identifies its implementation.
+    pub server_name: Option<String>,
     pub default_output_name: Option<String>,
 }
 
@@ -638,6 +640,7 @@ impl PulseSession {
         let callback_result = Rc::clone(&result);
         let operation = self.context.introspect().get_server_info(move |info| {
             *callback_result.borrow_mut() = Some(AudioServer {
+                server_name: info.server_name.as_deref().map(str::to_owned),
                 default_output_name: info.default_sink_name.as_deref().map(str::to_owned),
             });
         });
@@ -998,6 +1001,20 @@ fn accepted(success: Option<bool>, message: impl FnOnce() -> String) -> Result<(
     }
 }
 
+/// Indices of playback streams playing with `identity`.
+pub(crate) fn application_streams(identity: &str) -> Result<Vec<u32>, AudioError> {
+    if identity.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut session = PulseSession::connect()?;
+    Ok(session
+        .streams()?
+        .into_iter()
+        .filter(|stream| stream.application_id.as_deref() == Some(identity))
+        .map(|stream| stream.id)
+        .collect())
+}
+
 /// `application.id`, else the process binary, else the application name; the
 /// first value valid as a pinned-application key.
 fn application_identity(proplist: &pulse::proplist::Proplist) -> Option<String> {
@@ -1226,6 +1243,7 @@ mod tests {
     fn reachable_server_without_streams_is_limited_not_unavailable() {
         let report = capability_for_discovery(&Ok(AudioDiscovery {
             server: AudioServer {
+                server_name: Some("PulseAudio".to_string()),
                 default_output_name: Some("output-1".to_string()),
             },
             outputs: vec![output(1)],

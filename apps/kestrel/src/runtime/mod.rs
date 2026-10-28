@@ -16,10 +16,11 @@ use crate::{
         CapturePresentation, CaptureViewModel, ClipboardPresentation, ClipboardQuery,
         ClipboardViewModel, CommandBarPresentation, CommandBarQuery, ListenersViewModel,
         MicrophonePresentation, MicrophoneViewModel, MonitorPresentation, MonitorViewModel,
-        ProcessesViewModel, QuickToggleViewModel, RecordingPresentation, RecordingViewModel,
-        ScratchpadPresentation, ScratchpadViewModel, ScreenToolGate, ScreenToolsPresentation,
-        ScreenToolsViewModel, ShortcutsPresentation, ShortcutsViewModel, SnippetQuery,
-        SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel, WhatsNewViewModel,
+        ProcessesViewModel, QuickToggleViewModel, RecordingApplicationViewModel,
+        RecordingPresentation, RecordingViewModel, ScratchpadPresentation, ScratchpadViewModel,
+        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
+        ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
+        SpeedTestViewModel, WhatsNewViewModel,
     },
     whats_new::{self, Change},
 };
@@ -242,6 +243,8 @@ pub struct ApplicationRuntime {
     /// Detection shared with capability probes.
     recording_detection: Arc<Mutex<Option<RecordingDetection>>>,
     recording_settings: kestrel_core::RecordingConfiguration,
+    /// Applications with playback, offered for one-application System audio.
+    recording_applications: Vec<RecordingApplicationViewModel>,
     /// Take editor for trim previews.
     recording_editor: Arc<dyn TakeEditor>,
     screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
@@ -570,7 +573,8 @@ impl ApplicationRuntime {
             ),
             capture_detection,
             recording_detection,
-            recording_settings: configuration.recording,
+            recording_settings: configuration.recording.clone(),
+            recording_applications: Vec::new(),
             recording_editor: Arc::new(GstTakeEditor),
             recording: RecordingService::new(
                 Arc::new(PortalRecordingBackend::new()),
@@ -683,6 +687,7 @@ impl ApplicationRuntime {
         if self.microphone_is_running() {
             let _ = self.microphone.refresh();
         }
+        self.refresh_recording_applications();
         self.refresh_quick_toggles();
         Ok(())
     }
@@ -693,7 +698,7 @@ impl ApplicationRuntime {
     ) -> Result<(), RegistryError> {
         let before = self.feature_states();
         self.screen_tool_settings = configuration.screen_tools.clone();
-        self.recording_settings = configuration.recording;
+        self.recording_settings = configuration.recording.clone();
         self.screen_tools
             .set_recognizer(ocr_recognizer(&configuration.screen_tools));
         self.clipboard_ocr = ocr_recognizer(&configuration.screen_tools);

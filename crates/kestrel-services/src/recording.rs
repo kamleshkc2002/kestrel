@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 use kestrel_platform::capture::CaptureCancel;
 use kestrel_platform::recording::{
     AudioTrack, CaptureSession, CropRegion, RecordingBackend, RecordingError, RecordingErrorKind,
-    RecordingEvent, RecordingPlan, RecordingSource, TakeEditor, available_space,
+    RecordingEvent, RecordingPlan, RecordingSource, SystemAudioSource, TakeEditor, available_space,
 };
 use kestrel_platform::snippets::SystemClock;
 
@@ -45,6 +45,7 @@ pub struct RecordingOptions {
     pub cursor: bool,
     pub framerate: u32,
     pub audio: Vec<AudioTrack>,
+    pub system_audio: SystemAudioSource,
 }
 
 /// Elapsed time excluding pauses.
@@ -82,11 +83,20 @@ impl RecordingClock {
     }
 }
 
+/// One application's playback feeding the System track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationTrackState {
+    pub identity: String,
+    pub playing: bool,
+}
+
 /// Audio track state and failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackState {
     pub track: AudioTrack,
     pub error: Option<RecordingError>,
+    /// Set for the System track while it records one application.
+    pub application: Option<ApplicationTrackState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -608,6 +618,7 @@ impl Session<'_> {
             crop,
             framerate: options.framerate,
             audio: options.audio.clone(),
+            system_audio: options.system_audio.clone(),
         };
         drop(frame);
         let mut recording = match source.record(&plan) {
@@ -624,6 +635,15 @@ impl Session<'_> {
             .map(|track| TrackState {
                 track: *track,
                 error: None,
+                application: match (&options.system_audio, track) {
+                    (SystemAudioSource::Application { identity }, AudioTrack::System) => {
+                        Some(ApplicationTrackState {
+                            identity: identity.clone(),
+                            playing: false,
+                        })
+                    }
+                    _ => None,
+                },
             })
             .collect();
         let mut paused = false;
@@ -643,6 +663,17 @@ impl Session<'_> {
                     RecordingEvent::TrackFailed { track, error } => {
                         if let Some(state) = tracks.iter_mut().find(|state| state.track == track) {
                             state.error = Some(error);
+                        }
+                        publish(&tracks, paused, clock);
+                    }
+                    RecordingEvent::ApplicationAudio { playing } => {
+                        if let Some(state) = tracks
+                            .iter_mut()
+                            .find(|state| state.track == AudioTrack::System)
+                        {
+                            if let Some(application) = &mut state.application {
+                                application.playing = playing;
+                            }
                         }
                         publish(&tracks, paused, clock);
                     }
@@ -1294,6 +1325,7 @@ mod tests {
             cursor: true,
             framerate: 30,
             audio,
+            system_audio: SystemAudioSource::Output,
         }
     }
 
@@ -1463,19 +1495,24 @@ mod tests {
     fn a_failed_track_is_reported_while_recording_continues() {
         let folder = TempDir::new().expect("temp dir");
         let backend = FakeBackend::new(Script {
-            events: vec![RecordingEvent::TrackFailed {
-                track: AudioTrack::Microphone,
-                error: RecordingError::new(RecordingErrorKind::Unavailable, "unplugged"),
-            }],
+            events: vec![
+                RecordingEvent::ApplicationAudio { playing: true },
+                RecordingEvent::TrackFailed {
+                    track: AudioTrack::Microphone,
+                    error: RecordingError::new(RecordingErrorKind::Unavailable, "unplugged"),
+                },
+            ],
             ..Script::default()
         });
         let mut service = new_service(backend, folder.path());
-        service
-            .start(options(
-                RecordingSource::Screen,
-                vec![AudioTrack::System, AudioTrack::Microphone],
-            ))
-            .expect("starts");
+        let mut request = options(
+            RecordingSource::Screen,
+            vec![AudioTrack::System, AudioTrack::Microphone],
+        );
+        request.system_audio = SystemAudioSource::Application {
+            identity: "org.example.Player".to_owned(),
+        };
+        service.start(request).expect("starts");
         let phase = wait_for(
             &service,
             |phase| matches!(phase, RecordingPhase::Recording { tracks, .. } if tracks.iter().any(|t| t.error.is_some())),
@@ -1484,6 +1521,13 @@ mod tests {
             unreachable!();
         };
         assert_eq!(tracks[0].error, None, "system audio continues");
+        assert_eq!(
+            tracks[0].application,
+            Some(ApplicationTrackState {
+                identity: "org.example.Player".to_owned(),
+                playing: true,
+            })
+        );
         assert_eq!(tracks[1].track, AudioTrack::Microphone);
         service.stop().expect("stop");
         wait_for(&service, |phase| {

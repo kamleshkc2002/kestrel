@@ -225,11 +225,13 @@ pub type TrimPreview =
     std::sync::Arc<dyn Fn(std::time::Duration) -> Result<RgbaImage, String> + Send + Sync>;
 
 /// Recording default changed in the panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordingSetting {
     Framerate(u32),
     Cursor(bool),
     Track(AudioTrack, bool),
+    /// Records one application's playback; the whole output for `None`.
+    SystemAudioApplication(Option<String>),
 }
 /// Bounded clipboard retention value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

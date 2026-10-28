@@ -1,6 +1,7 @@
 //! Camera and recording runtime features.
 
 use super::*;
+use kestrel_platform::audio::AudioBackend;
 
 impl ApplicationRuntime {
     pub fn camera_is_running(&self) -> bool {
@@ -117,9 +118,72 @@ impl ApplicationRuntime {
             cursor_available: detection
                 .as_ref()
                 .is_some_and(RecordingDetection::cursor_available),
-            settings: self.recording_settings,
+            settings: self.recording_settings.clone(),
+            applications: self.recording_applications.clone(),
+            application_audio: detection.as_ref().map_or_else(
+                || Err("Recording support has not been checked yet.".to_owned()),
+                |detection| detection.application_audio.clone(),
+            ),
             folder: self.recording.folder().to_path_buf(),
         })
+    }
+
+    /// Refreshes the applications offered for the System track; `true` when
+    /// the list changed and the panel should be rebuilt.
+    pub fn refresh_recording_applications(&mut self) -> bool {
+        if !self.recording_is_running()
+            || matches!(
+                self.recording.snapshot().phase,
+                RecordingPhase::Recording { .. } | RecordingPhase::Stopping
+            )
+        {
+            return false;
+        }
+        // The mixer hides idle streams unless asked to keep them; a paused
+        // application must still be pickable, so then read the server directly.
+        let applications = if self.audio_mixer_is_running()
+            && self.audio_mixer.policy().include_inactive_streams
+        {
+            Self::applications_from_streams(self.audio_mixer.latest().streams.iter())
+        } else {
+            match PulseAudioBackend::new().discover() {
+                Ok(discovery) => Self::applications_from_streams(discovery.streams.iter()),
+                Err(_) => Vec::new(),
+            }
+        };
+        if applications == self.recording_applications {
+            return false;
+        }
+        self.recording_applications = applications;
+        true
+    }
+
+    /// The applications with playback streams, including paused ones,
+    /// deduplicated by identity and sorted by label.
+    fn applications_from_streams<'a>(
+        streams: impl Iterator<Item = &'a kestrel_platform::audio::PlaybackStream>,
+    ) -> Vec<RecordingApplicationViewModel> {
+        let mut applications: Vec<RecordingApplicationViewModel> = Vec::new();
+        for stream in streams {
+            let Some(identity) = stream.application_id.clone() else {
+                continue;
+            };
+            if applications
+                .iter()
+                .any(|application| application.identity == identity)
+            {
+                continue;
+            }
+            applications.push(RecordingApplicationViewModel {
+                label: stream
+                    .application_name
+                    .clone()
+                    .unwrap_or_else(|| identity.clone()),
+                identity,
+            });
+        }
+        applications.sort_by(|left, right| left.label.cmp(&right.label));
+        applications
     }
 
     /// The frame to choose an area from, while one is being chosen.
@@ -169,7 +233,7 @@ impl ApplicationRuntime {
                         source.label().to_lowercase()
                     ));
                 }
-                let settings = self.recording_settings;
+                let settings = self.recording_settings.clone();
                 let audio = AudioTrack::ALL
                     .into_iter()
                     .filter(|track| match track {
@@ -178,11 +242,20 @@ impl ApplicationRuntime {
                     })
                     .filter(|track| detection.track_available(*track))
                     .collect();
+                let system_audio = match &settings.system_audio_app {
+                    Some(identity) if detection.application_audio_available() => {
+                        kestrel_platform::recording::SystemAudioSource::Application {
+                            identity: identity.clone(),
+                        }
+                    }
+                    _ => kestrel_platform::recording::SystemAudioSource::Output,
+                };
                 self.recording.start(RecordingOptions {
                     source,
                     cursor: settings.cursor && detection.cursor_available(),
                     framerate: settings.framerate,
                     audio,
+                    system_audio,
                 })
             }
             RecordingRequest::ChooseArea(Some(region)) => self.recording.choose_area(Some(region)),
@@ -260,5 +333,43 @@ mod tests {
             kestrel_services::camera::CameraPhase::Idle
         );
         assert!(runtime.camera_view_model().cameras.is_empty());
+    }
+
+    #[test]
+    fn offered_applications_include_paused_streams_and_deduplicate() {
+        use kestrel_platform::audio::PlaybackStream;
+        let stream = |id: u32, identity: &str, name: Option<&str>, corked: bool| PlaybackStream {
+            id,
+            name: "stream".to_owned(),
+            application_name: name.map(str::to_owned),
+            application_id: Some(identity.to_owned()),
+            media_name: None,
+            output_id: 1,
+            volume_percent: None,
+            volume_writable: false,
+            muted: false,
+            corked,
+        };
+        let streams = [
+            stream(1, "zeta", Some("Aurora"), false),
+            stream(2, "alpha", None, false),
+            stream(3, "zeta", Some("Aurora elsewhere"), false),
+            stream(4, "idle", Some("Idle"), true),
+            stream(5, "nameless", None, false),
+        ];
+        let applications = ApplicationRuntime::applications_from_streams(streams.iter());
+        let offered: Vec<(&str, &str)> = applications
+            .iter()
+            .map(|application| (application.identity.as_str(), application.label.as_str()))
+            .collect();
+        assert_eq!(
+            offered,
+            [
+                ("zeta", "Aurora"),
+                ("idle", "Idle"),
+                ("alpha", "alpha"),
+                ("nameless", "nameless")
+            ]
+        );
     }
 }
