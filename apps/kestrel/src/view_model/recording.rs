@@ -451,7 +451,7 @@ mod tests {
             assert!(setup.tracks_offered[0].available);
             assert_eq!(setup.takes[0].detail, "3.0 MiB · 1:15");
             // The choice exists but stays off with System audio.
-            assert_eq!(setup.sound.options[0].label, "All apps");
+            assert_eq!(setup.sound.options[0].identity, None, "the whole output");
             assert_eq!(setup.sound.options.len(), 1);
             assert_eq!(setup.sound.selected, 0);
             assert!(!setup.sound.sensitive);
