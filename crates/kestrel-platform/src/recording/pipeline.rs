@@ -315,6 +315,14 @@ fn pipewire_stream(serial: u32) -> Result<gst::Element, RecordingError> {
     let source = element("pipewiresrc")?;
     source.set_property("target-object", serial.to_string());
     source.set_property("do-timestamp", true);
+    // A vanished stream must fail, never be replaced by the default source.
+    source.set_property(
+        "stream-properties",
+        gst::Structure::builder("props")
+            .field("node.dont-fallback", true)
+            .field("node.dont-reconnect", true)
+            .build(),
+    );
     Ok(source)
 }
 
