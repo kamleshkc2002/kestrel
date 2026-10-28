@@ -1421,7 +1421,7 @@ impl ProcessConfiguration {
 }
 
 /// Defaults for the next screen recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingConfiguration {
     #[serde(default = "default_recording_framerate")]
     pub framerate: u32,
@@ -1430,6 +1430,10 @@ pub struct RecordingConfiguration {
     pub cursor: bool,
     #[serde(default)]
     pub system_audio: bool,
+    /// Application whose playback the System track records; the whole output
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_audio_app: Option<String>,
     #[serde(default)]
     pub microphone: bool,
 }
@@ -1444,6 +1448,7 @@ impl Default for RecordingConfiguration {
             framerate: DEFAULT_RECORDING_FRAMERATE,
             cursor: true,
             system_audio: false,
+            system_audio_app: None,
             microphone: false,
         }
     }
@@ -1455,6 +1460,13 @@ impl RecordingConfiguration {
             return Err(ConfigurationError::InvalidRecordingFramerate {
                 framerate: self.framerate,
             });
+        }
+        if let Some(identity) = &self.system_audio_app {
+            if !valid_audio_identity_list(std::slice::from_ref(identity), 1) {
+                return Err(ConfigurationError::InvalidAudioList {
+                    field: "recording.system_audio_app",
+                });
+            }
         }
         Ok(())
     }

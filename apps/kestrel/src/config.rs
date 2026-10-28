@@ -1107,6 +1107,20 @@ fn parse_recording(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>
             }
         }
     }
+    if let Some(value) = table.get("system_audio_app") {
+        match value.as_str() {
+            Some("") => {}
+            Some(identity)
+                if kestrel_core::valid_audio_identity_list(&[identity.to_owned()], 1) =>
+            {
+                loaded.configuration.recording.system_audio_app = Some(identity.to_owned());
+            }
+            _ => loaded.warnings.push(warning(
+                "recording.system_audio_app",
+                "Must be an application identity; the whole output was retained.",
+            )),
+        }
+    }
 }
 
 fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -2317,10 +2331,11 @@ framerate = 240
 cursor = false
 microphone = "yes"
 system_audio = true
+system_audio_app = "firefox"
 "#,
         )
         .expect("document itself is valid TOML");
-        let recording = loaded.configuration.recording;
+        let recording = loaded.configuration.recording.clone();
         assert_eq!(
             recording.framerate,
             kestrel_core::DEFAULT_RECORDING_FRAMERATE
@@ -2328,6 +2343,7 @@ system_audio = true
         assert!(!recording.cursor);
         assert!(recording.system_audio);
         assert!(!recording.microphone);
+        assert_eq!(recording.system_audio_app.as_deref(), Some("firefox"));
         let mut rejected: Vec<&str> = loaded
             .warnings
             .iter()
@@ -2342,6 +2358,23 @@ system_audio = true
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.recording, configuration.recording);
         assert!(reloaded.warnings.is_empty());
+
+        // An empty string means the whole output; an invalid identity keeps it.
+        let whole = parse("schema_version = 3\n[recording]\nsystem_audio_app = \"\"\n")
+            .expect("document itself is valid TOML");
+        assert_eq!(whole.configuration.recording.system_audio_app, None);
+        assert!(whole.warnings.is_empty());
+        let invalid = parse("schema_version = 3\n[recording]\nsystem_audio_app = \"bad\\u0001\"\n")
+            .expect("document itself is valid TOML");
+        assert_eq!(invalid.configuration.recording.system_audio_app, None);
+        assert_eq!(
+            invalid
+                .warnings
+                .iter()
+                .map(|warning| warning.feature_id.as_str())
+                .collect::<Vec<_>>(),
+            ["recording.system_audio_app"]
+        );
     }
 
     #[test]

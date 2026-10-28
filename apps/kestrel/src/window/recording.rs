@@ -121,6 +121,9 @@ fn add_setup(
             set(&sender, RecordingSetting::Track(track, row.is_active()));
         });
         group.add(&row);
+        if option.track == AudioTrack::System {
+            add_sound_row(group, recording, commands);
+        }
     }
 
     let pointer = adw::SwitchRow::builder()
@@ -160,6 +163,56 @@ fn add_setup(
         }
     });
     group.add(&framerate);
+}
+
+fn add_sound_row(
+    group: &adw::PreferencesGroup,
+    recording: &RecordingViewModel,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let labels: Vec<&str> = recording
+        .sound
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    let combo = adw::ComboRow::builder()
+        .title("Sound from")
+        .model(&gtk::StringList::new(&labels))
+        .selected(recording.sound.selected)
+        .sensitive(recording.sound.sensitive)
+        .build();
+    if let Some(reason) = &recording.sound.reason {
+        combo.set_subtitle(reason);
+    }
+    let identities: Vec<Option<String>> = recording
+        .sound
+        .options
+        .iter()
+        .map(|option| option.identity.clone())
+        .collect();
+    // The selection is set above, before this handler exists, so rebuilding
+    // the panel never sends the setting back.
+    let ready = std::rc::Rc::new(std::cell::Cell::new(false));
+    let ready_for_selection = std::rc::Rc::clone(&ready);
+    let sender = commands.clone();
+    combo.connect_selected_notify(move |combo| {
+        if !ready_for_selection.get() {
+            return;
+        }
+        let Some(identity) = usize::try_from(combo.selected())
+            .ok()
+            .and_then(|position| identities.get(position))
+        else {
+            return;
+        };
+        set(
+            &sender,
+            RecordingSetting::SystemAudioApplication(identity.clone()),
+        );
+    });
+    ready.set(true);
+    group.add(&combo);
 }
 
 fn add_controls(
