@@ -494,6 +494,8 @@ pub enum ApplicationCommand {
         preset: Option<FeaturePreset>,
         left_off: Vec<String>,
     },
+    /// Records setup as done without changing any feature.
+    SkipSetup,
     UndoPreset,
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),

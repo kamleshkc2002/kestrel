@@ -9,7 +9,6 @@ use gtk::{Align, Orientation};
 use kestrel::{
     ApplicationCommand, ApplicationViewModel, FeaturePreset, SetupPresetViewModel,
     SetupSensitiveViewModel, SetupViewModel,
-    setup::{record_done, state_path},
 };
 
 /// Opens setup at the welcome step.
@@ -28,7 +27,7 @@ pub(crate) fn open_setup(
     dialog.set_child(Some(&navigation));
 
     let preset_page = preset_step(&dialog, &navigation, commands, choices.presets);
-    let welcome = welcome_step(&dialog, &navigation, preset_page);
+    let welcome = welcome_step(&dialog, &navigation, commands, preset_page);
     navigation.push(&welcome);
     dialog.present(Some(window));
 }
@@ -36,6 +35,7 @@ pub(crate) fn open_setup(
 fn welcome_step(
     dialog: &adw::Dialog,
     navigation: &adw::NavigationView,
+    commands: &Sender<ApplicationCommand>,
     preset_page: adw::NavigationPage,
 ) -> adw::NavigationPage {
     let page = adw::PreferencesPage::new();
@@ -52,8 +52,9 @@ fn welcome_step(
 
     let skip = gtk::Button::with_label("Skip setup");
     let dialog_for_skip = dialog.clone();
+    let commands_for_skip = commands.clone();
     skip.connect_clicked(move |_| {
-        record_done(state_path().as_deref());
+        let _ = commands_for_skip.try_send(ApplicationCommand::SkipSetup);
         dialog_for_skip.close();
     });
 

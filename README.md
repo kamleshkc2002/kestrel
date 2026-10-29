@@ -362,8 +362,8 @@ To propose a change, start with [`CONTRIBUTING.md`](CONTRIBUTING.md).
 ### Prerequisites
 
 The workspace is pinned to Rust 1.98.0 by `rust-toolchain.toml`; rustup selects
-Rust, rustfmt, and Clippy. The application requires GTK4, libadwaita, PulseAudio,
-D-Bus, PipeWire, and GStreamer development packages.
+Rust, rustfmt, and Clippy. The application requires GTK4, libadwaita 1.5 or
+newer, PulseAudio, D-Bus, PipeWire, and GStreamer development packages.
 
 On Debian/Ubuntu-derived distributions:
 

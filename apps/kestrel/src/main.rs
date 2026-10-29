@@ -714,6 +714,7 @@ enum ControllerOperation {
         preset: Option<FeaturePreset>,
         left_off: Vec<String>,
     },
+    SkipSetup,
     UndoPreset,
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),
@@ -2108,6 +2109,10 @@ impl ControllerState {
                         String::new()
                     }
                 }
+            }
+            ControllerOperation::SkipSetup => {
+                setup::record_done(setup::state_path().as_deref());
+                String::new()
             }
             ControllerOperation::UndoPreset => {
                 let Some(snapshot) = self.preset_snapshot.take() else {
@@ -3508,6 +3513,8 @@ fn dispatch_commands(
                         ControllerOperation::FinishSetup { preset, left_off },
                         "kestrel-setup-finish",
                     ),
+                ApplicationCommand::SkipSetup => controller
+                    .request_operation(ControllerOperation::SkipSetup, "kestrel-setup-skip"),
                 ApplicationCommand::UndoPreset => controller
                     .request_operation(ControllerOperation::UndoPreset, "kestrel-preset-undo"),
                 ApplicationCommand::SetAppearance(appearance) => controller.request_operation(
