@@ -181,7 +181,7 @@ mod tests {
             (FeaturePreset::Essentials, MICROPHONE_FEATURE_ID, true),
         ] {
             assert_eq!(
-                ApplicationRuntime::preset_enabled(preset, feature_id),
+                preset.enables(feature_id),
                 expected,
                 "{preset:?} and {feature_id}"
             );

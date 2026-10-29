@@ -145,7 +145,7 @@ mod tests {
             kestrel_platform::global_shortcuts::ShortcutPhase::Idle
         );
         assert!(
-            !ApplicationRuntime::preset_enabled(FeaturePreset::Balanced, GLOBAL_SHORTCUTS_ID),
+            !FeaturePreset::Balanced.enables(GLOBAL_SHORTCUTS_ID),
             "registration stays an explicit opt-in"
         );
     }

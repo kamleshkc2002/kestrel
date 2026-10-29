@@ -67,3 +67,7 @@ text = "The tray icon can be turned off in the Feature Hub, and presets leave it
 [[change]]
 feature = "capture.recording"
 text = "System audio can record a single application, so notifications and other apps stay out of the recording."
+
+[[change]]
+feature = "kestrel"
+text = "First launch offers a short setup that picks a preset and explains what each feature uses."

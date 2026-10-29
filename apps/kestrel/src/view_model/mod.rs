@@ -54,6 +54,7 @@ mod processes;
 mod recording;
 mod scratchpad;
 mod screen_tools;
+mod setup;
 mod shortcuts;
 mod snippets;
 mod speed_test;
@@ -122,6 +123,7 @@ pub use screen_tools::{
     QrRowViewModel, ScreenToolButtonViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
 };
 pub(crate) use screen_tools::{ScreenToolGate, ScreenToolsPresentation};
+pub use setup::{SetupPresetViewModel, SetupSensitiveViewModel, SetupViewModel};
 pub(crate) use shortcuts::ShortcutsPresentation;
 pub use shortcuts::{
     ShortcutChoiceViewModel, ShortcutRowViewModel, ShortcutsViewModel, shortcut_label,

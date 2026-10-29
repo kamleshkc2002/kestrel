@@ -32,6 +32,8 @@ const RETIRED_BATTERY_ALERTS_ID: &str = "power.battery-alerts";
 pub struct LoadedConfiguration {
     pub configuration: ApplicationConfiguration,
     pub warnings: Vec<ConfigurationWarning>,
+    /// A configuration file existed on disk when this was loaded.
+    pub existed: bool,
 }
 
 /// A malformed setting disabling only its preference.
@@ -140,7 +142,11 @@ fn videos_directory(contents: &str, home: &Path) -> Option<PathBuf> {
 /// Loads and migrates configuration, retaining valid settings.
 pub fn load(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> {
     match fs::read_to_string(path) {
-        Ok(contents) => import_string(&contents),
+        Ok(contents) => {
+            let mut loaded = import_string(&contents)?;
+            loaded.existed = true;
+            Ok(loaded)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(LoadedConfiguration::default())
         }
@@ -2841,6 +2847,22 @@ enable_files = true
 
         let loaded = load(&path).expect("missing configuration is not an error");
         assert_eq!(loaded.configuration, ApplicationConfiguration::default());
+        assert!(
+            !loaded.existed,
+            "a missing file reports that no configuration existed"
+        );
+
+        let directory =
+            std::env::temp_dir().join(format!("kestrel-existing-config-{}", std::process::id()));
+        let existing = directory.join("config.toml");
+        std::fs::create_dir_all(&directory).expect("temporary directory is creatable");
+        std::fs::write(&existing, "").expect("empty configuration is writable");
+        let loaded = load(&existing).expect("an empty configuration loads");
+        std::fs::remove_dir_all(&directory).expect("temporary directory is removable");
+        assert!(
+            loaded.existed,
+            "an existing file reports that a configuration existed"
+        );
     }
     #[test]
     fn explicit_import_reports_missing_file() {

@@ -132,6 +132,25 @@ impl FeaturePreset {
             Self::Everything => "Everything",
         }
     }
+
+    /// Whether the preset turns `feature_id` on. Presets choose features to
+    /// use; the tray stays as the user left it.
+    pub fn enables(self, feature_id: &str) -> bool {
+        match self {
+            Self::Essentials => matches!(
+                feature_id,
+                SYSTEM_MONITOR_ID
+                    | AUDIO_MIXER_ID
+                    | MICROPHONE_FEATURE_ID
+                    | kestrel_platform::quick_toggles::KEEP_AWAKE_ID
+                    | kestrel_platform::quick_toggles::SCREEN_LOCK_ID
+            ),
+            Self::Balanced => {
+                feature_id != CLIPBOARD_HISTORY_ID && feature_id != GLOBAL_SHORTCUTS_ID
+            }
+            Self::Everything => true,
+        }
+    }
 }
 
 const COMMAND_SURFACE_ID: &str = "app.command-surface";
@@ -799,22 +818,29 @@ impl ApplicationRuntime {
         configuration: &mut ApplicationConfiguration,
         preset: FeaturePreset,
     ) -> Result<FeatureConfigurationSnapshot, RegistryError> {
+        self.apply_setup(configuration, Some(preset), &[])
+    }
+
+    /// Applies a setup choice as one reversible change: the preset's features
+    /// minus those left off. No preset changes nothing.
+    pub fn apply_setup(
+        &mut self,
+        configuration: &mut ApplicationConfiguration,
+        preset: Option<FeaturePreset>,
+        left_off: &[String],
+    ) -> Result<FeatureConfigurationSnapshot, RegistryError> {
         let snapshot = configuration.snapshot_features();
-        let configurable = self
-            .registry
-            .registrations()
-            // Presets choose features to use; the tray stays as the user left it.
-            .filter(|registration| {
-                registration.feature.configurable && registration.feature.id != STATUS_NOTIFIER_ID
-            })
-            .map(|registration| registration.feature.id)
-            .collect::<Vec<_>>();
-        for feature_id in configurable {
+        let Some(preset) = preset else {
+            return Ok(snapshot);
+        };
+        for (feature_id, enabled) in
+            crate::setup::setup_features(Some(preset), left_off, &self.preset_features())
+        {
             configuration
                 .features
-                .entry(feature_id.to_owned())
+                .entry(feature_id)
                 .or_default()
-                .enabled = Self::preset_enabled(preset, feature_id);
+                .enabled = enabled;
         }
         if let Err(error) = self.apply_configuration(configuration) {
             configuration.restore_features(&snapshot);
@@ -822,6 +848,17 @@ impl ApplicationRuntime {
             return Err(error);
         }
         Ok(snapshot)
+    }
+
+    /// The features presets choose between; the tray stays as the user left it.
+    fn preset_features(&self) -> Vec<&'static str> {
+        self.registry
+            .registrations()
+            .filter(|registration| {
+                registration.feature.configurable && registration.feature.id != STATUS_NOTIFIER_ID
+            })
+            .map(|registration| registration.feature.id)
+            .collect()
     }
 
     /// Restores a consumed preset snapshot and reapplies its enablement.
@@ -1076,23 +1113,6 @@ impl ApplicationRuntime {
             || ALL_QUICK_TOGGLES
                 .into_iter()
                 .any(|id| id.feature_id() == feature_id)
-    }
-
-    fn preset_enabled(preset: FeaturePreset, feature_id: &str) -> bool {
-        match preset {
-            FeaturePreset::Essentials => matches!(
-                feature_id,
-                SYSTEM_MONITOR_ID
-                    | AUDIO_MIXER_ID
-                    | MICROPHONE_FEATURE_ID
-                    | kestrel_platform::quick_toggles::KEEP_AWAKE_ID
-                    | kestrel_platform::quick_toggles::SCREEN_LOCK_ID
-            ),
-            FeaturePreset::Balanced => {
-                feature_id != CLIPBOARD_HISTORY_ID && feature_id != GLOBAL_SHORTCUTS_ID
-            }
-            FeaturePreset::Everything => true,
-        }
     }
 }
 

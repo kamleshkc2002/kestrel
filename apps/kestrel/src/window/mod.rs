@@ -14,6 +14,7 @@ mod recording;
 mod scratchpad;
 mod screen_tools;
 mod settings;
+mod setup;
 mod snippets;
 mod trim;
 mod whats_new;
@@ -54,6 +55,7 @@ use widgets::{FilterRows, configure_wrapping_label};
 
 pub use floating::{FloatingSurface, QuickPanelEntry};
 pub use overlay::StatusOverlay;
+pub(crate) use setup::open_setup;
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
@@ -496,6 +498,10 @@ impl WindowView {
                 SidebarPage::Capture,
                 self.camera_container.borrow().as_ref(),
             ),
+            FocusTarget::FeatureHub => {
+                self.select_page(SidebarPage::FeatureHub);
+                true
+            }
         }
     }
 

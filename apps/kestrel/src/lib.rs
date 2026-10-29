@@ -7,6 +7,7 @@ mod config;
 pub mod logging;
 mod private_file;
 mod runtime;
+pub mod setup;
 mod snippets;
 mod status_notifier;
 pub mod text_lines;
@@ -62,9 +63,10 @@ pub use view_model::{
     ListenersViewModel, MicrophoneViewModel, MonitorViewModel, OutputKind, OverviewTool,
     OverviewToolsViewModel, ProcessRowViewModel, ProcessesViewModel, QuickToggleControlViewModel,
     QuickToggleViewModel, RecordingControls, RecordingExportViewModel, RecordingViewModel,
-    ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel, ShortcutsViewModel,
-    SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
-    WhatsNewSection, WhatsNewViewModel, output_icon, shortcut_label,
+    ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel, SetupPresetViewModel,
+    SetupSensitiveViewModel, SetupViewModel, ShortcutsViewModel, SnippetDraft,
+    SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel, WhatsNewSection,
+    WhatsNewViewModel, output_icon, shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -418,6 +420,8 @@ pub enum FocusTarget {
     SpeedTest,
     /// The camera preview on the Capture page, scrolled into view.
     Camera,
+    /// The Feature Hub, where features are switched.
+    FeatureHub,
 }
 
 /// A process action the user can confirm.
@@ -484,6 +488,12 @@ pub enum ApplicationCommand {
         enabled: bool,
     },
     ApplyPreset(FeaturePreset),
+    /// Finishes first-launch setup: the chosen preset, minus the features
+    /// left off. No preset changes nothing.
+    FinishSetup {
+        preset: Option<FeaturePreset>,
+        left_off: Vec<String>,
+    },
     UndoPreset,
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),

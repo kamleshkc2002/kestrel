@@ -26,10 +26,12 @@ Xvfb startup check of the AppImage and a layer-shell check under headless
 Sway. GNOME, KDE Plasma, Hyprland, and X11 are supported by design and have had
 little real use, so reports from them are especially welcome.
 
-Expect rough edges. Most features start off, so turn them on in the Feature
-Hub, where presets such as Balanced enable a sensible set. Some features need
-extra packages, and each one says what to install; screen recording, for
-example, needs GStreamer's PipeWire, Base, and Good plugins.
+Expect rough edges. Most features start off: first launch offers a short setup
+with presets and explains what each feature uses, and afterwards you turn
+features on in the Feature Hub, where presets such as Balanced enable a
+sensible set. Some features need extra packages, and each one says what to
+install; screen recording, for example, needs GStreamer's PipeWire, Base, and
+Good plugins.
 
 Use the Bug report form on GitHub Issues and include the feature's status line
 and its logs (see [Diagnostic logs](#diagnostic-logs)).
@@ -87,6 +89,13 @@ Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
 and shows one at a time. Each feature's settings sit on its own page, and the
 Settings page keeps app-wide choices. The sidebar search filters pages and
 settings together. On narrow windows the sidebar and the page take turns.
+
+- **First launch:** when no configuration file exists yet, setup offers a preset
+  and explains what each feature it turns on uses and keeps; anything you
+  switch off there is left off. Closing setup early turns nothing on and it
+  opens again on the next launch, Skip setup records it as done without
+  changing anything, and Settings → Run setup again reopens it. The preset
+  change it applies is undone like any other.
 
 ## Features
 
