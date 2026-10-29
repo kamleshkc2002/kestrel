@@ -383,9 +383,11 @@ fn sound_view(
     RecordingSoundViewModel {
         options,
         selected,
-        sensitive: settings.system_audio
-            && available_tracks.contains(&AudioTrack::System)
-            && (application_audio.is_ok() || saved.is_some()),
+        // A saved app that cannot be recorded leaves the choice open so it can
+        // be cleared, whatever the System audio switch says.
+        sensitive: available_tracks.contains(&AudioTrack::System)
+            && ((saved.is_some() && application_audio.is_err())
+                || (settings.system_audio && application_audio.is_ok())),
         reason: match (saved, application_audio) {
             (Some(_), Err(_)) => None,
             (_, Err(reason)) => Some(reason.clone()),
@@ -570,6 +572,41 @@ mod tests {
                 unavailable.sound.reason.as_deref(),
                 Some("No PipeWire audio server answered.")
             );
+
+            // A saved app that cannot be recorded keeps the choice usable, so
+            // it can be cleared with System audio off.
+            let stranded = view_with(
+                RecordingPhase::Idle,
+                AudioTrack::ALL.to_vec(),
+                kestrel_core::RecordingConfiguration {
+                    system_audio_app: Some("firefox".to_owned()),
+                    microphone: true,
+                    ..kestrel_core::RecordingConfiguration::default()
+                },
+                vec![RecordingApplicationViewModel {
+                    identity: "firefox".to_owned(),
+                    label: "Firefox".to_owned(),
+                }],
+                Err("No PipeWire audio server answered.".to_owned()),
+            );
+            assert!(!stranded.tracks_offered[0].available, "the System track");
+            assert!(stranded.sound.sensitive);
+            assert_eq!(stranded.sound.options.len(), 2);
+            assert_eq!(stranded.sound.options[0].identity, None);
+            assert_eq!(stranded.sound.options[1].label, "Firefox (unavailable)");
+            assert_eq!(stranded.sound.selected, 1);
+
+            let idle = view_with(
+                RecordingPhase::Idle,
+                AudioTrack::ALL.to_vec(),
+                kestrel_core::RecordingConfiguration {
+                    microphone: true,
+                    ..kestrel_core::RecordingConfiguration::default()
+                },
+                Vec::new(),
+                Err("No PipeWire audio server answered.".to_owned()),
+            );
+            assert!(!idle.sound.sensitive);
         }
 
         #[test]
