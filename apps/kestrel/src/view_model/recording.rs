@@ -52,6 +52,8 @@ pub struct RecordingTrackOptionViewModel {
     pub track: AudioTrack,
     pub available: bool,
     pub enabled: bool,
+    /// Why the track cannot be added, when it cannot.
+    pub reason: Option<String>,
 }
 
 /// One track of the running recording.
@@ -174,15 +176,34 @@ impl RecordingViewModel {
             &applications,
             &application_audio,
         );
+        let isolated_reason = match (
+            settings.system_audio_app.as_deref(),
+            application_audio.as_ref().err(),
+        ) {
+            (Some(identity), Some(reason)) => Some(format!(
+                "{} can't be recorded alone here: {reason} Choose All apps under Sound from \
+                 to record everything.",
+                application_label(identity, &applications)
+            )),
+            _ => None,
+        };
         let tracks_offered = AudioTrack::ALL
             .into_iter()
-            .map(|track| RecordingTrackOptionViewModel {
-                track,
-                available: available_tracks.contains(&track),
-                enabled: match track {
-                    AudioTrack::System => settings.system_audio,
-                    AudioTrack::Microphone => settings.microphone,
-                },
+            .map(|track| {
+                let reason = if track == AudioTrack::System {
+                    isolated_reason.clone()
+                } else {
+                    None
+                };
+                RecordingTrackOptionViewModel {
+                    track,
+                    available: available_tracks.contains(&track) && reason.is_none(),
+                    enabled: match track {
+                        AudioTrack::System => settings.system_audio,
+                        AudioTrack::Microphone => settings.microphone,
+                    },
+                    reason,
+                }
             })
             .collect();
         let takes = snapshot
@@ -311,36 +332,51 @@ fn sound_view(
     applications: &[RecordingApplicationViewModel],
     application_audio: &Result<(), String>,
 ) -> RecordingSoundViewModel {
-    let mut options = vec![RecordingSoundOptionViewModel {
+    let all_apps = || RecordingSoundOptionViewModel {
         identity: None,
         label: ALL_APPS_LABEL.to_owned(),
-    }];
-    options.extend(
-        applications
-            .iter()
-            .map(|application| RecordingSoundOptionViewModel {
-                identity: Some(application.identity.clone()),
-                label: application.label.clone(),
-            }),
-    );
-    if let Some(identity) = &settings.system_audio_app {
-        if !options
-            .iter()
-            .any(|option| option.identity.as_ref() == Some(identity))
-        {
-            options.push(RecordingSoundOptionViewModel {
-                identity: Some(identity.clone()),
-                label: format!("{identity} (not playing)"),
-            });
-        }
-    }
-    let selected = settings
-        .system_audio_app
-        .as_ref()
+    };
+    let saved = settings.system_audio_app.as_deref();
+    let options =
+        match (saved, application_audio) {
+            (Some(identity), Err(_)) => vec![
+                all_apps(),
+                RecordingSoundOptionViewModel {
+                    identity: Some(identity.to_owned()),
+                    label: format!(
+                        "{} (unavailable)",
+                        application_label(identity, applications)
+                    ),
+                },
+            ],
+            (None, Err(_)) => vec![all_apps()],
+            _ => {
+                let mut options = vec![all_apps()];
+                options.extend(applications.iter().map(|application| {
+                    RecordingSoundOptionViewModel {
+                        identity: Some(application.identity.clone()),
+                        label: application.label.clone(),
+                    }
+                }));
+                if let Some(identity) = saved {
+                    if !options
+                        .iter()
+                        .any(|option| option.identity.as_deref() == Some(identity))
+                    {
+                        options.push(RecordingSoundOptionViewModel {
+                            identity: Some(identity.to_owned()),
+                            label: format!("{identity} (not playing)"),
+                        });
+                    }
+                }
+                options
+            }
+        };
+    let selected = saved
         .and_then(|identity| {
             options
                 .iter()
-                .position(|option| option.identity.as_ref() == Some(identity))
+                .position(|option| option.identity.as_deref() == Some(identity))
         })
         .and_then(|position| u32::try_from(position).ok())
         .unwrap_or(0);
@@ -349,8 +385,12 @@ fn sound_view(
         selected,
         sensitive: settings.system_audio
             && available_tracks.contains(&AudioTrack::System)
-            && application_audio.is_ok(),
-        reason: application_audio.as_ref().err().cloned(),
+            && (application_audio.is_ok() || saved.is_some()),
+        reason: match (saved, application_audio) {
+            (Some(_), Err(_)) => None,
+            (_, Err(reason)) => Some(reason.clone()),
+            _ => None,
+        },
     }
 }
 
@@ -480,12 +520,38 @@ mod tests {
             let absent = view_with(
                 RecordingPhase::Idle,
                 vec![AudioTrack::System],
-                remembered,
+                remembered.clone(),
                 Vec::new(),
                 Ok(()),
             );
             assert_eq!(absent.sound.options[1].label, "firefox (not playing)");
             assert_eq!(absent.sound.selected, 1);
+
+            let isolated = view_with(
+                RecordingPhase::Idle,
+                AudioTrack::ALL.to_vec(),
+                remembered,
+                vec![RecordingApplicationViewModel {
+                    identity: "firefox".to_owned(),
+                    label: "Firefox".to_owned(),
+                }],
+                Err("No PipeWire audio server answered.".to_owned()),
+            );
+            let system = &isolated.tracks_offered[0];
+            assert_eq!(system.track, AudioTrack::System);
+            assert!(!system.available && system.enabled);
+            let reason = system.reason.as_deref().unwrap_or_default();
+            assert!(
+                reason.contains("No PipeWire audio server answered."),
+                "the platform's reason: {reason}"
+            );
+            assert!(isolated.tracks_offered[1].available, "the microphone");
+            assert!(isolated.sound.sensitive);
+            assert_eq!(isolated.sound.options.len(), 2);
+            assert_eq!(isolated.sound.options[0].identity, None);
+            assert_eq!(isolated.sound.options[1].label, "Firefox (unavailable)");
+            assert_eq!(isolated.sound.selected, 1);
+            assert!(isolated.sound.reason.is_none());
 
             let unavailable = view_with(
                 RecordingPhase::Idle,
@@ -498,6 +564,7 @@ mod tests {
                 Vec::new(),
                 Err("No PipeWire audio server answered.".to_owned()),
             );
+            assert_eq!(unavailable.sound.options.len(), 1);
             assert!(!unavailable.sound.sensitive);
             assert_eq!(
                 unavailable.sound.reason.as_deref(),
