@@ -3,7 +3,7 @@
 
 use crate::{
     FeaturePreset,
-    setup::{SensitiveFeature, sensitive_rows},
+    setup::{SensitiveFeature, preset_detail, sensitive_rows},
 };
 
 use super::FeatureViewModel;
@@ -44,32 +44,24 @@ impl SetupViewModel {
             .iter()
             .map(|feature| feature.id.as_str())
             .collect::<Vec<_>>();
+        let labelled = registered
+            .iter()
+            .map(|feature| (feature.id.as_str(), feature.label.as_str()))
+            .collect::<Vec<_>>();
         let mut presets = [
             FeaturePreset::Essentials,
             FeaturePreset::Balanced,
             FeaturePreset::Everything,
         ]
         .into_iter()
-        .map(|preset| {
-            let labels = registered
-                .iter()
-                .filter(|feature| preset.enables(&feature.id))
-                .map(|feature| feature.label.as_str())
-                .collect::<Vec<_>>();
-            let detail = if labels.is_empty() {
-                "Turns nothing on here.".to_owned()
-            } else {
-                format!("Turns on {}.", labels.join(", "))
-            };
-            SetupPresetViewModel {
-                preset: Some(preset),
-                title: preset.label(),
-                detail,
-                sensitive: sensitive_view_rows(
-                    &registered,
-                    sensitive_rows(preset, ids.iter().copied()),
-                ),
-            }
+        .map(|preset| SetupPresetViewModel {
+            preset: Some(preset),
+            title: preset.label(),
+            detail: preset_detail(preset, &labelled),
+            sensitive: sensitive_view_rows(
+                &registered,
+                sensitive_rows(preset, ids.iter().copied()),
+            ),
         })
         .collect::<Vec<_>>();
         presets.push(SetupPresetViewModel {

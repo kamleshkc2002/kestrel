@@ -65,7 +65,7 @@ fn welcome_step(
         navigation_for_go.push(&preset_page);
     });
 
-    navigation_page("Welcome", &page, &footer_bar(&[&skip, &go_on]), dialog)
+    navigation_page("Welcome", &page, &footer_bar(&[&skip, &go_on]))
 }
 
 /// Preset choice. Each entry lists the features it turns on; the choice that
@@ -140,7 +140,7 @@ fn preset_step(
         }
     });
 
-    navigation_page("Choose a preset", &page, &footer_bar(&[&go_on]), dialog)
+    navigation_page("Choose a preset", &page, &footer_bar(&[&go_on]))
 }
 
 /// Explanation step. Every row starts on; switching one off leaves that
@@ -202,27 +202,16 @@ fn finish_step(
         dialog_for_finish.close();
     });
 
-    navigation_page("Before you start", &page, &footer_bar(&[&finish]), dialog)
+    navigation_page("Before you start", &page, &footer_bar(&[&finish]))
 }
 
 fn navigation_page(
     title: &str,
     content: &impl IsA<gtk::Widget>,
     footer: &gtk::Box,
-    dialog: &adw::Dialog,
 ) -> adw::NavigationPage {
     let toolbar = adw::ToolbarView::new();
-    let header = adw::HeaderBar::new();
-    let close = gtk::Button::builder()
-        .icon_name("window-close-symbolic")
-        .tooltip_text("Close setup")
-        .build();
-    let dialog_for_close = dialog.clone();
-    close.connect_clicked(move |_| {
-        dialog_for_close.close();
-    });
-    header.pack_end(&close);
-    toolbar.add_top_bar(&header);
+    toolbar.add_top_bar(&adw::HeaderBar::new());
 
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)

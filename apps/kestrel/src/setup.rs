@@ -134,6 +134,36 @@ pub fn sensitive_rows<'a>(
         .collect()
 }
 
+/// A preset choice's summary line, with the features it turns on by label.
+/// Everything names what it adds to Balanced.
+pub fn preset_detail(preset: FeaturePreset, features: &[(&str, &str)]) -> String {
+    if preset == FeaturePreset::Everything {
+        let added = features
+            .iter()
+            .filter(|(feature_id, _)| {
+                FeaturePreset::Everything.enables(feature_id)
+                    && !FeaturePreset::Balanced.enables(feature_id)
+            })
+            .map(|(_, label)| *label)
+            .collect::<Vec<_>>();
+        return if added.is_empty() {
+            "Everything in Balanced.".to_owned()
+        } else {
+            format!("Everything in Balanced, plus {}.", added.join(", "))
+        };
+    }
+    let labels = features
+        .iter()
+        .filter(|(feature_id, _)| preset.enables(feature_id))
+        .map(|(_, label)| *label)
+        .collect::<Vec<_>>();
+    if labels.is_empty() {
+        "Turns nothing on here.".to_owned()
+    } else {
+        format!("Turns on {}.", labels.join(", "))
+    }
+}
+
 /// The enablement Finish applies: the preset's features, minus those left
 /// off. Choosing yourself returns nothing to change.
 pub fn setup_features(
@@ -227,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_explains_exactly_the_chosen_presets_sensitive_features() {
+    fn setup_explains_the_chosen_presets_and_their_sensitive_features() {
         let registered = [
             "capture.screenshot",
             "capture.recording",
@@ -265,6 +295,24 @@ mod tests {
                 "snippets.text"
             ],
             "a feature without a table row gets no row"
+        );
+
+        let labelled = [
+            ("capture.screenshot", "Screenshots"),
+            ("capture.recording", "Screen recording"),
+            ("clipboard.history", "Clipboard history"),
+            ("global.shortcuts", "Global shortcuts"),
+            ("audio.microphone", "Microphone"),
+            ("system.monitor", "System monitor"),
+            ("snippets.text", "Text snippets"),
+        ];
+        assert_eq!(
+            preset_detail(FeaturePreset::Balanced, &labelled),
+            "Turns on Screenshots, Screen recording, Microphone, System monitor, Text snippets."
+        );
+        assert_eq!(
+            preset_detail(FeaturePreset::Everything, &labelled),
+            "Everything in Balanced, plus Clipboard history, Global shortcuts."
         );
     }
 }
