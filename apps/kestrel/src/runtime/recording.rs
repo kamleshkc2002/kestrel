@@ -1,7 +1,39 @@
 //! Camera and recording runtime features.
 
 use super::*;
-use kestrel_platform::audio::AudioBackend;
+use kestrel_platform::{
+    audio::AudioBackend,
+    recording::{RecordingDetection, SystemAudioSource},
+};
+
+/// The tracks and System audio source a recording starts with.
+///
+/// When the settings save one application and this session cannot isolate it,
+/// the System track is left out so the recording keeps the chosen scope.
+fn recording_audio(
+    settings: &kestrel_core::RecordingConfiguration,
+    detection: &RecordingDetection,
+) -> (Vec<AudioTrack>, SystemAudioSource) {
+    let application = settings
+        .system_audio_app
+        .as_ref()
+        .filter(|_| detection.application_audio_available());
+    let isolated = settings.system_audio_app.is_none() || application.is_some();
+    let mut audio = Vec::new();
+    if settings.system_audio && isolated && detection.track_available(AudioTrack::System) {
+        audio.push(AudioTrack::System);
+    }
+    if settings.microphone && detection.track_available(AudioTrack::Microphone) {
+        audio.push(AudioTrack::Microphone);
+    }
+    let system_audio = match application {
+        Some(identity) => SystemAudioSource::Application {
+            identity: identity.clone(),
+        },
+        None => SystemAudioSource::Output,
+    };
+    (audio, system_audio)
+}
 
 impl ApplicationRuntime {
     pub fn camera_is_running(&self) -> bool {
@@ -234,22 +266,7 @@ impl ApplicationRuntime {
                     ));
                 }
                 let settings = self.recording_settings.clone();
-                let audio = AudioTrack::ALL
-                    .into_iter()
-                    .filter(|track| match track {
-                        AudioTrack::System => settings.system_audio,
-                        AudioTrack::Microphone => settings.microphone,
-                    })
-                    .filter(|track| detection.track_available(*track))
-                    .collect();
-                let system_audio = match &settings.system_audio_app {
-                    Some(identity) if detection.application_audio_available() => {
-                        kestrel_platform::recording::SystemAudioSource::Application {
-                            identity: identity.clone(),
-                        }
-                    }
-                    _ => kestrel_platform::recording::SystemAudioSource::Output,
-                };
+                let (audio, system_audio) = recording_audio(&settings, &detection);
                 self.recording.start(RecordingOptions {
                     source,
                     cursor: settings.cursor && detection.cursor_available(),
@@ -333,6 +350,65 @@ mod tests {
             kestrel_services::camera::CameraPhase::Idle
         );
         assert!(runtime.camera_view_model().cameras.is_empty());
+    }
+
+    #[test]
+    fn recording_audio_keeps_a_saved_application_scope() {
+        use kestrel_platform::recording::AudioAvailability;
+        let detection = |application_audio: Result<(), String>| RecordingDetection {
+            portal_version: Some(5),
+            source_types: 0,
+            cursor_modes: 0,
+            pipewire_socket: true,
+            gstreamer_error: None,
+            missing_elements: Vec::new(),
+            system_audio: AudioAvailability::Available,
+            microphone: AudioAvailability::Available,
+            application_audio,
+        };
+        let settings =
+            |system_audio: bool, application: Option<&str>| kestrel_core::RecordingConfiguration {
+                system_audio,
+                microphone: true,
+                system_audio_app: application.map(str::to_owned),
+                ..kestrel_core::RecordingConfiguration::default()
+            };
+        let application = || SystemAudioSource::Application {
+            identity: "firefox".to_owned(),
+        };
+        let cases = [
+            (
+                "System audio off",
+                recording_audio(&settings(false, None), &detection(Ok(()))),
+                vec![AudioTrack::Microphone],
+                SystemAudioSource::Output,
+            ),
+            (
+                "no saved application",
+                recording_audio(&settings(true, None), &detection(Ok(()))),
+                vec![AudioTrack::System, AudioTrack::Microphone],
+                SystemAudioSource::Output,
+            ),
+            (
+                "saved application isolated",
+                recording_audio(&settings(true, Some("firefox")), &detection(Ok(()))),
+                vec![AudioTrack::System, AudioTrack::Microphone],
+                application(),
+            ),
+            (
+                "saved application cannot be isolated",
+                recording_audio(
+                    &settings(true, Some("firefox")),
+                    &detection(Err("Needs a PipeWire audio server.".to_owned())),
+                ),
+                vec![AudioTrack::Microphone],
+                SystemAudioSource::Output,
+            ),
+        ];
+        for (case, (audio, source), expected_audio, expected_source) in cases {
+            assert_eq!(audio, expected_audio, "{case}");
+            assert_eq!(source, expected_source, "{case}");
+        }
     }
 
     #[test]

@@ -110,10 +110,13 @@ fn add_setup(
             .active(option.enabled && option.available)
             .sensitive(option.available)
             .build();
-        row.set_subtitle(match (option.track, option.available) {
-            (_, false) => "Unavailable in this session",
-            (AudioTrack::System, true) => "What this computer plays, as its own track",
-            (AudioTrack::Microphone, true) => "The default input, as its own track",
+        row.set_subtitle(match &option.reason {
+            Some(reason) => reason.as_str(),
+            None => match (option.track, option.available) {
+                (_, false) => "Unavailable in this session",
+                (AudioTrack::System, true) => "What this computer plays, as its own track",
+                (AudioTrack::Microphone, true) => "The default input, as its own track",
+            },
         });
         let sender = commands.clone();
         let track = option.track;
