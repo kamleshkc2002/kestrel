@@ -17,13 +17,25 @@ Kestrel's own actions. It is not a general app launcher.
 
 ## Status
 
-Phase 0 capability validation is complete. Phase 1 provides a production
-workspace, versioned non-sensitive configuration, and a GTK/libadwaita
-capability window; optional StatusNotifierItem tray actions are available when
-a compatible host exists.
+Kestrel is in preview. Releases are tagged `x.y.z-preview.N` on GitHub Releases
+as an x86_64 AppImage with a SHA-256 file, and there is no automatic update yet.
+
+It has been checked day to day on COSMIC (Wayland), feature work is
+smoke-tested in headless Sway sessions, and CI runs on Ubuntu 24.04 with an
+Xvfb startup check of the AppImage and a layer-shell check under headless
+Sway. GNOME, KDE Plasma, Hyprland, and X11 are supported by design and have had
+little real use, so reports from them are especially welcome.
+
+Expect rough edges. Most features start off, so turn them on in the Feature
+Hub, where presets such as Balanced enable a sensible set. Some features need
+extra packages, and each one says what to install; screen recording, for
+example, needs GStreamer's PipeWire, Base, and Good plugins.
+
+Use the Bug report form on GitHub Issues and include the feature's status line
+and its logs (see [Diagnostic logs](#diagnostic-logs)).
 
 - [Requirements and support contract](docs/REQUIREMENTS.md)
-- [Initial architecture](docs/ARCHITECTURE.md)
+- [Architecture](docs/ARCHITECTURE.md)
 
 ## Principles
 

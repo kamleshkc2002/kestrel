@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a problem with Kestrel
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you were doing at the time.
+    validations:
+      required: true
+  - type: textarea
+    id: what-you-expected
+    attributes:
+      label: What you expected
+      description: What you thought would happen.
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that brings the problem back.
+      placeholder: |
+        1. Open ...
+        2. Press ...
+        3. See ...
+  - type: input
+    id: kestrel-version
+    attributes:
+      label: Kestrel version
+      description: The output of `kestrel --version`, or the AppImage file name.
+      placeholder: 0.1.0-preview.1
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How you installed it
+      options:
+        - AppImage
+        - install-local.sh from source
+        - cargo run
+        - other
+  - type: input
+    id: desktop-session
+    attributes:
+      label: Desktop and session
+      description: "For example: GNOME 46, Wayland. `echo $XDG_CURRENT_DESKTOP $XDG_SESSION_TYPE` prints the values Kestrel sees."
+      placeholder: GNOME 46, Wayland
+    validations:
+      required: true
+  - type: input
+    id: distribution
+    attributes:
+      label: Distribution
+      description: The distribution and version, such as Ubuntu 24.04.
+      placeholder: Ubuntu 24.04
+  - type: input
+    id: feature
+    attributes:
+      label: Feature
+      description: The feature ID, such as `capture.recording`, and the status line the Feature Hub or the feature's page shows for it.
+      placeholder: capture.recording — needs GStreamer plugins
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Settings → Diagnostic logs → Open folder shows the files. For detail, turn on debug logging there or run with `KESTREL_LOG=debug`. Kestrel's logs leave out clipboard, snippet, and note text, window titles, network addresses, and paths in your home folder, but read them before pasting.
+      render: text
+  - type: markdown
+    attributes:
+      value: |
+        Please don't paste clipboard contents, screenshots of private windows, or anything you wouldn't share publicly.
