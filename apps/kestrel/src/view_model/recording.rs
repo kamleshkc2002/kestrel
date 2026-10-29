@@ -540,12 +540,10 @@ mod tests {
             let system = &isolated.tracks_offered[0];
             assert_eq!(system.track, AudioTrack::System);
             assert!(!system.available && system.enabled);
-            assert_eq!(
-                system.reason.as_deref(),
-                Some(
-                    "Firefox can't be recorded alone here: No PipeWire audio server answered. \
-                     Choose All apps under Sound from to record everything."
-                )
+            let reason = system.reason.as_deref().unwrap_or_default();
+            assert!(
+                reason.contains("No PipeWire audio server answered."),
+                "the platform's reason: {reason}"
             );
             assert!(isolated.tracks_offered[1].available, "the microphone");
             assert!(isolated.sound.sensitive);

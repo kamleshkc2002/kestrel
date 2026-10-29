@@ -67,7 +67,3 @@ text = "The tray icon can be turned off in the Feature Hub, and presets leave it
 [[change]]
 feature = "capture.recording"
 text = "System audio can record a single application, so notifications and other apps stay out of the recording."
-
-[[change]]
-feature = "capture.recording"
-text = "When a chosen app's audio cannot be recorded alone, the recording leaves System audio out so it never captures other apps."
