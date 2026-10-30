@@ -1,6 +1,7 @@
 //! Application configuration and runtime composition.
 
 mod autostart;
+pub mod bug_report;
 mod command_bar;
 pub mod command_line;
 mod config;
@@ -572,6 +573,8 @@ pub enum ApplicationCommand {
     },
     /// Opens the log folder in the file manager.
     OpenLogFolder,
+    /// Opens the prefilled bug report form.
+    ReportProblem,
     ClearLogs,
     /// Sets a command ID's global shortcut, or removes it for `None`.
     SetShortcut {

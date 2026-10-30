@@ -1235,7 +1235,7 @@ mod tests {
             .iter()
             .map(|registration| crate::view_model::FeatureViewModel::from(*registration))
             .collect::<Vec<_>>();
-        let empty = WhatsNewViewModel::new(&notes, true, &features, &configuration);
+        let empty = WhatsNewViewModel::new(&[], true, &features, &configuration);
         assert!(empty.sections.is_empty());
         assert!(empty.banner.is_none());
         let notes = [

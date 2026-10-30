@@ -211,6 +211,28 @@ fn add_logging_group(
         "log files folder open clear logs diagnostics".to_owned(),
     ));
     logs_group.add(&files_row);
+
+    let report = plain_row()
+        .title("Report a problem")
+        .subtitle(
+            "Opens the bug report form on GitHub with your Kestrel version and desktop \
+             filled in. Attach logs from the folder above if you can.",
+        )
+        .subtitle_lines(0)
+        .build();
+    let report_button = gtk::Button::with_label("Open");
+    report_button.set_valign(Align::Center);
+    let sender = commands.clone();
+    report_button.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::ReportProblem);
+    });
+    report.add_suffix(&report_button);
+    report.set_activatable_widget(Some(&report_button));
+    filter_rows.push((
+        report.clone().upcast(),
+        "report problem bug issue github diagnostics logs".to_owned(),
+    ));
+    logs_group.add(&report);
     group.add(&logs_group);
 }
 

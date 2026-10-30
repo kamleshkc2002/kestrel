@@ -1168,6 +1168,12 @@ impl ApplicationController {
         }
     }
 
+    fn show_link(&self, url: &str) {
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.show_link(url);
+        }
+    }
+
     fn command_gate(&self, action: CommandLineAction) -> Option<CommandGate> {
         self.state
             .lock()
@@ -3470,6 +3476,27 @@ fn add_command_action(
     application.add_action(&action);
 }
 
+/// Opens a link in the desktop's handler; a failure shows a copyable link.
+fn launch_uri(controller: &Rc<ApplicationController>, uri: &str) {
+    let parent = controller
+        .window
+        .borrow()
+        .as_ref()
+        .map(|view| view.window.clone());
+    let controller = Rc::clone(controller);
+    let uri = uri.to_owned();
+    gtk::UriLauncher::new(&uri).launch(
+        parent.as_ref(),
+        gtk::gio::Cancellable::NONE,
+        move |result| {
+            if result.is_err() {
+                log::warn!("kestrel-open-link failed");
+                controller.show_link(&uri);
+            }
+        },
+    );
+}
+
 fn dispatch_commands(
     application: &adw::Application,
     controller: &Rc<ApplicationController>,
@@ -3727,13 +3754,12 @@ fn dispatch_commands(
                         continue;
                     }
                     let uri = gtk::gio::File::for_path(logger.directory()).uri();
-                    let window = controller.window.borrow();
-                    let parent = window.as_ref().map(|view| view.window.clone());
-                    gtk::UriLauncher::new(&uri).launch(
-                        parent.as_ref(),
-                        gtk::gio::Cancellable::NONE,
-                        |_| {},
-                    );
+                    launch_uri(&controller, &uri);
+                }
+                ApplicationCommand::ReportProblem => {
+                    let environment = kestrel::bug_report::ReportEnvironment::from_system();
+                    let uri = kestrel::bug_report::bug_report_url(&environment);
+                    launch_uri(&controller, &uri);
                 }
                 ApplicationCommand::ScreenTools(request) => controller.screen_tool_request(request),
                 ApplicationCommand::Camera(request) => controller.camera_request(request),
@@ -3752,15 +3778,7 @@ fn dispatch_commands(
                         view.window.clipboard().set_text(&text);
                     }
                 }
-                ApplicationCommand::OpenUri(uri) => {
-                    let window = controller.window.borrow();
-                    let parent = window.as_ref().map(|view| view.window.clone());
-                    gtk::UriLauncher::new(&uri).launch(
-                        parent.as_ref(),
-                        gtk::gio::Cancellable::NONE,
-                        |_| {},
-                    );
-                }
+                ApplicationCommand::OpenUri(uri) => launch_uri(&controller, &uri),
                 ApplicationCommand::Clipboard(command) => controller.request_clipboard_operation(
                     ControllerOperation::Clipboard(command),
                     "kestrel-clipboard",
