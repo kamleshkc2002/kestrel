@@ -9,28 +9,55 @@ use std::{
 
 use crate::FeaturePreset;
 
-/// In the state directory: setup was finished or skipped.
+/// In the state directory: setup was offered and then finished or skipped.
 const STATE_FILE: &str = "setup";
+const OFFERED_CONTENTS: &str = "offered\n";
 const DONE_CONTENTS: &str = "done\n";
 
-/// Setup is offered only when no configuration existed and it has not been
-/// recorded as done.
-pub fn should_offer_setup(config_existed: bool, setup_done: bool) -> bool {
-    !config_existed && !setup_done
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupState {
+    Unknown,
+    Offered,
+    Done,
+}
+
+/// Setup is offered until it is finished or skipped.
+pub fn should_offer_setup(config_existed: bool, state: SetupState) -> bool {
+    match state {
+        SetupState::Done => false,
+        SetupState::Offered => true,
+        SetupState::Unknown => !config_existed,
+    }
 }
 
 pub fn state_path() -> Option<PathBuf> {
     Some(crate::config::state_directory()?.join(STATE_FILE))
 }
 
-/// A missing or unreadable record reads as not done.
-pub fn is_done(path: Option<&Path>) -> bool {
+/// A missing or unrecognised record reads as unknown.
+pub fn state(path: Option<&Path>) -> SetupState {
     let Some(path) = path else {
-        return false;
+        return SetupState::Unknown;
     };
-    fs::read_to_string(path)
-        .map(|contents| contents.trim() == DONE_CONTENTS.trim())
-        .unwrap_or(false)
+    match fs::read_to_string(path) {
+        Ok(contents) => match contents.trim() {
+            "offered" => SetupState::Offered,
+            "done" => SetupState::Done,
+            _ => SetupState::Unknown,
+        },
+        Err(_) => SetupState::Unknown,
+    }
+}
+
+/// Records setup as offered so it resumes if a configuration appears.
+pub fn record_offered(path: Option<&Path>) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Err(error) = crate::private_file::write_private_atomic(path, OFFERED_CONTENTS.as_bytes())
+    {
+        log::debug!(target: "startup.setup", "Could not record setup: {error}");
+    }
 }
 
 /// Records setup as finished or skipped; a failure means it is offered again.
@@ -193,35 +220,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn setup_is_offered_only_before_a_configuration_exists_and_once() {
-        // (case, configuration existed, setup recorded as done, offered)
+    fn setup_is_offered_until_it_is_finished_or_skipped() {
+        // (case, configuration existed, state, offered)
         let cases = [
-            ("first launch", false, false, true),
-            ("configuration exists", true, false, false),
-            ("setup is done", false, true, false),
-            ("configuration exists and setup is done", true, true, false),
+            ("first launch", false, SetupState::Unknown, true),
+            (
+                "an existing configuration",
+                true,
+                SetupState::Unknown,
+                false,
+            ),
+            (
+                "offered with no configuration",
+                false,
+                SetupState::Offered,
+                true,
+            ),
+            (
+                "closed early and a setting changed",
+                true,
+                SetupState::Offered,
+                true,
+            ),
+            ("done with no configuration", false, SetupState::Done, false),
+            ("done with a configuration", true, SetupState::Done, false),
         ];
-        for (case, config_existed, setup_done, offered) in cases {
-            assert_eq!(
-                should_offer_setup(config_existed, setup_done),
-                offered,
-                "{case}"
-            );
+        for (case, config_existed, state, offered) in cases {
+            assert_eq!(should_offer_setup(config_existed, state), offered, "{case}");
         }
     }
 
     #[test]
-    fn recording_setup_done_uses_the_private_atomic_writer() {
+    fn recording_setup_state_uses_the_private_atomic_writer() {
         let directory = TempDir::new().expect("temp dir");
         let path = directory.path().join("setup");
 
-        assert!(!is_done(Some(&path)), "a missing record is not done");
-        record_done(Some(&path));
+        assert_eq!(
+            state(Some(&path)),
+            SetupState::Unknown,
+            "a missing record is unknown"
+        );
+        assert_eq!(state(None), SetupState::Unknown, "no path is unknown");
 
-        assert!(is_done(Some(&path)));
+        record_offered(Some(&path));
+        assert_eq!(state(Some(&path)), SetupState::Offered);
         assert_eq!(
             fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
             crate::private_file::FILE_MODE
+        );
+
+        record_done(Some(&path));
+        assert_eq!(state(Some(&path)), SetupState::Done);
+        assert_eq!(
+            fs::metadata(&path).expect("metadata").permissions().mode() & 0o777,
+            crate::private_file::FILE_MODE
+        );
+
+        fs::write(&path, "garbage\n").expect("write garbage");
+        assert_eq!(
+            state(Some(&path)),
+            SetupState::Unknown,
+            "an unrecognised record is unknown"
         );
     }
 

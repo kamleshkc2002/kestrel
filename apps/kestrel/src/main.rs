@@ -3234,11 +3234,13 @@ fn main() -> glib::ExitCode {
     };
 
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
-    let offer_setup = config_path.is_some()
-        && setup::should_offer_setup(
-            loaded.existed,
-            setup::is_done(setup::state_path().as_deref()),
-        );
+    let setup_path = setup::state_path();
+    let setup_state = setup::state(setup_path.as_deref());
+    let offer_setup =
+        config_path.is_some() && setup::should_offer_setup(loaded.existed, setup_state);
+    if offer_setup && setup_state == setup::SetupState::Unknown {
+        setup::record_offered(setup_path.as_deref());
+    }
     let logger = kestrel::logging::install(kestrel::logging::LogPolicy::from_configuration(
         &loaded.configuration.logging,
     ));
