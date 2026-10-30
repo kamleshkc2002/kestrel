@@ -917,6 +917,36 @@ pub fn sustain_samples(duration: Duration, refresh_interval_millis: u64) -> u32 
         .clamp(MIN_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_SUSTAIN_SAMPLES)
 }
 
+/// A byte size in binary units.
+pub fn format_bytes(bytes: f64) -> String {
+    scaled(bytes, 1024.0, &["B", "KiB", "MiB", "GiB", "TiB"])
+}
+
+/// Scales into the largest unit whose rounded value stays below `base`.
+pub fn scaled(value: f64, base: f64, units: &[&str]) -> String {
+    if !value.is_finite() || value < 0.0 {
+        return "Unavailable".to_owned();
+    }
+    let rounded = |value: f64, unit: usize| {
+        if unit == 0 {
+            value.round()
+        } else {
+            (value * 10.0).round() / 10.0
+        }
+    };
+    let mut value = value;
+    let mut unit = 0;
+    while rounded(value, unit) >= base && unit + 1 < units.len() {
+        value /= base;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value:.0} {}", units[unit])
+    } else {
+        format!("{value:.1} {}", units[unit])
+    }
+}
+
 /// How a master output switch treats streams that are already playing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -2415,6 +2445,18 @@ mod tests {
         SnippetProviderPreference, SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
         variable_tokens,
     };
+
+    #[test]
+    fn byte_sizes_switch_at_the_rounded_boundary() {
+        for (value, expected) in [
+            (super::format_bytes(512.0), "512 B"),
+            (super::format_bytes(1023.6), "1.0 KiB"),
+            (super::format_bytes(1023.97 * 1024.0), "1.0 MiB"),
+            (super::format_bytes(1000.0 * 1024.0), "1000.0 KiB"),
+        ] {
+            assert_eq!(value, expected);
+        }
+    }
 
     #[test]
     fn configuration_tracks_enablement_by_stable_feature_id() {

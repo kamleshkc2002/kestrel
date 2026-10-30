@@ -11,3 +11,7 @@ text = "Settings → Diagnostic logs has Report a problem, which opens the bug r
 [[change]]
 feature = "kestrel"
 text = "First-launch setup now reopens on the next launch until you finish or skip it, even if you changed a setting in between."
+
+[[change]]
+feature = "files.empty-trash"
+text = "Empty Trash shows how much space your Trash uses in readable units."

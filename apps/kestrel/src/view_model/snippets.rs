@@ -150,7 +150,7 @@ impl SnippetsViewModel {
                 }
                 status.push_str(&format!(
                     " · content bound {}",
-                    format_clipboard_bytes(presentation.policy.max_content_bytes as usize)
+                    format_bytes(presentation.policy.max_content_bytes as f64)
                 ));
                 status
             } else {

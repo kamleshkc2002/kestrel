@@ -5,7 +5,9 @@ use std::{
     path::Path,
 };
 
-use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus, Permission};
+use kestrel_core::{
+    CapabilityEvidence, CapabilityReport, CapabilityStatus, Permission, format_bytes,
+};
 
 use super::{
     MutationConfirmation, QuickToggleControl, QuickToggleError, QuickToggleErrorKind,
@@ -68,8 +70,9 @@ pub(crate) fn observe_trash(data_home: &Path) -> Result<QuickToggleObservation, 
             "The current user's local Trash is empty.".to_owned()
         } else {
             format!(
-                "Local Trash contains {} top-level items ({} bytes); remote and other users' Trash locations are excluded.",
-                scope.items, scope.bytes
+                "Trash has {} ({}). Remote and other users' Trash folders aren't included.",
+                item_count(scope.items),
+                format_bytes(scope.bytes as f64)
             )
         },
     })
@@ -115,14 +118,19 @@ pub(crate) fn empty_trash(
 fn trash_scope_confirmation(scope: &TrashScope) -> MutationConfirmation {
     MutationConfirmation {
         scope: format!(
-            "Permanently delete {} top-level items ({} bytes) from this user's local Trash. Remote Trash locations are excluded.",
-            scope.items, scope.bytes
+            "Permanently delete {} ({}) from your Trash. Remote Trash folders aren't included.",
+            item_count(scope.items),
+            format_bytes(scope.bytes as f64)
         ),
         token: format!(
             "trash:{}:{}:{:016x}",
             scope.items, scope.bytes, scope.fingerprint
         ),
     }
+}
+
+fn item_count(items: usize) -> String {
+    format!("{items} {}", if items == 1 { "item" } else { "items" })
 }
 
 fn scan_trash(data_home: &Path) -> Result<TrashScope, QuickToggleError> {
@@ -212,6 +220,79 @@ mod tests {
 
     use super::{empty_trash, observe_trash, trash_confirmation};
     use crate::quick_toggles::{QuickToggleControl, QuickToggleMutation};
+
+    #[test]
+    fn trash_scope_shows_readable_sizes_and_plurals() {
+        let directory = TempDir::new().expect("temporary data home");
+        let files = directory.path().join("Trash/files");
+        fs::create_dir_all(&files).expect("Trash files");
+        fs::write(files.join("one.txt"), vec![0u8; 2048]).expect("first item");
+        let mutation = QuickToggleMutation::Activate { target: None };
+
+        let observation = observe_trash(directory.path()).expect("Trash observation");
+        assert!(
+            observation.detail.contains("1 item"),
+            "{}",
+            observation.detail
+        );
+        assert!(
+            observation.detail.contains("2.0 KiB"),
+            "{}",
+            observation.detail
+        );
+        assert!(
+            !observation.detail.contains("2048"),
+            "raw bytes stay hidden: {}",
+            observation.detail
+        );
+
+        let confirmation = trash_confirmation(directory.path(), &mutation)
+            .expect("scope")
+            .expect("confirmation");
+        assert!(
+            confirmation.scope.contains("1 item"),
+            "{}",
+            confirmation.scope
+        );
+        assert!(
+            confirmation.scope.contains("2.0 KiB"),
+            "{}",
+            confirmation.scope
+        );
+
+        fs::write(files.join("two.txt"), vec![0u8; 2048]).expect("second item");
+
+        let observation = observe_trash(directory.path()).expect("Trash observation");
+        assert!(
+            observation.detail.contains("2 items"),
+            "{}",
+            observation.detail
+        );
+        assert!(
+            observation.detail.contains("4.0 KiB"),
+            "{}",
+            observation.detail
+        );
+        assert!(
+            !observation.detail.contains("4096"),
+            "raw bytes stay hidden: {}",
+            observation.detail
+        );
+
+        let confirmation = trash_confirmation(directory.path(), &mutation)
+            .expect("scope")
+            .expect("confirmation");
+        assert!(
+            confirmation.scope.contains("2 items"),
+            "{}",
+            confirmation.scope
+        );
+        assert!(
+            confirmation.scope.contains("4.0 KiB"),
+            "{}",
+            confirmation.scope
+        );
+    }
 
     #[test]
     fn trash_confirmation_changes_when_scope_changes() {

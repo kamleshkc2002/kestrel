@@ -73,11 +73,11 @@ pub use camera::{CameraChoiceViewModel, CameraViewModel};
 pub(crate) use capture::CapturePresentation;
 pub use capture::{CaptureEntryViewModel, CaptureModeViewModel, CaptureViewModel};
 pub(crate) use clipboard::ClipboardPresentation;
+use clipboard::format_age;
 pub use clipboard::{
     ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
     ClipboardPreviewViewModel, ClipboardQuery, ClipboardViewModel,
 };
-use clipboard::{format_age, format_clipboard_bytes};
 pub(crate) use command_bar::CommandBarPresentation;
 pub use command_bar::{
     CommandBarQuery, CommandBarViewModel, CommandProvider, CommandProviderViewModel,
@@ -90,11 +90,11 @@ pub use features::{
     QuickToggleControlViewModel, QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel,
     TurnOnViewModel, disabled_status_for, turn_on_for,
 };
+use kestrel_core::format_bytes;
 pub use kestrel_platform::audio::OutputKind;
 pub(crate) use microphone::MicrophonePresentation;
 pub use microphone::{CaptureStreamViewModel, MicrophoneInputViewModel, MicrophoneViewModel};
 pub(crate) use monitor::MonitorPresentation;
-use monitor::format_bytes;
 pub use monitor::{
     AccessoriesViewModel, AccessoryViewModel, ActiveAlertViewModel, AlertRuleViewModel,
     CoreGroupViewModel, MonitorReadoutSettingViewModel, MonitorReadoutViewModel, MonitorViewModel,

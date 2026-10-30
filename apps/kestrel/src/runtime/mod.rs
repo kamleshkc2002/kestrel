@@ -1216,8 +1216,8 @@ mod tests {
         }
 
         // Shipped notes name real features, and the ones in use lead.
-        let notes = whats_new::shipped_changes();
-        for change in &notes {
+        let shipped = whats_new::shipped_changes();
+        for change in &shipped {
             assert!(
                 change.feature == whats_new::APP_WIDE
                     || registrations

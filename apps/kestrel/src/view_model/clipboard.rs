@@ -222,7 +222,7 @@ fn clipboard_status(snapshot: &ClipboardSnapshot, shown: usize) -> String {
         "{} of {} retained entries shown · {} retained · captured kinds: {}",
         shown,
         snapshot.items.len(),
-        format_clipboard_bytes(snapshot.total_bytes),
+        format_bytes(snapshot.total_bytes as f64),
         snapshot.kind_support.evidence_value()
     );
     if snapshot.pinned_items > 0 {
@@ -255,7 +255,7 @@ fn clipboard_status(snapshot: &ClipboardSnapshot, shown: usize) -> String {
 fn clipboard_item_detail(metadata: &kestrel_services::clipboard::ClipboardItemMetadata) -> String {
     let mut parts = vec![
         metadata.kind.label().to_owned(),
-        format_clipboard_bytes(metadata.size_bytes),
+        format_bytes(metadata.size_bytes as f64),
         format_age(metadata.age),
     ];
     if metadata.pinned {
@@ -283,18 +283,6 @@ fn clipboard_preview(preview: &ClipboardPreview) -> ClipboardPreviewViewModel {
         is_image: preview.kind == kestrel_platform::clipboard::ClipboardEntryKind::Image,
         image_dimensions: preview.image_dimensions,
         file_count: preview.file_count,
-    }
-}
-
-pub(super) fn format_clipboard_bytes(bytes: usize) -> String {
-    const KIB: usize = 1024;
-    const MIB: usize = 1024 * KIB;
-    if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
-    } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes as f64 / KIB as f64)
-    } else {
-        format!("{bytes} B")
     }
 }
 

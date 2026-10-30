@@ -436,44 +436,18 @@ fn active_alert(alert: &ActiveAlert) -> ActiveAlertViewModel {
         ),
     }
 }
-pub(super) fn format_bytes(bytes: f64) -> String {
-    scaled(bytes, 1024.0, &["B", "KiB", "MiB", "GiB", "TiB"])
-}
 
 /// A network rate in the configured unit.
 fn format_rate(bytes_per_second: f64, unit: kestrel_core::NetworkRateUnit) -> String {
     match unit {
-        kestrel_core::NetworkRateUnit::Bytes => format!("{}/s", format_bytes(bytes_per_second)),
-        kestrel_core::NetworkRateUnit::Bits => scaled(
+        kestrel_core::NetworkRateUnit::Bytes => {
+            format!("{}/s", kestrel_core::format_bytes(bytes_per_second))
+        }
+        kestrel_core::NetworkRateUnit::Bits => kestrel_core::scaled(
             bytes_per_second * 8.0,
             1000.0,
             &["bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"],
         ),
-    }
-}
-
-/// Scales into the largest unit whose rounded value stays below `base`.
-fn scaled(value: f64, base: f64, units: &[&str]) -> String {
-    if !value.is_finite() || value < 0.0 {
-        return "Unavailable".to_owned();
-    }
-    let rounded = |value: f64, unit: usize| {
-        if unit == 0 {
-            value.round()
-        } else {
-            (value * 10.0).round() / 10.0
-        }
-    };
-    let mut value = value;
-    let mut unit = 0;
-    while rounded(value, unit) >= base && unit + 1 < units.len() {
-        value /= base;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{value:.0} {}", units[unit])
-    } else {
-        format!("{value:.1} {}", units[unit])
     }
 }
 
@@ -773,14 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn units_switch_at_the_rounded_boundary() {
-        for (value, expected) in [
-            (super::format_bytes(1023.6), "1.0 KiB"),
-            (super::format_bytes(1023.97 * 1024.0), "1.0 MiB"),
-            (super::format_bytes(1000.0 * 1024.0), "1000.0 KiB"),
-        ] {
-            assert_eq!(value, expected);
-        }
+    fn rates_switch_at_the_rounded_boundary() {
         for (value, unit, expected) in [
             (125_000.0, kestrel_core::NetworkRateUnit::Bits, "1.0 Mbit/s"),
             (124.9, kestrel_core::NetworkRateUnit::Bits, "999 bit/s"),
