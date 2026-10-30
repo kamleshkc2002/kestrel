@@ -257,10 +257,10 @@ mod tests {
         assert!(error.contains(CAPTURE_ID), "{error}");
         assert!(runtime.clear_captures().is_err());
         assert!(runtime.capture_snapshot().entries.is_empty());
-        assert!(ApplicationRuntime::preset_enabled(
-            FeaturePreset::Balanced,
-            CAPTURE_ID
-        ));
+        assert!(
+            FeaturePreset::Balanced.enables(CAPTURE_ID),
+            "Balanced turns screenshots on"
+        );
     }
     #[test]
     fn disabled_screen_tools_refuse_jobs_and_keep_no_worker() {
@@ -278,10 +278,7 @@ mod tests {
         assert!(view.buttons.iter().all(|button| !button.enabled));
         assert!(view.buttons.iter().all(|button| button.reason.is_some()));
         for tool in ALL_SCREEN_TOOLS {
-            assert!(ApplicationRuntime::preset_enabled(
-                FeaturePreset::Balanced,
-                tool.feature_id()
-            ));
+            assert!(FeaturePreset::Balanced.enables(tool.feature_id()));
         }
     }
 }

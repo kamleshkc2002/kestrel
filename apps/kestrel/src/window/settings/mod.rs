@@ -69,7 +69,7 @@ pub(super) fn build_settings_group(
             panels::add_process_limits_group(&group, view_model, commands, &mut filter_rows);
         }
         SettingsPage::Settings => {
-            add_general_rows(&group, view_model, commands, &mut filter_rows);
+            add_general_rows(&group, view_model, window, commands, &mut filter_rows);
             let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
             group.add(&io_row);
             add_logging_group(&group, view_model, window, commands, &mut filter_rows);
@@ -503,6 +503,7 @@ fn add_quick_panel_group(
 fn add_general_rows(
     group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
 ) {
@@ -625,6 +626,32 @@ fn add_general_rows(
         "feature presets essentials balanced everything undo enablement".to_owned(),
     ));
     group.add(&preset_row);
+
+    let setup_row = plain_row()
+        .title("Run setup again")
+        .subtitle("Choose a preset and review what each feature uses.")
+        .build();
+    let open = gtk::Button::builder()
+        .label("Open")
+        .valign(Align::Center)
+        .build();
+    let window_for_setup = window.clone();
+    let view_model_for_setup = view_model.clone();
+    let commands_for_setup = commands.clone();
+    open.connect_clicked(move |_| {
+        super::open_setup(
+            &window_for_setup,
+            &view_model_for_setup,
+            &commands_for_setup,
+        );
+    });
+    setup_row.add_suffix(&open);
+    setup_row.set_activatable_widget(Some(&open));
+    filter_rows.push((
+        setup_row.clone().upcast(),
+        "run setup again first launch presets welcome".to_owned(),
+    ));
+    group.add(&setup_row);
 }
 
 fn add_whats_new_group(

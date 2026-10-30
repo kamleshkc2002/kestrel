@@ -29,7 +29,7 @@ use kestrel::{
     LoadedConfiguration, MicrophoneCommand, MonitorReadout, MonitorViewModel, PanelMoveDirection,
     SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch, SnippetProviderPreference,
     StatusNotifierIntegration, configuration_path, disable as disable_autostart,
-    enable as enable_autostart, export_file, import_file, load, save,
+    enable as enable_autostart, export_file, import_file, load, save, setup,
 };
 use kestrel::{
     ApplicationWindowDecision, CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch,
@@ -710,6 +710,11 @@ enum ControllerOperation {
         enabled: bool,
     },
     ApplyPreset(FeaturePreset),
+    FinishSetup {
+        preset: Option<FeaturePreset>,
+        left_off: Vec<String>,
+    },
+    SkipSetup,
     UndoPreset,
     SetAppearance(AppearancePreference),
     SetCloseAction(CloseAction),
@@ -798,6 +803,8 @@ enum ControllerOperation {
 
 struct ControllerContext {
     config_path: Option<PathBuf>,
+    /// First launch: setup waits for the window to be presented.
+    offer_setup: bool,
     refresh_results: Sender<RefreshResult>,
     tick_results: Sender<TickUpdate>,
     commands: Sender<ApplicationCommand>,
@@ -809,6 +816,8 @@ struct ControllerContext {
 struct ApplicationController {
     state: SharedState,
     config_path: Option<PathBuf>,
+    /// First launch: setup opens once the window is first presented.
+    setup_pending: Cell<bool>,
     window: RefCell<Option<WindowView>>,
     floating: RefCell<Option<FloatingSurface>>,
     /// Works with or without the main window.
@@ -870,6 +879,7 @@ impl ApplicationController {
     ) -> Rc<Self> {
         let ControllerContext {
             config_path,
+            offer_setup,
             refresh_results,
             tick_results,
             commands,
@@ -928,6 +938,7 @@ impl ApplicationController {
                 command_results: Vec::new(),
             })),
             config_path,
+            setup_pending: Cell::new(offer_setup),
             window: RefCell::new(None),
             floating: RefCell::new(None),
             overlay: StatusOverlay::new(commands.clone()),
@@ -1027,6 +1038,17 @@ impl ApplicationController {
         }
         view.window.present();
         self.window.replace(Some(view));
+        if self.setup_pending.replace(false) {
+            let window = self
+                .window
+                .borrow()
+                .as_ref()
+                .map(|view| view.window.clone());
+            if let Some(window) = window {
+                let view_model = self.current_view_model();
+                window::open_setup(&window, &view_model, &self.commands);
+            }
+        }
     }
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
@@ -2060,6 +2082,37 @@ impl ControllerState {
                 }
                 self.preset_snapshot = Some(snapshot);
                 format!("{} preset applied", preset.label())
+            }
+            ControllerOperation::FinishSetup { preset, left_off } => {
+                let old = self.configuration.clone();
+                let snapshot = self
+                    .runtime
+                    .apply_setup(&mut self.configuration, preset, &left_off)
+                    .map_err(|error| {
+                        self.restore_configuration(old.clone());
+                        format!("Could not apply setup: {error:?}")
+                    })?;
+                if let Err(error) = persist(config_path, &self.configuration) {
+                    self.restore_configuration(old);
+                    return Err(format!("Setup was not saved: {error}"));
+                }
+                if preset.is_some() {
+                    self.preset_snapshot = Some(snapshot);
+                }
+                setup::record_done(setup::state_path().as_deref());
+                match preset {
+                    Some(preset) => format!("{} is on. Undo it in Settings.", preset.label()),
+                    None => {
+                        let _ = self
+                            .commands
+                            .try_send(ApplicationCommand::Focus(FocusTarget::FeatureHub));
+                        String::new()
+                    }
+                }
+            }
+            ControllerOperation::SkipSetup => {
+                setup::record_done(setup::state_path().as_deref());
+                String::new()
             }
             ControllerOperation::UndoPreset => {
                 let Some(snapshot) = self.preset_snapshot.take() else {
@@ -3139,7 +3192,10 @@ fn load_startup_configuration(
     match load(&path) {
         Ok(loaded) => (loaded, Some(path)),
         Err(error) => {
-            let mut loaded = LoadedConfiguration::default();
+            let mut loaded = LoadedConfiguration {
+                existed: true,
+                ..LoadedConfiguration::default()
+            };
             loaded.warnings.push(ConfigurationWarning {
                 feature_id: "configuration".to_owned(),
                 reason: format!(
@@ -3178,6 +3234,11 @@ fn main() -> glib::ExitCode {
     };
 
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
+    let offer_setup = config_path.is_some()
+        && setup::should_offer_setup(
+            loaded.existed,
+            setup::is_done(setup::state_path().as_deref()),
+        );
     let logger = kestrel::logging::install(kestrel::logging::LogPolicy::from_configuration(
         &loaded.configuration.logging,
     ));
@@ -3288,6 +3349,7 @@ fn main() -> glib::ExitCode {
         loaded.warnings,
         ControllerContext {
             config_path,
+            offer_setup,
             refresh_results,
             tick_results,
             commands: commands.clone(),
@@ -3446,6 +3508,13 @@ fn dispatch_commands(
                     ControllerOperation::ApplyPreset(preset),
                     "kestrel-preset-change",
                 ),
+                ApplicationCommand::FinishSetup { preset, left_off } => controller
+                    .request_operation(
+                        ControllerOperation::FinishSetup { preset, left_off },
+                        "kestrel-setup-finish",
+                    ),
+                ApplicationCommand::SkipSetup => controller
+                    .request_operation(ControllerOperation::SkipSetup, "kestrel-setup-skip"),
                 ApplicationCommand::UndoPreset => controller
                     .request_operation(ControllerOperation::UndoPreset, "kestrel-preset-undo"),
                 ApplicationCommand::SetAppearance(appearance) => controller.request_operation(
@@ -3963,6 +4032,7 @@ mod tests {
                 Vec::new(),
                 ControllerContext {
                     config_path: None,
+                    offer_setup: false,
                     refresh_results,
                     tick_results,
                     commands,
