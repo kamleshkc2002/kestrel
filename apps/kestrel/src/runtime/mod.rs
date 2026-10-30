@@ -1235,6 +1235,19 @@ mod tests {
             .iter()
             .map(|registration| crate::view_model::FeatureViewModel::from(*registration))
             .collect::<Vec<_>>();
+        let empty = WhatsNewViewModel::new(&notes, true, &features, &configuration);
+        assert!(empty.sections.is_empty());
+        assert!(empty.banner.is_none());
+        let notes = [
+            Change {
+                feature: whats_new::APP_WIDE.to_owned(),
+                text: "App-wide.".to_owned(),
+            },
+            Change {
+                feature: "capture.screenshot".to_owned(),
+                text: "Screenshots.".to_owned(),
+            },
+        ];
         let offered = WhatsNewViewModel::new(&notes, true, &features, &configuration);
         let order = offered
             .sections
