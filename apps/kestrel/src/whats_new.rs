@@ -25,13 +25,18 @@ pub struct Change {
 
 #[derive(Deserialize)]
 struct NotesFile {
+    #[serde(default)]
     change: Vec<Change>,
 }
 
 /// The notes compiled into this build, in file order.
 pub fn shipped_changes() -> Vec<Change> {
-    toml::from_str::<NotesFile>(NOTES)
-        .expect("the shipped release notes are valid")
+    parse_changes(NOTES)
+}
+
+fn parse_changes(text: &str) -> Vec<Change> {
+    toml::from_str::<NotesFile>(text)
+        .expect("the release notes are valid")
         .change
 }
 
@@ -90,11 +95,23 @@ mod tests {
 
     #[test]
     fn notes_are_offered_only_after_an_update_that_changes_a_feature_in_use() {
-        let changes = [Change {
-            feature: "capture.screenshot".to_owned(),
-            text: String::new(),
-        }];
+        assert_eq!(parse_changes("# No notes yet.\n"), Vec::new());
+        let changes = parse_changes(
+            "[[change]]\nfeature = \"capture.screenshot\"\ntext = \"Screenshots open a menu.\"\n",
+        );
+        assert_eq!(
+            changes,
+            [Change {
+                feature: "capture.screenshot".to_owned(),
+                text: "Screenshots open a menu.".to_owned(),
+            }]
+        );
         let previous = Some("0.4.0-preview.1");
+        assert_eq!(
+            offer_after_update(previous, CURRENT_VERSION, &[], true, |feature| feature
+                == "capture.screenshot"),
+            (false, true)
+        );
         // (case, last version, offer, feature in use, offered, recorded now)
         let cases = [
             ("first run", None, true, "capture.screenshot", false, true),
