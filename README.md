@@ -17,27 +17,34 @@ Kestrel's own actions. It is not a general app launcher.
 
 ## Status
 
-Kestrel is in preview. Releases are tagged `x.y.z-preview.N` on GitHub Releases
-as an x86_64 AppImage with a SHA-256 file, and there is no automatic update yet.
+Kestrel is in preview: an x86_64 AppImage tagged `x.y.z-preview.N` on GitHub
+Releases, with a SHA-256 file. GNOME, KDE Plasma, Hyprland, and X11 are
+supported by design with little real use so far, so reports are welcome.
 
-It has been checked day to day on COSMIC (Wayland), feature work is
-smoke-tested in headless Sway sessions, and CI runs on Ubuntu 24.04 with an
-Xvfb startup check of the AppImage and a layer-shell check under headless
-Sway. GNOME, KDE Plasma, Hyprland, and X11 are supported by design and have had
-little real use, so reports from them are especially welcome.
+### Where it runs
 
-Expect rough edges. Most features start off: first launch offers a short setup
-with presets and explains what each feature uses, and afterwards you turn
-features on in the Feature Hub, where presets such as Balanced enable a
-sensible set. Some features need extra packages, and each one says what to
-install; screen recording, for example, needs GStreamer's PipeWire, Base, and
-Good plugins.
+- **Tested:** Ubuntu 24.04 in CI (the AppImage starts under Xvfb with `--appimage-extract-and-run`, and a headless Sway layer-shell check), Pop!_OS 24.04 with COSMIC on Wayland (day-to-day use; the AppImage launched normally through FUSE), and headless Sway test sessions for feature work.
+- **Meet the glibc minimum (untested):** Fedora 40+, Debian 13, Arch Linux, and openSUSE Tumbleweed.
+- **Below the minimum:** Ubuntu 22.04, Debian 12, Linux Mint 21, and older Pop!_OS releases have an older glibc, and the AppImage needs 2.39 or newer, so it will not start there.
 
-Use the Bug report form on GitHub Issues and include the feature's status line
-and its logs (see [Diagnostic logs](#diagnostic-logs)).
+If the AppImage does not mount, run it with `--appimage-extract-and-run`.
 
-- [Requirements and support contract](docs/REQUIREMENTS.md)
-- [Architecture](docs/ARCHITECTURE.md)
+### Known limits
+
+- Not yet tried on real hardware: keyboard lights, Bluetooth accessory batteries, and the Edit and Copy buttons in screenshot notifications.
+- The status overlay needs layer-shell (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors), so it is unavailable on GNOME.
+- Global shortcuts need the desktop's shortcuts portal (KDE Plasma, GNOME 48+, Hyprland) or X11; elsewhere, bind `kestrel --command` in your desktop's shortcut settings.
+- There is no automatic update; download each preview by hand.
+
+Expect rough edges. First launch offers a short setup with presets; afterwards,
+turn features on in the Feature Hub, where presets such as Balanced enable a
+sensible set. Some features need extra packages, and each one says which.
+
+Use Settings → Diagnostic logs → Report a problem, or the Bug report form on
+GitHub Issues, with the feature's status line and logs (see
+[Diagnostic logs](#diagnostic-logs)).
+
+- [Requirements and support contract](docs/REQUIREMENTS.md) · [Architecture](docs/ARCHITECTURE.md)
 
 ## Principles
 

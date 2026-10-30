@@ -3,3 +3,15 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "kestrel"
+text = "Settings → Diagnostic logs has Report a problem, which opens the bug report form with your version and desktop filled in."
+
+[[change]]
+feature = "kestrel"
+text = "First-launch setup now reopens on the next launch until you finish or skip it, even if you changed a setting in between."
+
+[[change]]
+feature = "files.empty-trash"
+text = "Empty Trash shows how much space your Trash uses in readable units."

@@ -318,6 +318,15 @@ impl OverviewToolsViewModel {
                 .collect(),
         }
     }
+
+    /// The Overview's opening line, matching whether tools appear below it.
+    pub fn intro(&self) -> &'static str {
+        if self.tools.is_empty() {
+            "Turn features on in the Feature Hub. Each one says what it needs before it runs."
+        } else {
+            "Your tools are below. The Feature Hub turns on more, and each feature says what it needs."
+        }
+    }
 }
 
 /// Creates an in-place enable action only for a disabled, switchable feature.
@@ -804,8 +813,9 @@ mod tests {
             .iter()
             .map(FeatureViewModel::from)
             .collect::<Vec<_>>();
+        let tools = OverviewToolsViewModel::from_features(&features);
         assert_eq!(
-            OverviewToolsViewModel::from_features(&features)
+            tools
                 .tools
                 .iter()
                 .map(|tool| tool.label)
@@ -824,6 +834,14 @@ mod tests {
                 "Run speed test",
                 "Audio mixer",
             ]
+        );
+        assert_eq!(
+            tools.intro(),
+            "Your tools are below. The Feature Hub turns on more, and each feature says what it needs."
+        );
+        assert_eq!(
+            OverviewToolsViewModel::default().intro(),
+            "Turn features on in the Feature Hub. Each one says what it needs before it runs."
         );
     }
 

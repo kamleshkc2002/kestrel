@@ -1216,8 +1216,8 @@ mod tests {
         }
 
         // Shipped notes name real features, and the ones in use lead.
-        let notes = whats_new::shipped_changes();
-        for change in &notes {
+        let shipped = whats_new::shipped_changes();
+        for change in &shipped {
             assert!(
                 change.feature == whats_new::APP_WIDE
                     || registrations
@@ -1235,7 +1235,7 @@ mod tests {
             .iter()
             .map(|registration| crate::view_model::FeatureViewModel::from(*registration))
             .collect::<Vec<_>>();
-        let empty = WhatsNewViewModel::new(&notes, true, &features, &configuration);
+        let empty = WhatsNewViewModel::new(&[], true, &features, &configuration);
         assert!(empty.sections.is_empty());
         assert!(empty.banner.is_none());
         let notes = [

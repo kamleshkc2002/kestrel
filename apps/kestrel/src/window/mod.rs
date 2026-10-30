@@ -725,6 +725,20 @@ impl WindowView {
         toast.set_use_markup(false);
         self.toasts.add_toast(toast);
     }
+
+    /// Shows a link that did not open, with a button that copies it.
+    pub fn show_link(&self, url: &str) {
+        let toast = adw::Toast::new(url);
+        toast.set_use_markup(false);
+        toast.set_button_label(Some("Copy"));
+        toast.set_timeout(10);
+        let window = self.window.clone();
+        let url = url.to_owned();
+        toast.connect_button_clicked(move |_| {
+            window.clipboard().set_text(&url);
+        });
+        self.toasts.add_toast(toast);
+    }
 }
 
 struct PageBuild {
@@ -1022,9 +1036,7 @@ fn build_page(
         heading.set_wrap(true);
         heading.set_xalign(0.0);
         body.append(&heading);
-        let description = gtk::Label::new(Some(
-            "Kestrel keeps registered features visible and explains unavailable platform paths.",
-        ));
+        let description = gtk::Label::new(Some(view_model.overview_tools.intro()));
         configure_wrapping_label(&description);
         description.add_css_class("dim-label");
         body.append(&description);
