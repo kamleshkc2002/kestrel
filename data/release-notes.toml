@@ -7,3 +7,7 @@
 [[change]]
 feature = "kestrel"
 text = "The app's menu in the dock offers Quit Kestrel, and closing the window the first time says Kestrel keeps running and how to quit."
+
+[[change]]
+feature = "desktop.appearance"
+text = "On COSMIC, Dark appearance now switches COSMIC's own light and dark mode."
