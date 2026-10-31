@@ -3,27 +3,3 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
-
-[[change]]
-feature = "kestrel"
-text = "The app's menu in the dock offers Quit Kestrel, and closing the window the first time says Kestrel keeps running and how to quit."
-
-[[change]]
-feature = "desktop.appearance"
-text = "On COSMIC, Desktop dark mode now switches COSMIC's own light and dark mode."
-
-[[change]]
-feature = "kestrel"
-text = "On COSMIC, the Kestrel window style setting now takes effect, and System follows COSMIC's light and dark switch without a restart."
-
-[[change]]
-feature = "session.lock"
-text = "Lock screen works on desktops that start apps outside the login session's scope, such as COSMIC."
-
-[[change]]
-feature = "kestrel"
-text = "The desktop-wide switch is now called Desktop dark mode, and Settings calls Kestrel's own setting Kestrel window style, so the two are easier to tell apart."
-
-[[change]]
-feature = "kestrel"
-text = "The Feature Hub groups tools by page, explains that Overview controls only add a button, and uses plainer names."
