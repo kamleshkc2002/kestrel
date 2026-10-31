@@ -816,6 +816,9 @@ struct ControllerContext {
 struct ApplicationController {
     state: SharedState,
     config_path: Option<PathBuf>,
+    /// The one-time notice that the window is hidden and Kestrel runs.
+    background_notice_path: Option<PathBuf>,
+    background_notice_shown: Cell<bool>,
     /// First launch: setup opens once the window is first presented.
     setup_pending: Cell<bool>,
     window: RefCell<Option<WindowView>>,
@@ -910,6 +913,10 @@ impl ApplicationController {
         });
         let overlay_modules = configuration.overlay;
         let state_commands = commands.clone();
+        let background_notice_path = kestrel::background_notice::state_path();
+        let background_notice_shown = Cell::new(kestrel::background_notice::shown(
+            background_notice_path.as_deref(),
+        ));
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
                 runtime,
@@ -938,6 +945,8 @@ impl ApplicationController {
                 command_results: Vec::new(),
             })),
             config_path,
+            background_notice_path,
+            background_notice_shown,
             setup_pending: Cell::new(offer_setup),
             window: RefCell::new(None),
             floating: RefCell::new(None),
@@ -1027,6 +1036,23 @@ impl ApplicationController {
                 .ui
                 .close_action;
             if close_action == CloseAction::Minimize {
+                let already_shown = controller.background_notice_shown.get();
+                if kestrel::background_notice::should_send_background_notice(
+                    close_action,
+                    already_shown,
+                ) {
+                    let notification = AlertNotification {
+                        summary: kestrel::background_notice::SUMMARY.to_owned(),
+                        body: kestrel::background_notice::BODY.to_owned(),
+                    };
+                    if let Err(error) = controller.capture_notifier.notify(&notification) {
+                        log::debug!(target: "window.close", "Could not show the background notice: {error}");
+                    }
+                    controller.background_notice_shown.set(true);
+                    kestrel::background_notice::record_shown(
+                        controller.background_notice_path.as_deref(),
+                    );
+                }
                 window.minimize();
                 return glib::Propagation::Stop;
             }
@@ -3280,6 +3306,11 @@ fn main() -> glib::ExitCode {
             }
         }
         return exit;
+    }
+
+    // Nothing was running, so a quit has no window to open and no features to start.
+    if matches!(requested, Invocation::Run(action) if !action.starts_kestrel()) {
+        return glib::ExitCode::SUCCESS;
     }
 
     log::info!("Kestrel {} started", env!("CARGO_PKG_VERSION"));

@@ -169,6 +169,11 @@ impl CommandLineAction {
         }
     }
 
+    /// Whether a primary instance presents the window for this action.
+    pub fn starts_kestrel(self) -> bool {
+        !matches!(self, Self::Quit)
+    }
+
     pub fn parse(id: &str) -> Result<Self, CommandLineError> {
         let well_formed = !id.is_empty()
             && id.len() <= MAX_SHORTCUT_COMMAND_CHARS
@@ -462,8 +467,14 @@ mod tests {
             ids.len(),
             "IDs are unique"
         );
-        for action in actions {
+        for &action in &actions {
             assert_eq!(CommandLineAction::parse(&action.id()), Ok(action));
+            assert_eq!(
+                action.starts_kestrel(),
+                action != CommandLineAction::Quit,
+                "{}",
+                action.id()
+            );
         }
     }
 
