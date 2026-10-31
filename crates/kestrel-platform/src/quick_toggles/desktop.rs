@@ -67,11 +67,11 @@ impl ModeSource {
 pub(crate) fn choose_appearance_backend(
     cosmic_mode_known: bool,
     cosmic_daemon_present: bool,
-) -> Option<AppearanceBackend> {
+) -> AppearanceBackend {
     if cosmic_mode_known && cosmic_daemon_present {
-        Some(AppearanceBackend::Cosmic)
+        AppearanceBackend::Cosmic
     } else {
-        Some(AppearanceBackend::Gnome)
+        AppearanceBackend::Gnome
     }
 }
 
@@ -109,10 +109,7 @@ fn selected_appearance_backend(paths: CosmicPaths<'_>) -> (AppearanceBackend, Op
     let known = mode.is_ok();
     let daemon = known && cosmic_settings_daemon_present();
     let source = mode.ok().map(|(_, source)| source);
-    (
-        choose_appearance_backend(known, daemon).unwrap_or(AppearanceBackend::Gnome),
-        source,
-    )
+    (choose_appearance_backend(known, daemon), source)
 }
 
 fn gnome_appearance_capability() -> CapabilityReport {
@@ -499,10 +496,10 @@ mod tests {
     #[test]
     fn appearance_backend_needs_cosmic_mode_and_daemon() {
         let cases = [
-            (true, true, Some(AppearanceBackend::Cosmic)),
-            (true, false, Some(AppearanceBackend::Gnome)),
-            (false, true, Some(AppearanceBackend::Gnome)),
-            (false, false, Some(AppearanceBackend::Gnome)),
+            (true, true, AppearanceBackend::Cosmic),
+            (true, false, AppearanceBackend::Gnome),
+            (false, true, AppearanceBackend::Gnome),
+            (false, false, AppearanceBackend::Gnome),
         ];
         for (mode_known, daemon_present, expected) in cases {
             assert_eq!(

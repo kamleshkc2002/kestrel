@@ -531,7 +531,11 @@ fn add_general_rows(
 ) {
     let appearance = adw::ComboRow::builder()
         .title("Appearance")
-        .subtitle("Choose the application color scheme.")
+        .subtitle(if view_model.appearance_overridden {
+            "Your GTK style sheet sets this window's colours, so Light and Dark may not change them."
+        } else {
+            "Choose the application color scheme."
+        })
         .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
         .selected(match view_model.appearance {
             AppearancePreference::System => 0,

@@ -11,3 +11,7 @@ text = "The app's menu in the dock offers Quit Kestrel, and closing the window t
 [[change]]
 feature = "desktop.appearance"
 text = "On COSMIC, Dark appearance now switches COSMIC's own light and dark mode."
+
+[[change]]
+feature = "kestrel"
+text = "On COSMIC, Kestrel's Appearance setting now takes effect, and System follows COSMIC's light and dark switch without a restart."

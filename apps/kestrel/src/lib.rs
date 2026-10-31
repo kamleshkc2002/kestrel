@@ -1,5 +1,6 @@
 //! Application configuration and runtime composition.
 
+pub mod appearance;
 mod autostart;
 pub mod background_notice;
 pub mod bug_report;

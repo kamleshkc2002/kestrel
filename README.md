@@ -240,6 +240,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Quick toggles
 
 - **Dark appearance:** switches COSMIC's own light and dark mode on COSMIC, and GNOME's color scheme elsewhere. COSMIC's automatic day/night switching may change it back.
+- **Appearance:** on COSMIC, Light and Dark apply COSMIC's own light or dark colours to Kestrel's window, and System follows COSMIC's switch live without a restart. Elsewhere, a custom GTK style sheet can override the window colours.
 
 ### Desktop integration
 
