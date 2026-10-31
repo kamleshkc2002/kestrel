@@ -8,6 +8,7 @@ pub mod audio;
 pub mod camera;
 pub mod capture;
 pub mod clipboard;
+pub mod dbus_error;
 pub mod global_shortcuts;
 pub mod launcher;
 pub mod logind_session;

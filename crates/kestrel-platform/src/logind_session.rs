@@ -11,6 +11,8 @@ use zbus::{
     zvariant::OwnedObjectPath,
 };
 
+use crate::dbus_error::{DbusErrorKind, dbus_error_kind};
+
 pub const LOGIN_DESTINATION: &str = "org.freedesktop.login1";
 pub const LOGIN_PATH: &str = "/org/freedesktop/login1";
 pub const MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
@@ -23,35 +25,17 @@ pub trait LogindSessionLookup {
     fn get_user_display(&self, uid: u32) -> Result<OwnedObjectPath, zbus::Error>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionLookupErrorKind {
-    PermissionDenied,
-    Unavailable,
-    Failed,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionLookupError {
-    pub kind: SessionLookupErrorKind,
+    pub kind: DbusErrorKind,
     pub message: String,
 }
 
 impl SessionLookupError {
     fn from_dbus(error: zbus::Error) -> Self {
-        let detail = error.to_string();
-        let kind = if detail.contains("AccessDenied")
-            || detail.contains("NotAuthorized")
-            || detail.contains("InteractiveAuthorizationRequired")
-        {
-            SessionLookupErrorKind::PermissionDenied
-        } else if detail.contains("ServiceUnknown") || detail.contains("NameHasNoOwner") {
-            SessionLookupErrorKind::Unavailable
-        } else {
-            SessionLookupErrorKind::Failed
-        };
         Self {
-            kind,
-            message: format!("the logind session could not be found: {detail}"),
+            kind: dbus_error_kind(&error),
+            message: format!("the logind session could not be found: {error}"),
         }
     }
 }
@@ -155,12 +139,33 @@ mod tests {
         }
     }
 
+    /// `denied:` details fail as a method error and `missing:` as a property error.
+    fn fake_error(detail: &str) -> zbus::Error {
+        if let Some(rest) = detail.strip_prefix("denied:") {
+            let reply = zbus::message::Message::method_call("/", "GetUser")
+                .unwrap()
+                .build(&())
+                .unwrap();
+            zbus::Error::MethodError(
+                "org.freedesktop.DBus.Error.AccessDenied"
+                    .try_into()
+                    .unwrap(),
+                Some(rest.to_owned()),
+                reply,
+            )
+        } else if let Some(rest) = detail.strip_prefix("missing:") {
+            zbus::Error::FDO(Box::new(zbus::fdo::Error::ServiceUnknown(rest.to_owned())))
+        } else {
+            zbus::Error::Failure(detail.to_owned())
+        }
+    }
+
     impl LogindSessionLookup for FakeLookup {
         fn get_session(&self, id: &str) -> Result<OwnedObjectPath, zbus::Error> {
             self.calls.borrow_mut().push(format!("session:{id}"));
             match self.sessions.iter().find(|(name, _)| *name == id) {
                 Some((_, Ok(path))) => Ok(OwnedObjectPath::try_from(*path).unwrap()),
-                Some((_, Err(detail))) => Err(zbus::Error::Failure((*detail).to_owned())),
+                Some((_, Err(detail))) => Err(fake_error(detail)),
                 None => Err(zbus::Error::Failure(format!("no session {id}"))),
             }
         }
@@ -169,7 +174,7 @@ mod tests {
             self.calls.borrow_mut().push(format!("user:{uid}"));
             match self.display {
                 Ok(path) => Ok(OwnedObjectPath::try_from(path).unwrap()),
-                Err(detail) => Err(zbus::Error::Failure(detail.to_owned())),
+                Err(detail) => Err(fake_error(detail)),
             }
         }
     }
@@ -178,7 +183,7 @@ mod tests {
         session_id: Option<&'static str>,
         sessions: Vec<(&'static str, Result<&'static str, &'static str>)>,
         display: Result<&'static str, &'static str>,
-        expected: Result<&'static str, &'static str>,
+        expected: Result<&'static str, (&'static str, DbusErrorKind)>,
         calls: Vec<&'static str>,
     }
 
@@ -186,7 +191,7 @@ mod tests {
         session_id: Option<&'static str>,
         sessions: Vec<(&'static str, Result<&'static str, &'static str>)>,
         display: Result<&'static str, &'static str>,
-        expected: Result<&'static str, &'static str>,
+        expected: Result<&'static str, (&'static str, DbusErrorKind)>,
         calls: Vec<&'static str>,
     ) -> Case {
         Case {
@@ -239,8 +244,35 @@ mod tests {
                     ("auto", Err("no automatic session")),
                 ],
                 Err("the logind user reports no graphical session"),
-                Err("the logind user reports no graphical session"),
+                Err((
+                    "the logind user reports no graphical session",
+                    DbusErrorKind::Failed,
+                )),
                 vec!["session:3", "session:auto", "user:1000"],
+            ),
+            case(
+                None,
+                vec![("auto", Err("no automatic session"))],
+                Err("denied:polkit refused"),
+                Err(("polkit refused", DbusErrorKind::PermissionDenied)),
+                vec!["session:auto", "user:1000"],
+            ),
+            case(
+                None,
+                vec![("auto", Err("no automatic session"))],
+                Err("missing:logind is not running"),
+                Err(("logind is not running", DbusErrorKind::Unavailable)),
+                vec!["session:auto", "user:1000"],
+            ),
+            case(
+                None,
+                vec![("auto", Err("no automatic session"))],
+                Err("org.freedesktop.DBus.Error.AccessDenied ServiceUnknown"),
+                Err((
+                    "org.freedesktop.DBus.Error.AccessDenied ServiceUnknown",
+                    DbusErrorKind::Failed,
+                )),
+                vec!["session:auto", "user:1000"],
             ),
         ];
         for (index, case) in cases.iter().enumerate() {
@@ -252,7 +284,8 @@ mod tests {
                     *path,
                     "case {index}: expected session path {path}"
                 ),
-                (Err(detail), Err(error)) => {
+                (Err((detail, kind)), Err(error)) => {
+                    assert_eq!(error.kind, *kind, "case {index}: {error}");
                     assert!(
                         error
                             .message
