@@ -23,8 +23,9 @@ pub(super) fn build_feature_hub(
     let header = adw::PreferencesGroup::builder()
         .title("Feature Hub")
         .description(
-            "Choose which tools Kestrel offers. Turning one off hides it; it never changes your \
-             system. Open a tool's details for what it costs and needs.",
+            "Turning a tool on makes it available for use; actions such as locking the screen \
+             stay separate buttons. Turning a tool off stops its background work. Open a tool's \
+             details for what it costs and needs.",
         )
         .build();
     body.append(&header);
