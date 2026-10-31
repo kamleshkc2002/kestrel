@@ -16,9 +16,12 @@ use super::{
     QuickToggleId, QuickToggleMutation, QuickToggleObservation, ToggleAction, permission_denied,
     supported,
 };
-use crate::logind_session::{
-    LOGIN_DESTINATION, LOGIN_PATH, MANAGER_INTERFACE, SESSION_INTERFACE, SessionLookupError,
-    SessionLookupErrorKind, current_session_path,
+use crate::{
+    dbus_error::{DbusErrorKind, dbus_error_kind},
+    logind_session::{
+        LOGIN_DESTINATION, LOGIN_PATH, MANAGER_INTERFACE, SESSION_INTERFACE, SessionLookupError,
+        current_session_path,
+    },
 };
 
 const BLUEZ_ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
@@ -713,27 +716,20 @@ fn invalid_switch(label: &str) -> QuickToggleError {
 }
 
 fn session_lookup_error(error: SessionLookupError) -> QuickToggleError {
-    let kind = match error.kind {
-        SessionLookupErrorKind::PermissionDenied => QuickToggleErrorKind::PermissionDenied,
-        SessionLookupErrorKind::Unavailable => QuickToggleErrorKind::Unavailable,
-        SessionLookupErrorKind::Failed => QuickToggleErrorKind::Protocol,
-    };
-    QuickToggleError::new(kind, error.message)
+    QuickToggleError::new(quick_toggle_error_kind(error.kind), error.message)
 }
 
 fn dbus_error(context: &str, error: zbus::Error) -> QuickToggleError {
-    let message = error.to_string();
-    let kind = if message.contains("AccessDenied")
-        || message.contains("NotAuthorized")
-        || message.contains("InteractiveAuthorizationRequired")
-    {
-        QuickToggleErrorKind::PermissionDenied
-    } else if message.contains("ServiceUnknown") || message.contains("NameHasNoOwner") {
-        QuickToggleErrorKind::Unavailable
-    } else {
-        QuickToggleErrorKind::Protocol
-    };
+    let kind = quick_toggle_error_kind(dbus_error_kind(&error));
     QuickToggleError::new(kind, format!("{context}: {error}"))
+}
+
+fn quick_toggle_error_kind(kind: DbusErrorKind) -> QuickToggleErrorKind {
+    match kind {
+        DbusErrorKind::PermissionDenied => QuickToggleErrorKind::PermissionDenied,
+        DbusErrorKind::Unavailable => QuickToggleErrorKind::Unavailable,
+        DbusErrorKind::Failed => QuickToggleErrorKind::Protocol,
+    }
 }
 
 fn dbus_capability_error(
