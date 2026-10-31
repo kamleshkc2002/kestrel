@@ -65,7 +65,9 @@ install -Dm755 "$repository/target/release/kestrel" "$binary"
 install -Dm644 "$repository/data/icons/$app_id.svg" "$icon_file"
 mkdir -p "$(dirname -- "$desktop_file")"
 # An absolute Exec works when ~/.local/bin is absent from the launcher's PATH.
-sed "s|^Exec=kestrel\$|Exec=$binary|" "$repository/data/$app_id.desktop" >"$desktop_file"
+sed -e "s|^Exec=kestrel\$|Exec=$binary|" \
+  -e "s|^Exec=kestrel |Exec=$binary |" \
+  "$repository/data/$app_id.desktop" >"$desktop_file"
 chmod 644 "$desktop_file"
 refresh_caches
 

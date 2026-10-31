@@ -9,3 +9,8 @@ Categories=Utility;System;
 Keywords=utility;system;monitor;alerts;audio;mixer;clipboard;snippets;screenshot;ocr;qr;color;recording;processes;ports;
 StartupNotify=true
 StartupWMClass=io.github.kamleshkc2002.Kestrel
+Actions=quit;
+
+[Desktop Action quit]
+Name=Quit Kestrel
+Exec=kestrel --command app.quit
