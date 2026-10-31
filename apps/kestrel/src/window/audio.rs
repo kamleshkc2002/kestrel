@@ -587,7 +587,9 @@ pub(super) fn build_microphone_controls(
     commands: &Sender<ApplicationCommand>,
 ) -> gtk::Box {
     let container = gtk::Box::new(Orientation::Vertical, 12);
-    let group = adw::PreferencesGroup::builder().title("Microphone").build();
+    let group = adw::PreferencesGroup::builder()
+        .title("Microphone controls")
+        .build();
     // While stopped, the row below carries the status.
     if microphone.running {
         group.set_description(Some(

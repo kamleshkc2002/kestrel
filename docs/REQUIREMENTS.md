@@ -100,9 +100,9 @@ Difficulty legend: ✅ straightforward · 🟡 moderate/partial · 🔶 hard or 
 |---|---|---|---|
 | Tray icon + panel | ✅ | StatusNotifierItem (SNI) / libappindicator | `waybar`, KDE tray |
 | Per-app volume mixer | ✅ | PipeWire / PulseAudio (`pavucontrol` model) | `pavucontrol`, `qpwgraph` |
-| System monitor (CPU/RAM/temps/net) | ✅ | `/proc`, `/sys/class/hwmon`, `/proc/net` | `btop`, `Mission Center` |
+| Monitoring (CPU/RAM/temps/net) | ✅ | `/proc`, `/sys/class/hwmon`, `/proc/net` | `btop`, `Mission Center` |
 | Clipboard history | ✅ | X11 selections / `wl-clipboard`; polling vs. ownership | `CopyQ`, `cliphist` |
-| Text snippets | ✅ | `xdotool` / `ydotool` / `wtype` for injection | `Espanso` |
+| Snippets | ✅ | `xdotool` / `ydotool` / `wtype` for injection | `Espanso` |
 | Screenshots | ✅ | `grim`+`slurp` (Wayland), X11 capture, portal | `flameshot`, `grim` |
 | Screen recording | 🟡 | PipeWire + `org.freedesktop.portal.ScreenCast` | `OBS`, `Kooha` |
 | Keep awake / battery alerts | ✅ | `systemd-inhibit`, UPower, `/sys/class/power_supply` | `caffeine`, GNOME power settings |
@@ -151,7 +151,7 @@ constraints.
 | Input injection (snippets) | `XTEST` (`xdotool`) | `ydotool` (uinput) or compositor-specific protocols; needs a virtual device |
 | Clipboard | X selections (`PRIMARY`/`CLIPBOARD`), well understood | `wl-clipboard`; clipboard owned by focused app, loses content on app exit without a manager |
 | Screenshots / capture | X11 grab or `ffmpeg x11grab` | XDG `Screenshot` portal for stills; PipeWire + XDG `ScreenCast` portal for recording; `grim` on wlroots compositors |
-| Global shortcuts | X11 grab | Portal `GlobalShortcuts` (newer) or compositor config |
+| Keyboard shortcuts | X11 grab | Portal `GlobalShortcuts` (newer) or compositor config |
 
 **Implication:** a fully feature-equivalent app is simpler to build for X11, but
 Wayland is the present and future default (GNOME, KDE, Fedora, Ubuntu). The
@@ -433,10 +433,10 @@ specific remediation rather than simply hiding a feature without explanation.
 
 | Feature | Module | Primary data source | DE / server notes |
 |---|---|---|---|
-| System monitor | `system-monitor` | `/proc`, `/sys/class/hwmon`, `/proc/net` | universal |
+| Monitoring | `system-monitor` | `/proc`, `/sys/class/hwmon`, `/proc/net` | universal |
 | Per-app volume | `audio` | PulseAudio compatibility API + PipeWire metadata | Native PipeWire backend for advanced routing |
 | Clipboard history | `clipboard` | X11 selections / Wayland data-control / portal clipboard APIs | `wl-clipboard` alone is not a history manager; persist by re-owning selection |
-| Text snippets | `snippets` | `xdotool`/`ydotool`/`wtype` injection | X11 vs uinput capability detection; app-specific Wayland behavior is limited |
+| Snippets | `snippets` | `xdotool`/`ydotool`/`wtype` injection | X11 vs uinput capability detection; app-specific Wayland behavior is limited |
 | Screenshots | `screenshot` | `grim`+`slurp` (Wayland), X11 grab, portal | portal-gated on Wayland |
 | Screen recording | `recorder` | PipeWire + `ScreenCast` portal | portal consent dialog |
 | Keep awake / battery | `power` | `systemd-inhibit`, UPower, `/sys/class/power_supply` | universal |
@@ -593,7 +593,7 @@ second explicit opt-in; memory-only history remains the default.
 - Feature hub with independent installed/enabled/available/running states,
   capability and permission explanations, conservative energy-cost labels, and
   small first-run presets.
-- System monitor: CPU, RAM/cache/swap, temperatures, network, disk, battery,
+- Monitoring: CPU, RAM/cache/swap, temperatures, network, disk, battery,
   bounded history, core alerts, and keep-awake toggle. GPU, peripheral battery
   and per-process depth may report unavailable until their adapters land.
 - Per-app volume mixer, mute/routing, output switching, and safe boosted volume.
@@ -609,7 +609,7 @@ second explicit opt-in; memory-only history remains the default.
 - **Exit criteria:** installable native package and AppImage preview; runs on GNOME and
   KDE Wayland plus one X11 environment; no root daemon required.
 ### 11.4 Phase 2 — Utility expansion
-- Text snippets with folders, search, date/time and clipboard variables, plus
+- Snippets with folders, search, date/time and clipboard variables, plus
   capability-gated X11/Wayland injection.
 - Command bar for Kestrel's feature commands, snippets, clipboard history,
   math, units, dates, URLs, local scripts, row shortcuts, and privacy-bounded
@@ -622,8 +622,9 @@ second explicit opt-in; memory-only history remains the default.
   positives and never replace hard retention bounds.
 - Portal screenshots and recording; annotation/redaction, quick preview, recent
   captures, OCR/QR, color picker, camera preview, and a tabbed scratchpad.
-- Microphone mute/input preference, network speed test, process inspector with
-  confirmed terminate/restart actions, and expanded monitor alerts/readouts.
+- Microphone controls with mute and input preference, speed test, process
+  inspector with confirmed terminate/restart actions, and expanded monitor
+  alerts/readouts.
 - Quick panel and toggles with configurable actions.
 
 ### 11.5 Phase 3 — Advanced workflows
@@ -678,7 +679,7 @@ second explicit opt-in; memory-only history remains the default.
 - Application updates, cleanup, uninstall, Homebrew handoff, and
   messaging-download organization. Package managers and software centres own
   application management.
-- Status overlay modules for media playback, lyrics, calendar, notifications,
+- Status bar overlay modules for media playback, lyrics, calendar, notifications,
   timers, downloads, AI-agent usage, window watching, and companions. Desktop
   panels, notification daemons, and media applets already provide them; the
   overlay shows only Kestrel's own state.
@@ -779,7 +780,7 @@ it well enough to *integrate* (shell out / D-Bus) rather than reinvent:
 | Need | Existing tool | Reuse strategy |
 |---|---|---|
 | Per-app volume | `pavucontrol`, `qpwgraph` | Use PulseAudio/PipeWire API directly (same backend) |
-| System monitor | `btop`, `Mission Center` | Reuse `/proc`+`/sys` approach, not the tools |
+| Monitoring | `btop`, `Mission Center` | Reuse `/proc`+`/sys` approach, not the tools |
 | Clipboard | `CopyQ`, `cliphist` | Could integrate or reimplement; re-owning selection is the key |
 | Snippets | `Espanso`, `xremap` | Integrate with Espanso or provide a uinput-backed implementation; app-specific Wayland behavior is limited |
 | Launcher | `rofi`, `wofi`, `ulauncher`, `albert` | Do not compete; expose Kestrel actions through `kestrel --command` and launcher script commands |

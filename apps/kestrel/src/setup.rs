@@ -360,18 +360,18 @@ mod tests {
             ("capture.screenshot", "Screenshots"),
             ("capture.recording", "Screen recording"),
             ("clipboard.history", "Clipboard history"),
-            ("global.shortcuts", "Global shortcuts"),
-            ("audio.microphone", "Microphone"),
-            ("system.monitor", "System monitor"),
-            ("snippets.text", "Text snippets"),
+            ("global.shortcuts", "Keyboard shortcuts"),
+            ("audio.microphone", "Microphone controls"),
+            ("system.monitor", "Monitoring"),
+            ("snippets.text", "Snippets"),
         ];
         assert_eq!(
             preset_detail(FeaturePreset::Balanced, &labelled),
-            "Turns on Screenshots, Screen recording, Microphone, System monitor, Text snippets."
+            "Turns on Screenshots, Screen recording, Microphone controls, Monitoring, Snippets."
         );
         assert_eq!(
             preset_detail(FeaturePreset::Everything, &labelled),
-            "Everything in Balanced, plus Clipboard history, Global shortcuts."
+            "Everything in Balanced, plus Clipboard history, Keyboard shortcuts."
         );
     }
 }

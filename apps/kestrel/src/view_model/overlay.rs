@@ -1,4 +1,4 @@
-//! Status overlay presentation.
+//! Status bar overlay presentation.
 
 use std::time::{Duration, Instant};
 
@@ -389,7 +389,7 @@ impl OverlayViewModel {
             Some(registration) if registration.running => {
                 "Appears at the top of the screen while one of these is active.".to_owned()
             }
-            _ => "Turn on Status overlay in the Feature Hub to use these.".to_owned(),
+            _ => "Turn on Status bar overlay in the Feature Hub to use these.".to_owned(),
         };
         Self {
             running,
@@ -490,7 +490,7 @@ mod tests {
     use kestrel_core::{CapabilityReport, FeatureSpec, OverlayConfiguration};
 
     fn overlay(status: CapabilityStatus, enabled: bool) -> OverlayViewModel {
-        let spec = FeatureSpec::new(crate::OVERLAY_ID, "Status overlay", status.clone());
+        let spec = FeatureSpec::new(crate::OVERLAY_ID, "Status bar overlay", status.clone());
         let report = CapabilityReport::new(crate::OVERLAY_ID, status, "Overlay.");
         let mut registration =
             ServiceRegistration::new(spec, report, enabled).expect("matching feature IDs");
@@ -1195,7 +1195,7 @@ mod tests {
         assert!(
             overlay(CapabilityStatus::Supported, false)
                 .status
-                .starts_with("Turn on Status overlay")
+                .starts_with("Turn on Status bar overlay")
         );
         assert!(
             overlay(CapabilityStatus::Supported, true)

@@ -4,7 +4,7 @@ use super::widgets::{FilterRows, icon_button, plain_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, gdk};
-use kestrel::view_model::{FeatureIndicator, ShortcutChoiceViewModel};
+use kestrel::view_model::{FeatureHubSection, FeatureIndicator, ShortcutChoiceViewModel};
 use kestrel::{
     ApplicationCommand, ApplicationViewModel, ConfirmationViewModel, FeatureViewModel,
     QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel,
@@ -13,63 +13,87 @@ use kestrel::{
 use kestrel_core::{ShortcutModifiers, ShortcutTrigger};
 use std::{cell::RefCell, rc::Rc};
 
-/// Builds the feature hub and returns its rows for the sidebar search.
-pub(super) fn build_feature_hub_group(
+/// Builds the feature hub's header and one group per section, returning every
+/// row for the sidebar search.
+pub(super) fn build_feature_hub(
     features: &[FeatureViewModel],
     commands: &Sender<ApplicationCommand>,
-) -> (adw::PreferencesGroup, FilterRows) {
-    let group = adw::PreferencesGroup::builder()
+) -> (gtk::Box, FilterRows) {
+    let body = gtk::Box::new(Orientation::Vertical, 24);
+    let header = adw::PreferencesGroup::builder()
         .title("Feature Hub")
         .description(
-            "Turn features on or off. Hover a feature, or open its details, for what it costs \
-             and needs.",
+            "Choose which tools Kestrel offers. Turning one off hides it; it never changes your \
+             system. Open a tool's details for what it costs and needs.",
         )
         .build();
-    let mut rows = FilterRows::new();
-    // A feature that cannot be turned off, such as the main window, is not a choice.
-    for feature in features.iter().filter(|feature| feature.configurable) {
-        let indicator = feature.indicator();
-        let status = feature.status_line();
-        let details = feature.details();
-        let row = plain_row()
-            .title(&feature.label)
-            .subtitle(&status)
-            .subtitle_lines(2)
-            .build();
-        row.add_prefix(&indicator_icon(indicator));
+    body.append(&header);
 
-        let controls = gtk::Box::new(Orientation::Horizontal, 6);
-        controls.append(&details_icon(&details));
-        let enabled = gtk::Switch::builder()
-            .active(feature.enabled)
-            .sensitive(feature.switchable())
-            .valign(Align::Center)
-            .build();
-        let sender = commands.clone();
-        let feature_id = feature.id.clone();
-        enabled.connect_state_set(move |_, state| {
-            let _ = sender.try_send(ApplicationCommand::SetFeatureEnabled {
-                feature_id: feature_id.clone(),
-                enabled: state,
-            });
-            gtk::glib::Propagation::Proceed
-        });
-        controls.append(&enabled);
-        row.add_suffix(&controls);
-        row.set_activatable_widget(Some(&enabled));
-        row.update_property(&[Property::Label(&format!(
-            "{}. {}. {status}",
-            feature.label,
-            indicator.label()
-        ))]);
-        row.update_property(&[Property::Description(&details)]);
-        group.add(&row);
-        rows.push((
-            row.upcast(),
-            format!("{} {} {status} {details}", feature.label, feature.id).to_lowercase(),
-        ));
+    let mut rows = FilterRows::new();
+    for section in FeatureHubSection::ALL {
+        let group = adw::PreferencesGroup::builder().title(section.title());
+        let group = match section.description() {
+            Some(description) => group.description(description).build(),
+            None => group.build(),
+        };
+        let mut empty = true;
+        for feature in features.iter().filter(|feature| {
+            feature.configurable && FeatureHubSection::of(&feature.id) == Some(section)
+        }) {
+            let (row, keywords) = build_feature_row(feature, commands);
+            group.add(&row);
+            rows.push((row.upcast(), keywords));
+            empty = false;
+        }
+        if !empty {
+            body.append(&group);
+        }
     }
-    (group, rows)
+    (body, rows)
+}
+
+/// One feature's switch, state icon, and details.
+fn build_feature_row(
+    feature: &FeatureViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> (adw::ActionRow, String) {
+    let indicator = feature.indicator();
+    let status = feature.status_line();
+    let details = feature.details();
+    let row = plain_row()
+        .title(&feature.label)
+        .subtitle(&status)
+        .subtitle_lines(2)
+        .build();
+    row.add_prefix(&indicator_icon(indicator));
+
+    let controls = gtk::Box::new(Orientation::Horizontal, 6);
+    controls.append(&details_icon(&details));
+    let enabled = gtk::Switch::builder()
+        .active(feature.enabled)
+        .sensitive(feature.switchable())
+        .valign(Align::Center)
+        .build();
+    let sender = commands.clone();
+    let feature_id = feature.id.clone();
+    enabled.connect_state_set(move |_, state| {
+        let _ = sender.try_send(ApplicationCommand::SetFeatureEnabled {
+            feature_id: feature_id.clone(),
+            enabled: state,
+        });
+        gtk::glib::Propagation::Proceed
+    });
+    controls.append(&enabled);
+    row.add_suffix(&controls);
+    row.set_activatable_widget(Some(&enabled));
+    row.update_property(&[Property::Label(&format!(
+        "{}. {}. {status}",
+        feature.label,
+        indicator.label()
+    ))]);
+    row.update_property(&[Property::Description(&details)]);
+    let keywords = format!("{} {} {status} {details}", feature.label, feature.id).to_lowercase();
+    (row, keywords)
 }
 
 /// The row's state icon: running, needs attention, unavailable, or off.
@@ -267,7 +291,7 @@ pub(super) fn build_shortcuts_group(
     commands: &Sender<ApplicationCommand>,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
-        .title("Global shortcuts")
+        .title("Keyboard shortcuts")
         .description(gtk::glib::markup_escape_text(&shortcuts.status).as_str())
         .build();
     let add = gtk::Button::with_label("Add shortcut");

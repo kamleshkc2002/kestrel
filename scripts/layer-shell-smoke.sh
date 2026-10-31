@@ -144,4 +144,4 @@ if grep -Eq "${status_surface}\.set_keyboard_interactivity\([1-9]" "$work/kestre
   printf 'The status overlay asked for keyboard input.\n' >&2
   exit 1
 fi
-printf 'Status overlay opened as a top-layer overlay without keyboard input\n'
+printf 'Status bar overlay opened as a top-layer overlay without keyboard input\n'

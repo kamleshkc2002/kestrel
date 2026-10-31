@@ -1,4 +1,4 @@
-//! Global shortcuts through the `GlobalShortcuts` portal or, on real X11
+//! Keyboard shortcuts through the `GlobalShortcuts` portal or, on real X11
 //! sessions, `XGrabKey`. Probing only reads the portal version and the session
 //! type; sessions and grabs exist only while the feature runs.
 
@@ -141,7 +141,7 @@ pub fn capability_for(detection: &ShortcutDetection) -> CapabilityReport {
             FEATURE_ID,
             CapabilityStatus::Supported,
             format!(
-                "Global shortcuts can be registered through the {}.",
+                "Keyboard shortcuts can be registered through the {}.",
                 provider.label()
             ),
         )
@@ -153,7 +153,7 @@ pub fn capability_for(detection: &ShortcutDetection) -> CapabilityReport {
                          need a real X11 session."
                     .to_owned(),
             },
-            "Global shortcuts are unavailable in this session.",
+            "Keyboard shortcuts are unavailable in this session.",
         )
         .with_remediation(
             "Bind `kestrel --command <id>` in your desktop's custom-shortcut settings, or use a \

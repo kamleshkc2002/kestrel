@@ -486,7 +486,7 @@ query when they close. `scripts/layer-shell-smoke.sh` proves the overlay path on
 a private headless Sway, and the AppImage workflow runs it against the bundled
 build.
 
-### 5.10 Network speed test
+### 5.10 Speed test
 
 `network.speed_test` never runs on its own: enabling the feature makes a test
 startable, and only an explicit start command spawns the named
@@ -506,7 +506,7 @@ messages. The service publishes progress through a generation counter so the
 periodic tick only rebuilds the panel when something changed, and `stop()` —
 called when the feature is disabled and on drop — cancels and joins the worker.
 
-### 5.11 Command entry points and global shortcuts
+### 5.11 Command entry points and keyboard shortcuts
 
 `kestrel --command <id>` parses the ID locally (at most 64 characters of
 `[a-z0-9._-]`; unknown and malformed IDs exit 2 before touching D-Bus) and
@@ -577,7 +577,7 @@ operations) applied by `kestrel-services` to decoded RGBA pixels; redaction
 writes opaque black into every channel before encoding, and the result is a new
 capture so the source stays until deleted. The GTK editor only previews the plan.
 
-### 5.13 Processes and listening ports
+### 5.13 Processes and open ports
 
 `system.processes` reads `/proc/<pid>/stat`, `status`, `exe`, and `cgroup`
 only; `cmdline` and `environ` are never opened. A scan visits at most 8192
@@ -932,7 +932,7 @@ Phase 0 validates architecture assumptions through small, disposable probes:
 | Spike | Architecture evidence produced | Production commitment after success |
 |---|---|---|
 | Tray/SNI | Access paths and GNOME fallback behavior | Optional UI adapter only; never sole entry point |
-| System monitor | Sensor identity, sampling cost, missing-hardware states | `system-monitor` service and `/proc`/`/sys` adapter |
+| Monitoring | Sensor identity, sampling cost, missing-hardware states | `system-monitor` service and `/proc`/`/sys` adapter |
 | Audio | Stream discovery, volume mutation, PipeWire/PulseAudio behavior | `audio` service and selected audio adapter |
 | Clipboard | Ownership persistence, privacy controls, X11/Wayland behavior | `clipboard` lifecycle and storage contract |
 | Screenshot | Portal discovery, consent, cancellation, artifact handling | `capture` service and portal adapter |

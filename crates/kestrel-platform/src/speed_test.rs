@@ -688,7 +688,7 @@ impl CapabilityProbe for SpeedTestProbe {
                 CapabilityStatus::Unsupported {
                     reason: "curl is not installed.".to_string(),
                 },
-                "Network speed tests are unavailable because curl is not installed.",
+                "Speed tests are unavailable because curl is not installed.",
             )
             .with_remediation("Install curl and ensure it is available on PATH.")
         }

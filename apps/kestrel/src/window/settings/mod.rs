@@ -244,7 +244,7 @@ fn add_overlay_group(
 ) -> Option<adw::ActionRow> {
     let overlay = &view_model.overlay;
     let overlay_group = adw::PreferencesGroup::builder()
-        .title("Status overlay")
+        .title("Status bar overlay")
         .description(gtk::glib::markup_escape_text(&overlay.status).as_str())
         .build();
     overlay_group.add(&overlay_module_row(

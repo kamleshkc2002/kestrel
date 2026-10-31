@@ -881,7 +881,7 @@ impl CapabilityProbe for ListenersProbe {
             CapabilityReport::new(
                 LISTENERS_FEATURE_ID,
                 CapabilityStatus::Supported,
-                "Listening ports are available.",
+                "Open ports are available.",
             )
         } else {
             CapabilityReport::new(
@@ -889,7 +889,7 @@ impl CapabilityProbe for ListenersProbe {
                 CapabilityStatus::Unsupported {
                     reason: "procfs network tables are unavailable".into(),
                 },
-                "Listening ports are unavailable.",
+                "Open ports are unavailable.",
             )
         }
     }

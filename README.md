@@ -33,7 +33,7 @@ If the AppImage does not mount, run it with `--appimage-extract-and-run`.
 
 - Not yet tried on real hardware: keyboard lights, Bluetooth accessory batteries, and the Edit and Copy buttons in screenshot notifications.
 - The status overlay needs layer-shell (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors), so it is unavailable on GNOME.
-- Global shortcuts need the desktop's shortcuts portal (KDE Plasma, GNOME 48+, Hyprland) or X11; elsewhere, bind `kestrel --command` in your desktop's shortcut settings.
+- Keyboard shortcuts need the desktop's shortcuts portal (KDE Plasma, GNOME 48+, Hyprland) or X11; elsewhere, bind `kestrel --command` in your desktop's shortcut settings.
 - There is no automatic update; download each preview by hand.
 
 Expect rough edges. First launch offers a short setup with presets; afterwards,
@@ -106,7 +106,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 ## Features
 
-### System monitoring — `system.monitor`
+### Monitoring — `system.monitor`
 
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** `[monitoring] refresh_interval_millis` (250–60,000; default 1,000), `history_samples` (1–600; default 120), `readouts`, `network_rate_unit` (`bytes` or `bits`; default `bytes`), `per_core_cpu` (default false), `tray_readouts` (up to 3; default none), and `[monitoring.alerts]` rules (`threshold` >0 and ≤100% or ≤150 °C, `sustain_samples` 1–600, `cooldown_seconds` ≤86,400).
@@ -126,7 +126,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Output priority: while followed, the highest-ranked connected output becomes the default when outputs connect or disconnect, or when the ranking changes. A manual choice stands until then. Disconnected devices keep their rank. Only server device names are stored.
 - Pinned applications are listed first in their pinned order, keyed by `application.id`, else the process binary, else the application name. Unpinned streams keep the server's order, and a pin applies again when the application returns.
 
-### Microphone — `audio.microphone`
+### Microphone controls — `audio.microphone`
 
 - **Default:** disabled; Essentials enables it.
 - **Configuration:** `[audio] input_priority` (up to 16 device names) and `follow_input_priority` (default false), following the output ranking's rules.
@@ -134,13 +134,13 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Recording applications lists each capture stream with its level and mute; a stream reading a sink monitor is labelled as recording system audio. Only the application name and identity are kept.
 - Mute toggle: the window switch, `Ctrl+Shift+M`, the command bar, or the tray menu.
 
-### Network speed test — `network.speed_test`
+### Speed test — `network.speed_test`
 
 - **Default:** disabled; runs only when you start it.
 - **Configuration:** `[speed_test] download_megabytes` (1–90; default 25), `upload_megabytes` (0–25; default 10; 0 skips upload), `timeout_seconds` (5–120; default 30).
 - Shows the Cloudflare host (which sees your IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` launched directly, ignores `~/.curlrc`, and supports cancellation.
 
-### Text snippets — `snippets.text`
+### Snippets — `snippets.text`
 
 - **Default:** disabled.
 - **Configuration:** `[snippets] max_content_bytes` (1 B–1 MiB; default 64 KiB), `clipboard_variable_bytes` (64 B–64 KiB; default 4 KiB), `insert_timeout_millis` (250–10,000; default 2,000), `preferred_provider` (`auto`, `wtype`, `ydotool`, or `xdotool`; default `auto`), and `expansion_timing` (`manual` or `delimiter`; default `manual`).
@@ -155,7 +155,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default false), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default false), `enable_windows` (default false), `enable_clipboard` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds. Configurations that already list these keys keep their values.
 - Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins, never queries, window titles, or clipboard entries.
 - `kestrel --command command-bar.open` opens the bar as a floating surface without raising the main window, with the search field already focused. Up/Down or Ctrl+N/Ctrl+P select, Return runs the selection (or the first result) and shows the outcome in the bar, and Escape closes it and returns focus to the window you were in. While the feature is off, the bar shows how to turn it on.
-- Tool results include Take screenshot, Edit last screenshot when a capture exists, Read text (OCR), Read QR code, Pick colour, Start/Stop recording, and Open scratchpad. Each appears only while its feature is usable; search aliases include `capture`, `grab`, `ocr`, `scan`, `color`, `eyedropper`, and `notes`.
+- Tool results include Take screenshot, Edit last screenshot when a capture exists, Read text (OCR), Read QR code, Pick color, Start/Stop recording, and Open scratchpad. Each appears only while its feature is usable; search aliases include `capture`, `grab`, `ocr`, `scan`, `color`, `eyedropper`, and `notes`.
 - Results cover Kestrel actions, feature switches (searching a feature lists its switch first), snippets, clipboard history entries while clipboard history runs, and scripts; with their sources switched on, also applications and their desktop actions, open windows, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
 - Open windows come from COSMIC toplevel management, wlroots foreign-toplevel management (Sway, Hyprland, labwc), the generic Wayland toplevel list (listing only), or EWMH on X11. GNOME exposes no window list to applications, so window results stay off there and the provider row says why.
 - Computed answers: arithmetic (numbers may group thousands with a space or an apostrophe and use a comma or period decimal), unit conversion, dates and times, `feb 29` or `days until dec 25`, and colors in `#rrggbb`, `rgb()`, or `hsl()` notation with a swatch.
@@ -230,7 +230,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Kestrel opens a pidfd and checks the start time again before every signal, so a PID reused by another process is refused. Without pidfd support (Linux 5.3+), the list still works, End, Kill, Restart, and Stop owner are hidden, and the panel says why.
 - Restart appears for systemd user services (`systemctl --user restart`) and apps the desktop launched into their own `app-…scope` (SIGTERM to every process in the scope, then a relaunch from the desktop entry). Force restart sends SIGKILL to anything still running after 5 s. Services in `session.slice` are never restarted.
 
-### Listening ports — `network.listeners`
+### Open ports — `network.listeners`
 
 - **Default:** disabled; Balanced and Everything enable it.
 - **Configuration:** no feature-specific keys; the list refreshes every 2 s while enabled and holds at most 1,024 sockets.
@@ -244,14 +244,14 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 ### Desktop integration
 
-- The normal window is always available; the tray is optional. Tray integration (`app.status-notifier`) is on by default and can be turned off in the Feature Hub, which removes the tray icon and readout icons at once; presets leave it as you set it.
+- The normal window is always available; the tray is optional. Tray icon (`app.status-notifier`) is on by default and can be turned off in the Feature Hub, which removes the tray icon and readout icons at once; presets leave it as you set it.
 - The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Some docks' Quit only sends the same close request, so Kestrel keeps running; **Quit Kestrel** in the app's menu (the desktop entry's action), the tray's Quit, the Quit row on the Settings page, and Ctrl+Q always quit. The first close that hides the window shows a one-time notification saying Kestrel is still running and how to quit. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make the close button quit instead. Minimizing turns off a running camera preview.
 - The StatusNotifierItem tray (open, refresh, toggle microphone mute, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, COSMIC, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Each readout marked **Tray** in Settings (up to three) gets its own tray icon showing its label and current value; clicking it opens Kestrel, and its menu shows the full reading. Hosts that support tooltips also show the reading on hover; COSMIC shows no tray tooltips.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 
-### Status overlay — `overlay.status`
+### Status bar overlay — `overlay.status`
 
-- **Default:** disabled. Turn it on in the Feature Hub, and choose its modules under Settings → Status overlay.
+- **Default:** disabled. Turn it on in the Feature Hub, and choose its modules under Settings → Status bar overlay.
 - A small pill at the top centre of the screen that appears only while one of its modules has something active, and disappears otherwise. It takes the keyboard only when you click into it, only its own area takes the pointer, and it reserves no screen space.
 - **Recording:** while a screen recording runs, its running time (or Paused) with Pause/Resume and Stop buttons.
 - **Alerts:** each active monitoring alert with its reading, such as "CPU is 95%"; clicking it opens the Monitoring page.
@@ -259,9 +259,9 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Volume:** after the active output's volume or mute changes, its type, a level slider, and mute; needs `audio.mixer`.
 - **Microphone level:** after the default input's mute or level changes, a fader, mute, and an editable percentage; needs `audio.microphone`.
 - **Keyboard light:** after the keyboard light changes, a slider whose icon turns it off and on; needs the Keyboard light quick toggle.
-- **Accessory batteries:** while a mouse, keyboard, headset, or other accessory that isn't charging runs at or below the warning level, its icon and percentage in amber, or in red at the critical level; a device also shows briefly when it connects or starts or stops charging. Needs System monitor and UPower, and never shows a device's name.
+- **Accessory batteries:** while a mouse, keyboard, headset, or other accessory that isn't charging runs at or below the warning level, its icon and percentage in amber, or in red at the critical level; a device also shows briefly when it connects or starts or stops charging. Needs Monitoring and UPower, and never shows a device's name.
 - These controls show for 3 seconds after a change and stay while the pointer is over the overlay. Changes made elsewhere, including from hardware keys or another mixer, are noticed within half a second.
-- Each module reads the state its feature already publishes, so a module that is off, or whose feature is off, costs nothing; switch modules under Settings → Status overlay (`[overlay] recording`, `alerts`, `microphone`, `volume`, `microphone_level`, `keyboard_light`, `accessories`, plus `accessory_warning` and `accessory_critical` for its levels, default 20 and 10).
+- Each module reads the state its feature already publishes, so a module that is off, or whose feature is off, costs nothing; switch modules under Settings → Status bar overlay (`[overlay] recording`, `alerts`, `microphone`, `volume`, `microphone_level`, `keyboard_light`, `accessories`, plus `accessory_warning` and `accessory_critical` for its levels, default 20 and 10).
 - **Needs:** a desktop that lets apps place a layer-shell surface (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors) and a build with gtk4-layer-shell; the AppImage bundles it. Elsewhere the feature shows as unavailable with the reason, and Kestrel's window, tray, and shortcuts work as usual. It appears on the display the compositor chooses.
 
 ### What's new after an update
@@ -280,7 +280,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 ### Keyboard shortcuts
 
-The Shortcuts page sets keys up without editing files: **Add shortcut** picks an action and records a key combination, and each binding has Change key, Copy command, and Remove. Kestrel registers the keys itself where the desktop allows it (see [Global shortcuts](#global-shortcuts--globalshortcuts)); elsewhere the page explains how to add each one as a custom shortcut.
+The Shortcuts page sets keys up without editing files: **Add shortcut** picks an action and records a key combination, and each binding has Change key, Copy command, and Remove. Kestrel registers the keys itself where the desktop allows it (see [Keyboard shortcuts](#keyboard-shortcuts--globalshortcuts)); elsewhere the page explains how to add each one as a custom shortcut.
 
 `kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, COSMIC Settings → Input devices → Keyboard → Keyboard shortcuts → Custom shortcuts, or your compositor config); Copy command on the Shortcuts page copies the line for a binding:
 
@@ -304,7 +304,7 @@ IDs cover the window, command bar, quick panel (`quick-panel.open`), clipboard q
 | 4 | The action's feature is unavailable on this system; the window shows why |
 | 5 | The action's feature is enabled but not running |
 
-#### Global shortcuts — `global.shortcuts`
+#### Keyboard shortcuts — `global.shortcuts`
 
 - **Default:** disabled; enabling it in the Feature Hub registers the configured bindings.
 - **Providers:** the `GlobalShortcuts` portal where the desktop exports it (KDE Plasma, GNOME 48+, Hyprland), which may ask you to confirm or change each key; `XGrabKey` on real X11 sessions, which reports a combination another client already holds. Other sessions show the feature as unsupported and point to `kestrel --command`.

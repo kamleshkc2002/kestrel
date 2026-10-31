@@ -153,9 +153,7 @@ pub(super) fn build_processes_panel(
     search_row.set_visible(processes.running);
     container.append(&process_group);
 
-    let listener_group = adw::PreferencesGroup::builder()
-        .title("Listening ports")
-        .build();
+    let listener_group = adw::PreferencesGroup::builder().title("Open ports").build();
     let listener_rows = boxed_list();
     listener_group.add(&listener_rows);
     container.append(&listener_group);

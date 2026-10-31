@@ -21,7 +21,7 @@ pub(super) fn build_snippet_panel(
 ) -> SnippetPanel {
     let container = gtk::Box::new(Orientation::Vertical, 12);
     let group = adw::PreferencesGroup::builder()
-        .title("Text snippets")
+        .title("Snippets")
         .description(
             "Reusable text with local date, time, time zone, and clipboard variables. \
              Insertion is only offered when a provider is verified.",
