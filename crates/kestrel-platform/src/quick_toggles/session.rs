@@ -16,10 +16,11 @@ use super::{
     QuickToggleId, QuickToggleMutation, QuickToggleObservation, ToggleAction, permission_denied,
     supported,
 };
+use crate::logind_session::{
+    LOGIN_DESTINATION, LOGIN_PATH, MANAGER_INTERFACE, SESSION_INTERFACE, SessionLookupError,
+    SessionLookupErrorKind, current_session_path,
+};
 
-const LOGIN_DESTINATION: &str = "org.freedesktop.login1";
-const LOGIN_PATH: &str = "/org/freedesktop/login1";
-const LOGIN_INTERFACE: &str = "org.freedesktop.login1.Manager";
 const BLUEZ_ADAPTER_INTERFACE: &str = "org.bluez.Adapter1";
 const UDISKS_BLOCK_INTERFACE: &str = "org.freedesktop.UDisks2.Block";
 const UDISKS_DRIVE_INTERFACE: &str = "org.freedesktop.UDisks2.Drive";
@@ -45,7 +46,12 @@ pub(crate) fn keep_awake_capability() -> CapabilityReport {
         Ok(connection) => connection,
         Err(error) => return unavailable_capability(id, "systemd-logind", error),
     };
-    let manager = match Proxy::new(&connection, LOGIN_DESTINATION, LOGIN_PATH, LOGIN_INTERFACE) {
+    let manager = match Proxy::new(
+        &connection,
+        LOGIN_DESTINATION,
+        LOGIN_PATH,
+        MANAGER_INTERFACE,
+    ) {
         Ok(manager) => manager,
         Err(error) => {
             return dbus_capability_error(
@@ -107,8 +113,13 @@ pub(crate) fn set_keep_awake(
             return Ok(());
         }
         let connection = system_connection()?;
-        let manager = Proxy::new(&connection, LOGIN_DESTINATION, LOGIN_PATH, LOGIN_INTERFACE)
-            .map_err(|error| dbus_error("creating the logind manager proxy", error))?;
+        let manager = Proxy::new(
+            &connection,
+            LOGIN_DESTINATION,
+            LOGIN_PATH,
+            MANAGER_INTERFACE,
+        )
+        .map_err(|error| dbus_error("creating the logind manager proxy", error))?;
         let fd: OwnedFd = manager
             .call(
                 "Inhibit",
@@ -315,8 +326,13 @@ pub(crate) fn lock_screen(mutation: &QuickToggleMutation) -> Result<(), QuickTog
         ));
     }
     let (connection, session_id) = current_session()?;
-    let manager = Proxy::new(&connection, LOGIN_DESTINATION, LOGIN_PATH, LOGIN_INTERFACE)
-        .map_err(|error| dbus_error("creating the logind manager proxy", error))?;
+    let manager = Proxy::new(
+        &connection,
+        LOGIN_DESTINATION,
+        LOGIN_PATH,
+        MANAGER_INTERFACE,
+    )
+    .map_err(|error| dbus_error("creating the logind manager proxy", error))?;
     manager
         .call::<_, _, ()>("LockSession", &session_id)
         .map_err(|error| dbus_error("locking the current session", error))
@@ -445,16 +461,12 @@ fn system_connection() -> Result<Connection, QuickToggleError> {
 
 fn current_session() -> Result<(Connection, String), QuickToggleError> {
     let connection = system_connection()?;
-    let manager = Proxy::new(&connection, LOGIN_DESTINATION, LOGIN_PATH, LOGIN_INTERFACE)
-        .map_err(|error| dbus_error("creating the logind manager proxy", error))?;
-    let path: OwnedObjectPath = manager
-        .call("GetSessionByPID", &(std::process::id()))
-        .map_err(|error| dbus_error("locating the current logind session", error))?;
+    let path = current_session_path(&connection).map_err(session_lookup_error)?;
     let session = Proxy::new(
         &connection,
         LOGIN_DESTINATION,
         path.as_str(),
-        "org.freedesktop.login1.Session",
+        SESSION_INTERFACE,
     )
     .map_err(|error| dbus_error("creating the logind session proxy", error))?;
     let id: String = session
@@ -698,6 +710,15 @@ fn invalid_switch(label: &str) -> QuickToggleError {
         QuickToggleErrorKind::InvalidRequest,
         format!("{label} accepts only an enabled/disabled value"),
     )
+}
+
+fn session_lookup_error(error: SessionLookupError) -> QuickToggleError {
+    let kind = match error.kind {
+        SessionLookupErrorKind::PermissionDenied => QuickToggleErrorKind::PermissionDenied,
+        SessionLookupErrorKind::Unavailable => QuickToggleErrorKind::Unavailable,
+        SessionLookupErrorKind::Failed => QuickToggleErrorKind::Protocol,
+    };
+    QuickToggleError::new(kind, error.message)
 }
 
 fn dbus_error(context: &str, error: zbus::Error) -> QuickToggleError {

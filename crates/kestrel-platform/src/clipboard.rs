@@ -28,7 +28,12 @@ use zbus::{
     zvariant::OwnedObjectPath,
 };
 
-use crate::CapabilityProbe;
+use crate::{
+    CapabilityProbe,
+    logind_session::{
+        LOGIN_DESTINATION, LOGIN_PATH, MANAGER_INTERFACE, SESSION_INTERFACE, current_session_path,
+    },
+};
 
 pub const FEATURE_ID: &str = "clipboard.history";
 const PRIVACY_METHOD_TIMEOUT: Duration = Duration::from_millis(500);
@@ -658,27 +663,12 @@ pub struct LogindPrivacyMonitor {
 
 impl LogindPrivacyMonitor {
     pub fn new() -> Result<Self, ClipboardError> {
-        let session_id = env::var("XDG_SESSION_ID").map_err(|_| {
-            ClipboardError::new(
-                ClipboardErrorKind::PrivacyMonitorFailed,
-                "XDG_SESSION_ID is unavailable",
-            )
-        })?;
         let connection = BusConnectionBuilder::system()
             .map_err(privacy_error)?
             .method_timeout(PRIVACY_METHOD_TIMEOUT)
             .build()
             .map_err(privacy_error)?;
-        let manager = Proxy::new(
-            &connection,
-            "org.freedesktop.login1",
-            "/org/freedesktop/login1",
-            "org.freedesktop.login1.Manager",
-        )
-        .map_err(privacy_error)?;
-        let session_path: OwnedObjectPath = manager
-            .call("GetSession", &(session_id))
-            .map_err(privacy_error)?;
+        let session_path = current_session_path(&connection).map_err(privacy_error)?;
         let (was_locked, was_preparing_for_sleep) = read_privacy_state(&connection, &session_path)?;
         Ok(Self {
             connection,
@@ -712,18 +702,13 @@ fn read_privacy_state(
 ) -> Result<(bool, bool), ClipboardError> {
     let session = Proxy::new(
         connection,
-        "org.freedesktop.login1",
+        LOGIN_DESTINATION,
         session_path.as_str(),
-        "org.freedesktop.login1.Session",
+        SESSION_INTERFACE,
     )
     .map_err(privacy_error)?;
-    let manager = Proxy::new(
-        connection,
-        "org.freedesktop.login1",
-        "/org/freedesktop/login1",
-        "org.freedesktop.login1.Manager",
-    )
-    .map_err(privacy_error)?;
+    let manager = Proxy::new(connection, LOGIN_DESTINATION, LOGIN_PATH, MANAGER_INTERFACE)
+        .map_err(privacy_error)?;
     let locked = session.get_property("LockedHint").map_err(privacy_error)?;
     let preparing_for_sleep = manager
         .get_property("PreparingForSleep")

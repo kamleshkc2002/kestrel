@@ -10,6 +10,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod global_shortcuts;
 pub mod launcher;
+pub mod logind_session;
 pub mod network_addresses;
 pub mod notifications;
 pub mod nvml;

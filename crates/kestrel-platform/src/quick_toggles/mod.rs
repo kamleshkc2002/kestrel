@@ -76,7 +76,7 @@ impl QuickToggleId {
     pub const fn label(self) -> &'static str {
         match self {
             Self::KeepAwake => "Keep awake",
-            Self::Appearance => "Dark appearance",
+            Self::Appearance => "Desktop dark mode",
             Self::Brightness => "Internal brightness",
             Self::KeyboardLight => "Keyboard light",
             Self::Bluetooth => "Bluetooth",
@@ -92,7 +92,7 @@ impl QuickToggleId {
     pub const fn requirement(self) -> &'static str {
         match self {
             Self::KeepAwake => "A logind user-session inhibitor; no elevated privileges.",
-            Self::Appearance => "A writable desktop appearance setting.",
+            Self::Appearance => "A writable desktop appearance setting for light and dark themes.",
             Self::Brightness => "A writable internal backlight exposed by sysfs.",
             Self::KeyboardLight => "A writable keyboard-backlight LED exposed by sysfs.",
             Self::Bluetooth => "A BlueZ adapter and permission to change its Powered property.",

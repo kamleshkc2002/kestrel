@@ -530,11 +530,11 @@ fn add_general_rows(
     filter_rows: &mut Vec<(gtk::Widget, String)>,
 ) {
     let appearance = adw::ComboRow::builder()
-        .title("Appearance")
+        .title("Kestrel window style")
         .subtitle(if view_model.appearance_overridden {
             "Your GTK style sheet sets this window's colours, so Light and Dark may not change them."
         } else {
-            "Choose the application color scheme."
+            "Only this window. System follows your desktop."
         })
         .model(&gtk::StringList::new(&["System", "Light", "Dark"]))
         .selected(match view_model.appearance {
@@ -554,7 +554,7 @@ fn add_general_rows(
     });
     filter_rows.push((
         appearance.clone().upcast(),
-        "appearance color scheme system light dark".to_owned(),
+        "appearance kestrel window style color scheme system light dark theme".to_owned(),
     ));
     group.add(&appearance);
 
