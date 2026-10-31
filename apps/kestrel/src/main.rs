@@ -15,6 +15,7 @@ use std::{
 
 use adw::{glib, prelude::*};
 use async_channel::{Receiver, Sender};
+use kestrel::appearance::AppearanceStyles;
 use kestrel::command_line::{
     CommandGate, CommandLineAction, CommandLineError, Invocation, command_list, parse_arguments,
     usage,
@@ -811,6 +812,7 @@ struct ControllerContext {
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
     status_notifier: Option<StatusNotifierIntegration>,
+    appearance: Rc<AppearanceStyles>,
 }
 
 struct ApplicationController {
@@ -866,6 +868,8 @@ struct ApplicationController {
     notification_captures: RefCell<HashMap<u32, CaptureId>>,
     /// The tray entry while the tray feature runs; started and stopped with it.
     status_notifier: RefCell<Option<StatusNotifierIntegration>>,
+    /// Owns the user style sheet provider and its directory monitors.
+    appearance: Rc<AppearanceStyles>,
     tray: RefCell<Option<kestrel::TrayReadoutSink>>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
@@ -889,6 +893,7 @@ impl ApplicationController {
             notifier,
             capture_notifier,
             status_notifier,
+            appearance,
         } = context;
         let monitor_running = runtime.monitor_is_running();
         let clipboard_running = runtime.clipboard_is_running();
@@ -987,6 +992,7 @@ impl ApplicationController {
                     .and_then(StatusNotifierIntegration::readout_sink),
             ),
             status_notifier: RefCell::new(status_notifier),
+            appearance,
             activation_token: RefCell::new(None),
             refresh_results,
             tick_results,
@@ -1404,6 +1410,7 @@ impl ApplicationController {
             Err(message) => (self.current_view_model(), Some(message)),
         };
         apply_color_scheme(view_model.appearance);
+        self.appearance.follow(view_model.appearance);
         self.track_running(&view_model);
         self.overlay.set_view_model(&view_model);
         self.reconcile_tray(&view_model);
@@ -3288,12 +3295,16 @@ fn main() -> glib::ExitCode {
         default_panic(info);
     }));
     let initial_appearance = loaded.configuration.ui.appearance;
+    let appearance_styles = Rc::new(AppearanceStyles::new());
     let application = adw::Application::builder()
         .application_id(kestrel_core::APPLICATION_ID)
         .flags(adw::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
+    let startup_styles = appearance_styles.clone();
     application.connect_startup(move |_| {
+        startup_styles.install();
         apply_color_scheme(initial_appearance);
+        startup_styles.apply(initial_appearance);
     });
     if let Err(error) = application.register(None::<&adw::gio::Cancellable>) {
         log::error!("could not register with the session bus: {error}");
@@ -3401,6 +3412,7 @@ fn main() -> glib::ExitCode {
             notifier,
             capture_notifier,
             status_notifier,
+            appearance: appearance_styles,
         },
     );
     controller
@@ -4096,6 +4108,7 @@ mod tests {
                     notifier: Arc::new(SilentNotifier),
                     capture_notifier: Arc::new(DesktopNotifier::new()),
                     status_notifier: None,
+                    appearance: Rc::new(kestrel::appearance::AppearanceStyles::new()),
                 },
             )
         }
