@@ -182,8 +182,8 @@ impl ApplicationRuntime {
             (
                 color_running,
                 "capture.color",
-                "Pick colour",
-                "Pick a colour from the screen",
+                "Pick color",
+                "Pick a color from the screen",
                 "capture.color",
                 &["colour", "color", "picker", "eyedropper", "screen"][..],
             ),

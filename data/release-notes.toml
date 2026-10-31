@@ -23,3 +23,7 @@ text = "Lock screen works on desktops that start apps outside the login session'
 [[change]]
 feature = "kestrel"
 text = "The desktop-wide switch is now called Desktop dark mode, and Settings calls Kestrel's own setting Kestrel window style, so the two are easier to tell apart."
+
+[[change]]
+feature = "kestrel"
+text = "The Feature Hub groups tools by page, explains that Overview controls only add a button, and uses plainer names."

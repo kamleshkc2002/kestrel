@@ -1,4 +1,4 @@
-//! System monitor presentation and readouts.
+//! Monitoring presentation and readouts.
 
 use super::*;
 use kestrel_platform::upower::{PeripheralCharge, PeripheralKind};
@@ -347,7 +347,7 @@ fn accessories(snapshot: &SystemSnapshot) -> AccessoriesViewModel {
 /// What the accessory batteries module needs to show a device.
 pub fn accessory_module_status(monitor: &MonitorViewModel) -> &str {
     if !monitor.running {
-        return "Needs System monitor, which reads accessory batteries.";
+        return "Needs Monitoring, which reads accessory batteries.";
     }
     monitor.accessories.unavailable.as_deref().unwrap_or(
         "While a device runs low, and briefly when one connects or starts or stops charging.",

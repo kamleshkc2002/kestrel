@@ -87,8 +87,7 @@ impl ApplicationRuntime {
 
     fn require_listeners(&self) -> Result<(), String> {
         self.listeners_is_running().then_some(()).ok_or_else(|| {
-            "Listening ports are not running; enable network.listeners in the Feature Hub."
-                .to_owned()
+            "Open ports are not running; enable network.listeners in the Feature Hub.".to_owned()
         })
     }
 

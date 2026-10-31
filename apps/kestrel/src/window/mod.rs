@@ -31,7 +31,7 @@ use clipboard::{
 };
 use command_bar::{CommandPanel, build_command_panel, fill_command_panel};
 use features::{
-    build_feature_hub_group, build_quick_toggle_group, build_shortcuts_group, build_warning_group,
+    build_feature_hub, build_quick_toggle_group, build_shortcuts_group, build_warning_group,
 };
 use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
@@ -1194,7 +1194,7 @@ fn build_page(
             build.shortcuts_container = shortcuts;
         }
         SidebarPage::FeatureHub => {
-            let (hub, rows) = build_feature_hub_group(&view_model.features, commands);
+            let (hub, rows) = build_feature_hub(&view_model.features, commands);
             body.append(&hub);
             build.filter_rows = rows;
         }

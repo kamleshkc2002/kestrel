@@ -18,8 +18,7 @@ pub struct SnippetQuery<'a> {
     pub draft: Option<&'a SnippetDraft>,
 }
 
-pub(crate) const SNIPPETS_OFF: &str =
-    "Text snippets are off. Enable snippets.text in the Feature Hub.";
+pub(crate) const SNIPPETS_OFF: &str = "Snippets are off. Enable snippets.text in the Feature Hub.";
 
 pub(crate) struct SnippetsPresentation<'a> {
     pub library: &'a SnippetLibrary,

@@ -202,7 +202,7 @@ impl ListenersViewModel {
             Vec::new()
         };
         let status = if !presentation.running {
-            "Listening ports are off. Enable network.listeners in the Feature Hub.".to_owned()
+            "Open ports are off. Enable network.listeners in the Feature Hub.".to_owned()
         } else if let Some(error) = &presentation.snapshot.error {
             format!("Listener scan failed: {}", error.message)
         } else {
@@ -276,7 +276,7 @@ impl Default for ListenersViewModel {
     fn default() -> Self {
         Self {
             running: false,
-            status: "Listening ports are off.".to_owned(),
+            status: "Open ports are off.".to_owned(),
             rows: Vec::new(),
             can_stop: false,
         }

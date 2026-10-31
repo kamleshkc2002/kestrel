@@ -85,10 +85,10 @@ pub use command_bar::{
 };
 pub use features::{
     CapabilityKind, CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
-    ConfirmationViewModel, FeatureIndicator, FeatureLifecycleViewModel, FeatureViewModel,
-    OverviewTool, OverviewToolViewModel, OverviewToolsViewModel, QuickToggleActionViewModel,
-    QuickToggleControlViewModel, QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel,
-    TurnOnViewModel, disabled_status_for, turn_on_for,
+    ConfirmationViewModel, FeatureHubSection, FeatureIndicator, FeatureLifecycleViewModel,
+    FeatureViewModel, OverviewTool, OverviewToolViewModel, OverviewToolsViewModel,
+    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
+    RemediationViewModel, ResourceCostViewModel, TurnOnViewModel, disabled_status_for, turn_on_for,
 };
 use kestrel_core::format_bytes;
 pub use kestrel_platform::audio::OutputKind;
@@ -304,8 +304,8 @@ impl ApplicationViewModel {
                 ),
                 ScreenTool::Color => (
                     "capture.color",
-                    "Pick colour is off",
-                    "Pick a colour from any pixel on the screen.",
+                    "Pick color is off",
+                    "Pick a color from any pixel on the screen.",
                 ),
             };
             button.turn_on = turn_on_for(features, feature_id, title, description);
@@ -352,12 +352,10 @@ impl ApplicationViewModel {
         self.snippets.turn_on = turn_on_for(
             features,
             "snippets.text",
-            "Text snippets are off",
+            "Snippets are off",
             "Store reusable text snippets and insert them quickly.",
         );
-        if let Some(status) =
-            disabled_status_for(features, "snippets.text", "Text snippets are off")
-        {
+        if let Some(status) = disabled_status_for(features, "snippets.text", "Snippets are off") {
             self.snippets.status = status;
         }
         self.scratchpad.turn_on = turn_on_for(

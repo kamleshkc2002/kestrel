@@ -1,4 +1,4 @@
-//! System monitoring and speed-test runtime features.
+//! Monitoring and speed-test runtime features.
 
 use super::*;
 

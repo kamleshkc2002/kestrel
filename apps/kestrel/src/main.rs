@@ -2324,12 +2324,12 @@ impl ControllerState {
             ControllerOperation::StartSpeedTest => self
                 .runtime
                 .start_speed_test()
-                .map(|()| "Network speed test started".to_owned())
+                .map(|()| "Speed test started".to_owned())
                 .unwrap_or_else(|error| error),
             ControllerOperation::CancelSpeedTest => self
                 .runtime
                 .cancel_speed_test()
-                .map(|()| "Network speed test cancellation requested".to_owned())
+                .map(|()| "Speed test cancellation requested".to_owned())
                 .unwrap_or_else(|error| error),
             ControllerOperation::RefreshProcesses => self
                 .runtime

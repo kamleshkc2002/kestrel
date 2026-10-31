@@ -1,4 +1,4 @@
-//! System monitor and speed-test groups.
+//! Monitoring and speed-test groups.
 
 use super::widgets::plain_row;
 use adw::prelude::*;
@@ -212,7 +212,7 @@ pub(super) fn build_speed_test_group(
     commands: &Sender<ApplicationCommand>,
 ) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
-        .title("Network speed test")
+        .title("Speed test")
         .description(gtk::glib::markup_escape_text(&speed_test.disclosure).as_str())
         .build();
     let row = plain_row()

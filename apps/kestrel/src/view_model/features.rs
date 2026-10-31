@@ -1,6 +1,20 @@
 //! Feature hub presentation.
 
 use super::*;
+use kestrel_platform::{
+    audio::{FEATURE_ID as AUDIO_MIXER_FEATURE_ID, MICROPHONE_FEATURE_ID},
+    camera::FEATURE_ID as CAMERA_FEATURE_ID,
+    capture::FEATURE_ID as CAPTURE_FEATURE_ID,
+    clipboard::FEATURE_ID as CLIPBOARD_FEATURE_ID,
+    global_shortcuts::FEATURE_ID as GLOBAL_SHORTCUTS_FEATURE_ID,
+    processes::{FEATURE_ID as PROCESSES_FEATURE_ID, LISTENERS_FEATURE_ID},
+    quick_toggles::ALL_QUICK_TOGGLES,
+    recording::FEATURE_ID as RECORDING_FEATURE_ID,
+    screen_tools::{COLOR_FEATURE_ID, QR_FEATURE_ID, TEXT_FEATURE_ID},
+    snippets::FEATURE_ID as SNIPPETS_FEATURE_ID,
+    speed_test::FEATURE_ID as SPEED_TEST_FEATURE_ID,
+    system_monitor::FEATURE_ID as SYSTEM_MONITOR_FEATURE_ID,
+};
 
 /// What a feature costs while it is not being used: background work and how
 /// often it wakes up on its own.
@@ -234,7 +248,7 @@ impl OverviewToolsViewModel {
             ),
             (
                 OverviewTool::PickColour,
-                "Pick colour",
+                "Pick color",
                 "color-select-symbolic",
                 "capture.color",
             ),
@@ -367,6 +381,80 @@ pub fn disabled_status_for(
         })
 }
 
+/// The Feature Hub's titled groups, in the order it shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeatureHubSection {
+    App,
+    Monitoring,
+    Audio,
+    Capture,
+    ClipboardAndNotes,
+    OverviewControls,
+}
+
+impl FeatureHubSection {
+    /// Every section, in display order.
+    pub const ALL: [Self; 6] = [
+        Self::App,
+        Self::Monitoring,
+        Self::Audio,
+        Self::Capture,
+        Self::ClipboardAndNotes,
+        Self::OverviewControls,
+    ];
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::App => "App",
+            Self::Monitoring => "Monitoring",
+            Self::Audio => "Audio",
+            Self::Capture => "Capture",
+            Self::ClipboardAndNotes => "Clipboard and notes",
+            Self::OverviewControls => "Overview controls",
+        }
+    }
+
+    /// A section's one-line explanation, where its rows need one.
+    pub const fn description(self) -> Option<&'static str> {
+        match self {
+            Self::OverviewControls => Some(
+                "Each adds a control to Overview's quick toggles. Turning one on doesn't change \
+                 the setting itself.",
+            ),
+            _ => None,
+        }
+    }
+
+    /// The section a feature belongs to. Every registered feature has one;
+    /// the hub still hides the ones that are not a choice.
+    pub fn of(feature_id: &str) -> Option<Self> {
+        match feature_id {
+            "app.command-surface"
+            | crate::STATUS_NOTIFIER_ID
+            | crate::OVERLAY_ID
+            | GLOBAL_SHORTCUTS_FEATURE_ID
+            | crate::runtime::COMMAND_BAR_ID => Some(Self::App),
+            SYSTEM_MONITOR_FEATURE_ID
+            | PROCESSES_FEATURE_ID
+            | LISTENERS_FEATURE_ID
+            | SPEED_TEST_FEATURE_ID => Some(Self::Monitoring),
+            AUDIO_MIXER_FEATURE_ID | MICROPHONE_FEATURE_ID => Some(Self::Audio),
+            CAPTURE_FEATURE_ID | RECORDING_FEATURE_ID | CAMERA_FEATURE_ID | TEXT_FEATURE_ID
+            | QR_FEATURE_ID | COLOR_FEATURE_ID => Some(Self::Capture),
+            CLIPBOARD_FEATURE_ID | SNIPPETS_FEATURE_ID | crate::runtime::SCRATCHPAD_ID => {
+                Some(Self::ClipboardAndNotes)
+            }
+            _ if ALL_QUICK_TOGGLES
+                .iter()
+                .any(|toggle| toggle.feature_id() == feature_id) =>
+            {
+                Some(Self::OverviewControls)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// State for one registered feature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeatureViewModel {
@@ -433,7 +521,7 @@ impl FeatureLifecycleViewModel {
             Self::Registered => "Disabled",
             Self::Available => "Ready",
             Self::Unavailable => "Unavailable",
-            Self::Running => "Running",
+            Self::Running => "On",
         }
     }
 }
@@ -524,7 +612,7 @@ pub enum FeatureIndicator {
 impl FeatureIndicator {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Running => "Running",
+            Self::Running => "On",
             Self::NeedsAttention => "Needs attention",
             Self::Unavailable => "Unavailable",
             Self::Off => "Off",
@@ -560,7 +648,7 @@ impl FeatureViewModel {
             .as_ref()
             .map(|remediation| remediation.message.as_str());
         let need = match (self.indicator(), self.capability.status.kind) {
-            (FeatureIndicator::Running, _) => return "Running".to_owned(),
+            (FeatureIndicator::Running, _) => return "On".to_owned(),
             (FeatureIndicator::Off, _) => return "Off".to_owned(),
             (FeatureIndicator::Unavailable, _) => {
                 return sentences("Not available here", Some(detail));
@@ -823,7 +911,7 @@ mod tests {
             [
                 "Screenshot",
                 "Read QR code",
-                "Pick colour",
+                "Pick color",
                 "Record",
                 "Camera preview",
                 "Scratchpad",
@@ -967,7 +1055,7 @@ mod tests {
                 None,
                 true,
                 true,
-                (FeatureIndicator::Running, "Running"),
+                (FeatureIndicator::Running, "On"),
             ),
             (
                 "off",
@@ -1032,7 +1120,7 @@ mod tests {
                 None,
                 true,
                 true,
-                (FeatureIndicator::Running, "Running"),
+                (FeatureIndicator::Running, "On"),
             ),
             (
                 "limited with fix",
@@ -1137,5 +1225,26 @@ mod tests {
             view_model.quick_toggles[0].detail,
             "No backlight adapter exists."
         );
+    }
+
+    #[test]
+    fn every_registered_feature_has_a_hub_section() {
+        let runtime = crate::ApplicationRuntime::new(&ApplicationConfiguration::default())
+            .expect("runtime builds");
+        for registration in runtime.registrations() {
+            assert!(
+                FeatureHubSection::of(registration.feature.id).is_some(),
+                "{} has a hub section",
+                registration.feature.id
+            );
+        }
+        for id in ALL_QUICK_TOGGLES {
+            assert_eq!(
+                FeatureHubSection::of(id.feature_id()),
+                Some(FeatureHubSection::OverviewControls),
+                "{} is an Overview control",
+                id.feature_id()
+            );
+        }
     }
 }

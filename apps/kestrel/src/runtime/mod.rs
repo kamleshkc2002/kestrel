@@ -337,7 +337,7 @@ impl ApplicationRuntime {
             .is_none_or(|feature| feature.enabled);
         let status_notifier = FeatureSpec::new(
             STATUS_NOTIFIER_ID,
-            "Tray integration",
+            "Tray icon",
             status_notifier_capability.status.clone(),
         )
         .with_cost(TRAY_COST);
@@ -347,12 +347,9 @@ impl ApplicationRuntime {
             StaticCapabilityProbe::new(status_notifier_capability),
         )?;
 
-        let system_monitor = FeatureSpec::new(
-            SYSTEM_MONITOR_ID,
-            "System monitor",
-            CapabilityStatus::Supported,
-        )
-        .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::Moderate));
+        let system_monitor =
+            FeatureSpec::new(SYSTEM_MONITOR_ID, "Monitoring", CapabilityStatus::Supported)
+                .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::Moderate));
         let monitor_source = ProcSysMonitor::default();
         let audio_backend = PulseAudioBackend::new();
         registry.register_probe(
@@ -371,7 +368,7 @@ impl ApplicationRuntime {
 
         let microphone = FeatureSpec::new(
             MICROPHONE_FEATURE_ID,
-            "Microphone",
+            "Microphone controls",
             CapabilityStatus::Supported,
         )
         .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::Low));
@@ -380,12 +377,8 @@ impl ApplicationRuntime {
             configuration.feature_enabled(MICROPHONE_FEATURE_ID),
             MicrophoneProbe::new(),
         )?;
-        let speed_test = FeatureSpec::new(
-            SPEED_TEST_ID,
-            "Network speed test",
-            CapabilityStatus::Supported,
-        )
-        .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
+        let speed_test = FeatureSpec::new(SPEED_TEST_ID, "Speed test", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
         registry.register_probe(
             speed_test,
             configuration.feature_enabled(SPEED_TEST_ID),
@@ -440,7 +433,7 @@ impl ApplicationRuntime {
         )?;
         let listeners = FeatureSpec::new(
             LISTENERS_FEATURE_ID,
-            "Listening ports",
+            "Open ports",
             CapabilityStatus::Supported,
         )
         .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::Low));
@@ -472,7 +465,7 @@ impl ApplicationRuntime {
             configuration.feature_enabled(COMMAND_BAR_ID),
             CommandBarProbe::new(configuration.command_bar.clone()),
         )?;
-        let snippets = FeatureSpec::new(SNIPPETS_ID, "Text snippets", CapabilityStatus::Supported)
+        let snippets = FeatureSpec::new(SNIPPETS_ID, "Snippets", CapabilityStatus::Supported)
             .with_cost(cost(CostLevel::None, CostLevel::Moderate, CostLevel::None));
         registry.register_probe(
             snippets,
@@ -492,7 +485,7 @@ impl ApplicationRuntime {
         )?;
         let overlay = FeatureSpec::new(
             OVERLAY_ID,
-            "Status overlay",
+            "Status bar overlay",
             overlay_capability.status.clone(),
         )
         .with_cost(cost(CostLevel::Low, CostLevel::Low, CostLevel::None));
@@ -503,7 +496,7 @@ impl ApplicationRuntime {
         )?;
         let global_shortcuts = FeatureSpec::new(
             GLOBAL_SHORTCUTS_ID,
-            "Global shortcuts",
+            "Keyboard shortcuts",
             CapabilityStatus::Supported,
         )
         .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::None));

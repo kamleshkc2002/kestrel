@@ -38,7 +38,7 @@ pub struct ShortcutChoiceViewModel {
     pub description: String,
 }
 
-/// Global shortcuts: one row per configured binding, in configuration order.
+/// Keyboard shortcuts: one row per configured binding, in configuration order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortcutsViewModel {
     pub running: bool,
@@ -89,7 +89,7 @@ impl ShortcutsViewModel {
              keyboard settings."
                 .to_owned()
         } else if !presentation.running {
-            "Global shortcuts are off. Turn on Global shortcuts in the Feature Hub so Kestrel \
+            "Keyboard shortcuts are off. Turn on Keyboard shortcuts in the Feature Hub so Kestrel \
              registers these keys, or add them as custom shortcuts in your desktop's keyboard \
              settings."
                 .to_owned()
