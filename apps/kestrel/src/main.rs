@@ -1041,17 +1041,23 @@ impl ApplicationController {
                     close_action,
                     already_shown,
                 ) {
-                    let notification = AlertNotification {
-                        summary: kestrel::background_notice::SUMMARY.to_owned(),
-                        body: kestrel::background_notice::BODY.to_owned(),
-                    };
-                    if let Err(error) = controller.capture_notifier.notify(&notification) {
-                        log::debug!(target: "window.close", "Could not show the background notice: {error}");
-                    }
                     controller.background_notice_shown.set(true);
                     kestrel::background_notice::record_shown(
                         controller.background_notice_path.as_deref(),
                     );
+                    // The blocking notification call must not hold the close.
+                    let notification = AlertNotification {
+                        summary: kestrel::background_notice::SUMMARY.to_owned(),
+                        body: kestrel::background_notice::BODY.to_owned(),
+                    };
+                    let notifier = Arc::clone(&controller.capture_notifier);
+                    let _ = thread::Builder::new()
+                        .name("kestrel-background-notice".to_owned())
+                        .spawn(move || {
+                            if let Err(error) = notifier.notify(&notification) {
+                                log::debug!(target: "window.close", "Could not show the background notice: {error}");
+                            }
+                        });
                 }
                 window.minimize();
                 return glib::Propagation::Stop;
