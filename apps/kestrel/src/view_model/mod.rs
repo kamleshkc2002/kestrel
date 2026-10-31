@@ -159,6 +159,8 @@ pub struct ApplicationViewModel {
     pub monitor: MonitorViewModel,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub appearance: AppearancePreference,
+    /// A custom GTK style sheet decides the window colours.
+    pub appearance_overridden: bool,
     pub close_action: kestrel_core::CloseAction,
     pub autostart: bool,
     pub logging: LoggingViewModel,
@@ -256,6 +258,9 @@ impl ApplicationViewModel {
                 .map(ConfigurationWarningViewModel::from)
                 .collect(),
             appearance: configuration.ui.appearance,
+            appearance_overridden: crate::appearance::colors_are_overridden(
+                configuration.ui.appearance,
+            ),
             close_action: configuration.ui.close_action,
             autostart: configuration.startup.autostart,
             logging: LoggingViewModel::new(&configuration.logging, crate::logging::logger()),

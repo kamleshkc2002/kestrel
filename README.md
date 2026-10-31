@@ -237,6 +237,11 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Lists TCP and UDP listeners from `/proc/net` with the owning process when its sockets are visible to you. Each row copies the port, address, or PID. When a browser is installed, TCP listeners on a loopback address open at that address (for example `http://127.0.0.1:8765/`), and listeners on every address open at `http://localhost:<port>/`.
 - Stop owner uses the same confirmed End flow; listeners owned by other users show the reason. Addresses stay in the window and are dropped when the feature is disabled.
 
+### Quick toggles
+
+- **Dark appearance:** switches COSMIC's own light and dark mode on COSMIC, and GNOME's color scheme elsewhere. COSMIC's automatic day/night switching may change it back.
+- **Appearance:** on COSMIC, Light and Dark apply COSMIC's own light or dark colours to Kestrel's window, and System follows COSMIC's switch live without a restart. Elsewhere, a custom GTK style sheet can override the window colours.
+
 ### Desktop integration
 
 - The normal window is always available; the tray is optional. Tray integration (`app.status-notifier`) is on by default and can be turned off in the Feature Hub, which removes the tray icon and readout icons at once; presets leave it as you set it.

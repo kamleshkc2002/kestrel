@@ -92,7 +92,7 @@ impl QuickToggleId {
     pub const fn requirement(self) -> &'static str {
         match self {
             Self::KeepAwake => "A logind user-session inhibitor; no elevated privileges.",
-            Self::Appearance => "A writable desktop appearance GSettings key.",
+            Self::Appearance => "A writable desktop appearance setting.",
             Self::Brightness => "A writable internal backlight exposed by sysfs.",
             Self::KeyboardLight => "A writable keyboard-backlight LED exposed by sysfs.",
             Self::Bluetooth => "A BlueZ adapter and permission to change its Powered property.",
@@ -214,6 +214,8 @@ pub trait QuickToggleBackend: Send {
 pub struct LinuxQuickToggleBackend {
     sys_root: PathBuf,
     data_home: PathBuf,
+    config_home: PathBuf,
+    cosmic_system_root: PathBuf,
     inhibitor: Arc<Mutex<Option<session::InhibitorLease>>>,
 }
 
@@ -223,6 +225,8 @@ impl fmt::Debug for LinuxQuickToggleBackend {
             .debug_struct("LinuxQuickToggleBackend")
             .field("sys_root", &self.sys_root)
             .field("data_home", &self.data_home)
+            .field("config_home", &self.config_home)
+            .field("cosmic_system_root", &self.cosmic_system_root)
             .finish_non_exhaustive()
     }
 }
@@ -235,8 +239,20 @@ impl Default for LinuxQuickToggleBackend {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
             })
             .unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        Self::new_with_roots("/sys", data_home)
+        Self::new_with_paths(
+            "/sys",
+            data_home,
+            default_config_home(),
+            "/usr/share/cosmic",
+        )
     }
+}
+
+fn default_config_home() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("/nonexistent"))
 }
 
 impl LinuxQuickToggleBackend {
@@ -245,10 +261,33 @@ impl LinuxQuickToggleBackend {
     }
 
     pub fn new_with_roots(sys_root: impl Into<PathBuf>, data_home: impl Into<PathBuf>) -> Self {
+        Self::new_with_paths(
+            sys_root,
+            data_home,
+            default_config_home(),
+            "/usr/share/cosmic",
+        )
+    }
+
+    pub fn new_with_paths(
+        sys_root: impl Into<PathBuf>,
+        data_home: impl Into<PathBuf>,
+        config_home: impl Into<PathBuf>,
+        cosmic_system_root: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             sys_root: sys_root.into(),
             data_home: data_home.into(),
+            config_home: config_home.into(),
+            cosmic_system_root: cosmic_system_root.into(),
             inhibitor: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn cosmic_paths(&self) -> desktop::CosmicPaths<'_> {
+        desktop::CosmicPaths {
+            config_home: &self.config_home,
+            system_root: &self.cosmic_system_root,
         }
     }
 
@@ -279,7 +318,7 @@ impl QuickToggleBackend for LinuxQuickToggleBackend {
     fn capability(&self, id: QuickToggleId) -> CapabilityReport {
         match id {
             QuickToggleId::KeepAwake => session::keep_awake_capability(),
-            QuickToggleId::Appearance => desktop::appearance_capability(),
+            QuickToggleId::Appearance => desktop::appearance_capability(self.cosmic_paths()),
             QuickToggleId::Brightness => backlight::capability(
                 id,
                 &self.sys_root.join("class/backlight"),
@@ -303,7 +342,7 @@ impl QuickToggleBackend for LinuxQuickToggleBackend {
     fn observe(&self, id: QuickToggleId) -> Result<QuickToggleObservation, QuickToggleError> {
         match id {
             QuickToggleId::KeepAwake => session::observe_keep_awake(&self.inhibitor),
-            QuickToggleId::Appearance => desktop::observe_appearance(),
+            QuickToggleId::Appearance => desktop::observe_appearance(self.cosmic_paths()),
             QuickToggleId::Brightness => backlight::observe(
                 &self.sys_root.join("class/backlight"),
                 backlight::DeviceKind::Display,
@@ -346,7 +385,7 @@ impl QuickToggleBackend for LinuxQuickToggleBackend {
         self.validate_confirmation(id, &mutation, confirmation_token)?;
         match id {
             QuickToggleId::KeepAwake => session::set_keep_awake(&self.inhibitor, &mutation)?,
-            QuickToggleId::Appearance => desktop::set_appearance(&mutation)?,
+            QuickToggleId::Appearance => desktop::set_appearance(self.cosmic_paths(), &mutation)?,
             QuickToggleId::Brightness => backlight::set_level(
                 &self.sys_root.join("class/backlight"),
                 backlight::DeviceKind::Display,
