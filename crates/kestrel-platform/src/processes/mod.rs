@@ -147,12 +147,12 @@ impl Ineligible {
         match self {
             Self::KernelThread => "Kernel threads cannot be signalled.",
             Self::ForeignUser => {
-                "This process belongs to another user; Kestrel acts only on your own processes."
+                "This process belongs to another user; only your own processes can be signalled."
             }
             Self::OwnerUnknown => {
                 "Ownership could not be read; refresh, and check that /proc is mounted normally."
             }
-            Self::OwnProcess => "This is Kestrel itself; quit it from the window or tray.",
+            Self::OwnProcess => "This is the app's own process; quit it from the window or tray.",
             Self::SessionManager => "Stopping this process would end your session.",
         }
     }

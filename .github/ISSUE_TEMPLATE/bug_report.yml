@@ -44,7 +44,7 @@ body:
     id: desktop-session
     attributes:
       label: Desktop and session
-      description: "For example: GNOME 46, Wayland. `echo $XDG_CURRENT_DESKTOP $XDG_SESSION_TYPE` prints the values Kestrel sees."
+      description: "For example: GNOME 46, Wayland. `echo $XDG_CURRENT_DESKTOP $XDG_SESSION_TYPE` prints the values that end up in the report."
       placeholder: GNOME 46, Wayland
     validations:
       required: true
@@ -64,7 +64,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Settings → Diagnostic logs → Open folder shows the files. For detail, turn on debug logging there or run with `KESTREL_LOG=debug`. Kestrel's logs leave out clipboard, snippet, and note text, window titles, network addresses, and paths in your home folder, but read them before pasting.
+      description: Settings → Diagnostic logs → Open folder shows the files. For detail, turn on debug logging there or run with `KESTREL_LOG=debug`. The logs leave out clipboard, snippet, and note text, window titles, network addresses, and paths in your home folder, but read them before pasting.
       render: text
   - type: markdown
     attributes:

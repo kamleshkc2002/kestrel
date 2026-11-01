@@ -148,8 +148,8 @@ impl CapabilityProbe for CommandBarProbe {
         }
         if self.configuration.enable_files && roots == 0 {
             report = report.with_remediation(
-                "File search needs at least one configured root; Kestrel never indexes the whole \
-                 filesystem.",
+                "File search needs at least one configured root; the whole filesystem is never \
+                 indexed.",
             );
         }
         report

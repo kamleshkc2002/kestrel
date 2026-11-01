@@ -474,8 +474,8 @@ fn build_priority_group(
             &kind[1..]
         ))
         .description(format!(
-            "When {kind}s connect or disconnect, Kestrel selects the highest-ranked connected \
-             {kind}. Disconnected devices keep their rank."
+            "When {kind}s connect or disconnect, the highest-ranked connected {kind} is \
+             selected. Disconnected devices keep their rank."
         ))
         .build();
 

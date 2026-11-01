@@ -117,10 +117,10 @@ while IFS=$'\t' read -r id description; do
     echo 'wait "$pid"'
     echo 'case $? in'
     echo '  0) exit 0 ;;'
-    echo "  3) echo \"Turn this feature on in Kestrel's Feature hub\" ;;"
-    echo "  4) echo \"Not available on this desktop; Kestrel's window says why\" ;;"
-    echo "  5) echo \"On but not running; Kestrel's window says why\" ;;"
-    echo "  *) echo \"Kestrel could not run $id\" ;;"
+    echo "  3) echo \"Turn this feature on in the Feature Hub\" ;;"
+    echo "  4) echo \"Not available on this desktop; the main window says why\" ;;"
+    echo "  5) echo \"On but not running; the main window says why\" ;;"
+    echo "  *) echo \"Could not run $id\" ;;"
     echo 'esac'
     echo 'exit 1'
   } > "$file"

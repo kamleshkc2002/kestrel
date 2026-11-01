@@ -10,4 +10,8 @@ text = "Keep awake can run for a set time, from 15 minutes to 8 hours or a custo
 
 [[change]]
 feature = "kestrel"
-text = "Settings links to a new page listing everything Kestrel stores, where, for how long, and what it sends; settings files are now private and written safely."
+text = "Settings links to a new page listing everything that is stored, where, for how long, and what is sent; settings files are now private and written safely."
+
+[[change]]
+feature = "kestrel"
+text = "Messages describe what is happening directly, without referring to Kestrel by name."

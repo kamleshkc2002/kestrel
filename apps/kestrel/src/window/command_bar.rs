@@ -28,20 +28,20 @@ pub(super) fn build_command_panel(
     let group = adw::PreferencesGroup::builder()
         .title("Command bar")
         .description(
-            "Reach Kestrel's features from the keyboard: toggles, captures, presets, snippets, \
+            "Reach the app's features from the keyboard: toggles, captures, presets, snippets, \
              clipboard history, and your scripts. Applications, windows, files, and emoji are \
              optional sources below.",
         )
         .build();
 
     let query = gtk::SearchEntry::builder()
-        .placeholder_text("Search Kestrel actions, snippets, and clipboard")
+        .placeholder_text("Search actions, snippets, and clipboard")
         .hexpand(true)
         .build();
     query.update_property(&[
         Property::Label("Command bar query"),
         Property::Description(
-            "Ranks Kestrel actions, snippets, clipboard entries, configured scripts, and the \
+            "Ranks actions, snippets, clipboard entries, configured scripts, and the \
              optional sources that are switched on",
         ),
     ]);
@@ -168,7 +168,7 @@ pub(super) fn fill_command_panel(
                 "No results"
             })
             .subtitle(if command_bar.running {
-                "Kestrel actions, snippets, and the sources switched on below are searched together."
+                "Actions, snippets, and the sources switched on below are searched together."
             } else {
                 "Enable commands.bar in the Feature Hub to use the command bar."
             })

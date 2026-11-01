@@ -128,7 +128,7 @@ pub(super) fn add_clipboard_limits_group(
     let clear = adw::SpinRow::with_range(0.0, bounds.max_clear_seconds as f64, 5.0);
     clear.set_title("Automatic selection clear");
     clear.set_subtitle(
-        "Seconds after Kestrel takes the selection before the live clipboard is cleared. \
+        "Seconds after the selection is taken before the live clipboard is cleared. \
          Saved entries are kept; 0 disables it.",
     );
     clear.set_value(clipboard.policy.clear_seconds as f64);

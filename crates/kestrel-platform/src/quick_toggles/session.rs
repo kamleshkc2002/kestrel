@@ -94,9 +94,9 @@ pub(crate) fn observe_keep_awake(
             confirmation: None,
         },
         detail: if enabled {
-            "Kestrel owns an active idle and sleep inhibitor.".to_owned()
+            "Keeping the computer awake.".to_owned()
         } else {
-            "Kestrel does not currently inhibit idle or sleep.".to_owned()
+            "Not keeping the computer awake.".to_owned()
         },
     })
 }
@@ -360,7 +360,7 @@ pub(crate) fn eject_capability() -> CapabilityReport {
             id,
             Permission::RemovableMedia,
             "UDisks2 denied removable-drive discovery.",
-            "Grant normal active-session UDisks2 permissions; Kestrel will not elevate itself.",
+            "Grant normal active-session UDisks2 permissions; no admin rights are requested.",
         ),
         Err(error) => unavailable_capability(id, "UDisks2", error),
     }

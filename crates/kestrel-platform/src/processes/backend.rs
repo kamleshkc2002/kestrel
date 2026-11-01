@@ -570,7 +570,7 @@ fn errno_error(errno: i32) -> ProcessError {
         libc::ESRCH => ProcessError::new(ProcessErrorKind::Exited, "The process already exited."),
         libc::EPERM => ProcessError::new(
             ProcessErrorKind::PermissionDenied,
-            "Only your own processes can be signalled; Kestrel uses no root helper.",
+            "Only your own processes can be signalled; no root helper is used.",
         ),
         libc::ENOSYS => ProcessError::new(ProcessErrorKind::Unavailable, NO_PIDFD_EXPLANATION),
         _ => ProcessError::new(ProcessErrorKind::Failed, "Sending the signal failed."),

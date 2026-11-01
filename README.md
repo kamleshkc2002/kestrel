@@ -9,15 +9,15 @@ don't have to install and learn a separate app for each one.
 
 Every feature says whether it works on your session (GNOME, KDE Plasma, Sway,
 Hyprland, COSMIC, or X11), what it uses, and what to install or allow when it
-doesn't. Kestrel runs as your normal user, with no root helpers, accounts, or
+doesn't. Runs as your normal user, with no root helpers, accounts, or
 telemetry. Use it from the window, the tray, global shortcuts,
 `kestrel --command`, your own launcher (see
 [Launcher script commands](#launcher-script-commands)), or its command bar for
-Kestrel's own actions. It is not a general app launcher.
+the app's own actions. It is not a general app launcher.
 
 ## Status
 
-Kestrel is in preview: an x86_64 AppImage tagged `x.y.z-preview.N` on GitHub
+In preview: an x86_64 AppImage tagged `x.y.z-preview.N` on GitHub
 Releases, with a SHA-256 file. GNOME, KDE Plasma, Hyprland, and X11 are
 supported by design with little real use so far, so reports are welcome.
 
@@ -53,9 +53,9 @@ GitHub Issues, with the feature's status line and logs (see
 - Every feature reports supported, limited, permission-gated, dependency-gated, or unsupported status and remediation.
 - Works alongside your existing shell, panel, launcher, and compositor; support claims name the tested desktop and session.
 
-## What Kestrel stores and sends
+## What's stored and sent
 
-Kestrel keeps its files in the standard XDG folders, under a `kestrel` folder;
+Files go in the standard XDG folders, under a `kestrel` folder;
 debug builds use `kestrel-devel` instead.
 
 | Folder | Default path | Holds |
@@ -75,11 +75,11 @@ The autostart entry is the one file outside these folders: it lives in
 | Settings | `config.toml` | Features, window and feature settings, shortcuts, command-bar file roots, scripts and their arguments, device names | 0600 file, 0700 folder | No size limit; replaced atomically whenever a setting changes | Nothing automatic; `install-local.sh --uninstall` keeps it |
 | Diagnostic logs | `logs/` | Warnings and errors, and features starting, stopping, or changing capability; paths in your home folder and network addresses are replaced before they are written | 0700 folder, 0600 files | 7 days and 20 MiB by default (`logging.retention_days`, `logging.max_total_megabytes`); a new file each day or at a quarter of the size limit | Files older than the retention period go at startup and every hour; the oldest go first over the size limit; Clear logs deletes them all |
 | Screenshots | `captures/` | Original and edited PNG captures | 0700 folder, 0600 files | 30 files, 256 MB, and 168 hours by default (`capture.max_entries`, `capture.max_total_megabytes`, `capture.max_age_hours`) | Age and size limits apply at startup and after each capture; Delete and Clear all remove captures |
-| Screenshots from the portal | The file the Screenshot portal returns (in `/tmp` or `$XDG_RUNTIME_DIR`) | The PNG the desktop captured | Set by the portal | None | Kestrel deletes it right after reading it, when it is a temporary file |
-| Screen recordings | `Videos/Kestrel/` | VP8/Opus WebM takes, and a hidden `.partial` while one records | The folder uses your default folder permissions (usually 0755); files are 0600 | No automatic retention; recording stops below 512 MiB of free space; the panel lists the newest 10 takes | Delete removes a take; a partial is removed when a recording is cancelled, fails, or Kestrel quits, and at startup when it is older than 60 seconds — a crash can leave one behind |
+| Screenshots from the portal | The file the Screenshot portal returns (in `/tmp` or `$XDG_RUNTIME_DIR`) | The PNG the desktop captured | Set by the portal | None | Deleted right after it is read, when it is a temporary file |
+| Screen recordings | `Videos/Kestrel/` | VP8/Opus WebM takes, and a hidden `.partial` while one records | The folder uses your default folder permissions (usually 0755); files are 0600 | No automatic retention; recording stops below 512 MiB of free space; the panel lists the newest 10 takes | Delete removes a take; a partial is removed when a recording is cancelled or fails, on quit, and at startup when it is older than 60 seconds — a crash can leave one behind |
 | Trim exports | The folder you choose | The kept range as VP8/Opus WebM, written as `.<name>.partial` and renamed once complete | 0600 | None | Cancelling, failing, or quitting removes the partial; the finished export is yours |
 | Scratchpad | `scratchpad.json` | Notes with their titles, text, and times, and the open tab | 0600 file, 0700 folder | 20 notes of up to 256 KiB each (`scratchpad.max_notes`, `scratchpad.max_note_bytes`); age removal happens only when `scratchpad.max_age_days` is above 0 | Closing a note, or confirming expired notes; turning the feature off or quitting keeps them |
-| Scratchpad, unreadable copy | `scratchpad.json.corrupt-<time>` | A file Kestrel could not read, kept instead of overwriting it | 0600 | None | Only you; Kestrel never deletes it |
+| Scratchpad, unreadable copy | `scratchpad.json.corrupt-<time>` | A file that could not be read, kept instead of overwriting it | 0600 | None | Only you; it is never deleted automatically |
 | Snippets | `snippets.toml` | Name, folder, trigger, and the text with its `{{…}}` variables | 0600 file, 0700 folder | 64 KiB per snippet by default, up to 1 MiB (`snippets.max_content_bytes`) | Deleting a snippet; turning the feature off keeps the file |
 | Command ranking | `command_ranking.toml` | Command IDs, usage counts, and pins; never search text | 0600 file, 0700 folder | 200 commands | Nothing; it is rewritten as you use commands |
 | Setup | `setup` | Whether setup was offered, and whether it finished or was skipped | 0600 | One line | Nothing |
@@ -90,12 +90,12 @@ The autostart entry is the one file outside these folders: it lives in
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
 
 - Recordings have no automatic retention: they stay until you delete them.
-- Files are replaced through a hidden temporary beside them and then renamed, so a crash can leave one behind. Kestrel never reads it: the scratchpad removes its own on the next load, screenshots remove theirs when the folder is opened, and the rest can be deleted by hand.
+- Files are replaced through a hidden temporary beside them and then renamed, so a crash can leave one behind. It is never read back: the scratchpad removes its own on the next load, screenshots remove theirs when the folder is opened, and the rest can be deleted by hand.
 - Turning a feature off does not delete what it stored. Captures, recordings, notes, snippets, ranking, state files, and settings stay until you remove them.
 - `install-local.sh --uninstall` removes the installed binary, desktop entry, icon, and autostart entry, but keeps settings and data. Full uninstall cleanup is tracked in [issue #178](https://github.com/kamleshkc2002/kestrel/issues/178).
 - The recordings folder uses normal folder permissions, so other local users can see take names and sizes even though the files themselves are 0600.
 
-### Settings Kestrel changes on your desktop
+### Settings changed on your desktop
 
 - **Dark mode** writes `true` or `false` to `$XDG_CONFIG_HOME/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark` on COSMIC, through a temporary file beside it that is then renamed. Everywhere else it sets the `color-scheme` setting (`prefer-dark` or `default`) through the desktop settings bus.
 - **Hidden files** sets `show-hidden-files` for the file manager and `show-hidden` for GTK file choosers.
@@ -103,15 +103,15 @@ The autostart entry is the one file outside these folders: it lives in
 - **Brightness and keyboard light** write a number to `/sys/class/backlight/*/brightness` and `/sys/class/leds/*::kbd_backlight/brightness`.
 - **Empty Trash** permanently deletes the files and metadata under `$XDG_DATA_HOME/Trash`; there is no undo. Remote Trash folders are not included.
 
-These are your desktop's settings, so they keep the value Kestrel set after Kestrel quits, or after you turn the feature off.
+These are your desktop's settings, so the value persists after quitting, or after you turn the feature off.
 
 ### Kept in memory only
 
-- **Clipboard history:** memory only, bounded by `clipboard.max_items` (default 100), `max_total_bytes` (default 16 MiB), and `max_age_hours` (default 24), with hard caps of 1,000 entries and 128 MiB. Locking the session, sleeping, quitting, or stopping the feature wipes it, and pinned entries survive Clear but not Wipe. While history runs, Kestrel also takes ownership of each new selection so it can offer it back later; that keeps the entry in memory and makes Kestrel the clipboard owner for other applications. If `clipboard.clear_seconds` is set, Kestrel also clears the live selection after that many seconds.
+- **Clipboard history:** memory only, bounded by `clipboard.max_items` (default 100), `max_total_bytes` (default 16 MiB), and `max_age_hours` (default 24), with hard caps of 1,000 entries and 128 MiB. Locking the session, sleeping, quitting, or stopping the feature wipes it, and pinned entries survive Clear but not Wipe. While history runs, each new selection is also taken over so it can be offered back later; that keeps the entry in memory and makes the app the clipboard owner for other applications. If `clipboard.clear_seconds` is set, the live selection is also cleared after that many seconds.
 - **OCR text and QR results:** held in memory until you dismiss the result or run a new job. They are not written to disk. Copy puts them on the clipboard, where clipboard history keeps them if it is on; opening a QR code's web address hands it to your browser.
 - **A colour sample, the screen frame being selected, and the camera preview frame:** one of each at a time; dropped when you confirm, cancel, stop, or close the window.
 - **Network addresses:** read only after you press Show and never stored, logged, or exported; dropped on the next refresh or when the feature stops.
-- **The speed-test result:** the last measurement is held in memory and lost when Kestrel quits.
+- **The speed-test result:** the last measurement is held in memory and lost on quit.
 - **The snippet `{{clipboard}}` value:** read once at insert time, clipped to `snippets.clipboard_variable_bytes`, and inserted; it is never written to the snippet file.
 
 Only clipboard history is zeroized: its entries and the live selection it owns are overwritten when they are dropped. OCR and QR text, notes in use, snippet text, frames, and the other values listed here are ordinary memory, freed when they are dropped but not overwritten.
@@ -126,30 +126,30 @@ Only clipboard history is zeroized: its entries and the live selection it owns a
 | Screenshot-saved notification, when `capture.after_screenshot` is `notify` (the default) | "Screenshot saved", and whether it was added to recent captures; Open, Edit, and Copy actions when the service supports actions | Your desktop's notification service |
 | Keep awake ended and the keep-running notice | Fixed text only | Your desktop's notification service |
 | Tray readouts, for each readout you configure | The label, value, and detail line, which can name a filesystem and mount point, a battery, a sensor, or a GPU | The tray host over the session bus |
-| Clipboard re-own, while clipboard history runs | The selection Kestrel just captured, written back unchanged | The clipboard, and so any application that reads it |
+| Clipboard re-own, while clipboard history runs | The selection just captured, written back unchanged | The clipboard, and so any application that reads it |
 | Keyboard shortcut registration, when `global.shortcuts` starts | The app ID, and each command's ID, description, and preferred key combination | The desktop's GlobalShortcuts portal |
 
-Nothing else leaves Kestrel without a user action, and nothing contacts a
-network host without one. Kestrel has no update check, telemetry, or crash
-reporting, and the speed test's `curl` is its only network client.
+Nothing else leaves the app without a user action, and nothing contacts a
+network host without one. There is no update check, telemetry, or crash
+reporting, and the app's only network client is the speed test's `curl`.
 
 **User-triggered** — each starts from a button, menu, command, or shortcut:
 
-- **Speed test:** `curl` makes HTTPS requests to `speed.cloudflare.com`, which sees your IP address. The latency phase and the download fetch data from `__down` and discard it; the upload posts the configured number of zero bytes to `__up`. `curl` runs with `--proto =https` and ignores `~/.curlrc`, but it inherits Kestrel's environment, including any proxy variables.
-- **Report a problem:** opens the GitHub issue form in your browser with Kestrel's version, your desktop session (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), and your distribution's name from `/etc/os-release` in the link. GitHub, and the browser, see them.
+- **Speed test:** `curl` makes HTTPS requests to `speed.cloudflare.com`, which sees your IP address. The latency phase and the download fetch data from `__down` and discard it; the upload posts the configured number of zero bytes to `__up`. `curl` runs with `--proto =https` and ignores `~/.curlrc`, but it inherits the app's environment, including any proxy variables.
+- **Report a problem:** opens the GitHub issue form in your browser with the app's version, your desktop session (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), and your distribution's name from `/etc/os-release` in the link. GitHub, and the browser, see them.
 - **QR Open:** a QR result that is an `http://` or `https://` address with no whitespace opens in your browser, which then contacts that host.
 - **Open ports Open:** a TCP listener opens in your browser at `http://127.0.0.1:<port>/` or `http://localhost:<port>/`; only the loopback address is contacted.
 - **Command-bar URL and file results:** `xdg-open` is run with the URL or path as an argument; the handler sees it, a URL may leave the computer, and the argument appears in the process list.
 - **Opening folders and files:** the log folder, the recordings folder, a take, or a trimmed copy is handed to your desktop as a `file://` address; Save as, Export, and the file choosers write to the path you pick.
-- **Application launches and process Restart:** the desktop entry or action is launched by ID, with no URIs or Kestrel data passed.
-- **Command-bar scripts:** receive the executable and arguments configured for them, inherit Kestrel's environment, and get empty standard input; their bounded output is read back.
+- **Application launches and process Restart:** the desktop entry or action is launched by ID, with no URIs or app data passed.
+- **Command-bar scripts:** receive the executable and arguments configured for them, inherit the app's environment, and get empty standard input; their bounded output is read back.
 - **Snippet insertion:** the expanded snippet text, including any `{{clipboard}}` value, goes to `wtype`, `ydotool`, or `xdotool` on standard input.
 - **OCR:** the selected image goes to the local `tesseract` executable on standard input, with the language and mode as arguments.
 - **Screen capture on wlroots desktops:** `grim` receives the capture geometry and returns the image on standard output; `slurp` returns the area you drag.
 - **Screenshots, recording, and colour picking:** requests go to the desktop's Screenshot, ScreenCast, or colour-picker portal. Recording tells the portal whether you chose a screen or a window and whether the cursor is included, asks it not to remember the choice, and receives the shared frames and audio over PipeWire.
 - **Copy actions:** text, an image, or a file list goes to the clipboard, where any application or clipboard manager can read it.
-- **The "What Kestrel stores and sends" link in Settings:** opens this page on GitHub in your browser.
-- **System actions:** Keep awake holds a logind inhibit, quick toggles change Wi-Fi, Bluetooth, unmount or eject, volume, and the desktop settings above, process actions send signals, and Empty Trash deletes local Trash files. They act on the system and carry no Kestrel data.
+- **The "What's stored and sent" link in Settings:** opens this page on GitHub in your browser.
+- **System actions:** Keep awake holds a logind inhibit, quick toggles change Wi-Fi, Bluetooth, unmount or eject, volume, and the desktop settings above, process actions send signals, and Empty Trash deletes local Trash files. They act on the system and carry no app data.
 
 ### Logs
 
@@ -173,7 +173,7 @@ folder. Feature enablement uses stable IDs. Invalid settings are ignored
 individually and reported in the window. Export contains only typed
 application-owned preferences; it excludes clipboard content, runtime
 snapshots, credentials, and resolved executable paths. See
-[What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+[What's stored and sent](#whats-stored-and-sent).
 
 Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub marks each feature as running, needing
@@ -243,7 +243,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled; runs only when you start it.
 - **Configuration:** `[speed_test] download_megabytes` (1–90; default 25), `upload_megabytes` (0–25; default 10; 0 skips upload), `timeout_seconds` (5–120; default 30).
-- Shows the Cloudflare host (which sees your IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` launched directly, ignores `~/.curlrc`, and supports cancellation. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+- Shows the Cloudflare host (which sees your IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` launched directly, ignores `~/.curlrc`, and supports cancellation. See [What's stored and sent](#whats-stored-and-sent).
 
 ### Snippets — `snippets.text`
 
@@ -256,15 +256,15 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Command bar — `commands.bar`
 
 - **Default:** disabled.
-- A keyboard surface for Kestrel's own features: actions, feature switches, presets, snippets, clipboard history, and your scripts, plus computed answers. Applications, windows, files, and emoji are optional sources, off by default, for when you have no other launcher.
+- A keyboard surface for the app's own features: actions, feature switches, presets, snippets, clipboard history, and your scripts, plus computed answers. Applications, windows, files, and emoji are optional sources, off by default, for when you have no other launcher.
 - **Configuration:** `[command_bar] max_results` (5–50; default 12), `enable_applications` (default false), `enable_files` (default false), `enable_scripts` (default true), `enable_emoji` (default false), `enable_windows` (default false), `enable_clipboard` (default true), up to 8 absolute `file_roots`, and scripts with 250 ms–60 s (default 5 s) timeouts and 1 KiB–1 MiB (default 64 KiB) output bounds. Configurations that already list these keys keep their values.
 - Search is local and bounded to configured sources; learned ranking stores command IDs, counts, and pins, never queries, window titles, or clipboard entries.
 - `kestrel --command command-bar.open` opens the bar as a floating surface without raising the main window, with the search field already focused. Up/Down or Ctrl+N/Ctrl+P select, Return runs the selection (or the first result) and shows the outcome in the bar, and Escape closes it and returns focus to the window you were in. While the feature is off, the bar shows how to turn it on.
 - Tool results include Take screenshot, Edit last screenshot when a capture exists, Read text (OCR), Read QR code, Pick color, Start/Stop recording, and Open scratchpad. Each appears only while its feature is usable; search aliases include `capture`, `grab`, `ocr`, `scan`, `color`, `eyedropper`, and `notes`.
-- Results cover Kestrel actions, feature switches (searching a feature lists its switch first), snippets, clipboard history entries while clipboard history runs, and scripts; with their sources switched on, also applications and their desktop actions, open windows, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
+- Results cover built-in actions, feature switches (searching a feature lists its switch first), snippets, clipboard history entries while clipboard history runs, and scripts; with their sources switched on, also applications and their desktop actions, open windows, files, and emoji. Running an application brings its window forward, hides it when it is already in front (where the window backend can minimize), and launches it otherwise.
 - Open windows come from COSMIC toplevel management, wlroots foreign-toplevel management (Sway, Hyprland, labwc), the generic Wayland toplevel list (listing only), or EWMH on X11. GNOME exposes no window list to applications, so window results stay off there and the provider row says why.
 - Computed answers: arithmetic (numbers may group thousands with a space or an apostrophe and use a comma or period decimal), unit conversion, dates and times, `feb 29` or `days until dec 25`, and colors in `#rrggbb`, `rgb()`, or `hsl()` notation with a swatch.
-- The bar is a wlr-layer-shell overlay where the compositor offers the protocol and Kestrel was built with gtk4-layer-shell (the AppImage bundles it); elsewhere it is a normal undecorated window. The command bar panel shows which placement is in use and why.
+- The bar is a wlr-layer-shell overlay where the compositor offers the protocol and the build uses gtk4-layer-shell (the AppImage bundles it); elsewhere it is a normal undecorated window. The command bar panel shows which placement is in use and why.
 
 ### Quick panel
 
@@ -275,7 +275,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled and requires explicit opt-in.
 - **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), `paste_plain_text` (default true), and `history_layout` (`list` or `cards`; default `list`), also editable on the Clipboard page.
-- History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+- History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only. See [What's stored and sent](#whats-stored-and-sent).
 - Copying an entry again moves it to the top; pinned entries keep their place. Wipe history and Clear unpinned ask first and state how many entries go; anything copied while the prompt is open is kept.
 - Search highlights matches. Ctrl+N and Ctrl+P move through results and Return copies the selected entry, or the first one when none is selected.
 - Previews lay JSON out one value per line. Image previews offer Copy text, which reads the image with the local `tesseract` executable; the text goes to the clipboard only and is neither retained nor logged. Without Tesseract the preview says what to install.
@@ -286,9 +286,9 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Default:** disabled; Balanced and Everything enable it. Nothing is captured until you press a capture button or run `kestrel --command capture.screenshot` / `capture.screen`.
 - **Providers:** the Screenshot portal where the desktop exports it (GNOME, KDE Plasma, COSMIC): "Choose in dialog" opens the desktop's own capture UI, and "Screen" asks once for screenshot permission; `grim` with `slurp` for area selection on wlroots compositors such as Sway and Hyprland; core X11 for the focused window or the whole screen on real X11 sessions.
 - **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), and `after_screenshot` (`"notify"` by default, `"edit"`, or `"nothing"`), also editable on the Capture page. Notifications offer **Edit** and **Copy** buttons when the desktop notification service supports actions; clicking the notification opens the Capture page.
-- Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every capture Kestrel saved (other files in the folder stay). Temporary files a portal leaves behind are deleted after import. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+- Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every saved capture (other files in the folder stay). Temporary files a portal leaves behind are deleted after import. See [What's stored and sent](#whats-stored-and-sent).
 - Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, spotlights areas, redacts regions, adds space around the screenshot, and takes pasted images; the original capture stays until you delete it.
-- **Redact:** the menu beside the toolbar picks **Black box** or **Erase**, which fills the area with the colour around its edge so the content looks removed. Either way the saved copy holds one opaque colour there, so nothing of the original survives. **Text only** hides just the words Tesseract finds in the dragged area (each with a little padding), read on this computer with the screen tools' OCR language and time limit; one Undo removes them all. Without Tesseract the switch is unavailable and says why. Both choices are kept while Kestrel runs.
+- **Redact:** the menu beside the toolbar picks **Black box** or **Erase**, which fills the area with the colour around its edge so the content looks removed. Either way the saved copy holds one opaque colour there, so nothing of the original survives. **Text only** hides just the words Tesseract finds in the dragged area (each with a little padding), read on this computer with the screen tools' OCR language and time limit; one Undo removes them all. Without Tesseract the switch is unavailable and says why. Both choices are kept until quit.
 - **Spotlight:** drag one or more areas to keep them bright and dim the rest of the screenshot; overlapping spotlights are never dimmed twice. The Dim slider (10–90%, default 60%) appears while Spotlight is selected and sets the strength for every spotlight. Boxes, arrows, and highlights are never dimmed, and Undo removes the last spotlight like any other edit.
 - **Canvas:** the Canvas button adds space on any side (up to 4,096 pixels each, 64 megapixels in total) in white, black, transparent, or a custom colour. Edits keep their place when the canvas changes, and closing the panel records one Undo step.
 - **Paste image:** Paste image or Ctrl+V adds the clipboard's image (up to 64 megapixels, 16 per edit) centred on the canvas, shrunk to fit if needed. Drag it to move it and drag a corner to resize it without stretching; Place, Enter, or picking another tool fixes it as an edit that Undo removes, and Escape cancels it. Pasted images count as part of the picture, so Spotlight dims them like the screenshot.
@@ -296,18 +296,18 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Screen tools — `capture.text`, `capture.qr`, `capture.color`
 
 - **Default:** disabled; Balanced and Everything enable all three. Each tool is its own feature and fails on its own: reading text needs Tesseract (`sudo apt install tesseract-ocr tesseract-ocr-eng`), and all three need a screenshot provider (see Screenshots).
-- **Use:** the Screen tools buttons on the Capture page, or `kestrel --command capture.text` / `capture.qr` / `capture.color`. Kestrel takes one frame through the screenshot provider and opens a selection view with a magnifier: drag an area to read (or read the whole frame), or click a pixel for its color. Arrow keys move the cursor and Enter confirms. Where the Screenshot portal offers its color picker, colors come from the desktop's picker.
+- **Use:** the Screen tools buttons on the Capture page, or `kestrel --command capture.text` / `capture.qr` / `capture.color`. One frame is taken through the screenshot provider, and a selection view opens with a magnifier: drag an area to read (or read the whole frame), or click a pixel for its color. Arrow keys move the cursor and Enter confirms. Where the Screenshot portal offers its color picker, colors come from the desktop's picker.
 - **Configuration:** `[screen_tools] ocr_language` (Tesseract codes such as `eng` or `eng+deu`; default `eng`) and `ocr_timeout_seconds` (5–120; default 30), also editable on the Capture page.
 - Everything runs on this computer: text through the `tesseract` executable, QR codes in-process. The frame stays in memory only while you select and is dropped once reading starts or you cancel; results stay until cleared and are not written to disk. Text and QR results copy to the clipboard, web addresses in QR codes open in your browser, and colors copy as HEX, RGB, or HSL. Copying puts them on the clipboard, where clipboard history keeps them if it is on.
 
 ### Screen recording — `capture.recording`
 
-- **Default:** disabled; Balanced and Everything enable it. Nothing is shared until you press Screen, Window, or Area; the desktop's ScreenCast dialog asks every time, and Kestrel never asks it to remember the choice.
+- **Default:** disabled; Balanced and Everything enable it. Nothing is shared until you press Screen, Window, or Area; the desktop's ScreenCast dialog asks every time, and is never asked to remember the choice.
 - **Needs:** a ScreenCast portal backend (GNOME, KDE Plasma, COSMIC, wlroots), PipeWire, and GStreamer with its PipeWire, Base, and Good plugins (`sudo apt install gstreamer1.0-pipewire gstreamer1.0-plugins-base gstreamer1.0-plugins-good`). The feature names whichever piece is missing.
 - **Sources:** a screen or a window as the desktop offers; Area shares a screen, then shows its current frame so you can drag the region to keep.
 - **Audio:** System audio and Microphone (the default input) are separate opt-in switches, each recorded as its own Opus track. Under Sound from, System audio records all apps or just one, remembered in `[recording] system_audio_app`; streams that app opens later join the track, and while it plays nothing the track stays silent. Recording one app needs a PipeWire audio server and the GStreamer PipeWire plugin, and captures its streams without changing where it plays. When the saved app cannot be recorded alone in this session, the System track is left out so other apps stay out of the take. A track that fails or disconnects is marked in the panel and the rest of the recording continues.
 - **Configuration:** `[recording] framerate` (10–60; default 30), `cursor` (default true), `system_audio`, `system_audio_app` (an application identity; unset records all apps), `microphone` (default false), also editable in the panel.
-- Recordings are VP8 WebM files in `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`), written as a hidden `.partial` file (0600) and renamed only once complete. Discard, failures, and leftovers from a crash remove the partial file; earlier recordings are never touched. Pause leaves the paused time out of the file. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+- Recordings are VP8 WebM files in `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`), written as a hidden `.partial` file (0600) and renamed only once complete. Discard, failures, and leftovers from a crash remove the partial file; earlier recordings are never touched. Pause leaves the paused time out of the file. See [What's stored and sent](#whats-stored-and-sent).
 - Stop, disabling the feature, and quitting save the take; the desktop ending the share saves what was recorded and says so. Recording stops and saves when less than 512 MiB of disk space remains.
 - **Trim:** each recent recording has Trim, which opens its timeline with Start and End handles and a preview of the frame at either point. Export writes the kept range, re-encoded as VP8/Opus WebM with every track, to a file you choose, through a hidden partial file renamed once complete. Cancelling or a failed export removes that file; the recording itself is never changed. Disabling the feature or quitting cancels a running export.
 
@@ -315,7 +315,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command scratchpad.open`.
 - **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable on the Notes page.
-- Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+- Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`. See [What's stored and sent](#whats-stored-and-sent).
 - Alt+Up and Alt+Down move the current line or selected lines; Ctrl+Z undoes a move and restores the selection.
 - Shift+Return continues a bulleted, numbered, or task list: the new item gets the same bullet, the next number (later numbers shift up), or an unticked `[ ]`. On an empty item it ends the list.
 - Preview renders the note's Markdown, with each `- [ ]` or `- [x]` task as a checkbox; clicking one changes only that task's marker in the note. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
@@ -331,8 +331,8 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command processes.open`.
 - **Configuration:** `[processes] refresh_millis` (1,000–10,000; default 2,000) and `max_rows` (rows shown, 10–500; default 100), also editable on the Processes page.
 - Rows show the executable, PID, start time in clock ticks since boot, owner, CPU, and resident memory, busiest first; search covers every process by name, executable, owner, or PID. Command lines and environments are never read.
-- End (SIGTERM, then a 3 s wait) and Kill (SIGKILL) apply only to your own processes. Kernel threads, other users' processes, PID 1, your systemd manager, and Kestrel itself show the reason instead. Each action asks for confirmation naming the executable, PID, owner, and signal.
-- Kestrel opens a pidfd and checks the start time again before every signal, so a PID reused by another process is refused. Without pidfd support (Linux 5.3+), the list still works, End, Kill, Restart, and Stop owner are hidden, and the panel says why.
+- End (SIGTERM, then a 3 s wait) and Kill (SIGKILL) apply only to your own processes. Kernel threads, other users' processes, PID 1, your systemd manager, and this app itself show the reason instead. Each action asks for confirmation naming the executable, PID, owner, and signal.
+- A pidfd is opened and the start time is checked again before every signal, so a PID reused by another process is refused. Without pidfd support (Linux 5.3+), the list still works, End, Kill, Restart, and Stop owner are hidden, and the panel says why.
 - Restart appears for systemd user services (`systemctl --user restart`) and apps the desktop launched into their own `app-…scope` (SIGTERM to every process in the scope, then a relaunch from the desktop entry). Force restart sends SIGKILL to anything still running after 5 s. Services in `session.slice` are never restarted.
 
 ### Open ports — `network.listeners`
@@ -345,14 +345,14 @@ settings together. On narrow windows the sidebar and the page take turns.
 ### Quick toggles
 
 - **Desktop dark mode:** switches COSMIC's own light and dark mode on COSMIC, and GNOME's color scheme elsewhere. COSMIC's automatic day/night switching may change it back.
-- **Kestrel window style:** on COSMIC, Light and Dark apply COSMIC's own light or dark colours to Kestrel's window, and System follows COSMIC's switch live without a restart. Elsewhere, a custom GTK style sheet can override the window colours.
-- **Keep awake:** keeps the computer from idling or sleeping for a chosen time: 15 or 30 minutes, 1, 2, 4, or 8 hours, a custom whole-minute length from 1 minute to 24 hours, or until you turn it off. Overview shows the time left and when it ends; the tray's **Keep awake** menu starts any preset or stops the session, and its label shows the time left while a timed session runs; the status bar overlay can also show the time left with a stop button. When a timed session ends Kestrel sends one "Keep awake ended" notification and lets the computer sleep and lock again. Stopping it yourself sends no notification. The command line starts a preset with `keep-awake.start-15m`, `keep-awake.start-30m`, `keep-awake.start-1h`, `keep-awake.start-2h`, `keep-awake.start-4h`, `keep-awake.start-8h`, or `keep-awake.start-until-stopped`, accepts a custom length such as `keep-awake.start-90m`, and stops it with `keep-awake.stop`. The command bar offers the same starts and a Stop entry while it runs.
+- **Kestrel window style:** on COSMIC, Light and Dark apply COSMIC's own light or dark colours to the window, and System follows COSMIC's switch live without a restart. Elsewhere, a custom GTK style sheet can override the window colours.
+- **Keep awake:** keeps the computer from idling or sleeping for a chosen time: 15 or 30 minutes, 1, 2, 4, or 8 hours, a custom whole-minute length from 1 minute to 24 hours, or until you turn it off. Overview shows the time left and when it ends; the tray's **Keep awake** menu starts any preset or stops the session, and its label shows the time left while a timed session runs; the status bar overlay can also show the time left with a stop button. When a timed session ends one "Keep awake ended" notification is sent, and the computer can sleep and lock again. Stopping it yourself sends no notification. The command line starts a preset with `keep-awake.start-15m`, `keep-awake.start-30m`, `keep-awake.start-1h`, `keep-awake.start-2h`, `keep-awake.start-4h`, `keep-awake.start-8h`, or `keep-awake.start-until-stopped`, accepts a custom length such as `keep-awake.start-90m`, and stops it with `keep-awake.stop`. The command bar offers the same starts and a Stop entry while it runs.
 
 ### Desktop integration
 
 - The normal window is always available; the tray is optional. Tray icon (`app.status-notifier`) is on by default and can be turned off in the Feature Hub, which removes the tray icon and readout icons at once; presets leave it as you set it.
-- The close button minimizes Kestrel to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching Kestrel again, the tray, or `window.show` brings the window back. Some docks' Quit only sends the same close request, so Kestrel keeps running; **Quit Kestrel** in the app's menu (the desktop entry's action), the tray's Quit, the Quit row on the Settings page, and Ctrl+Q always quit. The first close that hides the window shows a one-time notification saying Kestrel is still running and how to quit. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make the close button quit instead. Minimizing turns off a running camera preview.
-- The StatusNotifierItem tray (open, refresh, toggle microphone mute, a Keep awake menu while that toggle runs, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, COSMIC, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Each readout marked **Tray** in Settings (up to three) gets its own tray icon showing its label and current value; clicking it opens Kestrel, and its menu shows the full reading. Hosts that support tooltips also show the reading on hover; COSMIC shows no tray tooltips.
+- The close button minimizes the app to the taskbar by default, so monitoring, clipboard history, and recordings keep running; launching again, the tray, or `window.show` brings the window back. Some docks' Quit only sends the same close request, so it keeps running; **Quit Kestrel** in the app's menu (the desktop entry's action), the tray's Quit, the Quit row on the Settings page, and Ctrl+Q always quit. The first close that hides the window shows a one-time notification saying it is still running and how to quit. Choose "Quit Kestrel" under Settings → Close button (`[ui] close_action = "quit"`) to make the close button quit instead. Minimizing turns off a running camera preview.
+- The StatusNotifierItem tray (open, refresh, toggle microphone mute, a Keep awake menu while that toggle runs, quit) registers when a compatible host exists, and the window works either way. KDE Plasma, XFCE, Cinnamon, MATE, Budgie, LXQt, COSMIC, and SNI-capable bars provide one; GNOME needs the AppIndicator extension. Each readout marked **Tray** in Settings (up to three) gets its own tray icon showing its label and current value; clicking it opens the window, and its menu shows the full reading. Hosts that support tooltips also show the reading on hover; COSMIC shows no tray tooltips.
 - See [Keyboard shortcuts](#keyboard-shortcuts) for `global.shortcuts` and `kestrel --command`.
 
 ### Status bar overlay — `overlay.status`
@@ -369,27 +369,27 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Accessory batteries:** while a mouse, keyboard, headset, or other accessory that isn't charging runs at or below the warning level, its icon and percentage in amber, or in red at the critical level; a device also shows briefly when it connects or starts or stops charging. Needs Monitoring and UPower, and never shows a device's name.
 - These controls show for 3 seconds after a change and stay while the pointer is over the overlay. Changes made elsewhere, including from hardware keys or another mixer, are noticed within half a second.
 - Each module reads the state its feature already publishes, so a module that is off, or whose feature is off, costs nothing; switch modules under Settings → Status bar overlay (`[overlay] recording`, `alerts`, `microphone`, `volume`, `microphone_level`, `keyboard_light`, `accessories`, `keep_awake`, plus `accessory_warning` and `accessory_critical` for its levels, default 20 and 10).
-- **Needs:** a desktop that lets apps place a layer-shell surface (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors) and a build with gtk4-layer-shell; the AppImage bundles it. Elsewhere the feature shows as unavailable with the reason, and Kestrel's window, tray, and shortcuts work as usual. It appears on the display the compositor chooses.
+- **Needs:** a desktop that lets apps place a layer-shell surface (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors) and a build with gtk4-layer-shell; the AppImage bundles it. Elsewhere the feature shows as unavailable with the reason, and the window, tray, and shortcuts work as usual. It appears on the display the compositor chooses.
 
 ### What's new after an update
 
-- After an update that changes a feature you have on (or Kestrel as a whole), Overview shows a banner once; **Show** lists this release's notes with your features first and the rest folded under Other changes. Updates that change nothing you use show no banner.
+- After an update that changes a feature you have on (or the app as a whole), Overview shows a banner once; **Show** lists this release's notes with your features first and the rest folded under Other changes. Updates that change nothing you use show no banner.
 - Settings → What's new reopens the notes at any time, and its switch (`[startup] whats_new`, default true) turns the banner off.
-- The notes ship inside Kestrel and are read locally. The last version you ran is kept in `$XDG_STATE_HOME/kestrel/last-version`; a first run records it without a banner.
+- The notes are bundled and read locally. The last version you ran is kept in `$XDG_STATE_HOME/kestrel/last-version`; a first run records it without a banner.
 
 ### Diagnostic logs
 
 - **Configuration:** `[logging] debug` (default false), `retention_days` (1–30; default 7), and `max_total_megabytes` (1–100; default 20), also editable under Settings → Diagnostic logs.
-- Kestrel keeps warnings, errors, and features starting, stopping, or changing capability in `$XDG_STATE_HOME/kestrel/logs` (usually `~/.local/state/kestrel/logs`; debug builds use `kestrel-devel`). The folder is 0700 and files are 0600. A new file starts each day, or when a file reaches a quarter of the size limit.
+- Warnings, errors, and features starting, stopping, or changing capability are kept in `$XDG_STATE_HOME/kestrel/logs` (usually `~/.local/state/kestrel/logs`; debug builds use `kestrel-devel`). The folder is 0700 and files are 0600. A new file starts each day, or when a file reaches a quarter of the size limit.
 - Debug logging adds operation names and timings. It applies at once, and `KESTREL_LOG=debug` turns it on for one run without changing the setting.
 - Files older than the retention period are deleted at startup and every hour, and the oldest go first when the folder passes the size limit. Settings shows the folder with **Open folder** and **Clear logs**.
-- Logs never record clipboard, snippet, or note text, OCR or QR results, command-bar searches, window titles, network addresses, or paths in your home folder, and never leave the computer. A failed operation is logged by name only, such as `kestrel-audio-output-switch failed`; its reason, which can name a process or device, appears only in the window. When Kestrel runs from a terminal, warnings and errors also appear there. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
+- Logs never record clipboard, snippet, or note text, OCR or QR results, command-bar searches, window titles, network addresses, or paths in your home folder, and never leave the computer. A failed operation is logged by name only, such as `kestrel-audio-output-switch failed`; its reason, which can name a process or device, appears only in the window. When run from a terminal, warnings and errors also appear there. See [What's stored and sent](#whats-stored-and-sent).
 
 ### Keyboard shortcuts
 
-The Shortcuts page sets keys up without editing files: **Add shortcut** picks an action and records a key combination, and each binding has Change key, Copy command, and Remove. Kestrel registers the keys itself where the desktop allows it (see [Keyboard shortcuts](#keyboard-shortcuts--globalshortcuts)); elsewhere the page explains how to add each one as a custom shortcut.
+The Shortcuts page sets keys up without editing files: **Add shortcut** picks an action and records a key combination, and each binding has Change key, Copy command, and Remove. Keys are registered where the desktop allows it (see [Keyboard shortcuts](#keyboard-shortcuts--globalshortcuts)); elsewhere the page explains how to add each one as a custom shortcut.
 
-`kestrel --command <id>` sends one action to the running instance; if Kestrel is not running it starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, COSMIC Settings → Input devices → Keyboard → Keyboard shortcuts → Custom shortcuts, or your compositor config); Copy command on the Shortcuts page copies the line for a binding:
+`kestrel --command <id>` sends one action to the running instance; when none is running, the app starts, opens its window, and runs the action. Bind it in your desktop's custom-shortcut settings (GNOME Settings → Keyboard → Custom Shortcuts, KDE System Settings → Shortcuts → Add Command, COSMIC Settings → Input devices → Keyboard → Keyboard shortcuts → Custom shortcuts, or your compositor config); Copy command on the Shortcuts page copies the line for a binding:
 
 ```bash
 kestrel --command command-bar.open        # floating command bar
@@ -435,7 +435,7 @@ trigger = "LOGO+ALT+o"
 
 #### Launcher script commands
 
-Kestrel's actions can run from your own launcher as script commands. The scripts are generated from `kestrel --list-commands`:
+Actions can run from your own launcher as script commands. The scripts are generated from `kestrel --list-commands`:
 
 ```bash
 bash scripts/launcher-commands.sh              # Vicinae: ~/.local/share/vicinae/scripts/kestrel
@@ -445,9 +445,9 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 ```
 
 - Each script runs `kestrel --command <id>` with the installed binary's absolute path, under the action's own title, such as "Open the process inspector" or "Toggle Keep awake". Vicinae finds them by title, by "kestrel", or by ID.
-- Scripts use compact mode. Success stays quiet, and when Kestrel can't run the action the launcher shows a one-line reason: the feature is off, unavailable on this desktop, or on but not running. Kestrel's window shows the full reason.
-- When Kestrel isn't running, the script starts it, which opens the window and runs or explains the action there. The script returns after three seconds and leaves Kestrel running.
-- Only files this script wrote are replaced or removed. Run it again after updating Kestrel so new actions appear; `command-bar.open` is left out.
+- Scripts use compact mode. Success stays quiet, and when the action cannot run the launcher shows a one-line reason: the feature is off, unavailable on this desktop, or on but not running. The window shows the full reason.
+- When the app is not running, the script starts it, which opens the window and runs or explains the action there. The script returns after three seconds and leaves the app running.
+- Only files this script wrote are replaced or removed. Run it again after updating so new actions appear; `command-bar.open` is left out.
 
 ## AppImage preview
 
@@ -462,7 +462,7 @@ bash scripts/build-appimage.sh 0.1.0
 
 ## Install from source
 
-To use Kestrel day to day from a `main` checkout:
+To use the app day to day from a `main` checkout:
 
 ```bash
 bash scripts/install-local.sh            # build and install, or update

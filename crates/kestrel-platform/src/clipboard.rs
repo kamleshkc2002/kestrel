@@ -850,7 +850,7 @@ fn capability_report(
                 "Privacy-preserving clipboard history is unavailable.",
             )
             .with_remediation(
-                "Run Kestrel in a logind graphical session with Wayland data-control or X11 access.",
+                "Run the app in a logind graphical session with Wayland data-control or X11 access.",
             )
             .with_evidence(CapabilityEvidence::new(
                 "source_application_identity",

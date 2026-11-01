@@ -76,7 +76,7 @@ impl FloatingSurface {
         }
 
         let query = gtk::SearchEntry::builder()
-            .placeholder_text("Search Kestrel actions, snippets, and clipboard")
+            .placeholder_text("Search actions, snippets, and clipboard")
             .hexpand(true)
             .build();
         query.update_property(&[Property::Label("Command bar search")]);

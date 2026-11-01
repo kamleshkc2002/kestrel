@@ -36,7 +36,7 @@ impl StatusNotifierIntegration {
                 capability: CapabilityReport::new(
                     FEATURE_ID,
                     CapabilityStatus::Supported,
-                    "The desktop tray host accepted Kestrel's optional StatusNotifierItem.",
+                    "The desktop tray host accepted the optional StatusNotifierItem.",
                 )
                 .with_selected_backend("StatusNotifierItem over the user session D-Bus"),
             },
@@ -61,7 +61,7 @@ impl StatusNotifierIntegration {
             Ok(true) => CapabilityReport::new(
                 FEATURE_ID,
                 CapabilityStatus::Supported,
-                "A desktop tray host can show Kestrel's optional tray entry.",
+                "A desktop tray host can show the optional tray entry.",
             )
             .with_selected_backend("StatusNotifierItem over the user session D-Bus"),
             Ok(false) => unavailable_capability("no StatusNotifierItem tray host is running"),
@@ -215,7 +215,7 @@ pub(crate) fn unavailable_capability(reason: impl Into<String>) -> CapabilityRep
         CapabilityStatus::Unsupported {
             reason: reason.into(),
         },
-        "The optional tray entry is unavailable; the normal Kestrel window remains fully usable.",
+        "The optional tray entry is unavailable; the normal window remains fully usable.",
     )
     .with_remediation(
         "Use the normal window. On GNOME, enable an AppIndicator/StatusNotifierItem extension; on other desktops, start an SNI-compatible panel or tray host, then restart Kestrel.",
@@ -362,7 +362,7 @@ impl Tray for KestrelTray {
         ToolTip {
             icon_name: self.icon_name(),
             title: self.title(),
-            description: "Open Kestrel's capability and feature status window.".to_owned(),
+            description: "Open the capability and feature status window.".to_owned(),
             ..ToolTip::default()
         }
     }
@@ -618,7 +618,6 @@ mod tests {
             report.status,
             CapabilityStatus::Unsupported { .. }
         ));
-        assert!(report.summary.contains("normal Kestrel window"));
         assert!(
             report
                 .remediation
