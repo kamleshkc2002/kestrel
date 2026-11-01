@@ -215,8 +215,8 @@ fn add_logging_group(
     let report = plain_row()
         .title("Report a problem")
         .subtitle(
-            "Opens the bug report form on GitHub with your Kestrel version and desktop \
-             filled in. Attach logs from the folder above if you can.",
+            "Opens the bug report form on GitHub with your Kestrel version, desktop, and \
+             distribution filled in. Attach logs from the folder above if you can.",
         )
         .subtitle_lines(0)
         .build();
@@ -233,6 +233,27 @@ fn add_logging_group(
         "report problem bug issue github diagnostics logs".to_owned(),
     ));
     logs_group.add(&report);
+
+    let storage = plain_row()
+        .title("What Kestrel stores and sends")
+        .subtitle("Files, permissions, retention, and everything that leaves this computer.")
+        .subtitle_lines(0)
+        .build();
+    let storage_button = gtk::Button::with_label("Open");
+    storage_button.set_valign(Align::Center);
+    let sender = commands.clone();
+    storage_button.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::OpenUri(
+            "https://github.com/kamleshkc2002/kestrel#what-kestrel-stores-and-sends".to_owned(),
+        ));
+    });
+    storage.add_suffix(&storage_button);
+    storage.set_activatable_widget(Some(&storage_button));
+    filter_rows.push((
+        storage.clone().upcast(),
+        "privacy storage data files retention sends network what kestrel stores".to_owned(),
+    ));
+    logs_group.add(&storage);
     group.add(&logs_group);
 }
 

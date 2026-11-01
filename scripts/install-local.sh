@@ -4,7 +4,8 @@
 #   bash scripts/install-local.sh              install or update
 #   bash scripts/install-local.sh --restart    also (re)start Kestrel; it logs to
 #                                              ~/.local/state/kestrel/logs
-#   bash scripts/install-local.sh --uninstall  remove installed files
+#   bash scripts/install-local.sh --uninstall  remove installed files and the
+#                                              autostart entry
 #
 # Settings and data in ~/.config/kestrel and ~/.local/share/kestrel stay.
 # Debug builds use their own ID and kestrel-devel folders alongside this copy.
@@ -16,8 +17,13 @@ set -euo pipefail
 app_id="io.github.kamleshkc2002.Kestrel"
 repository="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 prefix="${KESTREL_PREFIX:-$HOME/.local}"
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 binary="$prefix/bin/kestrel"
 desktop_file="$prefix/share/applications/$app_id.desktop"
+case "$config_home" in
+  /*) autostart_file="$config_home/autostart/$app_id.desktop" ;;
+  *) autostart_file="" ;;
+esac
 icon_root="$prefix/share/icons/hicolor"
 icon_file="$icon_root/scalable/apps/$app_id.svg"
 
@@ -42,6 +48,9 @@ case "${1:-}" in
       "$binary" --command app.quit || true
     fi
     rm -f "$binary" "$desktop_file" "$icon_file"
+    if [ -n "$autostart_file" ]; then
+      rm -f "$autostart_file"
+    fi
     refresh_caches
     printf 'Removed Kestrel from %s; settings and data were kept.\n' "$prefix"
     exit 0
@@ -65,10 +74,14 @@ install -Dm755 "$repository/target/release/kestrel" "$binary"
 install -Dm644 "$repository/data/icons/$app_id.svg" "$icon_file"
 mkdir -p "$(dirname -- "$desktop_file")"
 # An absolute Exec works when ~/.local/bin is absent from the launcher's PATH.
+desktop_temp="$(mktemp "$desktop_file.XXXXXX")"
+trap 'rm -f "$desktop_temp"' EXIT
 sed -e "s|^Exec=kestrel\$|Exec=$binary|" \
   -e "s|^Exec=kestrel |Exec=$binary |" \
-  "$repository/data/$app_id.desktop" >"$desktop_file"
-chmod 644 "$desktop_file"
+  "$repository/data/$app_id.desktop" >"$desktop_temp"
+chmod 644 "$desktop_temp"
+mv -f "$desktop_temp" "$desktop_file"
+trap - EXIT
 refresh_caches
 
 # Kestrel now keeps bounded logs; the older unbounded launch log goes.

@@ -79,7 +79,7 @@ impl std::fmt::Display for ConfigurationLoadError {
 
 impl std::error::Error for ConfigurationLoadError {}
 
-/// XDG path for non-sensitive configuration.
+/// XDG path for the configuration file.
 pub fn configuration_path() -> Option<PathBuf> {
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -154,15 +154,12 @@ pub fn load(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> 
     }
 }
 
-/// Saves typed, versioned non-sensitive settings.
+/// Saves typed, versioned settings privately and atomically.
 pub fn save(path: &Path, configuration: &ApplicationConfiguration) -> Result<(), std::io::Error> {
     let content = export_string(configuration).map_err(|error| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{error:?}"))
     })?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)
+    crate::private_file::write_private_atomic(path, content.as_bytes())
 }
 
 /// Imports portable configuration; isolated errors become warnings.
@@ -2982,5 +2979,28 @@ favorites = ["command-bar.open", "missing.action", "command-bar.open", "quick-pa
                 .iter()
                 .any(|warning| warning.feature_id == "quick_panel.favorites[2]")
         );
+    }
+
+    #[test]
+    fn saved_configuration_is_private_and_leaves_no_temporary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::TempDir::new().expect("temp dir");
+        let path = root.path().join("kestrel/config.toml");
+        let configuration = ApplicationConfiguration::default();
+
+        save(&path, &configuration).expect("the save succeeds");
+        save(&path, &configuration).expect("a replacement succeeds");
+
+        let file = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(file.permissions().mode() & 0o777, 0o600);
+        let directory = std::fs::metadata(path.parent().expect("parent")).expect("metadata");
+        assert_eq!(directory.permissions().mode() & 0o777, 0o700);
+        let entries = std::fs::read_dir(path.parent().expect("parent"))
+            .expect("readable")
+            .count();
+        assert_eq!(entries, 1, "no temporary file is left behind");
+        let reloaded = load(&path).expect("the saved file loads");
+        assert_eq!(reloaded.configuration, configuration);
     }
 }
