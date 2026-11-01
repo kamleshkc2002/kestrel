@@ -46,6 +46,8 @@ pub struct QuickToggleService<B: QuickToggleBackend = LinuxQuickToggleBackend> {
     backend: B,
     snapshots: BTreeMap<QuickToggleId, QuickToggleSnapshot>,
     keep_awake_session: Option<KeepAwakeSession>,
+    /// Changes whenever the session does; orders published state.
+    keep_awake_revision: u64,
 }
 
 impl<B: QuickToggleBackend> QuickToggleService<B> {
@@ -71,6 +73,7 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
             backend,
             snapshots,
             keep_awake_session: None,
+            keep_awake_revision: 0,
         }
     }
 
@@ -130,8 +133,8 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
             command.confirmation_token.as_deref(),
         );
         let session = if command.id == QuickToggleId::KeepAwake {
-            if disabled {
-                self.keep_awake_session = None;
+            if disabled && self.keep_awake_session.take().is_some() {
+                self.bump_keep_awake_revision();
             }
             self.keep_awake_session
         } else {
@@ -177,6 +180,7 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
             KeepAwakeDuration::For(length) => Some(now.saturating_add(length)),
         };
         self.keep_awake_session = Some(KeepAwakeSession { duration, deadline });
+        self.bump_keep_awake_revision();
         let snapshot = self
             .snapshots
             .get_mut(&QuickToggleId::KeepAwake)
@@ -187,7 +191,9 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
 
     /// Releases the inhibitor and clears the session; safe to repeat.
     pub fn stop_keep_awake(&mut self) {
-        self.keep_awake_session = None;
+        if self.keep_awake_session.take().is_some() {
+            self.bump_keep_awake_revision();
+        }
         let _ = self.backend.apply(
             QuickToggleId::KeepAwake,
             QuickToggleMutation::SetEnabled(false),
@@ -212,10 +218,21 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
         ALL_QUICK_TOGGLES.iter().map(|id| &self.snapshots[id])
     }
 
+    /// Changes whenever the keep-awake session does, including restarts.
+    pub fn keep_awake_revision(&self) -> u64 {
+        self.keep_awake_revision
+    }
+
+    fn bump_keep_awake_revision(&mut self) {
+        self.keep_awake_revision = self.keep_awake_revision.wrapping_add(1);
+    }
+
     /// Provider-observed toggles remain untouched on stop.
     pub fn stop(&mut self, id: QuickToggleId) {
         if id == QuickToggleId::KeepAwake {
-            self.keep_awake_session = None;
+            if self.keep_awake_session.take().is_some() {
+                self.bump_keep_awake_revision();
+            }
             let _ = self
                 .backend
                 .apply(id, QuickToggleMutation::SetEnabled(false), None);
@@ -553,6 +570,49 @@ mod tests {
         assert_eq!(session.duration, thirty);
         assert_eq!(session.deadline, Some(Duration::from_secs(1_900)));
         assert_eq!(service.backend.keep_awake_releases, 0);
+    }
+
+    #[test]
+    fn keep_awake_revision_tracks_each_session_change() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        let fifteen = KeepAwakeDuration::timed(Duration::from_secs(15 * 60)).expect("valid");
+        let thirty = KeepAwakeDuration::timed(Duration::from_secs(30 * 60)).expect("valid");
+        assert_eq!(service.keep_awake_revision(), 0);
+
+        service
+            .start_keep_awake(fifteen, Duration::ZERO)
+            .expect("start");
+        let started = service.keep_awake_revision();
+        assert_eq!(started, 1);
+
+        service
+            .start_keep_awake(thirty, Duration::from_secs(100))
+            .expect("restart");
+        let restarted = service.keep_awake_revision();
+        assert_eq!(restarted, started + 1);
+
+        service.stop_keep_awake();
+        let stopped = service.keep_awake_revision();
+        assert_eq!(stopped, restarted + 1);
+
+        // Stopping again while nothing runs changes nothing.
+        service.stop_keep_awake();
+        assert_eq!(service.keep_awake_revision(), stopped);
+    }
+
+    #[test]
+    fn keep_awake_revision_changes_when_a_timed_session_expires() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        let duration = KeepAwakeDuration::timed(Duration::from_secs(60)).expect("valid");
+        service
+            .start_keep_awake(duration, Duration::from_secs(1_000))
+            .expect("start");
+        let started = service.keep_awake_revision();
+
+        assert!(!service.expire_keep_awake(Duration::from_secs(1_059)));
+        assert_eq!(service.keep_awake_revision(), started);
+        assert!(service.expire_keep_awake(Duration::from_secs(1_060)));
+        assert!(service.keep_awake_revision() > started);
     }
 
     #[test]

@@ -113,6 +113,11 @@ impl ApplicationRuntime {
             .is_some_and(|snapshot| snapshot.keep_awake.is_some())
     }
 
+    /// The revision of the keep-awake session; it changes whenever the session does.
+    pub fn keep_awake_revision(&self) -> u64 {
+        self.quick_toggles.keep_awake_revision()
+    }
+
     /// Whether the running session has a deadline.
     pub fn keep_awake_is_timed(&self) -> bool {
         self.quick_toggles
@@ -133,12 +138,13 @@ impl ApplicationRuntime {
             .registry
             .registrations()
             .find(|registration| registration.feature.id == id.feature_id());
+        let now = kestrel_platform::clock::boot_time();
+        let stamp = KeepAwakeStamp {
+            revision: self.quick_toggles.keep_awake_revision(),
+            observed_at: now,
+        };
         let mut model = QuickToggleViewModel::from_snapshot(snapshot, registration);
-        model.attach_keep_awake(
-            snapshot,
-            self.keep_awake_choice,
-            kestrel_platform::clock::boot_time(),
-        );
+        model.attach_keep_awake(snapshot, self.keep_awake_choice, now, stamp);
         Some(model)
     }
 }

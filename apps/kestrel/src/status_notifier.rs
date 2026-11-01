@@ -1,5 +1,5 @@
 use crate::{
-    ApplicationCommand, ApplicationViewModel, QuickToggleId, QuickToggleViewModel,
+    ApplicationCommand, ApplicationViewModel, KeepAwakeStamp, QuickToggleId, QuickToggleViewModel,
     tray_icon::readout_icon,
 };
 use async_channel::Sender;
@@ -246,6 +246,8 @@ pub struct TrayKeepAwake {
     pub active: bool,
     /// The submenu's label, with the time left while a timed session runs.
     pub label: String,
+    /// Orders publishers; `None` only for the state built before any read.
+    pub stamp: Option<KeepAwakeStamp>,
 }
 
 impl TrayKeepAwake {
@@ -282,8 +284,29 @@ impl TrayKeepAwake {
             available,
             active,
             label,
+            stamp: toggle.and_then(|toggle| toggle.keep_awake_stamp),
         }
     }
+}
+
+/// The state the tray last received.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Published {
+    state: TrayKeepAwake,
+}
+
+/// Accepts a state that is not older, and reports whether the tray must redraw.
+fn accept(published: &mut Published, incoming: TrayKeepAwake) -> bool {
+    if let (Some(shown), Some(next)) = (published.state.stamp, incoming.stamp) {
+        if next < shown {
+            return false;
+        }
+    }
+    let unchanged = published.state.available == incoming.available
+        && published.state.active == incoming.active
+        && published.state.label == incoming.label;
+    published.state = incoming;
+    !unchanged
 }
 
 /// Pushes the keep-awake submenu state to an open tray.
@@ -291,22 +314,20 @@ impl TrayKeepAwake {
 pub struct TrayKeepAwakeSink {
     handle: Handle<KestrelTray>,
     /// The state the tray last received.
-    published: Arc<Mutex<TrayKeepAwake>>,
+    published: Arc<Mutex<Published>>,
 }
 
 impl TrayKeepAwakeSink {
-    /// Skips an update the tray already has.
+    /// Skips an update the tray already has or an older state cannot replace.
     pub fn publish(&self, state: TrayKeepAwake) {
         let mut published = self
             .published
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *published == state {
-            return;
+        // The lock is held across the update, so the cache and the tray agree.
+        if accept(&mut published, state.clone()) {
+            self.handle.update(move |tray| tray.keep_awake = state);
         }
-        *published = state.clone();
-        drop(published);
-        self.handle.update(move |tray| tray.keep_awake = state);
     }
 }
 
@@ -532,7 +553,61 @@ impl Tray for ReadoutTray {
 mod tests {
     use kestrel_core::CapabilityStatus;
 
-    use super::{FEATURE_ID, unavailable_capability};
+    use super::{FEATURE_ID, Published, TrayKeepAwake, accept, unavailable_capability};
+    use crate::KeepAwakeStamp;
+    use std::time::Duration;
+
+    fn stamp(revision: u64, observed_at: u64) -> Option<KeepAwakeStamp> {
+        Some(KeepAwakeStamp {
+            revision,
+            observed_at: Duration::from_secs(observed_at),
+        })
+    }
+
+    fn state(active: bool, revision: u64, observed_at: u64) -> TrayKeepAwake {
+        TrayKeepAwake {
+            available: true,
+            active,
+            label: if active {
+                "Keep awake · 30 min left".to_owned()
+            } else {
+                "Keep awake".to_owned()
+            },
+            stamp: stamp(revision, observed_at),
+        }
+    }
+
+    #[test]
+    fn an_older_tick_state_does_not_replace_a_newer_stop() {
+        let mut published = Published::default();
+        assert!(accept(&mut published, state(false, 2, 200)));
+
+        assert!(!accept(&mut published, state(true, 1, 100)));
+
+        assert!(!published.state.active);
+        assert_eq!(published.state.stamp, stamp(2, 200));
+    }
+
+    #[test]
+    fn a_newer_stamp_with_the_same_state_updates_without_a_redraw() {
+        let mut published = Published::default();
+        assert!(accept(&mut published, state(true, 1, 100)));
+
+        assert!(!accept(&mut published, state(true, 2, 200)));
+
+        assert_eq!(published.state.stamp, stamp(2, 200));
+    }
+
+    #[test]
+    fn a_changed_newer_state_reaches_the_tray() {
+        let mut published = Published::default();
+        assert!(accept(&mut published, state(true, 1, 100)));
+
+        assert!(accept(&mut published, state(false, 2, 200)));
+
+        assert!(!published.state.active);
+        assert_eq!(published.state.label, "Keep awake");
+    }
 
     #[test]
     fn unavailable_tray_keeps_the_normal_window_as_remediation() {
