@@ -82,6 +82,10 @@ impl std::error::Error for ConfigurationLoadError {}
 pub fn load(path: &Path) -> Result<LoadedConfiguration, ConfigurationLoadError> {
     match fs::read_to_string(path) {
         Ok(contents) => {
+            // Files written before saves became private are narrowed here.
+            if let Err(error) = crate::private_file::restrict_existing(path) {
+                log::warn!(target: "kestrel", "could not make the settings file private: {error}");
+            }
             let mut loaded = import_string(&contents)?;
             loaded.existed = true;
             Ok(loaded)
@@ -268,7 +272,7 @@ mod tests {
 
     #[test]
     fn saved_configuration_is_private_and_leaves_no_temporary() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::{os::unix::fs::PermissionsExt, path::Path};
 
         let root = tempfile::TempDir::new().expect("temp dir");
         let path = root.path().join("kestrel/config.toml");
@@ -287,6 +291,36 @@ mod tests {
         assert_eq!(entries, 1, "no temporary file is left behind");
         let reloaded = load(&path).expect("the saved file loads");
         assert_eq!(reloaded.configuration, configuration);
+
+        // A file left readable by an older build is narrowed when it loads.
+        let older = root.path().join("older/config.toml");
+        std::fs::create_dir(older.parent().expect("parent")).expect("folder");
+        std::fs::write(&older, export_string(&configuration).expect("exports")).expect("write");
+        let loose = |path: &Path, mode| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod")
+        };
+        loose(&older, 0o664);
+        loose(older.parent().expect("parent"), 0o775);
+        load(&older).expect("the older file loads");
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&older), 0o600);
+        assert_eq!(mode(older.parent().expect("parent")), 0o700);
+
+        // A linked settings file keeps its target's permissions.
+        let target = root.path().join("dotfiles.toml");
+        std::fs::copy(&older, &target).expect("copy");
+        loose(&target, 0o644);
+        let linked = root.path().join("linked/config.toml");
+        std::fs::create_dir(linked.parent().expect("parent")).expect("folder");
+        std::os::unix::fs::symlink(&target, &linked).expect("link");
+        load(&linked).expect("the linked file loads");
+        assert_eq!(mode(&target), 0o644);
     }
 
     #[test]
