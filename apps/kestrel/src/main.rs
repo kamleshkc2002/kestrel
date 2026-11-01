@@ -898,6 +898,10 @@ struct ApplicationController {
     keep_awake_running: Cell<bool>,
     /// A timed keep-awake session is counting down.
     keep_awake_timed: Cell<bool>,
+    /// The newest keep-awake state applied; older ones are dropped.
+    last_keep_awake_stamp: Cell<Option<kestrel::KeepAwakeStamp>>,
+    /// The keep-awake row behind that stamp, restored into an older refresh.
+    last_keep_awake: RefCell<Option<kestrel::QuickToggleViewModel>>,
     /// A selection view is open; at most one at a time.
     selection_open: Cell<bool>,
     /// A frame waits for a selection view.
@@ -1036,6 +1040,8 @@ impl ApplicationController {
             keyboard_light_running: Cell::new(keyboard_light_running),
             keep_awake_running: Cell::new(keep_awake_running),
             keep_awake_timed: Cell::new(keep_awake_timed),
+            last_keep_awake_stamp: Cell::new(None),
+            last_keep_awake: RefCell::new(None),
             selection_open: Cell::new(false),
             selection_pending: Cell::new(None),
             recording_area_open: Cell::new(false),
@@ -1087,7 +1093,8 @@ impl ApplicationController {
             return;
         }
 
-        let view_model = self.current_view_model();
+        let mut view_model = self.current_view_model();
+        self.settle_keep_awake(&mut view_model);
         let frames = self
             .state
             .lock()
@@ -1479,6 +1486,8 @@ impl ApplicationController {
         };
         apply_color_scheme(view_model.appearance);
         self.appearance.follow(view_model.appearance);
+        let mut view_model = view_model;
+        self.settle_keep_awake(&mut view_model);
         self.track_running(&view_model);
         self.overlay.set_view_model(&view_model);
         self.reconcile_tray(&view_model);
@@ -1525,6 +1534,41 @@ impl ApplicationController {
             return;
         };
         sink.publish(kestrel::TrayKeepAwake::from_view_model(view_model));
+    }
+
+    /// Whether `stamp` is not older than the keep-awake state already shown.
+    fn keep_awake_stamp_is_current(&self, stamp: Option<kestrel::KeepAwakeStamp>) -> bool {
+        match (stamp, self.last_keep_awake_stamp.get()) {
+            (Some(incoming), Some(applied)) => incoming >= applied,
+            _ => true,
+        }
+    }
+
+    /// Avoids regressing the keep-awake row when a full refresh predates a tick.
+    fn settle_keep_awake(&self, view_model: &mut ApplicationViewModel) {
+        let toggle = view_model
+            .quick_toggles
+            .iter()
+            .find(|toggle| toggle.id == kestrel::QuickToggleId::KeepAwake);
+        let Some(toggle) = toggle else {
+            return;
+        };
+        if self.keep_awake_stamp_is_current(toggle.keep_awake_stamp) {
+            self.last_keep_awake_stamp.set(toggle.keep_awake_stamp);
+            *self.last_keep_awake.borrow_mut() = Some(toggle.clone());
+            return;
+        }
+        let newer = self.last_keep_awake.borrow().clone();
+        let Some(newer) = newer else {
+            return;
+        };
+        if let Some(toggle) = view_model
+            .quick_toggles
+            .iter_mut()
+            .find(|toggle| toggle.id == kestrel::QuickToggleId::KeepAwake)
+        {
+            *toggle = newer;
+        }
     }
 
     /// Removes the tray entry and its readout icons off the GTK thread.
@@ -1788,15 +1832,20 @@ impl ApplicationController {
             self.overlay.set_keyboard_light(keyboard_light);
         }
         if let Some(keep_awake) = &keep_awake {
-            self.keep_awake_timed.set(
-                keep_awake
-                    .keep_awake
-                    .as_ref()
-                    .is_some_and(|controls| controls.timed),
-            );
-            self.overlay.set_keep_awake(keep_awake);
-            if let Some(view) = self.window.borrow().as_ref() {
-                view.set_keep_awake(keep_awake);
+            // A snapshot read before a newer state must not overwrite it.
+            if self.keep_awake_stamp_is_current(keep_awake.keep_awake_stamp) {
+                self.last_keep_awake_stamp.set(keep_awake.keep_awake_stamp);
+                *self.last_keep_awake.borrow_mut() = Some(keep_awake.clone());
+                self.keep_awake_timed.set(
+                    keep_awake
+                        .keep_awake
+                        .as_ref()
+                        .is_some_and(|controls| controls.timed),
+                );
+                self.overlay.set_keep_awake(keep_awake);
+                if let Some(view) = self.window.borrow().as_ref() {
+                    view.set_keep_awake(keep_awake);
+                }
             }
         }
         if let Some(recording) = &recording {
@@ -3577,9 +3626,9 @@ fn main() -> glib::ExitCode {
             appearance: appearance_styles,
         },
     );
-    controller
-        .overlay
-        .set_view_model(&controller.current_view_model());
+    let mut initial_view_model = controller.current_view_model();
+    controller.settle_keep_awake(&mut initial_view_model);
+    controller.overlay.set_view_model(&initial_view_model);
     let command_line_commands = commands.clone();
     install_command_actions(&application, commands);
     dispatch_commands(&application, &controller, command_receiver);

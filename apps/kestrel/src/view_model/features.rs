@@ -66,6 +66,14 @@ pub struct KeepAwakeControlsViewModel {
     pub remaining: Option<std::time::Duration>,
 }
 
+/// Where a keep-awake state came from: the session revision and the moment it
+/// was read. The order is by revision, then by reading time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KeepAwakeStamp {
+    pub revision: u64,
+    pub observed_at: std::time::Duration,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickToggleViewModel {
     pub id: QuickToggleId,
@@ -79,6 +87,8 @@ pub struct QuickToggleViewModel {
     pub error: Option<String>,
     /// Present on the keep-awake row while its feature runs.
     pub keep_awake: Option<KeepAwakeControlsViewModel>,
+    /// Present on the keep-awake row even while its controls are absent.
+    pub keep_awake_stamp: Option<KeepAwakeStamp>,
 }
 
 impl QuickToggleViewModel {
@@ -116,6 +126,7 @@ impl QuickToggleViewModel {
                 .and(snapshot.error.as_ref())
                 .map(|error| error.message.clone()),
             keep_awake: None,
+            keep_awake_stamp: None,
         }
     }
 
@@ -125,8 +136,13 @@ impl QuickToggleViewModel {
         snapshot: &QuickToggleSnapshot,
         selected: KeepAwakeDuration,
         now: std::time::Duration,
+        stamp: KeepAwakeStamp,
     ) {
-        if self.id != QuickToggleId::KeepAwake || !self.available {
+        if self.id != QuickToggleId::KeepAwake {
+            return;
+        }
+        self.keep_awake_stamp = Some(stamp);
+        if !self.available {
             return;
         }
         let mut duration_choices = KEEP_AWAKE_PRESETS

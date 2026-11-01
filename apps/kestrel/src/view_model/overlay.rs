@@ -577,6 +577,7 @@ mod tests {
             control: Some(QuickToggleControlViewModel::Level { percentage }),
             error: None,
             keep_awake: None,
+            keep_awake_stamp: None,
         }
     }
 
@@ -901,6 +902,7 @@ mod tests {
             control: None,
             error: None,
             keep_awake,
+            keep_awake_stamp: None,
         };
         let session = |remaining, timed| KeepAwakeControlsViewModel {
             duration_choices: Vec::new(),

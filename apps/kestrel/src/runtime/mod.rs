@@ -14,9 +14,9 @@ use crate::{
     view_model::{
         AudioPresentation, AudioViewModel, CameraPresentation, CameraViewModel,
         CapturePresentation, CaptureViewModel, ClipboardPresentation, ClipboardQuery,
-        ClipboardViewModel, CommandBarPresentation, CommandBarQuery, ListenersViewModel,
-        MicrophonePresentation, MicrophoneViewModel, MonitorPresentation, MonitorViewModel,
-        ProcessesViewModel, QuickToggleViewModel, RecordingApplicationViewModel,
+        ClipboardViewModel, CommandBarPresentation, CommandBarQuery, KeepAwakeStamp,
+        ListenersViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
+        MonitorViewModel, ProcessesViewModel, QuickToggleViewModel, RecordingApplicationViewModel,
         RecordingPresentation, RecordingViewModel, ScratchpadPresentation, ScratchpadViewModel,
         ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
         ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
@@ -978,12 +978,16 @@ impl ApplicationRuntime {
             .find(|snapshot| snapshot.id == QuickToggleId::KeepAwake)
         {
             let now = kestrel_platform::clock::boot_time();
+            let stamp = KeepAwakeStamp {
+                revision: self.quick_toggles.keep_awake_revision(),
+                observed_at: now,
+            };
             if let Some(keep_awake) = model
                 .quick_toggles
                 .iter_mut()
                 .find(|toggle| toggle.id == QuickToggleId::KeepAwake)
             {
-                keep_awake.attach_keep_awake(snapshot, self.keep_awake_choice, now);
+                keep_awake.attach_keep_awake(snapshot, self.keep_awake_choice, now, stamp);
             }
         }
         model.whats_new = WhatsNewViewModel::new(
