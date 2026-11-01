@@ -88,6 +88,7 @@ The autostart entry is the one file outside these folders: it lives in
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
+| Settings export | The file you choose in Settings → Export | Your settings as TOML, the same contents as `config.toml`, including any command-bar file roots and scripts | Your umask | None | You |
 
 - Recordings have no automatic retention: they stay until you delete them.
 - Files are replaced through a hidden temporary beside them and then renamed, so a crash can leave one behind. It is never read back: the scratchpad removes its own on the next load, screenshots remove theirs when the folder is opened, and the rest can be deleted by hand.
@@ -128,10 +129,14 @@ Only clipboard history is zeroized: its entries and the live selection it owns a
 | Tray readouts, for each readout you configure | The label, value, and detail line, which can name a filesystem and mount point, a battery, a sensor, or a GPU | The tray host over the session bus |
 | Clipboard re-own, while clipboard history runs | The selection just captured, written back unchanged | The clipboard, and so any application that reads it |
 | Keyboard shortcut registration, when `global.shortcuts` starts | The app ID, and each command's ID, description, and preferred key combination | The desktop's GlobalShortcuts portal |
+| Audio mixer and microphone controls, while they run | Requests that list and change devices, streams, levels, and defaults | Your sound server, through libpulse |
 
-Nothing else leaves the app without a user action, and nothing contacts a
-network host without one. There is no update check, telemetry, or crash
-reporting, and the app's only network client is the speed test's `curl`.
+Nothing else leaves the app without a user action. The sound server connection
+goes wherever libpulse is configured to connect: normally a local socket, or a
+remote host when `PULSE_SERVER` or your PulseAudio configuration names one.
+Apart from that, nothing contacts a network host without a user action. There
+is no update check, telemetry, or crash reporting, and the speed test's `curl`
+is the app's only network client of its own.
 
 **User-triggered** — each starts from a button, menu, command, or shortcut:
 
@@ -146,7 +151,7 @@ reporting, and the app's only network client is the speed test's `curl`.
 - **Snippet insertion:** the expanded snippet text, including any `{{clipboard}}` value, goes to `wtype`, `ydotool`, or `xdotool` on standard input.
 - **OCR:** the selected image goes to the local `tesseract` executable on standard input, with the language and mode as arguments.
 - **Screen capture on wlroots desktops:** `grim` receives the capture geometry and returns the image on standard output; `slurp` returns the area you drag.
-- **Screenshots, recording, and colour picking:** requests go to the desktop's Screenshot, ScreenCast, or colour-picker portal. Recording tells the portal whether you chose a screen or a window and whether the cursor is included, asks it not to remember the choice, and receives the shared frames and audio over PipeWire.
+- **Screenshots, recording, and colour picking:** requests go to the desktop's Screenshot, ScreenCast, or colour-picker portal. Recording tells the portal whether you chose a screen or a window and whether the cursor is included, asks it not to remember the choice, and receives the shared frames over PipeWire. Recorded audio is read directly from your sound server: the system and microphone tracks through `pulsesrc`, and a single application's audio through `pipewiresrc` attached to that application's playback streams.
 - **Copy actions:** text, an image, or a file list goes to the clipboard, where any application or clipboard manager can read it.
 - **The "What's stored and sent" link in Settings:** opens this page on GitHub in your browser.
 - **System actions:** Keep awake holds a logind inhibit, quick toggles change Wi-Fi, Bluetooth, unmount or eject, volume, and the desktop settings above, process actions send signals, and Empty Trash deletes local Trash files. They act on the system and carry no app data.
