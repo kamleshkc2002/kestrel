@@ -115,7 +115,7 @@ impl CommandProvider {
     pub const fn requirement(self) -> &'static str {
         match self {
             Self::Applications => "XDG application directories",
-            Self::Files => "At least one configured root; Kestrel never indexes everything",
+            Self::Files => "At least one configured root; the whole filesystem is never indexed",
             Self::Scripts => "Script definitions in the configuration",
             Self::Emoji => "Built in",
             Self::Windows => "Compositor window-list protocol",

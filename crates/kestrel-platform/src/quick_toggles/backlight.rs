@@ -36,7 +36,7 @@ pub(crate) fn capability(id: QuickToggleId, root: &Path, kind: DeviceKind) -> Ca
                 match kind {
                     DeviceKind::Display => format!("{} hardware was not detected.", id.label()),
                     DeviceKind::Keyboard => {
-                        "No keyboard light Kestrel can change was found.".to_owned()
+                        "No keyboard light that can be changed was found.".to_owned()
                     }
                 },
             )
@@ -45,7 +45,7 @@ pub(crate) fn capability(id: QuickToggleId, root: &Path, kind: DeviceKind) -> Ca
                     "Use the display or compositor controls for external and unsupported panels."
                 }
                 DeviceKind::Keyboard => {
-                    "Kestrel changes keyboard lights that Linux exposes as a backlight LED. If your keyboard is lit, its light is controlled by the keyboard or laptop itself; use its own lighting keys."
+                    "Keyboard lights that Linux exposes as a backlight LED can be changed. If your keyboard is lit, its light is controlled by the keyboard or laptop itself; use its own lighting keys."
                 }
             });
         }
@@ -61,7 +61,7 @@ pub(crate) fn capability(id: QuickToggleId, root: &Path, kind: DeviceKind) -> Ca
                     "{} is visible but not writable by the current user.",
                     id.label()
                 ),
-                "Grant a narrowly scoped udev/logind permission for this backlight; Kestrel will not elevate itself.",
+                "Grant a narrowly scoped udev/logind permission for this backlight; no admin rights are requested.",
             )
             .with_evidence(CapabilityEvidence::new(
                 "device",

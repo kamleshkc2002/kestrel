@@ -112,9 +112,9 @@ impl QuickToggleViewModel {
                 && snapshot.observation.is_some(),
             detail,
             source: match snapshot.source {
-                ToggleStateSource::KestrelOwned => "Kestrel-owned state",
+                ToggleStateSource::KestrelOwned => "App-owned state",
                 ToggleStateSource::ProviderObserved => "Provider-observed state",
-                ToggleStateSource::ChangedElsewhere => "Changed outside Kestrel",
+                ToggleStateSource::ChangedElsewhere => "Changed outside the app",
             },
             control: snapshot
                 .observation

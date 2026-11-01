@@ -83,7 +83,7 @@ pub const SENSITIVE_FEATURES: [SensitiveFeature; 12] = [
     SensitiveFeature {
         feature_id: "capture.screenshot",
         uses: "Uses the desktop's screenshot permission when you take one.",
-        keeps: "Keeps recent captures as files in Kestrel's data folder, within your limits, until deleted.",
+        keeps: "Keeps recent captures as files in the data folder, within your limits, until deleted.",
     },
     SensitiveFeature {
         feature_id: "capture.text",
@@ -118,7 +118,7 @@ pub const SENSITIVE_FEATURES: [SensitiveFeature; 12] = [
     SensitiveFeature {
         feature_id: "snippets.text",
         uses: "Types into the focused app when you insert a snippet.",
-        keeps: "Snippets are saved in Kestrel's data folder.",
+        keeps: "Snippets are saved in the data folder.",
     },
     SensitiveFeature {
         feature_id: "global.shortcuts",

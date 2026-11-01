@@ -215,7 +215,7 @@ fn add_logging_group(
     let report = plain_row()
         .title("Report a problem")
         .subtitle(
-            "Opens the bug report form on GitHub with your Kestrel version, desktop, and \
+            "Opens the bug report form on GitHub with the app's version, desktop, and \
              distribution filled in. Attach logs from the folder above if you can.",
         )
         .subtitle_lines(0)
@@ -235,7 +235,7 @@ fn add_logging_group(
     logs_group.add(&report);
 
     let storage = plain_row()
-        .title("What Kestrel stores and sends")
+        .title("What's stored and sent")
         .subtitle("Files, permissions, retention, and everything that leaves this computer.")
         .subtitle_lines(0)
         .build();
@@ -244,7 +244,7 @@ fn add_logging_group(
     let sender = commands.clone();
     storage_button.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::OpenUri(
-            "https://github.com/kamleshkc2002/kestrel#what-kestrel-stores-and-sends".to_owned(),
+            "https://github.com/kamleshkc2002/kestrel#whats-stored-and-sent".to_owned(),
         ));
     });
     storage.add_suffix(&storage_button);
@@ -595,7 +595,7 @@ fn add_general_rows(
 
     let close_button = adw::ComboRow::builder()
         .title("Close button")
-        .subtitle("Minimizing keeps Kestrel running in the taskbar.")
+        .subtitle("Minimizing keeps the app running in the taskbar.")
         .model(&gtk::StringList::new(&[
             "Minimize to the taskbar",
             "Quit Kestrel",
@@ -622,7 +622,7 @@ fn add_general_rows(
 
     let quit_row = plain_row()
         .title("Quit Kestrel")
-        .subtitle("Ctrl+Q quits from any Kestrel window.")
+        .subtitle("Ctrl+Q quits from any window.")
         .build();
     let quit = gtk::Button::with_label("Quit");
     quit.set_valign(Align::Center);
@@ -781,7 +781,7 @@ fn build_configuration_files_row(
     io_buttons.append(&export);
     let io_row = stacked_row(
         "Configuration files",
-        "Import or export configuration. Kestrel only emits the selected path command.",
+        "Save your settings to a file you choose, or load them from one.",
         &io_buttons,
     );
     filter_rows.push((

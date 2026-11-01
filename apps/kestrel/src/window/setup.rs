@@ -42,8 +42,8 @@ fn welcome_step(
     let group = adw::PreferencesGroup::builder()
         .title("Welcome to Kestrel")
         .description(
-            "Kestrel puts everyday utilities in one window: system monitoring, audio, \
-             clipboard history, screenshots, notes, and desktop integrations. It runs as you, \
+            "Everyday utilities live in one window: system monitoring, audio, \
+             clipboard history, screenshots, notes, and desktop integrations. They run as you, \
              with no root helpers and no telemetry, and every feature says what it needs \
              before it runs.",
         )
@@ -155,7 +155,7 @@ fn finish_step(
     let group = adw::PreferencesGroup::builder()
         .title("Before you start")
         .description(
-            "These features use something outside Kestrel. Switch off any you do not want now; \
+            "These features use something outside the app. Switch off any you do not want now; \
              you can turn them on later in the Feature Hub.",
         )
         .build();
@@ -179,7 +179,7 @@ fn finish_step(
     }
     if switches.borrow().is_empty() {
         group.set_description(Some(
-            "This preset turns on no features that use anything outside Kestrel.",
+            "This preset turns on no features that use anything outside the app.",
         ));
     }
     page.add(&group);

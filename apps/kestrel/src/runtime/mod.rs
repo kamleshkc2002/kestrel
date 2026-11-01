@@ -295,7 +295,7 @@ impl ApplicationRuntime {
                     },
                     "The status overlay needs a desktop session.",
                 )
-                .with_remediation("Kestrel's window, tray, and shortcuts work without it."),
+                .with_remediation("The window, tray, and shortcuts work without it."),
             },
         )
     }
@@ -325,7 +325,7 @@ impl ApplicationRuntime {
                 CapabilityReport::new(
                     command_surface.id,
                     CapabilityStatus::Supported,
-                    "The normal Kestrel window is always available as the command surface.",
+                    "The normal window is always available as the command surface.",
                 )
                 .with_selected_backend("GTK/libadwaita normal window"),
             ),

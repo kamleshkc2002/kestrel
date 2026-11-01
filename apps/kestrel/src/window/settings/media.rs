@@ -186,7 +186,7 @@ pub(super) fn add_screenshot_limits_group(
     let capture_group = adw::PreferencesGroup::builder()
         .title("Screenshot settings")
         .description(
-            "Recent captures are private files in Kestrel's data directory. The oldest are \
+            "Recent captures are private files in the data directory. The oldest are \
              removed first when a limit is reached.",
         )
         .build();

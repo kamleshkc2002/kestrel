@@ -84,13 +84,13 @@ impl ShortcutsViewModel {
             ShortcutPhase::Failed(error) if error.kind == ShortcutErrorKind::Unavailable
         );
         let summary = if !presentation.available {
-            "This desktop does not let apps register global shortcuts, so Kestrel cannot \
-             listen for these keys itself. Add each one as a custom shortcut in your desktop's \
-             keyboard settings."
+            "This desktop does not let apps register global shortcuts, so these keys cannot be \
+             bound directly. Add each one as a custom shortcut in your desktop's keyboard \
+             settings."
                 .to_owned()
         } else if !presentation.running {
-            "Keyboard shortcuts are off. Turn on Keyboard shortcuts in the Feature Hub so Kestrel \
-             registers these keys, or add them as custom shortcuts in your desktop's keyboard \
+            "Keyboard shortcuts are off. Turn on Keyboard shortcuts in the Feature Hub so these \
+             keys are registered, or add them as custom shortcuts in your desktop's keyboard \
              settings."
                 .to_owned()
         } else {

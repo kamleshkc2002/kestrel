@@ -363,7 +363,7 @@ fn boolean_capability(
             id,
             Permission::DesktopSettings,
             format!("The {schema} setting is present but read-only."),
-            "Allow the current user to change this desktop setting; Kestrel will not elevate itself.",
+            "Allow the current user to change this desktop setting; no admin rights are requested.",
         );
     }
     supported(id, summary, format!("GSettings {schema}"))

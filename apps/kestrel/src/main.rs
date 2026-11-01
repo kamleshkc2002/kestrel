@@ -270,7 +270,7 @@ impl ControllerState {
             },
             CommandAction::Kestrel(action) => match self.run_kestrel_command(action) {
                 Some(message) => message,
-                None => format!("No Kestrel action named \"{action}\""),
+                None => format!("No action named \"{action}\""),
             },
         };
 
@@ -1372,7 +1372,7 @@ impl ApplicationController {
     fn request_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
         if self.refreshing.replace(true) {
             if let Some(view) = self.window.borrow().as_ref() {
-                view.show_message("Another Kestrel operation is still running");
+                view.show_message("Another operation is still running");
             }
             return;
         }
@@ -2203,7 +2203,7 @@ impl ApplicationController {
     ) {
         if self.refreshing.replace(true) {
             if let Some(view) = self.window.borrow().as_ref() {
-                view.show_message("Another Kestrel operation is still running");
+                view.show_message("Another operation is still running");
             }
             return;
         }
@@ -2402,8 +2402,8 @@ impl ControllerState {
                     return Err(format!("The close button setting was not saved: {error}"));
                 }
                 match close_action {
-                    CloseAction::Minimize => "The close button minimizes Kestrel".to_owned(),
-                    CloseAction::Quit => "The close button quits Kestrel".to_owned(),
+                    CloseAction::Minimize => "The close button minimizes the window".to_owned(),
+                    CloseAction::Quit => "The close button quits the app".to_owned(),
                 }
             }
             ControllerOperation::SetAutostart(enabled) => {
@@ -2897,7 +2897,7 @@ impl ControllerState {
                             describe(&holder)
                         ),
                         kestrel_core::ShortcutEditError::Full => format!(
-                            "Kestrel keeps at most {} shortcuts; remove one first",
+                            "At most {} shortcuts can be kept; remove one first",
                             kestrel_core::MAX_SHORTCUT_BINDINGS
                         ),
                     });

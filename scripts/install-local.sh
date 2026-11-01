@@ -96,7 +96,7 @@ launch() {
     running && return 0
     sleep 0.1
   done
-  printf 'Kestrel did not start; see %s.\n' \
+  printf 'Did not start; see %s.\n' \
     "${XDG_STATE_HOME:-$HOME/.local/state}/kestrel/logs" >&2
   return 1
 }
@@ -109,12 +109,12 @@ if [ "${1:-}" = "--restart" ]; then
       sleep 0.1
     done
     if running; then
-      printf 'The running Kestrel did not quit; close it and start it again.\n' >&2
+      printf 'The running copy did not quit; close it and start it again.\n' >&2
       exit 1
     fi
   fi
   launch
   printf 'Started Kestrel.\n'
 elif running; then
-  printf 'Kestrel is running the previous build; rerun with --restart or quit and reopen it.\n'
+  printf 'The previous build is still running; rerun with --restart or quit and reopen it.\n'
 fi
