@@ -10,7 +10,7 @@ use kestrel::{
     QuickToggleCommand, QuickToggleControlViewModel, QuickToggleMutation, QuickToggleViewModel,
     ShortcutsViewModel, shortcut_label,
 };
-use kestrel_core::{ShortcutModifiers, ShortcutTrigger};
+use kestrel_core::{KeepAwakeDuration, ShortcutModifiers, ShortcutTrigger};
 use std::{cell::RefCell, rc::Rc};
 
 /// Builds the feature hub's header and one group per section, returning every
@@ -126,16 +126,22 @@ pub(super) fn build_quick_toggle_group(
     toggles: &[QuickToggleViewModel],
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
-) -> adw::PreferencesGroup {
+) -> (adw::PreferencesGroup, Option<adw::ActionRow>) {
     let group = adw::PreferencesGroup::builder()
         .title("Quick toggles")
         .description("Hover a toggle to see what it needs and where its state comes from.")
         .build();
+    let mut keep_awake_row = None;
 
     for toggle in toggles {
-        let subtitle = match &toggle.error {
-            Some(error) => format!("{}\nLast error: {error}", toggle.detail),
-            None => toggle.detail.clone(),
+        let session_text = toggle
+            .keep_awake
+            .as_ref()
+            .and_then(|controls| controls.session_text.as_deref());
+        let subtitle = match (session_text, &toggle.error) {
+            (Some(session_text), _) => session_text.to_owned(),
+            (None, Some(error)) => format!("{}\nLast error: {error}", toggle.detail),
+            (None, None) => toggle.detail.clone(),
         };
         let row = plain_row()
             .title(toggle.label)
@@ -157,22 +163,48 @@ pub(super) fn build_quick_toggle_group(
                     .active(*enabled)
                     .valign(Align::Center)
                     .build();
-                let sender = commands.clone();
-                let window = window.clone();
-                let id = toggle.id;
-                let label = toggle.label;
-                let confirmation = confirmation.clone();
-                control.connect_state_set(move |_, state| {
-                    let command = QuickToggleCommand {
-                        id,
-                        mutation: QuickToggleMutation::SetEnabled(state),
-                        confirmation_token: confirmation
-                            .as_ref()
-                            .map(|confirmation| confirmation.token.clone()),
-                    };
-                    send_with_confirmation(&window, label, confirmation.as_ref(), command, &sender);
-                    gtk::glib::Propagation::Stop
-                });
+                if let Some(keep_awake) = &toggle.keep_awake {
+                    let selection = Rc::new(std::cell::Cell::new(keep_awake.selected));
+                    row.add_suffix(&keep_awake_picker(
+                        keep_awake,
+                        window,
+                        commands,
+                        Rc::clone(&selection),
+                    ));
+                    let sender = commands.clone();
+                    control.connect_state_set(move |_, state| {
+                        let command = if state {
+                            ApplicationCommand::StartKeepAwake(selection.get())
+                        } else {
+                            ApplicationCommand::StopKeepAwake
+                        };
+                        let _ = sender.try_send(command);
+                        gtk::glib::Propagation::Stop
+                    });
+                } else {
+                    let sender = commands.clone();
+                    let window = window.clone();
+                    let id = toggle.id;
+                    let label = toggle.label;
+                    let confirmation = confirmation.clone();
+                    control.connect_state_set(move |_, state| {
+                        let command = QuickToggleCommand {
+                            id,
+                            mutation: QuickToggleMutation::SetEnabled(state),
+                            confirmation_token: confirmation
+                                .as_ref()
+                                .map(|confirmation| confirmation.token.clone()),
+                        };
+                        send_with_confirmation(
+                            &window,
+                            label,
+                            confirmation.as_ref(),
+                            command,
+                            &sender,
+                        );
+                        gtk::glib::Propagation::Stop
+                    });
+                }
                 row.add_suffix(&control);
                 row.set_activatable_widget(Some(&control));
             }
@@ -250,9 +282,157 @@ pub(super) fn build_quick_toggle_group(
             toggle.label, toggle.detail, toggle.requirement, toggle.source
         );
         row.update_property(&[Property::Label(&accessible_label)]);
+        if toggle.id == kestrel::QuickToggleId::KeepAwake {
+            keep_awake_row = Some(row.clone());
+        }
         group.add(&row);
     }
-    group
+    (group, keep_awake_row)
+}
+
+/// The keep-awake duration picker, with a custom length dialog.
+fn keep_awake_picker(
+    controls: &kestrel::view_model::KeepAwakeControlsViewModel,
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    selection: Rc<std::cell::Cell<KeepAwakeDuration>>,
+) -> gtk::DropDown {
+    let mut labels = controls
+        .duration_choices
+        .iter()
+        .map(|(_, label)| label.as_str())
+        .collect::<Vec<_>>();
+    let custom_index = labels.len() as u32;
+    labels.push("Custom…");
+    let picker = gtk::DropDown::from_strings(&labels);
+    picker.set_valign(Align::Center);
+    picker.set_tooltip_text(Some("How long Keep awake runs"));
+    picker.update_property(&[Property::Label("Keep awake duration")]);
+    let selected = controls
+        .duration_choices
+        .iter()
+        .position(|(duration, _)| *duration == controls.selected)
+        .unwrap_or_default() as u32;
+    picker.set_selected(selected);
+
+    let choices = controls.duration_choices.clone();
+    let sender = commands.clone();
+    let window = window.clone();
+    let updating = Rc::new(std::cell::Cell::new(false));
+    let last = Rc::new(std::cell::Cell::new(selected));
+    picker.connect_selected_notify(move |picker| {
+        if updating.get() {
+            return;
+        }
+        let index = picker.selected();
+        if index == custom_index {
+            updating.set(true);
+            picker.set_selected(last.get());
+            updating.set(false);
+            let current = choices
+                .get(last.get() as usize)
+                .map(|(duration, _)| *duration)
+                .unwrap_or(KeepAwakeDuration::UntilStopped);
+            keep_awake_custom_dialog(&window, &sender, current, Rc::clone(&selection));
+            return;
+        }
+        last.set(index);
+        if let Some((duration, _)) = choices.get(index as usize) {
+            selection.set(*duration);
+            let _ = sender.try_send(ApplicationCommand::SetKeepAwakeChoice(*duration));
+        }
+    });
+    picker
+}
+
+/// Asks for a whole-minute length from one minute to 24 hours.
+fn keep_awake_custom_dialog(
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    current: KeepAwakeDuration,
+    selection: Rc<std::cell::Cell<KeepAwakeDuration>>,
+) {
+    let (hours, minutes) = match current {
+        KeepAwakeDuration::For(duration) => (
+            (duration.as_secs() / 3600).min(24),
+            (duration.as_secs() % 3600) / 60,
+        ),
+        KeepAwakeDuration::UntilStopped => (1, 0),
+    };
+    let content = gtk::Box::new(Orientation::Vertical, 12);
+    let hour_spin = gtk::SpinButton::with_range(0.0, 24.0, 1.0);
+    hour_spin.set_digits(0);
+    hour_spin.set_value(hours as f64);
+    hour_spin.update_property(&[Property::Label("Hours")]);
+    content.append(&keep_awake_spin_row("Hours", &hour_spin));
+    let minute_spin = gtk::SpinButton::with_range(0.0, 59.0, 1.0);
+    minute_spin.set_digits(0);
+    minute_spin.set_value(minutes as f64);
+    minute_spin.update_property(&[Property::Label("Minutes")]);
+    content.append(&keep_awake_spin_row("Minutes", &minute_spin));
+
+    let dialog = adw::AlertDialog::builder()
+        .heading("Custom length")
+        .body("Choose how long to keep the computer awake.")
+        .extra_child(&content)
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("use", "Use");
+    dialog.set_response_appearance("use", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("use"));
+    dialog.set_close_response("cancel");
+
+    let validate: Rc<dyn Fn() -> Option<KeepAwakeDuration>> = {
+        let dialog = dialog.clone();
+        let hour_spin = hour_spin.clone();
+        let minute_spin = minute_spin.clone();
+        Rc::new(move || {
+            let seconds = hour_spin.value() as u64 * 3_600 + minute_spin.value() as u64 * 60;
+            match KeepAwakeDuration::timed(std::time::Duration::from_secs(seconds)) {
+                Ok(duration) => {
+                    dialog.set_body("Choose how long to keep the computer awake.");
+                    dialog.set_response_enabled("use", true);
+                    Some(duration)
+                }
+                Err(error) => {
+                    dialog.set_body(&error.to_string());
+                    dialog.set_response_enabled("use", false);
+                    None
+                }
+            }
+        })
+    };
+    for spin in [&hour_spin, &minute_spin] {
+        let validate = Rc::clone(&validate);
+        spin.connect_value_changed(move |_| {
+            let _ = validate();
+        });
+    }
+    let _ = validate();
+
+    let sender = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response != "use" {
+            dialog.close();
+            return;
+        }
+        if let Some(duration) = validate() {
+            selection.set(duration);
+            let _ = sender.try_send(ApplicationCommand::SetKeepAwakeChoice(duration));
+            dialog.close();
+        }
+    });
+    dialog.present(Some(window));
+}
+
+fn keep_awake_spin_row(label: &str, spin: &gtk::SpinButton) -> gtk::Box {
+    let row = gtk::Box::new(Orientation::Horizontal, 12);
+    let text = gtk::Label::new(Some(label));
+    text.set_xalign(0.0);
+    text.set_hexpand(true);
+    row.append(&text);
+    row.append(spin);
+    row
 }
 
 fn send_with_confirmation(

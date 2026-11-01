@@ -564,6 +564,7 @@ mod tests {
             source: "",
             control: Some(QuickToggleControlViewModel::Level { percentage }),
             error: None,
+            keep_awake: None,
         }
     }
 

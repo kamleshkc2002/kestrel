@@ -241,6 +241,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Desktop dark mode:** switches COSMIC's own light and dark mode on COSMIC, and GNOME's color scheme elsewhere. COSMIC's automatic day/night switching may change it back.
 - **Kestrel window style:** on COSMIC, Light and Dark apply COSMIC's own light or dark colours to Kestrel's window, and System follows COSMIC's switch live without a restart. Elsewhere, a custom GTK style sheet can override the window colours.
+- **Keep awake:** keeps the computer from idling or sleeping for a chosen time: 15 or 30 minutes, 1, 2, 4, or 8 hours, a custom whole-minute length from 1 minute to 24 hours, or until you turn it off. Overview shows the time left and when it ends; when a timed session ends Kestrel sends one "Keep awake ended" notification and lets the computer sleep and lock again. Stopping it yourself sends no notification. The command line starts a preset with `keep-awake.start-15m`, `keep-awake.start-30m`, `keep-awake.start-1h`, `keep-awake.start-2h`, `keep-awake.start-4h`, `keep-awake.start-8h`, or `keep-awake.start-until-stopped`, accepts a custom length such as `keep-awake.start-90m`, and stops it with `keep-awake.stop`. The command bar offers the same starts and a Stop entry while it runs.
 
 ### Desktop integration
 

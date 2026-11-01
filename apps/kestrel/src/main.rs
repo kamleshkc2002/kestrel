@@ -53,6 +53,8 @@ const AUDIO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const AUDIO_FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
 /// Poll interval for the applications offered to the System track.
 const RECORDING_APPS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+/// How often a timed keep-awake session checks its deadline and the countdown.
+const KEEP_AWAKE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 /// Which deferred reads this tick performs.
@@ -61,6 +63,7 @@ struct TickDue {
     audio: bool,
     listeners: bool,
     keyboard_light: bool,
+    keep_awake: bool,
     recording_apps: bool,
 }
 struct TickUpdate {
@@ -81,6 +84,9 @@ struct TickUpdate {
     camera: Option<kestrel::CameraViewModel>,
     recording: Option<kestrel::RecordingViewModel>,
     keyboard_light: Option<kestrel::QuickToggleViewModel>,
+    keep_awake: Option<kestrel::QuickToggleViewModel>,
+    /// A timed keep-awake session just ended; every surface must refresh.
+    keep_awake_expired: bool,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -292,12 +298,24 @@ impl ControllerState {
                 QuickToggleControl::Level { percentage } => *percentage > 0,
                 QuickToggleControl::Actions(_) => false,
             });
+        let label = id.label();
+        if id == kestrel::QuickToggleId::KeepAwake {
+            if currently_enabled {
+                self.runtime.stop_keep_awake();
+                return format!("{label} stopped");
+            }
+            let choice = self.runtime.keep_awake_choice();
+            return match self.runtime.start_keep_awake(choice) {
+                Some(Ok(_)) => format!("{label} started"),
+                Some(Err(error)) => format!("{label} failed: {error}"),
+                None => format!("{label} is not available"),
+            };
+        }
         let command = kestrel::QuickToggleCommand {
             id,
             mutation: kestrel::QuickToggleMutation::SetEnabled(!currently_enabled),
             confirmation_token: None,
         };
-        let label = id.label();
         match self.runtime.execute_quick_toggle_command(command) {
             Some(Ok(_)) => format!("{label} toggled"),
             Some(Err(error)) => format!("{label} failed: {error}"),
@@ -422,6 +440,8 @@ fn run_tick(
         camera,
         recording,
         keyboard_light,
+        keep_awake,
+        keep_awake_expired,
     ) = {
         let mut guard = state
             .lock()
@@ -441,6 +461,13 @@ fn run_tick(
         let keyboard_light = due
             .keyboard_light
             .then(|| controller.runtime.refresh_keyboard_light())
+            .flatten();
+        let keep_awake_expired = due.keep_awake
+            && controller
+                .runtime
+                .expire_keep_awake(kestrel_platform::clock::boot_time());
+        let keep_awake = (due.keep_awake || keep_awake_expired)
+            .then(|| controller.runtime.keep_awake_view_model())
             .flatten();
         let generation = guard.runtime.speed_test_snapshot().generation;
         let speed_test = (generation != guard.speed_test_generation).then(|| {
@@ -528,8 +555,19 @@ fn run_tick(
             camera,
             recording,
             keyboard_light,
+            keep_awake,
+            keep_awake_expired,
         )
     };
+    if keep_awake_expired {
+        log::info!(target: "power.keep-awake", "timed session ended");
+        if let Err(error) = notifier.notify(&AlertNotification {
+            summary: "Keep awake ended".to_owned(),
+            body: "Your computer can sleep and lock again.".to_owned(),
+        }) {
+            log::warn!(target: "power.keep-awake", "ended notification failed: {error}");
+        }
+    }
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
     if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
         tray.publish(&monitor.tray);
@@ -558,6 +596,8 @@ fn run_tick(
         camera,
         recording,
         keyboard_light,
+        keep_awake,
+        keep_awake_expired,
     }
 }
 
@@ -706,6 +746,9 @@ enum ControllerOperation {
     Refresh,
     QuickToggle(kestrel::QuickToggleCommand),
     FlipQuickToggle(kestrel::QuickToggleId),
+    StartKeepAwake(kestrel::KeepAwakeDuration),
+    StopKeepAwake,
+    SetKeepAwakeChoice(kestrel::KeepAwakeDuration),
     SetFeatureEnabled {
         feature_id: String,
         enabled: bool,
@@ -847,6 +890,10 @@ struct ApplicationController {
     overlay_running: Cell<bool>,
     overlay_modules: Cell<kestrel_core::OverlayConfiguration>,
     keyboard_light_running: Cell<bool>,
+    /// The keep-awake feature runs.
+    keep_awake_running: Cell<bool>,
+    /// A timed keep-awake session is counting down.
+    keep_awake_timed: Cell<bool>,
     /// A selection view is open; at most one at a time.
     selection_open: Cell<bool>,
     /// A frame waits for a selection view.
@@ -859,6 +906,8 @@ struct ApplicationController {
     audio_last_refresh: Cell<Instant>,
     /// Bounds the keyboard light poll to the feedback interval.
     keyboard_light_last_refresh: Cell<Instant>,
+    /// Bounds the keep-awake countdown and expiry check to its interval.
+    keep_awake_last_refresh: Cell<Instant>,
     /// Bounds the System audio application poll to its interval.
     recording_apps_last_refresh: Cell<Instant>,
     /// Keeps only the newest query received while a worker is busy.
@@ -916,6 +965,11 @@ impl ApplicationController {
             registration.feature.id == kestrel::QuickToggleId::KeyboardLight.feature_id()
                 && registration.running
         });
+        let keep_awake_running = runtime.registrations().any(|registration| {
+            registration.feature.id == kestrel::QuickToggleId::KeepAwake.feature_id()
+                && registration.running
+        });
+        let keep_awake_timed = runtime.keep_awake_is_timed();
         let overlay_modules = configuration.overlay;
         let state_commands = commands.clone();
         let background_notice_path = kestrel::background_notice::state_path();
@@ -974,6 +1028,8 @@ impl ApplicationController {
             overlay_running: Cell::new(overlay_running),
             overlay_modules: Cell::new(overlay_modules),
             keyboard_light_running: Cell::new(keyboard_light_running),
+            keep_awake_running: Cell::new(keep_awake_running),
+            keep_awake_timed: Cell::new(keep_awake_timed),
             selection_open: Cell::new(false),
             selection_pending: Cell::new(None),
             recording_area_open: Cell::new(false),
@@ -981,6 +1037,7 @@ impl ApplicationController {
             monitor_started_at: Instant::now(),
             audio_last_refresh: Cell::new(Instant::now()),
             keyboard_light_last_refresh: Cell::new(Instant::now()),
+            keep_awake_last_refresh: Cell::new(Instant::now()),
             recording_apps_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
             notifier,
@@ -1484,6 +1541,18 @@ impl ApplicationController {
             .set(view_model.features.iter().any(|feature| {
                 feature.id == kestrel::QuickToggleId::KeyboardLight.feature_id() && feature.running
             }));
+        self.keep_awake_running
+            .set(view_model.features.iter().any(|feature| {
+                feature.id == kestrel::QuickToggleId::KeepAwake.feature_id() && feature.running
+            }));
+        self.keep_awake_timed.set(
+            view_model
+                .quick_toggles
+                .iter()
+                .find(|toggle| toggle.id == kestrel::QuickToggleId::KeepAwake)
+                .and_then(|toggle| toggle.keep_awake.as_ref())
+                .is_some_and(|controls| controls.timed),
+        );
     }
 
     fn request_tick(&self) {
@@ -1518,6 +1587,14 @@ impl ApplicationController {
                 }
                 due
             };
+        let keep_awake_due = self.keep_awake_running.get() && self.keep_awake_timed.get() && {
+            let due = now.duration_since(self.keep_awake_last_refresh.get())
+                >= KEEP_AWAKE_REFRESH_INTERVAL;
+            if due {
+                self.keep_awake_last_refresh.set(now);
+            }
+            due
+        };
         let listeners_due = self.listeners_running.get() && {
             let due =
                 now.duration_since(self.listener_last_refresh.get()) >= Duration::from_secs(2);
@@ -1546,6 +1623,7 @@ impl ApplicationController {
             && !self.recording_running.get()
             && !audio_due
             && !keyboard_light_due
+            && !keep_awake_due
             && !recording_apps_due
         {
             self.monitoring.set(false);
@@ -1561,6 +1639,7 @@ impl ApplicationController {
             audio: audio_due,
             listeners: listeners_due,
             keyboard_light: keyboard_light_due,
+            keep_awake: keep_awake_due,
             recording_apps: recording_apps_due,
         };
         let worker = thread::Builder::new()
@@ -1579,6 +1658,19 @@ impl ApplicationController {
         if worker.is_err() {
             self.monitoring.set(false);
         }
+    }
+
+    /// Republishes the whole view model after a session ended on its own.
+    fn finish_keep_awake_expiry(&self) {
+        let view_model = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.refresh_command_results();
+            guard.view_model()
+        };
+        self.finish_refresh(Ok((view_model, String::new())));
     }
 
     fn finish_tick(&self, update: TickUpdate) {
@@ -1600,6 +1692,8 @@ impl ApplicationController {
             camera,
             recording,
             keyboard_light,
+            keep_awake,
+            keep_awake_expired,
         } = update;
         if let Some((id, notification_id)) = capture_notification {
             self.notification_captures
@@ -1667,6 +1761,17 @@ impl ApplicationController {
         if let Some(keyboard_light) = &keyboard_light {
             self.overlay.set_keyboard_light(keyboard_light);
         }
+        if let Some(keep_awake) = &keep_awake {
+            self.keep_awake_timed.set(
+                keep_awake
+                    .keep_awake
+                    .as_ref()
+                    .is_some_and(|controls| controls.timed),
+            );
+            if let Some(view) = self.window.borrow().as_ref() {
+                view.set_keep_awake(keep_awake);
+            }
+        }
         if let Some(recording) = &recording {
             self.overlay.set_recording(recording);
         }
@@ -1676,6 +1781,11 @@ impl ApplicationController {
         if let (Some(command_bar), Some(surface)) = (&command_bar, self.floating.borrow().as_ref())
         {
             surface.set_command_bar(command_bar);
+        }
+        // An expiry ends the session outside a command, so rebuild every
+        // surface as a finished command would.
+        if keep_awake_expired {
+            self.finish_keep_awake_expiry();
         }
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
@@ -2081,6 +2191,27 @@ impl ControllerState {
                 }
             }
             ControllerOperation::FlipQuickToggle(id) => self.flip_quick_toggle(id),
+            ControllerOperation::StartKeepAwake(duration) => {
+                match self.runtime.start_keep_awake(duration) {
+                    Some(Ok(_)) => "Keep awake started".to_owned(),
+                    Some(Err(error)) => format!("Keep awake failed: {error}"),
+                    None => "Keep awake is not available".to_owned(),
+                }
+            }
+            ControllerOperation::StopKeepAwake => {
+                if self.runtime.stop_keep_awake() {
+                    "Keep awake stopped".to_owned()
+                } else {
+                    "Keep awake is not available".to_owned()
+                }
+            }
+            ControllerOperation::SetKeepAwakeChoice(duration) => {
+                match self.runtime.set_keep_awake_choice(duration) {
+                    Some(Ok(_)) => "Keep awake restarted".to_owned(),
+                    Some(Err(error)) => format!("Keep awake failed: {error}"),
+                    None => format!("Keep awake set to {}", duration.label()),
+                }
+            }
             ControllerOperation::SetFeatureEnabled {
                 feature_id,
                 enabled,
@@ -3571,6 +3702,16 @@ fn dispatch_commands(
                 ApplicationCommand::FlipQuickToggle(id) => controller.request_operation(
                     ControllerOperation::FlipQuickToggle(id),
                     "kestrel-quick-toggle",
+                ),
+                ApplicationCommand::StartKeepAwake(duration) => controller.request_operation(
+                    ControllerOperation::StartKeepAwake(duration),
+                    "kestrel-keep-awake",
+                ),
+                ApplicationCommand::StopKeepAwake => controller
+                    .request_operation(ControllerOperation::StopKeepAwake, "kestrel-keep-awake"),
+                ApplicationCommand::SetKeepAwakeChoice(duration) => controller.request_operation(
+                    ControllerOperation::SetKeepAwakeChoice(duration),
+                    "kestrel-keep-awake",
                 ),
                 ApplicationCommand::SetFeatureEnabled {
                     feature_id,

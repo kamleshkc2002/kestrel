@@ -170,6 +170,8 @@ pub struct WindowView {
     scratchpad_panel: std::cell::RefCell<Option<ScratchpadPanel>>,
     /// The Settings row whose subtitle follows the monitor's provider state.
     accessory_row: std::cell::RefCell<Option<adw::ActionRow>>,
+    /// Overview's keep-awake row, updated while its countdown runs.
+    keep_awake_row: std::cell::RefCell<Option<adw::ActionRow>>,
 }
 
 impl WindowView {
@@ -350,6 +352,7 @@ impl WindowView {
             scratchpad_panel: std::cell::RefCell::new(build.scratchpad_panel),
             command_panel: std::cell::RefCell::new(build.command_panel),
             accessory_row: std::cell::RefCell::new(build.accessory_row),
+            keep_awake_row: std::cell::RefCell::new(build.keep_awake_row),
         }
     }
 
@@ -421,7 +424,8 @@ impl WindowView {
             SidebarPage::CommandBar => *self.command_panel.borrow_mut() = build.command_panel,
             SidebarPage::Processes => *self.processes_panel.borrow_mut() = build.processes_panel,
             SidebarPage::Settings => *self.accessory_row.borrow_mut() = build.accessory_row,
-            SidebarPage::Overview | SidebarPage::FeatureHub => {}
+            SidebarPage::Overview => *self.keep_awake_row.borrow_mut() = build.keep_awake_row,
+            SidebarPage::FeatureHub => {}
         }
     }
 
@@ -711,6 +715,25 @@ impl WindowView {
         ));
     }
 
+    pub fn set_keep_awake(&self, toggle: &kestrel::QuickToggleViewModel) {
+        let row = self.keep_awake_row.borrow();
+        let Some(row) = row.as_ref() else {
+            return;
+        };
+        let session_text = toggle
+            .keep_awake
+            .as_ref()
+            .and_then(|controls| controls.session_text.as_deref());
+        let subtitle = match (session_text, &toggle.error) {
+            (Some(session_text), _) => session_text.to_owned(),
+            (None, Some(error)) => format!("{}\nLast error: {error}", toggle.detail),
+            (None, None) => toggle.detail.clone(),
+        };
+        if row.subtitle().as_deref() != Some(subtitle.as_str()) {
+            row.set_subtitle(&subtitle);
+        }
+    }
+
     pub fn set_refreshing(&self, refreshing: bool) {
         self.refresh_button.set_sensitive(!refreshing);
         self.refresh_button.set_tooltip_text(Some(if refreshing {
@@ -759,6 +782,8 @@ struct PageBuild {
     scratchpad_panel: Option<ScratchpadPanel>,
     /// The accessory batteries row, updated from monitor ticks.
     accessory_row: Option<adw::ActionRow>,
+    /// The keep-awake row, updated while its countdown runs.
+    keep_awake_row: Option<adw::ActionRow>,
     filter_rows: FilterRows,
 }
 
@@ -858,6 +883,7 @@ impl Default for PageBuild {
             command_panel: None,
             scratchpad_panel: None,
             accessory_row: None,
+            keep_awake_row: None,
             filter_rows: FilterRows::new(),
         }
     }
@@ -894,6 +920,7 @@ impl PageBuild {
             .recording_container
             .take()
             .or(other.recording_container);
+        self.keep_awake_row = self.keep_awake_row.take().or(other.keep_awake_row);
         self.shortcuts_container = if self.shortcuts_container.first_child().is_some() {
             self.shortcuts_container.clone()
         } else {
@@ -1013,6 +1040,7 @@ fn build_page(
     body.set_margin_bottom(24);
     body.set_margin_start(18);
     body.set_margin_end(18);
+    let mut build = PageBuild::default();
     if page == SidebarPage::Overview {
         if let Some(title) = &view_model.whats_new.banner {
             let banner = adw::Banner::builder()
@@ -1045,17 +1073,15 @@ fn build_page(
             commands,
         ));
         if !view_model.quick_toggles.is_empty() {
-            body.append(&build_quick_toggle_group(
-                &view_model.quick_toggles,
-                window,
-                commands,
-            ));
+            let (group, keep_awake_row) =
+                build_quick_toggle_group(&view_model.quick_toggles, window, commands);
+            body.append(&group);
+            build.keep_awake_row = keep_awake_row;
         }
         if !view_model.warnings.is_empty() {
             body.append(&build_warning_group(view_model));
         }
     }
-    let mut build = PageBuild::default();
     match page {
         SidebarPage::Monitoring => {
             let monitor = gtk::Box::new(Orientation::Vertical, 0);

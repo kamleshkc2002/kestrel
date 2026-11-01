@@ -3,7 +3,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
 };
 use kestrel_core::{
     AlertKind, ApplicationConfiguration, CapabilityEvidence, CapabilityReport, CapabilityStatus,
-    CostLevel, FeatureConfigurationSnapshot, FeatureSpec, ResourceCost,
+    CostLevel, FeatureConfigurationSnapshot, FeatureSpec, KeepAwakeDuration, ResourceCost,
 };
 use kestrel_platform::{
     CapabilityProbe, StaticCapabilityProbe,
@@ -177,8 +177,6 @@ const fn quick_toggle_cost(id: QuickToggleId) -> ResourceCost {
     }
 }
 
-use std::time::Duration;
-
 /// Stable feature identifier for the snippet library.
 pub const SNIPPETS_ID: &str = "snippets.text";
 /// The stable feature identifier for the command bar.
@@ -273,6 +271,8 @@ pub struct ApplicationRuntime {
     scratchpad_warning: Option<String>,
     scratchpad_policy: kestrel_core::ScratchpadConfiguration,
     quick_toggles: QuickToggleService,
+    /// The length the next keep-awake session uses; memory only.
+    keep_awake_choice: KeepAwakeDuration,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorTick {
@@ -656,6 +656,7 @@ impl ApplicationRuntime {
             scratchpad_path: scratchpad_path.clone(),
             scratchpad_policy: configuration.scratchpad,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
+            keep_awake_choice: KeepAwakeDuration::UntilStopped,
         };
         runtime.configure_audio_preferences(&configuration.audio);
         Ok(runtime)
@@ -971,6 +972,20 @@ impl ApplicationRuntime {
         model.recording = self.recording_view_model();
         model.listeners = self.listeners_view_model();
         model.apply_tool_actions();
+        if let Some(snapshot) = self
+            .quick_toggles
+            .snapshots()
+            .find(|snapshot| snapshot.id == QuickToggleId::KeepAwake)
+        {
+            let now = kestrel_platform::clock::boot_time();
+            if let Some(keep_awake) = model
+                .quick_toggles
+                .iter_mut()
+                .find(|toggle| toggle.id == QuickToggleId::KeepAwake)
+            {
+                keep_awake.attach_keep_awake(snapshot, self.keep_awake_choice, now);
+            }
+        }
         model.whats_new = WhatsNewViewModel::new(
             &self.release_notes,
             self.whats_new_pending,

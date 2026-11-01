@@ -1,6 +1,7 @@
 //! Feature hub presentation.
 
 use super::*;
+use kestrel_core::{KEEP_AWAKE_PRESETS, KeepAwakeDuration};
 use kestrel_platform::{
     audio::{FEATURE_ID as AUDIO_MIXER_FEATURE_ID, MICROPHONE_FEATURE_ID},
     camera::FEATURE_ID as CAMERA_FEATURE_ID,
@@ -15,6 +16,7 @@ use kestrel_platform::{
     speed_test::FEATURE_ID as SPEED_TEST_FEATURE_ID,
     system_monitor::FEATURE_ID as SYSTEM_MONITOR_FEATURE_ID,
 };
+use kestrel_services::quick_toggles::KeepAwakeSession;
 
 /// What a feature costs while it is not being used: background work and how
 /// often it wakes up on its own.
@@ -52,6 +54,17 @@ impl ResourceCostViewModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeepAwakeControlsViewModel {
+    /// The presets, plus the current choice when it is custom.
+    pub duration_choices: Vec<(KeepAwakeDuration, String)>,
+    pub selected: KeepAwakeDuration,
+    /// The running session's subtitle; `None` while it is off.
+    pub session_text: Option<String>,
+    /// A timed session has a deadline the tick checks.
+    pub timed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickToggleViewModel {
     pub id: QuickToggleId,
     pub feature_id: &'static str,
@@ -62,6 +75,8 @@ pub struct QuickToggleViewModel {
     pub source: &'static str,
     pub control: Option<QuickToggleControlViewModel>,
     pub error: Option<String>,
+    /// Present on the keep-awake row while its feature runs.
+    pub keep_awake: Option<KeepAwakeControlsViewModel>,
 }
 
 impl QuickToggleViewModel {
@@ -98,8 +113,71 @@ impl QuickToggleViewModel {
                 .as_ref()
                 .and(snapshot.error.as_ref())
                 .map(|error| error.message.clone()),
+            keep_awake: None,
         }
     }
+
+    /// Adds the keep-awake duration picker and session line while it can run.
+    pub(crate) fn attach_keep_awake(
+        &mut self,
+        snapshot: &QuickToggleSnapshot,
+        selected: KeepAwakeDuration,
+        now: std::time::Duration,
+    ) {
+        if self.id != QuickToggleId::KeepAwake || !self.available {
+            return;
+        }
+        let mut duration_choices = KEEP_AWAKE_PRESETS
+            .into_iter()
+            .map(|duration| (duration, duration.label()))
+            .collect::<Vec<_>>();
+        if !duration_choices
+            .iter()
+            .any(|(duration, _)| *duration == selected)
+        {
+            duration_choices.push((selected, selected.label()));
+        }
+        let session = snapshot.keep_awake;
+        self.keep_awake = Some(KeepAwakeControlsViewModel {
+            duration_choices,
+            selected,
+            session_text: session.map(|session| session_text(&session, now)),
+            timed: session.is_some_and(|session| session.deadline.is_some()),
+        });
+    }
+}
+
+/// The keep-awake row subtitle while a session runs.
+fn session_text(session: &KeepAwakeSession, now: std::time::Duration) -> String {
+    let Some(deadline) = session.deadline else {
+        return "On until you turn it off".to_owned();
+    };
+    let remaining = deadline.saturating_sub(now);
+    let minutes = remaining.as_secs().div_ceil(60);
+    let label = if minutes == 0 {
+        "less than a minute".to_owned()
+    } else if minutes <= 60 {
+        if minutes == 1 {
+            "1 minute".to_owned()
+        } else {
+            format!("{minutes} minutes")
+        }
+    } else {
+        let hours = minutes / 60;
+        let rest = minutes % 60;
+        if rest == 0 {
+            format!("{hours} h")
+        } else {
+            format!("{hours} h {rest} min")
+        }
+    };
+    let ends_at = kestrel_platform::snippets::LocalTime::from_system_time(
+        std::time::SystemTime::now() + remaining,
+    );
+    format!(
+        "On for {label} more · ends at {:02}:{:02}",
+        ends_at.hour, ends_at.minute
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1175,6 +1253,7 @@ mod tests {
             observation: None,
             source: ToggleStateSource::ProviderObserved,
             error: None,
+            keep_awake: None,
         };
 
         let configuration = ApplicationConfiguration::default();

@@ -26,7 +26,8 @@ pub use config::{
 };
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
-    CaptureAfterScreenshot, ClipboardLayout, CloseAction, MonitorReadout, NetworkRateUnit,
+    CaptureAfterScreenshot, ClipboardLayout, CloseAction, KeepAwakeDuration, MonitorReadout,
+    NetworkRateUnit,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -486,6 +487,12 @@ pub enum ApplicationCommand {
     QuickToggle(QuickToggleCommand),
     /// Flips a quick toggle from its current observed state.
     FlipQuickToggle(QuickToggleId),
+    /// Starts or restarts a keep-awake session and makes its length the choice.
+    StartKeepAwake(KeepAwakeDuration),
+    /// Releases the keep-awake inhibitor and clears the session.
+    StopKeepAwake,
+    /// Stores the keep-awake length, restarting a running session from now.
+    SetKeepAwakeChoice(KeepAwakeDuration),
     SetFeatureEnabled {
         feature_id: String,
         enabled: bool,

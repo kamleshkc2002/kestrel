@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     process::{Command, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use kestrel_core::{
@@ -380,11 +380,23 @@ impl SystemClock {
     }
 
     pub fn local_time(&self) -> LocalTime {
+        LocalTime::from_system_time(SystemTime::now())
+    }
+}
+
+impl LocalTime {
+    /// Converts an instant to the local calendar, or the Unix epoch if the
+    /// time cannot be represented.
+    pub fn from_system_time(time: SystemTime) -> Self {
+        let seconds = time
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or_default();
+        let seconds = libc::time_t::try_from(seconds).unwrap_or_default();
         // SAFETY: `localtime_r` fills caller-owned storage; copy fields before it dies.
         unsafe {
-            let now = libc::time(std::ptr::null_mut());
             let mut local: libc::tm = std::mem::zeroed();
-            if libc::localtime_r(&now, &mut local).is_null() {
+            if libc::localtime_r(&seconds, &mut local).is_null() {
                 return LocalTime {
                     year: 1970,
                     month: 1,

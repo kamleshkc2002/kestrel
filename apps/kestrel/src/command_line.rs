@@ -4,13 +4,13 @@
 
 use std::{ffi::OsString, fmt};
 
-use kestrel_core::MAX_SHORTCUT_COMMAND_CHARS;
+use kestrel_core::{KeepAwakeDuration, MAX_SHORTCUT_COMMAND_CHARS};
 use kestrel_platform::{
     applications::FEATURE_ID as COMMAND_BAR_ID,
     audio::{FEATURE_ID as AUDIO_MIXER_ID, MICROPHONE_FEATURE_ID},
     capture::{CaptureMode, FEATURE_ID as CAPTURE_ID},
     clipboard::FEATURE_ID as CLIPBOARD_HISTORY_ID,
-    quick_toggles::{ALL_QUICK_TOGGLES, QuickToggleId},
+    quick_toggles::{ALL_QUICK_TOGGLES, KEEP_AWAKE_ID, QuickToggleId},
     screen_tools::ScreenTool,
     speed_test::FEATURE_ID as SPEED_TEST_ID,
 };
@@ -26,6 +26,8 @@ use crate::{
 };
 
 const TOGGLE_PREFIX: &str = "toggle.";
+const KEEP_AWAKE_START_PREFIX: &str = "keep-awake.start-";
+const KEEP_AWAKE_STOP_ID: &str = "keep-awake.stop";
 
 /// One action a command line can trigger, identified by a stable ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,9 +58,11 @@ pub enum CommandLineAction {
     ApplyPreset(FeaturePreset),
     UndoPreset,
     QuickToggle(QuickToggleId),
+    StartKeepAwake(KeepAwakeDuration),
+    StopKeepAwake,
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 29] = [
+const FIXED_ACTIONS: [CommandLineAction; 37] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::OpenQuickPanel,
@@ -88,6 +92,26 @@ const FIXED_ACTIONS: [CommandLineAction; 29] = [
     CommandLineAction::ApplyPreset(FeaturePreset::Balanced),
     CommandLineAction::ApplyPreset(FeaturePreset::Everything),
     CommandLineAction::UndoPreset,
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::UntilStopped),
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(std::time::Duration::from_secs(
+        15 * 60,
+    ))),
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(std::time::Duration::from_secs(
+        30 * 60,
+    ))),
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(std::time::Duration::from_secs(
+        60 * 60,
+    ))),
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(std::time::Duration::from_secs(
+        2 * 60 * 60,
+    ))),
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(std::time::Duration::from_secs(
+        4 * 60 * 60,
+    ))),
+    CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(std::time::Duration::from_secs(
+        8 * 60 * 60,
+    ))),
+    CommandLineAction::StopKeepAwake,
 ];
 
 impl CommandLineAction {
@@ -129,6 +153,10 @@ impl CommandLineAction {
             Self::ApplyPreset(FeaturePreset::Balanced) => "preset.balanced",
             Self::ApplyPreset(FeaturePreset::Everything) => "preset.everything",
             Self::UndoPreset => "preset.undo",
+            Self::StartKeepAwake(duration) => {
+                return format!("{KEEP_AWAKE_START_PREFIX}{}", duration.command_suffix());
+            }
+            Self::StopKeepAwake => return KEEP_AWAKE_STOP_ID.to_owned(),
             Self::QuickToggle(toggle) => return format!("{TOGGLE_PREFIX}{}", toggle.feature_id()),
         };
         fixed.to_owned()
@@ -165,6 +193,13 @@ impl CommandLineAction {
             Self::ClearClipboardSelection => "Clear the live clipboard selection".to_owned(),
             Self::ApplyPreset(preset) => format!("Apply the {} preset", preset.label()),
             Self::UndoPreset => "Undo the last preset".to_owned(),
+            Self::StartKeepAwake(KeepAwakeDuration::UntilStopped) => {
+                "Keep awake until turned off".to_owned()
+            }
+            Self::StartKeepAwake(duration) => {
+                format!("Keep awake for {}", duration.label())
+            }
+            Self::StopKeepAwake => "Stop keeping awake".to_owned(),
             Self::QuickToggle(toggle) => format!("Toggle {}", toggle.label()),
         }
     }
@@ -189,6 +224,14 @@ impl CommandLineAction {
                 .find(|toggle| toggle.feature_id() == feature_id)
                 .map(Self::QuickToggle)
                 .ok_or_else(|| CommandLineError::UnknownCommand(id.to_owned()));
+        }
+        if let Some(suffix) = id.strip_prefix(KEEP_AWAKE_START_PREFIX) {
+            return KeepAwakeDuration::parse_command_suffix(suffix)
+                .map(Self::StartKeepAwake)
+                .ok_or_else(|| CommandLineError::UnknownCommand(id.to_owned()));
+        }
+        if id == KEEP_AWAKE_STOP_ID {
+            return Ok(Self::StopKeepAwake);
         }
         FIXED_ACTIONS
             .into_iter()
@@ -223,6 +266,7 @@ impl CommandLineAction {
             Self::RecordingStart | Self::RecordingStop => {
                 Some(kestrel_platform::recording::FEATURE_ID)
             }
+            Self::StartKeepAwake(_) | Self::StopKeepAwake => Some(KEEP_AWAKE_ID),
             Self::QuickToggle(toggle) => Some(toggle.feature_id()),
         }
     }
@@ -271,6 +315,8 @@ impl CommandLineAction {
             }
             Self::ApplyPreset(preset) => ApplicationCommand::ApplyPreset(preset),
             Self::UndoPreset => ApplicationCommand::UndoPreset,
+            Self::StartKeepAwake(duration) => ApplicationCommand::StartKeepAwake(duration),
+            Self::StopKeepAwake => ApplicationCommand::StopKeepAwake,
             Self::QuickToggle(toggle) => ApplicationCommand::FlipQuickToggle(toggle),
         }
     }
@@ -445,8 +491,9 @@ pub fn command_list() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, ffi::OsString};
+    use std::{collections::HashSet, ffi::OsString, time::Duration};
 
+    use kestrel_core::KeepAwakeDuration;
     use kestrel_platform::quick_toggles::QuickToggleId;
 
     use super::{CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments};
@@ -488,6 +535,31 @@ mod tests {
             CommandLineAction::parse("preset.balanced").map(CommandLineAction::to_command),
             Ok(ApplicationCommand::ApplyPreset(FeaturePreset::Balanced))
         );
+        assert_eq!(
+            CommandLineAction::parse("keep-awake.start-30m").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::StartKeepAwake(KeepAwakeDuration::For(
+                Duration::from_secs(30 * 60)
+            )))
+        );
+        assert_eq!(
+            CommandLineAction::parse("keep-awake.start-90m"),
+            Ok(CommandLineAction::StartKeepAwake(KeepAwakeDuration::For(
+                Duration::from_secs(90 * 60)
+            ))),
+            "a custom length survives the round trip"
+        );
+        assert_eq!(
+            parse_arguments(&arguments(&["--command", "keep-awake.stop"])),
+            Ok(Invocation::Run(CommandLineAction::StopKeepAwake))
+        );
+        assert_eq!(
+            CommandLineAction::parse("keep-awake.stop").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::StopKeepAwake)
+        );
+        assert!(matches!(
+            CommandLineAction::parse("keep-awake.start-25h"),
+            Err(CommandLineError::UnknownCommand(_))
+        ));
         assert_eq!(
             parse_arguments(&arguments(&["--command=toggle.power.keep-awake"])).map(|invocation| {
                 match invocation {

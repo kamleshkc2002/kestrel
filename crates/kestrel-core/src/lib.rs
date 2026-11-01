@@ -8,6 +8,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+mod keep_awake;
+pub use keep_awake::{
+    KEEP_AWAKE_MAX, KEEP_AWAKE_MIN, KEEP_AWAKE_PRESETS, KeepAwakeDuration, KeepAwakeDurationError,
+};
+
 /// Debug builds run as a separate application: their own bus name, settings,
 /// and data, so development never touches an installed release.
 pub const DEVELOPMENT_BUILD: bool = cfg!(debug_assertions);
