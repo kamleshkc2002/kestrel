@@ -45,6 +45,7 @@ struct OverlayState {
     microphone: Option<MicrophoneViewModel>,
     audio: Option<AudioViewModel>,
     keyboard_light: Option<QuickToggleViewModel>,
+    keep_awake: Option<QuickToggleViewModel>,
     feedback: ControlFeedback,
     layout: Vec<ItemLayout>,
     controls: Controls,
@@ -85,6 +86,11 @@ impl StatusOverlay {
                 .iter()
                 .find(|toggle| toggle.id == QuickToggleId::KeyboardLight)
                 .cloned();
+            state.keep_awake = view_model
+                .quick_toggles
+                .iter()
+                .find(|toggle| toggle.id == QuickToggleId::KeepAwake)
+                .cloned();
         }
         self.observe();
     }
@@ -115,6 +121,11 @@ impl StatusOverlay {
 
     pub fn set_keyboard_light(&self, keyboard_light: &QuickToggleViewModel) {
         self.state.borrow_mut().keyboard_light = Some(keyboard_light.clone());
+        self.observe();
+    }
+
+    pub fn set_keep_awake(&self, keep_awake: &QuickToggleViewModel) {
+        self.state.borrow_mut().keep_awake = Some(keep_awake.clone());
         self.observe();
     }
 
@@ -159,6 +170,9 @@ enum ItemLayout {
         input_id: u32,
     },
     KeyboardLight,
+    KeepAwake {
+        remaining: String,
+    },
     MicrophoneMuted,
 }
 
@@ -191,6 +205,9 @@ impl ItemLayout {
                 input_id: reading.input_id,
             },
             OverlayItem::KeyboardLight { .. } => Self::KeyboardLight,
+            OverlayItem::KeepAwake { remaining } => Self::KeepAwake {
+                remaining: remaining.clone(),
+            },
             OverlayItem::MicrophoneMuted => Self::MicrophoneMuted,
         }
     }
@@ -212,6 +229,7 @@ fn render(state: &Rc<RefCell<OverlayState>>, commands: &Sender<ApplicationComman
                         accessories: state.accessories.as_deref(),
                         shown_accessories: &shown_accessories,
                         controls: state.feedback.shown(now),
+                        keep_awake: state.keep_awake.as_ref(),
                     },
                 )
             }
@@ -321,6 +339,9 @@ fn build_pill(
                 let keyboard_light = KeyboardLightControls::new(*percent, commands);
                 pill.append(&keyboard_light.container);
                 controls.keyboard_light = Some(keyboard_light);
+            }
+            OverlayItem::KeepAwake { remaining } => {
+                pill.append(&keep_awake_item(remaining, commands));
             }
             OverlayItem::MicrophoneMuted => pill.append(&microphone_item(commands)),
         }
@@ -909,6 +930,32 @@ fn alert_item(message: &str, commands: &Sender<ApplicationCommand>) -> gtk::Butt
         let _ = commands.try_send(ApplicationCommand::Focus(FocusTarget::Monitoring));
     });
     button
+}
+
+/// A timed keep-awake session's time left, with a stop control.
+fn keep_awake_item(remaining: &str, commands: &Sender<ApplicationCommand>) -> gtk::Box {
+    let item = gtk::Box::new(Orientation::Horizontal, 4);
+    let icon = gtk::Image::from_icon_name("preferences-desktop-screensaver-symbolic");
+    icon.set_valign(Align::Center);
+    item.append(&icon);
+    let time = gtk::Label::new(Some(remaining));
+    time.add_css_class("numeric");
+    time.set_valign(Align::Center);
+    item.append(&time);
+
+    let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+    stop.add_css_class("flat");
+    stop.add_css_class("circular");
+    stop.set_valign(Align::Center);
+    stop.set_tooltip_text(Some("Stop keeping awake"));
+    let label = format!("Keep awake, {remaining} left");
+    stop.update_property(&[Property::Label(&label)]);
+    let commands = commands.clone();
+    stop.connect_clicked(move |_| {
+        let _ = commands.try_send(ApplicationCommand::StopKeepAwake);
+    });
+    item.append(&stop);
+    item
 }
 
 fn microphone_item(commands: &Sender<ApplicationCommand>) -> gtk::Button {

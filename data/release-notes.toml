@@ -6,4 +6,4 @@
 
 [[change]]
 feature = "power.keep-awake"
-text = "Keep awake can run for a set time, from 15 minutes to 8 hours or a custom length up to 24 hours, shows the time left, and says when it ends."
+text = "Keep awake can run for a set time, from 15 minutes to 8 hours or a custom length up to 24 hours, from Overview, the command bar, or the tray menu; it shows the time left, including in the status bar overlay, and says when it ends."

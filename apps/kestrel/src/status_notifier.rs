@@ -1,10 +1,13 @@
-use crate::{ApplicationCommand, tray_icon::readout_icon};
+use crate::{
+    ApplicationCommand, ApplicationViewModel, QuickToggleId, QuickToggleViewModel,
+    tray_icon::readout_icon,
+};
 use async_channel::Sender;
-use kestrel_core::{CapabilityReport, CapabilityStatus};
+use kestrel_core::{CapabilityReport, CapabilityStatus, KEEP_AWAKE_PRESETS};
 use ksni::{
     Category, Icon, MenuItem, Status, ToolTip, Tray,
     blocking::{Handle, TrayMethods},
-    menu::StandardItem,
+    menu::{StandardItem, SubMenu},
 };
 use std::{
     collections::BTreeMap,
@@ -24,6 +27,7 @@ impl StatusNotifierIntegration {
     pub fn start(sender: Sender<ApplicationCommand>) -> Self {
         let tray = KestrelTray {
             sender: sender.clone(),
+            keep_awake: TrayKeepAwake::default(),
         };
         match tray.spawn() {
             Ok(handle) => Self {
@@ -70,6 +74,14 @@ impl StatusNotifierIntegration {
         self.handle.as_ref().map(|_| TrayReadoutSink {
             sender: self.sender.clone(),
             items: Arc::default(),
+        })
+    }
+
+    /// Publishes the keep-awake menu state; `None` without a tray host.
+    pub fn keep_awake_sink(&self) -> Option<TrayKeepAwakeSink> {
+        self.handle.as_ref().map(|handle| TrayKeepAwakeSink {
+            handle: handle.clone(),
+            published: Arc::default(),
         })
     }
 }
@@ -225,9 +237,83 @@ fn open_item<T: Tray>(sender: &Sender<ApplicationCommand>) -> MenuItem<T> {
     .into()
 }
 
+/// The keep-awake submenu state pushed to an open tray.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayKeepAwake {
+    /// The keep-awake feature runs.
+    pub available: bool,
+    /// A session holds the inhibitor.
+    pub active: bool,
+    /// The submenu's label, with the time left while a timed session runs.
+    pub label: String,
+}
+
+impl TrayKeepAwake {
+    /// Reads the full view model, whose feature list says whether it runs.
+    pub fn from_view_model(view_model: &ApplicationViewModel) -> Self {
+        let available = view_model
+            .features
+            .iter()
+            .any(|feature| feature.id == QuickToggleId::KeepAwake.feature_id() && feature.running);
+        let toggle = view_model
+            .quick_toggles
+            .iter()
+            .find(|toggle| toggle.id == QuickToggleId::KeepAwake);
+        Self::from_toggle(available, toggle)
+    }
+
+    /// Reads a refreshed keep-awake row, which carries its own availability.
+    pub fn from_refreshed(toggle: &QuickToggleViewModel) -> Self {
+        Self::from_toggle(toggle.available, Some(toggle))
+    }
+
+    fn from_toggle(available: bool, toggle: Option<&QuickToggleViewModel>) -> Self {
+        let controls = toggle.and_then(|toggle| toggle.keep_awake.as_ref());
+        let active = controls.is_some_and(|controls| controls.session_text.is_some());
+        let label = match controls {
+            Some(controls) if controls.timed => controls.remaining_words().map_or_else(
+                || "Keep awake".to_owned(),
+                |words| format!("Keep awake · {words}"),
+            ),
+            Some(_) if active => "Keep awake · on".to_owned(),
+            _ => "Keep awake".to_owned(),
+        };
+        Self {
+            available,
+            active,
+            label,
+        }
+    }
+}
+
+/// Pushes the keep-awake submenu state to an open tray.
+#[derive(Clone)]
+pub struct TrayKeepAwakeSink {
+    handle: Handle<KestrelTray>,
+    /// The state the tray last received.
+    published: Arc<Mutex<TrayKeepAwake>>,
+}
+
+impl TrayKeepAwakeSink {
+    /// Skips an update the tray already has.
+    pub fn publish(&self, state: TrayKeepAwake) {
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *published == state {
+            return;
+        }
+        *published = state.clone();
+        drop(published);
+        self.handle.update(move |tray| tray.keep_awake = state);
+    }
+}
+
 #[derive(Debug)]
 struct KestrelTray {
     sender: Sender<ApplicationCommand>,
+    keep_awake: TrayKeepAwake,
 }
 
 impl Tray for KestrelTray {
@@ -270,7 +356,7 @@ impl Tray for KestrelTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        vec![
+        let mut items: Vec<MenuItem<Self>> = vec![
             open_item(&self.sender),
             StandardItem {
                 label: "Refresh capabilities".to_owned(),
@@ -295,7 +381,12 @@ impl Tray for KestrelTray {
                 ..StandardItem::default()
             }
             .into(),
-            MenuItem::Separator,
+        ];
+        if let Some(keep_awake) = keep_awake_item(&self.sender, &self.keep_awake) {
+            items.push(keep_awake);
+        }
+        items.push(MenuItem::Separator);
+        items.push(
             StandardItem {
                 label: "Quit".to_owned(),
                 icon_name: "application-exit-symbolic".to_owned(),
@@ -303,8 +394,55 @@ impl Tray for KestrelTray {
                 ..StandardItem::default()
             }
             .into(),
-        ]
+        );
+        items
     }
+}
+
+/// The keep-awake presets and Stop, while its feature runs.
+fn keep_awake_item<T: Tray>(
+    sender: &Sender<ApplicationCommand>,
+    state: &TrayKeepAwake,
+) -> Option<MenuItem<T>> {
+    if !state.available {
+        return None;
+    }
+    let mut submenu = KEEP_AWAKE_PRESETS
+        .into_iter()
+        .map(|duration| {
+            let sender = sender.clone();
+            MenuItem::from(StandardItem {
+                label: duration.label(),
+                activate: Box::new(move |_: &mut T| {
+                    send(&sender, ApplicationCommand::StartKeepAwake(duration))
+                }),
+                ..StandardItem::default()
+            })
+        })
+        .collect::<Vec<_>>();
+    submenu.push(MenuItem::Separator);
+    let stop_sender = sender.clone();
+    submenu.push(
+        StandardItem {
+            label: "Stop keeping awake".to_owned(),
+            enabled: state.active,
+            icon_name: "media-playback-stop-symbolic".to_owned(),
+            activate: Box::new(move |_: &mut T| {
+                send(&stop_sender, ApplicationCommand::StopKeepAwake)
+            }),
+            ..StandardItem::default()
+        }
+        .into(),
+    );
+    Some(
+        SubMenu {
+            label: state.label.clone(),
+            icon_name: "preferences-desktop-screensaver-symbolic".to_owned(),
+            submenu,
+            ..SubMenu::default()
+        }
+        .into(),
+    )
 }
 
 /// A tray item whose icon shows one readout's label and value.

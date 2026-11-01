@@ -62,6 +62,8 @@ pub struct KeepAwakeControlsViewModel {
     pub session_text: Option<String>,
     /// A timed session has a deadline the tick checks.
     pub timed: bool,
+    /// The time left in a timed session.
+    pub remaining: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,8 +145,53 @@ impl QuickToggleViewModel {
             selected,
             session_text: session.map(|session| session_text(&session, now)),
             timed: session.is_some_and(|session| session.deadline.is_some()),
+            remaining: session
+                .and_then(|session| session.deadline)
+                .map(|deadline| deadline.saturating_sub(now)),
         });
     }
+}
+
+impl KeepAwakeControlsViewModel {
+    /// The time left in the status overlay's words: "42 min", "1 h 5 min", "<1 min".
+    pub fn remaining_short(&self) -> Option<String> {
+        let minutes = remaining_minutes(self.remaining?);
+        Some(match minutes {
+            0 => "<1 min".to_owned(),
+            1..=60 => format!("{minutes} min"),
+            _ => {
+                let hours = minutes / 60;
+                let rest = minutes % 60;
+                if rest == 0 {
+                    format!("{hours} h")
+                } else {
+                    format!("{hours} h {rest} min")
+                }
+            }
+        })
+    }
+
+    /// The time left in the tray menu's words: "42 min left", "less than a minute left".
+    pub fn remaining_words(&self) -> Option<String> {
+        let minutes = remaining_minutes(self.remaining?);
+        Some(match minutes {
+            0 => "less than a minute left".to_owned(),
+            1..=60 => format!("{minutes} min left"),
+            _ => {
+                let hours = minutes / 60;
+                let rest = minutes % 60;
+                if rest == 0 {
+                    format!("{hours} h left")
+                } else {
+                    format!("{hours} h {rest} min left")
+                }
+            }
+        })
+    }
+}
+
+fn remaining_minutes(remaining: std::time::Duration) -> u64 {
+    remaining.as_secs().div_ceil(60)
 }
 
 /// The keep-awake row subtitle while a session runs.

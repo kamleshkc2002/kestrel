@@ -421,6 +421,7 @@ fn run_tick(
     notifier: &dyn AlertNotifier,
     capture_notifier: &DesktopNotifier,
     tray: Option<&kestrel::TrayReadoutSink>,
+    tray_keep_awake: Option<&kestrel::TrayKeepAwakeSink>,
     observed_at: Duration,
     due: TickDue,
 ) -> TickUpdate {
@@ -567,6 +568,9 @@ fn run_tick(
         }) {
             log::warn!(target: "power.keep-awake", "ended notification failed: {error}");
         }
+    }
+    if let (Some(sink), Some(toggle)) = (tray_keep_awake, keep_awake.as_ref()) {
+        sink.publish(kestrel::TrayKeepAwake::from_refreshed(toggle));
     }
     let monitor = updated.then(|| deliver_alerts(state, notifier, alerts));
     if let (Some(tray), Some(monitor)) = (tray, monitor.as_ref()) {
@@ -920,6 +924,8 @@ struct ApplicationController {
     /// Owns the user style sheet provider and its directory monitors.
     appearance: Rc<AppearanceStyles>,
     tray: RefCell<Option<kestrel::TrayReadoutSink>>,
+    /// Pushes the keep-awake submenu to the same tray.
+    tray_keep_awake: RefCell<Option<kestrel::TrayKeepAwakeSink>>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
     refresh_results: Sender<RefreshResult>,
@@ -1047,6 +1053,11 @@ impl ApplicationController {
                 status_notifier
                     .as_ref()
                     .and_then(StatusNotifierIntegration::readout_sink),
+            ),
+            tray_keep_awake: RefCell::new(
+                status_notifier
+                    .as_ref()
+                    .and_then(StatusNotifierIntegration::keep_awake_sink),
             ),
             status_notifier: RefCell::new(status_notifier),
             appearance,
@@ -1471,6 +1482,7 @@ impl ApplicationController {
         self.track_running(&view_model);
         self.overlay.set_view_model(&view_model);
         self.reconcile_tray(&view_model);
+        self.publish_tray_keep_awake(&view_model);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1492,6 +1504,7 @@ impl ApplicationController {
         if wanted && !present {
             let integration = StatusNotifierIntegration::start(self.commands.clone());
             let sink = integration.readout_sink();
+            let keep_awake = integration.keep_awake_sink();
             if sink.is_none() {
                 log::warn!(
                     target: kestrel::STATUS_NOTIFIER_ID,
@@ -1499,15 +1512,25 @@ impl ApplicationController {
                 );
             }
             *self.tray.borrow_mut() = sink;
+            *self.tray_keep_awake.borrow_mut() = keep_awake;
             *self.status_notifier.borrow_mut() = Some(integration);
         } else if !wanted && present {
             let _ = self.stop_tray();
         }
     }
 
+    /// Pushes the keep-awake submenu to the tray, if it is open.
+    fn publish_tray_keep_awake(&self, view_model: &ApplicationViewModel) {
+        let Some(sink) = self.tray_keep_awake.borrow().clone() else {
+            return;
+        };
+        sink.publish(kestrel::TrayKeepAwake::from_view_model(view_model));
+    }
+
     /// Removes the tray entry and its readout icons off the GTK thread.
     fn stop_tray(&self) -> Option<thread::JoinHandle<()>> {
         let sink = self.tray.borrow_mut().take();
+        let keep_awake = self.tray_keep_awake.borrow_mut().take();
         let integration = self.status_notifier.borrow_mut().take();
         thread::Builder::new()
             .name("kestrel-tray-stop".to_owned())
@@ -1515,6 +1538,7 @@ impl ApplicationController {
                 if let Some(sink) = sink {
                     sink.close();
                 }
+                drop(keep_awake);
                 drop(integration);
             })
             .ok()
@@ -1633,6 +1657,7 @@ impl ApplicationController {
         let notifier = Arc::clone(&self.notifier);
         let capture_notifier = Arc::clone(&self.capture_notifier);
         let tray = self.tray.borrow().clone();
+        let tray_keep_awake = self.tray_keep_awake.borrow().clone();
         let results = self.tick_results.clone();
         let observed_at = self.monitor_started_at.elapsed();
         let due = TickDue {
@@ -1650,6 +1675,7 @@ impl ApplicationController {
                     notifier.as_ref(),
                     capture_notifier.as_ref(),
                     tray.as_ref(),
+                    tray_keep_awake.as_ref(),
                     observed_at,
                     due,
                 );
@@ -1768,6 +1794,7 @@ impl ApplicationController {
                     .as_ref()
                     .is_some_and(|controls| controls.timed),
             );
+            self.overlay.set_keep_awake(keep_awake);
             if let Some(view) = self.window.borrow().as_ref() {
                 view.set_keep_awake(keep_awake);
             }
@@ -2770,6 +2797,10 @@ impl ControllerState {
                     kestrel::OverlayModule::Accessories => {
                         candidate.overlay.accessories = shown;
                         "The accessory batteries module"
+                    }
+                    kestrel::OverlayModule::KeepAwake => {
+                        candidate.overlay.keep_awake = shown;
+                        "The keep awake time left"
                     }
                 };
                 let message = format!(

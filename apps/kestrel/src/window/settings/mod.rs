@@ -261,6 +261,20 @@ fn add_overlay_group(
     overlay_group.add(&overlay_module_row(
         overlay,
         (
+            "Keep awake",
+            "While a timed Keep awake session runs: the time left, with stop.",
+        ),
+        (
+            overlay.modules.keep_awake,
+            kestrel::OverlayModule::KeepAwake,
+        ),
+        "status overlay keep awake time left",
+        commands,
+        filter_rows,
+    ));
+    overlay_group.add(&overlay_module_row(
+        overlay,
+        (
             "Alerts",
             "Each active monitoring alert with its reading; click it to open Monitoring.",
         ),

@@ -57,7 +57,8 @@ pub use runtime::{
 };
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
-    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayReadout, TrayReadoutSink,
+    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayKeepAwake, TrayKeepAwakeSink,
+    TrayReadout, TrayReadoutSink,
 };
 pub use view_model::{
     ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
@@ -157,6 +158,7 @@ pub enum OverlayModule {
     MicrophoneLevel,
     KeyboardLight,
     Accessories,
+    KeepAwake,
 }
 
 /// Scratchpad bound edited from Settings.
