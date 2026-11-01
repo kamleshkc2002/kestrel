@@ -49,6 +49,28 @@ pub(crate) fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<(
     Ok(())
 }
 
+/// Narrows an existing file to owner-only and its folder likewise; links,
+/// missing paths, and modes already as tight are left alone.
+pub(crate) fn restrict_existing(path: &Path) -> io::Result<()> {
+    restrict(path, FILE_MODE)?;
+    match path.parent() {
+        Some(parent) => restrict(parent, DIRECTORY_MODE),
+        None => Ok(()),
+    }
+}
+
+fn restrict(path: &Path, mode: u32) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || metadata.permissions().mode() & 0o777 & !mode == 0 {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
 fn create_temporary(parent: &Path, file_name: &OsStr) -> io::Result<(PathBuf, File)> {
     for _ in 0..TEMPORARY_ATTEMPTS {
         let nanos = SystemTime::now()
