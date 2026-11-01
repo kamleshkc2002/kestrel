@@ -356,6 +356,8 @@ pub enum OverlayItem {
     MicrophoneLevel(MicrophoneReading),
     /// The keyboard light's level.
     KeyboardLight { percent: u8 },
+    /// A timed keep-awake session and the time it has left.
+    KeepAwake { remaining: String },
     /// Every microphone input is muted; clicking it unmutes them.
     MicrophoneMuted,
 }
@@ -411,6 +413,8 @@ pub struct OverlaySources<'a> {
     pub shown_accessories: &'a [AccessoryReading],
     /// The controls currently shown.
     pub controls: ControlReadings,
+    /// The keep-awake row, with its session while one runs.
+    pub keep_awake: Option<&'a QuickToggleViewModel>,
 }
 
 /// What the overlay shows, in order; empty while it is off, so it hides.
@@ -438,6 +442,14 @@ pub fn overlay_items(overlay: &OverlayViewModel, sources: &OverlaySources<'_>) -
                     message: alert.message.clone(),
                 }),
         );
+    }
+    if let Some(remaining) = sources
+        .keep_awake
+        .and_then(|toggle| toggle.keep_awake.as_ref())
+        .filter(|_| modules.keep_awake)
+        .and_then(KeepAwakeControlsViewModel::remaining_short)
+    {
+        items.push(OverlayItem::KeepAwake { remaining });
     }
     if modules.accessories {
         for reading in sources.accessories.unwrap_or_default() {
@@ -487,7 +499,7 @@ pub fn overlay_items(overlay: &OverlayViewModel, sources: &OverlaySources<'_>) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kestrel_core::{CapabilityReport, FeatureSpec, OverlayConfiguration};
+    use kestrel_core::{CapabilityReport, FeatureSpec, KeepAwakeDuration, OverlayConfiguration};
 
     fn overlay(status: CapabilityStatus, enabled: bool) -> OverlayViewModel {
         let spec = FeatureSpec::new(crate::OVERLAY_ID, "Status bar overlay", status.clone());
@@ -564,6 +576,7 @@ mod tests {
             source: "",
             control: Some(QuickToggleControlViewModel::Level { percentage }),
             error: None,
+            keep_awake: None,
         }
     }
 
@@ -644,6 +657,7 @@ mod tests {
                     accessories: None,
                     shown_accessories: &[],
                     controls: ControlReadings::default(),
+                    keep_awake: None,
                 },
             )
         };
@@ -672,6 +686,7 @@ mod tests {
                     accessories: None,
                     shown_accessories: &[],
                     controls: ControlReadings::default(),
+                    keep_awake: None,
                 }
             )
             .is_empty(),
@@ -687,6 +702,7 @@ mod tests {
                 accessories: None,
                 shown_accessories: &[],
                 controls: readings(None, Some(sample_microphone(20)), None),
+                keep_awake: None,
             },
         );
         assert_eq!(
@@ -706,6 +722,7 @@ mod tests {
                     accessories: None,
                     shown_accessories: &[],
                     controls: readings(None, Some(sample_microphone(20)), None),
+                    keep_awake: None,
                 },
             ),
             [OverlayItem::MicrophoneMuted],
@@ -752,6 +769,7 @@ mod tests {
                     accessories: Some(&battery),
                     shown_accessories: &changed,
                     controls: readings,
+                    keep_awake: None,
                 },
             )
         };
@@ -866,6 +884,65 @@ mod tests {
                 OverlayItem::MicrophoneMuted,
             ],
             "each control needs its own module"
+        );
+    }
+
+    #[test]
+    fn a_keep_awake_item_shows_only_for_a_timed_session_while_its_module_is_on() {
+        let running = overlay(CapabilityStatus::Supported, true);
+        let toggle = |keep_awake| QuickToggleViewModel {
+            id: crate::QuickToggleId::KeepAwake,
+            feature_id: crate::QuickToggleId::KeepAwake.feature_id(),
+            label: "Keep awake",
+            requirement: "",
+            available: true,
+            detail: String::new(),
+            source: "",
+            control: None,
+            error: None,
+            keep_awake,
+        };
+        let session = |remaining, timed| KeepAwakeControlsViewModel {
+            duration_choices: Vec::new(),
+            selected: KeepAwakeDuration::For(Duration::from_secs(42 * 60)),
+            session_text: Some("On for 42 minutes more".to_owned()),
+            timed,
+            remaining,
+        };
+        let shown = |overlay: &OverlayViewModel, toggle: &QuickToggleViewModel| {
+            overlay_items(
+                overlay,
+                &OverlaySources {
+                    recording: None,
+                    alerts: None,
+                    microphone: None,
+                    accessories: None,
+                    shown_accessories: &[],
+                    controls: ControlReadings::default(),
+                    keep_awake: Some(toggle),
+                },
+            )
+        };
+        let timed = toggle(Some(session(Some(Duration::from_secs(42 * 60)), true)));
+        assert!(
+            shown(&running, &timed)
+                .iter()
+                .any(|item| matches!(item, OverlayItem::KeepAwake { .. })),
+            "a timed session shows its time left"
+        );
+
+        let mut module_off = running.clone();
+        module_off.modules.keep_awake = false;
+        assert!(shown(&module_off, &timed).is_empty());
+
+        let indefinite = toggle(Some(session(None, false)));
+        assert!(
+            shown(&running, &indefinite).is_empty(),
+            "an indefinite session has no time left to show"
+        );
+        assert!(
+            shown(&running, &toggle(None)).is_empty(),
+            "no session shows nothing"
         );
     }
 

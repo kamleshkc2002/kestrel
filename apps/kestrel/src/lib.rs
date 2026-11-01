@@ -26,7 +26,8 @@ pub use config::{
 };
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
-    CaptureAfterScreenshot, ClipboardLayout, CloseAction, MonitorReadout, NetworkRateUnit,
+    CaptureAfterScreenshot, ClipboardLayout, CloseAction, KeepAwakeDuration, MonitorReadout,
+    NetworkRateUnit,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -56,7 +57,8 @@ pub use runtime::{
 };
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
-    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayReadout, TrayReadoutSink,
+    FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayKeepAwake, TrayKeepAwakeSink,
+    TrayReadout, TrayReadoutSink,
 };
 pub use view_model::{
     ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
@@ -156,6 +158,7 @@ pub enum OverlayModule {
     MicrophoneLevel,
     KeyboardLight,
     Accessories,
+    KeepAwake,
 }
 
 /// Scratchpad bound edited from Settings.
@@ -486,6 +489,12 @@ pub enum ApplicationCommand {
     QuickToggle(QuickToggleCommand),
     /// Flips a quick toggle from its current observed state.
     FlipQuickToggle(QuickToggleId),
+    /// Starts or restarts a keep-awake session and makes its length the choice.
+    StartKeepAwake(KeepAwakeDuration),
+    /// Releases the keep-awake inhibitor and clears the session.
+    StopKeepAwake,
+    /// Stores the keep-awake length, restarting a running session from now.
+    SetKeepAwakeChoice(KeepAwakeDuration),
     SetFeatureEnabled {
         feature_id: String,
         enabled: bool,

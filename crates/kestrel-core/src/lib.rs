@@ -8,6 +8,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+mod keep_awake;
+pub use keep_awake::{
+    KEEP_AWAKE_MAX, KEEP_AWAKE_MIN, KEEP_AWAKE_PRESETS, KeepAwakeDuration, KeepAwakeDurationError,
+};
+
 /// Debug builds run as a separate application: their own bus name, settings,
 /// and data, so development never touches an installed release.
 pub const DEVELOPMENT_BUILD: bool = cfg!(debug_assertions);
@@ -1317,6 +1322,9 @@ pub struct OverlayConfiguration {
     /// Low batteries and brief connections of accessories.
     #[serde(default = "default_true")]
     pub accessories: bool,
+    /// The time left and stop control while a timed keep-awake session runs.
+    #[serde(default = "default_true")]
+    pub keep_awake: bool,
     /// The percentage at or below which an accessory reads as low.
     #[serde(default = "default_accessory_warning")]
     pub accessory_warning: u8,
@@ -1343,6 +1351,7 @@ impl Default for OverlayConfiguration {
             microphone_level: true,
             keyboard_light: true,
             accessories: true,
+            keep_awake: true,
             accessory_warning: DEFAULT_ACCESSORY_WARNING_LEVEL,
             accessory_critical: DEFAULT_ACCESSORY_CRITICAL_LEVEL,
         }

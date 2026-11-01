@@ -12,6 +12,8 @@ struct ToolAvailability {
     recording_active: bool,
     recording_source: Option<kestrel_platform::recording::RecordingSource>,
     scratchpad_running: bool,
+    keep_awake_running: bool,
+    keep_awake_active: bool,
 }
 
 impl ApplicationRuntime {
@@ -112,6 +114,8 @@ impl ApplicationRuntime {
             recording_active: self.recording.snapshot().phase.is_active(),
             recording_source,
             scratchpad_running: running(SCRATCHPAD_ID),
+            keep_awake_running: running(kestrel_platform::quick_toggles::KEEP_AWAKE_ID),
+            keep_awake_active: self.keep_awake_is_active(),
         })
     }
 
@@ -126,6 +130,8 @@ impl ApplicationRuntime {
             recording_active,
             recording_source,
             scratchpad_running,
+            keep_awake_running,
+            keep_awake_active,
         } = availability;
         let mut items = Vec::new();
         if capture_running {
@@ -243,6 +249,45 @@ impl ApplicationRuntime {
                 )
                 .with_keywords(["scratchpad", "notes", "note", "pad"]),
             );
+        }
+        if keep_awake_running {
+            for duration in kestrel_core::KEEP_AWAKE_PRESETS {
+                let suffix = duration.command_suffix();
+                let title = match duration {
+                    kestrel_core::KeepAwakeDuration::UntilStopped => {
+                        "Keep awake until turned off".to_owned()
+                    }
+                    kestrel_core::KeepAwakeDuration::For(_) => {
+                        format!("Keep awake for {}", duration.label())
+                    }
+                };
+                items.push(
+                    CommandItem::new(
+                        format!("kestrel:keep-awake-start-{suffix}"),
+                        CommandSource::Kestrel,
+                        title,
+                        "Keep the computer from sleeping",
+                        kestrel_services::command_bar::CommandAction::Kestrel(format!(
+                            "keep-awake.start-{suffix}"
+                        )),
+                    )
+                    .with_keywords(["keep awake", "sleep", "power", "inhibit"]),
+                );
+            }
+            if keep_awake_active {
+                items.push(
+                    CommandItem::new(
+                        "kestrel:keep-awake-stop",
+                        CommandSource::Kestrel,
+                        "Stop keeping awake",
+                        "Let the computer sleep and lock again",
+                        kestrel_services::command_bar::CommandAction::Kestrel(
+                            "keep-awake.stop".to_owned(),
+                        ),
+                    )
+                    .with_keywords(["keep awake", "sleep", "power", "stop"]),
+                );
+            }
         }
         items
     }
@@ -740,6 +785,8 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: false,
+            keep_awake_running: false,
+            keep_awake_active: false,
         });
         assert!(absent.is_empty(), "tools whose features are off are hidden");
 
@@ -753,6 +800,8 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: true,
+            keep_awake_running: false,
+            keep_awake_active: false,
         });
         let ids: Vec<_> = present.iter().map(|item| item.id.as_str()).collect();
         for id in [
@@ -786,6 +835,8 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: false,
+            keep_awake_running: false,
+            keep_awake_active: false,
         });
         assert!(
             without_capture
@@ -802,6 +853,8 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: false,
+            keep_awake_running: false,
+            keep_awake_active: false,
         });
         assert!(
             with_capture
@@ -822,6 +875,8 @@ mod tests {
             recording_active: false,
             recording_source: Some(kestrel_platform::recording::RecordingSource::Screen),
             scratchpad_running: false,
+            keep_awake_running: false,
+            keep_awake_active: false,
         });
         assert_eq!(idle[0].title, "Start recording");
         let active = ApplicationRuntime::tool_items_for(ToolAvailability {
@@ -834,6 +889,8 @@ mod tests {
             recording_active: true,
             recording_source: None,
             scratchpad_running: false,
+            keep_awake_running: false,
+            keep_awake_active: false,
         });
         assert_eq!(active[0].title, "Stop recording");
     }

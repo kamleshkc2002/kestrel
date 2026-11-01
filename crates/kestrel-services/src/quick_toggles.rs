@@ -1,7 +1,8 @@
 //! Quick-toggle state, confirmation, and ownership policy.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
+use kestrel_core::KeepAwakeDuration;
 use kestrel_platform::quick_toggles::{
     ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleBackend, QuickToggleError,
     QuickToggleId, QuickToggleMutation, QuickToggleObservation,
@@ -22,6 +23,16 @@ pub struct QuickToggleSnapshot {
     pub observation: Option<QuickToggleObservation>,
     pub source: ToggleStateSource,
     pub error: Option<QuickToggleError>,
+    /// Set while Kestrel holds the keep-awake inhibitor.
+    pub keep_awake: Option<KeepAwakeSession>,
+}
+
+/// The chosen keep-awake length and, for a timed session, its boot-time end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeepAwakeSession {
+    pub duration: KeepAwakeDuration,
+    /// `None` while the session runs until it is turned off.
+    pub deadline: Option<Duration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +45,7 @@ pub struct QuickToggleCommand {
 pub struct QuickToggleService<B: QuickToggleBackend = LinuxQuickToggleBackend> {
     backend: B,
     snapshots: BTreeMap<QuickToggleId, QuickToggleSnapshot>,
+    keep_awake_session: Option<KeepAwakeSession>,
 }
 
 impl<B: QuickToggleBackend> QuickToggleService<B> {
@@ -50,11 +62,16 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
                         observation: None,
                         source: local_source(id),
                         error: None,
+                        keep_awake: None,
                     },
                 )
             })
             .collect();
-        Self { backend, snapshots }
+        Self {
+            backend,
+            snapshots,
+            keep_awake_session: None,
+        }
     }
 
     pub fn refresh(&mut self, id: QuickToggleId) -> &QuickToggleSnapshot {
@@ -90,6 +107,15 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
                     .error = Some(error);
             }
         }
+        let session = if id == QuickToggleId::KeepAwake {
+            self.keep_awake_session
+        } else {
+            None
+        };
+        self.snapshots
+            .get_mut(&id)
+            .expect("every built-in quick toggle has a snapshot")
+            .keep_awake = session;
         &self.snapshots[&id]
     }
 
@@ -97,11 +123,20 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
         &mut self,
         command: QuickToggleCommand,
     ) -> Result<&QuickToggleSnapshot, QuickToggleError> {
+        let disabled = matches!(&command.mutation, QuickToggleMutation::SetEnabled(false));
         let result = self.backend.apply(
             command.id,
             command.mutation,
             command.confirmation_token.as_deref(),
         );
+        let session = if command.id == QuickToggleId::KeepAwake {
+            if disabled {
+                self.keep_awake_session = None;
+            }
+            self.keep_awake_session
+        } else {
+            None
+        };
         match result {
             Ok(observation) => {
                 let snapshot = self
@@ -111,6 +146,7 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
                 snapshot.observation = Some(observation);
                 snapshot.source = ToggleStateSource::KestrelOwned;
                 snapshot.error = None;
+                snapshot.keep_awake = session;
                 Ok(snapshot)
             }
             Err(error) => {
@@ -124,6 +160,54 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
         }
     }
 
+    /// Holds the inhibitor and runs for `duration` from `now`, replacing any
+    /// earlier deadline.
+    pub fn start_keep_awake(
+        &mut self,
+        duration: KeepAwakeDuration,
+        now: Duration,
+    ) -> Result<&QuickToggleSnapshot, QuickToggleError> {
+        self.execute(QuickToggleCommand {
+            id: QuickToggleId::KeepAwake,
+            mutation: QuickToggleMutation::SetEnabled(true),
+            confirmation_token: None,
+        })?;
+        let deadline = match duration {
+            KeepAwakeDuration::UntilStopped => None,
+            KeepAwakeDuration::For(length) => Some(now.saturating_add(length)),
+        };
+        self.keep_awake_session = Some(KeepAwakeSession { duration, deadline });
+        let snapshot = self
+            .snapshots
+            .get_mut(&QuickToggleId::KeepAwake)
+            .expect("every built-in quick toggle has a snapshot");
+        snapshot.keep_awake = self.keep_awake_session;
+        Ok(snapshot)
+    }
+
+    /// Releases the inhibitor and clears the session; safe to repeat.
+    pub fn stop_keep_awake(&mut self) {
+        self.keep_awake_session = None;
+        let _ = self.backend.apply(
+            QuickToggleId::KeepAwake,
+            QuickToggleMutation::SetEnabled(false),
+            None,
+        );
+        self.refresh(QuickToggleId::KeepAwake);
+    }
+
+    /// Ends a timed session at or after its deadline, returning true once.
+    pub fn expire_keep_awake(&mut self, now: Duration) -> bool {
+        let expired = self
+            .keep_awake_session
+            .and_then(|session| session.deadline)
+            .is_some_and(|deadline| now >= deadline);
+        if expired {
+            self.stop_keep_awake();
+        }
+        expired
+    }
+
     pub fn snapshots(&self) -> impl Iterator<Item = &QuickToggleSnapshot> {
         ALL_QUICK_TOGGLES.iter().map(|id| &self.snapshots[id])
     }
@@ -131,6 +215,7 @@ impl<B: QuickToggleBackend> QuickToggleService<B> {
     /// Provider-observed toggles remain untouched on stop.
     pub fn stop(&mut self, id: QuickToggleId) {
         if id == QuickToggleId::KeepAwake {
+            self.keep_awake_session = None;
             let _ = self
                 .backend
                 .apply(id, QuickToggleMutation::SetEnabled(false), None);
@@ -159,18 +244,20 @@ fn local_source(id: QuickToggleId) -> ToggleStateSource {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, time::Duration};
 
-    use kestrel_core::{CapabilityReport, CapabilityStatus};
+    use kestrel_core::{CapabilityReport, CapabilityStatus, KeepAwakeDuration};
     use kestrel_platform::quick_toggles::{
         MutationConfirmation, QuickToggleBackend, QuickToggleControl, QuickToggleError,
         QuickToggleErrorKind, QuickToggleId, QuickToggleMutation, QuickToggleObservation,
     };
 
-    use super::{QuickToggleCommand, QuickToggleService, ToggleStateSource};
+    use super::{KeepAwakeSession, QuickToggleCommand, QuickToggleService, ToggleStateSource};
 
     struct FakeBackend {
         controls: BTreeMap<QuickToggleId, QuickToggleControl>,
+        /// Keep-awake release requests, to observe that an expiry releases once.
+        keep_awake_releases: usize,
     }
 
     impl FakeBackend {
@@ -196,7 +283,10 @@ mod tests {
             ]
             .into_iter()
             .collect();
-            Self { controls }
+            Self {
+                controls,
+                keep_awake_releases: 0,
+            }
         }
     }
 
@@ -259,6 +349,9 @@ mod tests {
                     });
                 }
             };
+            if id == QuickToggleId::KeepAwake && !enabled {
+                self.keep_awake_releases += 1;
+            }
             let control = QuickToggleControl::Switch {
                 enabled,
                 confirmation: None,
@@ -401,6 +494,114 @@ mod tests {
         assert!(matches!(
             wifi.observation.as_ref().unwrap().control,
             QuickToggleControl::Switch { enabled: true, .. }
+        ));
+    }
+
+    fn keep_awake(service: &QuickToggleService<FakeBackend>) -> Option<KeepAwakeSession> {
+        service
+            .snapshots()
+            .find(|snapshot| snapshot.id == QuickToggleId::KeepAwake)
+            .expect("Keep Awake snapshot")
+            .keep_awake
+    }
+
+    #[test]
+    fn timed_session_expires_exactly_at_its_deadline_releasing_once() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        let start = Duration::from_secs(1_000);
+        let duration = KeepAwakeDuration::timed(Duration::from_secs(60)).expect("valid");
+
+        let snapshot = service
+            .start_keep_awake(duration, start)
+            .expect("the inhibitor is held")
+            .clone();
+
+        assert_eq!(
+            snapshot.keep_awake.map(|session| session.deadline),
+            Some(Some(Duration::from_secs(1_060)))
+        );
+        assert!(!service.expire_keep_awake(Duration::from_secs(1_059)));
+        assert!(keep_awake(&service).is_some());
+        assert!(service.expire_keep_awake(Duration::from_secs(1_060)));
+        assert_eq!(service.backend.keep_awake_releases, 1);
+        assert!(keep_awake(&service).is_none());
+        assert!(matches!(
+            service.backend.controls.get(&QuickToggleId::KeepAwake),
+            Some(QuickToggleControl::Switch { enabled: false, .. })
+        ));
+        assert!(!service.expire_keep_awake(Duration::from_secs(2_000)));
+        assert_eq!(service.backend.keep_awake_releases, 1);
+    }
+
+    #[test]
+    fn restarting_replaces_the_deadline() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        let fifteen = KeepAwakeDuration::timed(Duration::from_secs(15 * 60)).expect("valid");
+        let thirty = KeepAwakeDuration::timed(Duration::from_secs(30 * 60)).expect("valid");
+
+        service
+            .start_keep_awake(fifteen, Duration::ZERO)
+            .expect("start");
+        assert_eq!(
+            keep_awake(&service).and_then(|session| session.deadline),
+            Some(Duration::from_secs(900))
+        );
+        service
+            .start_keep_awake(thirty, Duration::from_secs(100))
+            .expect("restart");
+        let session = keep_awake(&service).expect("session");
+        assert_eq!(session.duration, thirty);
+        assert_eq!(session.deadline, Some(Duration::from_secs(1_900)));
+        assert_eq!(service.backend.keep_awake_releases, 0);
+    }
+
+    #[test]
+    fn manual_stop_is_idempotent_and_clears_the_session() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        let duration = KeepAwakeDuration::timed(Duration::from_secs(30 * 60)).expect("valid");
+        service
+            .start_keep_awake(duration, Duration::ZERO)
+            .expect("start");
+
+        service.stop_keep_awake();
+        service.stop_keep_awake();
+
+        assert!(keep_awake(&service).is_none());
+        assert!(!service.expire_keep_awake(Duration::from_secs(60 * 60)));
+        assert!(matches!(
+            service.backend.controls.get(&QuickToggleId::KeepAwake),
+            Some(QuickToggleControl::Switch { enabled: false, .. })
+        ));
+    }
+
+    #[test]
+    fn an_indefinite_session_never_expires() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        service
+            .start_keep_awake(KeepAwakeDuration::UntilStopped, Duration::ZERO)
+            .expect("start");
+
+        assert!(!service.expire_keep_awake(Duration::from_secs(365 * 24 * 60 * 60)));
+        let session = keep_awake(&service).expect("session");
+        assert_eq!(session.duration, KeepAwakeDuration::UntilStopped);
+        assert_eq!(session.deadline, None);
+        assert_eq!(service.backend.keep_awake_releases, 0);
+    }
+
+    #[test]
+    fn stop_all_clears_the_keep_awake_session() {
+        let mut service = QuickToggleService::new(FakeBackend::new());
+        let duration = KeepAwakeDuration::timed(Duration::from_secs(8 * 60 * 60)).expect("valid");
+        service
+            .start_keep_awake(duration, Duration::ZERO)
+            .expect("start");
+
+        service.stop_all();
+
+        assert!(keep_awake(&service).is_none());
+        assert!(matches!(
+            service.backend.controls.get(&QuickToggleId::KeepAwake),
+            Some(QuickToggleControl::Switch { enabled: false, .. })
         ));
     }
 }

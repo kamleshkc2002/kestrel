@@ -86,9 +86,10 @@ pub use command_bar::{
 pub use features::{
     CapabilityKind, CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
     ConfirmationViewModel, FeatureHubSection, FeatureIndicator, FeatureLifecycleViewModel,
-    FeatureViewModel, OverviewTool, OverviewToolViewModel, OverviewToolsViewModel,
-    QuickToggleActionViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
-    RemediationViewModel, ResourceCostViewModel, TurnOnViewModel, disabled_status_for, turn_on_for,
+    FeatureViewModel, KeepAwakeControlsViewModel, OverviewTool, OverviewToolViewModel,
+    OverviewToolsViewModel, QuickToggleActionViewModel, QuickToggleControlViewModel,
+    QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel, TurnOnViewModel,
+    disabled_status_for, turn_on_for,
 };
 use kestrel_core::format_bytes;
 pub use kestrel_platform::audio::OutputKind;

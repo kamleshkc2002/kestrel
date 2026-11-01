@@ -897,6 +897,7 @@ fn parse_overlay(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) 
         ("microphone_level", &mut modules.microphone_level),
         ("keyboard_light", &mut modules.keyboard_light),
         ("accessories", &mut modules.accessories),
+        ("keep_awake", &mut modules.keep_awake),
     ] {
         let Some(value) = table.get(key) else {
             continue;
@@ -1809,14 +1810,14 @@ whats_new = false
     #[test]
     fn on_off_settings_parse_and_a_malformed_one_keeps_its_default() {
         let loaded = parse(
-            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\nvolume = false\nmicrophone_level = \"no\"\nkeyboard_light = true\naccessories = false\naccessory_warning = 35\naccessory_critical = 15\n[startup]\nwhats_new = \"no\"\n",
+            "schema_version = 3\n[overlay]\nmicrophone = false\nrecording = \"no\"\nalerts = false\nvolume = false\nmicrophone_level = \"no\"\nkeyboard_light = true\naccessories = false\nkeep_awake = \"no\"\naccessory_warning = 35\naccessory_critical = 15\n[startup]\nwhats_new = \"no\"\n",
         )
         .expect("document itself is valid TOML");
         let overlay = loaded.configuration.overlay;
         assert!(!overlay.microphone && !overlay.alerts && !overlay.volume && !overlay.accessories);
         assert!(overlay.keyboard_light);
         assert!(
-            overlay.recording && overlay.microphone_level,
+            overlay.recording && overlay.microphone_level && overlay.keep_awake,
             "a malformed value keeps its default"
         );
         assert_eq!(
@@ -1833,10 +1834,26 @@ whats_new = false
         assert_eq!(
             warned,
             [
+                "overlay.keep_awake",
                 "overlay.microphone_level",
                 "overlay.recording",
                 "startup.whats_new"
             ]
+        );
+
+        let without = parse("schema_version = 3\n[overlay]\nkeep_awake = false\n")
+            .expect("document itself is valid TOML");
+        assert!(
+            !without.configuration.overlay.keep_awake,
+            "an explicit false is kept"
+        );
+        assert!(
+            parse("schema_version = 3\n[overlay]\nalerts = false\n")
+                .expect("document itself is valid TOML")
+                .configuration
+                .overlay
+                .keep_awake,
+            "the default is on"
         );
 
         let inverted = parse(
