@@ -228,7 +228,7 @@ impl CommandLineAction {
         if let Some(suffix) = id.strip_prefix(KEEP_AWAKE_START_PREFIX) {
             return KeepAwakeDuration::parse_command_suffix(suffix)
                 .map(Self::StartKeepAwake)
-                .ok_or_else(|| CommandLineError::UnknownCommand(id.to_owned()));
+                .ok_or_else(|| CommandLineError::InvalidKeepAwakeDuration(suffix.to_owned()));
         }
         if id == KEEP_AWAKE_STOP_ID {
             return Ok(Self::StopKeepAwake);
@@ -336,6 +336,8 @@ pub enum CommandLineError {
     UnknownCommand(String),
     /// Empty, overlong, or outside `[a-z0-9._-]`; shown truncated and escaped.
     MalformedCommandId(String),
+    /// A `keep-awake.start-` ID whose length is malformed or outside 1m–24h.
+    InvalidKeepAwakeDuration(String),
     MissingCommandId,
     UnexpectedArgument(String),
 }
@@ -355,6 +357,10 @@ impl fmt::Display for CommandLineError {
                 formatter,
                 "malformed command ID \"{id}\"; IDs use lowercase letters, digits, '.', '-', \
                  and '_' and are at most {MAX_SHORTCUT_COMMAND_CHARS} characters"
+            ),
+            Self::InvalidKeepAwakeDuration(_) => formatter.write_str(
+                "keep-awake.start needs a length from 1m to 24h, such as \
+                 keep-awake.start-90m",
             ),
             Self::MissingCommandId => formatter.write_str("--command needs a command ID"),
             Self::UnexpectedArgument(argument) => {
@@ -556,10 +562,10 @@ mod tests {
             CommandLineAction::parse("keep-awake.stop").map(CommandLineAction::to_command),
             Ok(ApplicationCommand::StopKeepAwake)
         );
-        assert!(matches!(
+        assert_eq!(
             CommandLineAction::parse("keep-awake.start-25h"),
-            Err(CommandLineError::UnknownCommand(_))
-        ));
+            Err(CommandLineError::InvalidKeepAwakeDuration("25h".to_owned()))
+        );
         assert_eq!(
             parse_arguments(&arguments(&["--command=toggle.power.keep-awake"])).map(|invocation| {
                 match invocation {
@@ -586,6 +592,13 @@ mod tests {
             Err(CommandLineError::UnknownCommand(
                 "toggle.radio.unknown".to_owned()
             ))
+        );
+        assert_eq!(
+            parse_arguments(&arguments(&["--command", "keep-awake.start-1441m"])),
+            Err(CommandLineError::InvalidKeepAwakeDuration(
+                "1441m".to_owned()
+            )),
+            "an excessive duration names the allowed range instead of being unknown"
         );
         assert_eq!(
             parse_arguments(&arguments(&["--command"])),

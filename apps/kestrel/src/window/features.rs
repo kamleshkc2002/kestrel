@@ -338,8 +338,11 @@ fn keep_awake_picker(
         }
         last.set(index);
         if let Some((duration, _)) = choices.get(index as usize) {
-            selection.set(*duration);
-            let _ = sender.try_send(ApplicationCommand::SetKeepAwakeChoice(*duration));
+            // A reset or a re-cancel can notify with the unchanged value.
+            if *duration != selection.get() {
+                selection.set(*duration);
+                let _ = sender.try_send(ApplicationCommand::SetKeepAwakeChoice(*duration));
+            }
         }
     });
     picker
@@ -417,8 +420,10 @@ fn keep_awake_custom_dialog(
             return;
         }
         if let Some(duration) = validate() {
-            selection.set(duration);
-            let _ = sender.try_send(ApplicationCommand::SetKeepAwakeChoice(duration));
+            if duration != selection.get() {
+                selection.set(duration);
+                let _ = sender.try_send(ApplicationCommand::SetKeepAwakeChoice(duration));
+            }
             dialog.close();
         }
     });
