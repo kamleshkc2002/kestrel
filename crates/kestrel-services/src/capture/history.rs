@@ -420,9 +420,10 @@ fn write_export(
     fs::rename(temporary, destination).map_err(|error| io_error("commit export", error))
 }
 
-/// The mode a plainly created file gets under the current umask.
+/// The mode a plainly created file gets under the current umask; owner-only
+/// when the umask cannot be read.
 fn default_file_mode() -> u32 {
-    let umask = fs::read_to_string("/proc/self/status")
+    fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
             status.lines().find_map(|line| {
@@ -430,8 +431,7 @@ fn default_file_mode() -> u32 {
                     .and_then(|value| u32::from_str_radix(value.trim(), 8).ok())
             })
         })
-        .unwrap_or(0o022);
-    0o666 & !umask
+        .map_or(0o600, |umask| 0o666 & !umask)
 }
 
 fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
