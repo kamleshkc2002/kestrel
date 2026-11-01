@@ -53,6 +53,109 @@ GitHub Issues, with the feature's status line and logs (see
 - Every feature reports supported, limited, permission-gated, dependency-gated, or unsupported status and remediation.
 - Works alongside your existing shell, panel, launcher, and compositor; support claims name the tested desktop and session.
 
+## What Kestrel stores and sends
+
+Kestrel keeps its files in the standard XDG folders, under a `kestrel` folder;
+debug builds use `kestrel-devel` instead.
+
+| Folder | Default path | Holds |
+|---|---|---|
+| Config | `$XDG_CONFIG_HOME/kestrel` (usually `~/.config/kestrel`) | `config.toml` |
+| Data | `$XDG_DATA_HOME/kestrel` (usually `~/.local/share/kestrel`) | captures, scratchpad, snippets, command ranking |
+| State | `$XDG_STATE_HOME/kestrel` (usually `~/.local/state/kestrel`) | logs, and the `setup`, `last-version`, and `background-notice` files |
+| Videos | `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`; `Kestrel (Development)` in debug builds) | recordings, and trim exports you save there |
+
+The autostart entry is the one file outside these folders: it lives in
+`$XDG_CONFIG_HOME/autostart`.
+
+### Kept on disk
+
+| Feature | File or folder | What is in it | Permissions | Limits and retention | What deletes it |
+|---|---|---|---|---|---|
+| Settings | `config.toml` | Features, window and feature settings, shortcuts, command-bar file roots, scripts and their arguments, device names | 0600 file, 0700 folder | No size limit; replaced atomically whenever a setting changes | Nothing automatic; `install-local.sh --uninstall` keeps it |
+| Diagnostic logs | `logs/` | Warnings and errors, and features starting, stopping, or changing capability; paths in your home folder and network addresses are replaced before they are written | 0700 folder, 0600 files | 7 days and 20 MiB by default (`logging.retention_days`, `logging.max_total_megabytes`); a new file each day or at a quarter of the size limit | Files older than the retention period go at startup and every hour; the oldest go first over the size limit; Clear logs deletes them all |
+| Screenshots | `captures/` | Original and edited PNG captures | 0700 folder, 0600 files | 30 files, 256 MB, and 168 hours by default (`capture.max_entries`, `capture.max_total_megabytes`, `capture.max_age_hours`) | Age and size limits apply at startup and after each capture; Delete and Clear all remove captures |
+| Screenshots from the portal | The file the Screenshot portal returns (in `/tmp` or `$XDG_RUNTIME_DIR`) | The PNG the desktop captured | Set by the portal | None | Kestrel deletes it right after reading it, when it is a temporary file |
+| Screen recordings | `Videos/Kestrel/` | VP8/Opus WebM takes, and a hidden `.partial` while one records | The folder uses your default folder permissions (usually 0755); files are 0600 | No automatic retention; recording stops below 512 MiB of free space; the panel lists the newest 10 takes | Delete removes a take; a partial is removed when a recording is cancelled, fails, or Kestrel quits, and at startup when it is older than 60 seconds — a crash can leave one behind |
+| Trim exports | The folder you choose | The kept range as VP8/Opus WebM, written as `.<name>.partial` and renamed once complete | 0600 | None | Cancelling, failing, or quitting removes the partial; the finished export is yours |
+| Scratchpad | `scratchpad.json` | Notes with their titles, text, and times, and the open tab | 0600 file, 0700 folder | 20 notes of up to 256 KiB each (`scratchpad.max_notes`, `scratchpad.max_note_bytes`); age removal happens only when `scratchpad.max_age_days` is above 0 | Closing a note, or confirming expired notes; turning the feature off or quitting keeps them |
+| Scratchpad, unreadable copy | `scratchpad.json.corrupt-<time>` | A file Kestrel could not read, kept instead of overwriting it | 0600 | None | Only you; Kestrel never deletes it |
+| Snippets | `snippets.toml` | Name, folder, trigger, and the text with its `{{…}}` variables | 0600 file, 0700 folder | 64 KiB per snippet by default, up to 1 MiB (`snippets.max_content_bytes`) | Deleting a snippet; turning the feature off keeps the file |
+| Command ranking | `command_ranking.toml` | Command IDs, usage counts, and pins; never search text | 0600 file, 0700 folder | 200 commands | Nothing; it is rewritten as you use commands |
+| Setup | `setup` | Whether setup was offered, and whether it finished or was skipped | 0600 | One line | Nothing |
+| What's new | `last-version` | The version you last ran | 0600 | One line | Nothing |
+| Background notice | `background-notice` | Whether the keep-running notice was shown | 0600 | One line | Nothing |
+| Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
+| Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
+| Note export | The file you choose in Export | The note's text | Your umask | None | You |
+
+- Recordings have no automatic retention: they stay until you delete them.
+- Files are replaced through a hidden temporary beside them and then renamed, so a crash can leave one behind. Kestrel never reads it: the scratchpad removes its own on the next load, screenshots remove theirs when the folder is opened, and the rest can be deleted by hand.
+- Turning a feature off does not delete what it stored. Captures, recordings, notes, snippets, ranking, state files, and settings stay until you remove them.
+- `install-local.sh --uninstall` removes the installed binary, desktop entry, icon, and autostart entry, but keeps settings and data. Full uninstall cleanup is tracked in [issue #178](https://github.com/kamleshkc2002/kestrel/issues/178).
+- The recordings folder uses normal folder permissions, so other local users can see take names and sizes even though the files themselves are 0600.
+
+### Settings Kestrel changes on your desktop
+
+- **Dark mode** writes `true` or `false` to `$XDG_CONFIG_HOME/cosmic/com.system76.CosmicTheme.Mode/v1/is_dark` on COSMIC, through a temporary file beside it that is then renamed. Everywhere else it sets the `color-scheme` setting (`prefer-dark` or `default`) through the desktop settings bus.
+- **Hidden files** sets `show-hidden-files` for the file manager and `show-hidden` for GTK file choosers.
+- **Desktop icons** sets `show-desktop-icons` for the desktop that provides it (GNOME, Nemo, or MATE).
+- **Brightness and keyboard light** write a number to `/sys/class/backlight/*/brightness` and `/sys/class/leds/*::kbd_backlight/brightness`.
+- **Empty Trash** permanently deletes the files and metadata under `$XDG_DATA_HOME/Trash`; there is no undo. Remote Trash folders are not included.
+
+These are your desktop's settings, so they keep the value Kestrel set after Kestrel quits, or after you turn the feature off.
+
+### Kept in memory only
+
+- **Clipboard history:** memory only, bounded by `clipboard.max_items` (default 100), `max_total_bytes` (default 16 MiB), and `max_age_hours` (default 24), with hard caps of 1,000 entries and 128 MiB. Locking the session, sleeping, quitting, or stopping the feature wipes it, and pinned entries survive Clear but not Wipe. While history runs, Kestrel also takes ownership of each new selection so it can offer it back later; that keeps the entry in memory and makes Kestrel the clipboard owner for other applications. If `clipboard.clear_seconds` is set, Kestrel also clears the live selection after that many seconds.
+- **OCR text and QR results:** held in memory until you dismiss the result or run a new job. They are not written to disk. Copy puts them on the clipboard, where clipboard history keeps them if it is on; opening a QR code's web address hands it to your browser.
+- **A colour sample, the screen frame being selected, and the camera preview frame:** one of each at a time; dropped when you confirm, cancel, stop, or close the window.
+- **Network addresses:** read only after you press Show and never stored, logged, or exported; dropped on the next refresh or when the feature stops.
+- **The speed-test result:** the last measurement is held in memory and lost when Kestrel quits.
+- **The snippet `{{clipboard}}` value:** read once at insert time, clipped to `snippets.clipboard_variable_bytes`, and inserted; it is never written to the snippet file.
+
+Only clipboard history is zeroized: its entries and the live selection it owns are overwritten when they are dropped. OCR and QR text, notes in use, snippet text, frames, and the other values listed here are ordinary memory, freed when they are dropped but not overwritten.
+
+### What leaves this computer or goes to other apps
+
+**Automatic** — no click needed:
+
+| What | Passed along | To whom |
+|---|---|---|
+| Alert notifications, while monitoring runs and a rule fires | The rule's label and its reading, such as "CPU is at 95%" | Your desktop's notification service |
+| Screenshot-saved notification, when `capture.after_screenshot` is `notify` (the default) | "Screenshot saved", and whether it was added to recent captures; Open, Edit, and Copy actions when the service supports actions | Your desktop's notification service |
+| Keep awake ended and the keep-running notice | Fixed text only | Your desktop's notification service |
+| Tray readouts, for each readout you configure | The label, value, and detail line, which can name a filesystem and mount point, a battery, a sensor, or a GPU | The tray host over the session bus |
+| Clipboard re-own, while clipboard history runs | The selection Kestrel just captured, written back unchanged | The clipboard, and so any application that reads it |
+| Keyboard shortcut registration, when `global.shortcuts` starts | The app ID, and each command's ID, description, and preferred key combination | The desktop's GlobalShortcuts portal |
+
+Nothing else leaves Kestrel without a user action, and nothing contacts a
+network host without one. Kestrel has no update check, telemetry, or crash
+reporting, and the speed test's `curl` is its only network client.
+
+**User-triggered** — each starts from a button, menu, command, or shortcut:
+
+- **Speed test:** `curl` makes HTTPS requests to `speed.cloudflare.com`, which sees your IP address. The latency phase and the download fetch data from `__down` and discard it; the upload posts the configured number of zero bytes to `__up`. `curl` runs with `--proto =https` and ignores `~/.curlrc`, but it inherits Kestrel's environment, including any proxy variables.
+- **Report a problem:** opens the GitHub issue form in your browser with Kestrel's version, your desktop session (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), and your distribution's name from `/etc/os-release` in the link. GitHub, and the browser, see them.
+- **QR Open:** a QR result that is an `http://` or `https://` address with no whitespace opens in your browser, which then contacts that host.
+- **Open ports Open:** a TCP listener opens in your browser at `http://127.0.0.1:<port>/` or `http://localhost:<port>/`; only the loopback address is contacted.
+- **Command-bar URL and file results:** `xdg-open` is run with the URL or path as an argument; the handler sees it, a URL may leave the computer, and the argument appears in the process list.
+- **Opening folders and files:** the log folder, the recordings folder, a take, or a trimmed copy is handed to your desktop as a `file://` address; Save as, Export, and the file choosers write to the path you pick.
+- **Application launches and process Restart:** the desktop entry or action is launched by ID, with no URIs or Kestrel data passed.
+- **Command-bar scripts:** receive the executable and arguments configured for them, inherit Kestrel's environment, and get empty standard input; their bounded output is read back.
+- **Snippet insertion:** the expanded snippet text, including any `{{clipboard}}` value, goes to `wtype`, `ydotool`, or `xdotool` on standard input.
+- **OCR:** the selected image goes to the local `tesseract` executable on standard input, with the language and mode as arguments.
+- **Screen capture on wlroots desktops:** `grim` receives the capture geometry and returns the image on standard output; `slurp` returns the area you drag.
+- **Screenshots, recording, and colour picking:** requests go to the desktop's Screenshot, ScreenCast, or colour-picker portal. Recording tells the portal whether you chose a screen or a window and whether the cursor is included, asks it not to remember the choice, and receives the shared frames and audio over PipeWire.
+- **Copy actions:** text, an image, or a file list goes to the clipboard, where any application or clipboard manager can read it.
+- **The "What Kestrel stores and sends" link in Settings:** opens this page on GitHub in your browser.
+- **System actions:** Keep awake holds a logind inhibit, quick toggles change Wi-Fi, Bluetooth, unmount or eject, volume, and the desktop settings above, process actions send signals, and Empty Trash deletes local Trash files. They act on the system and carry no Kestrel data.
+
+### Logs
+
+See [Diagnostic logs](#diagnostic-logs) for what the log files contain, how
+long they are kept, and how to clear them.
+
 ## Workspace
 
 - `apps/kestrel`: GTK/libadwaita application, configuration I/O, and window.
@@ -65,10 +168,12 @@ GitHub Issues, with the feature's status line and logs (see
 ## Configuration
 
 Preferences are stored in `$XDG_CONFIG_HOME/kestrel/config.toml` (or
-`~/.config/kestrel/config.toml`). Feature enablement uses stable IDs. Invalid
-settings are ignored individually and reported in the window. Export contains
-only typed application-owned preferences; it excludes clipboard content,
-runtime snapshots, credentials, and resolved executable paths.
+`~/.config/kestrel/config.toml`), written atomically as a 0600 file in a 0700
+folder. Feature enablement uses stable IDs. Invalid settings are ignored
+individually and reported in the window. Export contains only typed
+application-owned preferences; it excludes clipboard content, runtime
+snapshots, credentials, and resolved executable paths. See
+[What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 
 Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub marks each feature as running, needing
@@ -138,7 +243,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled; runs only when you start it.
 - **Configuration:** `[speed_test] download_megabytes` (1–90; default 25), `upload_megabytes` (0–25; default 10; 0 skips upload), `timeout_seconds` (5–120; default 30).
-- Shows the Cloudflare host (which sees your IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` launched directly, ignores `~/.curlrc`, and supports cancellation.
+- Shows the Cloudflare host (which sees your IP), transfer limits, and phase times before sending data; uses HTTPS-only `curl` launched directly, ignores `~/.curlrc`, and supports cancellation. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 
 ### Snippets — `snippets.text`
 
@@ -170,7 +275,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled and requires explicit opt-in.
 - **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), `paste_plain_text` (default true), and `history_layout` (`list` or `cards`; default `list`), also editable on the Clipboard page.
-- History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only.
+- History is memory-only and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 - Copying an entry again moves it to the top; pinned entries keep their place. Wipe history and Clear unpinned ask first and state how many entries go; anything copied while the prompt is open is kept.
 - Search highlights matches. Ctrl+N and Ctrl+P move through results and Return copies the selected entry, or the first one when none is selected.
 - Previews lay JSON out one value per line. Image previews offer Copy text, which reads the image with the local `tesseract` executable; the text goes to the clipboard only and is neither retained nor logged. Without Tesseract the preview says what to install.
@@ -181,7 +286,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Default:** disabled; Balanced and Everything enable it. Nothing is captured until you press a capture button or run `kestrel --command capture.screenshot` / `capture.screen`.
 - **Providers:** the Screenshot portal where the desktop exports it (GNOME, KDE Plasma, COSMIC): "Choose in dialog" opens the desktop's own capture UI, and "Screen" asks once for screenshot permission; `grim` with `slurp` for area selection on wlroots compositors such as Sway and Hyprland; core X11 for the focused window or the whole screen on real X11 sessions.
 - **Configuration:** `[capture] max_entries` (1–200; default 30), `max_total_megabytes` (1–2,048; default 256), `max_age_hours` (1–720; default 168), and `after_screenshot` (`"notify"` by default, `"edit"`, or `"nothing"`), also editable on the Capture page. Notifications offer **Edit** and **Copy** buttons when the desktop notification service supports actions; clicking the notification opens the Capture page.
-- Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every file at once. Temporary files a portal leaves behind are deleted after import.
+- Recent captures are PNG files in `$XDG_DATA_HOME/kestrel/captures` (folder 0700, files 0600); the oldest go first when a limit is reached, and Clear all removes every capture Kestrel saved (other files in the folder stay). Temporary files a portal leaves behind are deleted after import. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 - Each capture can be copied as an image, saved elsewhere, deleted, or edited. The editor crops, draws boxes, arrows, and highlights, spotlights areas, redacts regions, adds space around the screenshot, and takes pasted images; the original capture stays until you delete it.
 - **Redact:** the menu beside the toolbar picks **Black box** or **Erase**, which fills the area with the colour around its edge so the content looks removed. Either way the saved copy holds one opaque colour there, so nothing of the original survives. **Text only** hides just the words Tesseract finds in the dragged area (each with a little padding), read on this computer with the screen tools' OCR language and time limit; one Undo removes them all. Without Tesseract the switch is unavailable and says why. Both choices are kept while Kestrel runs.
 - **Spotlight:** drag one or more areas to keep them bright and dim the rest of the screenshot; overlapping spotlights are never dimmed twice. The Dim slider (10–90%, default 60%) appears while Spotlight is selected and sets the strength for every spotlight. Boxes, arrows, and highlights are never dimmed, and Undo removes the last spotlight like any other edit.
@@ -193,7 +298,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Default:** disabled; Balanced and Everything enable all three. Each tool is its own feature and fails on its own: reading text needs Tesseract (`sudo apt install tesseract-ocr tesseract-ocr-eng`), and all three need a screenshot provider (see Screenshots).
 - **Use:** the Screen tools buttons on the Capture page, or `kestrel --command capture.text` / `capture.qr` / `capture.color`. Kestrel takes one frame through the screenshot provider and opens a selection view with a magnifier: drag an area to read (or read the whole frame), or click a pixel for its color. Arrow keys move the cursor and Enter confirms. Where the Screenshot portal offers its color picker, colors come from the desktop's picker.
 - **Configuration:** `[screen_tools] ocr_language` (Tesseract codes such as `eng` or `eng+deu`; default `eng`) and `ocr_timeout_seconds` (5–120; default 30), also editable on the Capture page.
-- Everything runs on this computer: text through the `tesseract` executable, QR codes in-process. The frame stays in memory only while you select and is dropped once reading starts or you cancel; results stay until cleared and are never saved. Text and QR results copy to the clipboard, web addresses in QR codes open in your browser, and colors copy as HEX, RGB, or HSL.
+- Everything runs on this computer: text through the `tesseract` executable, QR codes in-process. The frame stays in memory only while you select and is dropped once reading starts or you cancel; results stay until cleared and are not written to disk. Text and QR results copy to the clipboard, web addresses in QR codes open in your browser, and colors copy as HEX, RGB, or HSL. Copying puts them on the clipboard, where clipboard history keeps them if it is on.
 
 ### Screen recording — `capture.recording`
 
@@ -202,7 +307,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - **Sources:** a screen or a window as the desktop offers; Area shares a screen, then shows its current frame so you can drag the region to keep.
 - **Audio:** System audio and Microphone (the default input) are separate opt-in switches, each recorded as its own Opus track. Under Sound from, System audio records all apps or just one, remembered in `[recording] system_audio_app`; streams that app opens later join the track, and while it plays nothing the track stays silent. Recording one app needs a PipeWire audio server and the GStreamer PipeWire plugin, and captures its streams without changing where it plays. When the saved app cannot be recorded alone in this session, the System track is left out so other apps stay out of the take. A track that fails or disconnects is marked in the panel and the rest of the recording continues.
 - **Configuration:** `[recording] framerate` (10–60; default 30), `cursor` (default true), `system_audio`, `system_audio_app` (an application identity; unset records all apps), `microphone` (default false), also editable in the panel.
-- Recordings are VP8 WebM files in `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`), written as a hidden `.partial` file (0600) and renamed only once complete. Discard, failures, and leftovers from a crash remove the partial file; earlier recordings are never touched. Pause leaves the paused time out of the file.
+- Recordings are VP8 WebM files in `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`), written as a hidden `.partial` file (0600) and renamed only once complete. Discard, failures, and leftovers from a crash remove the partial file; earlier recordings are never touched. Pause leaves the paused time out of the file. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 - Stop, disabling the feature, and quitting save the take; the desktop ending the share saves what was recorded and says so. Recording stops and saves when less than 512 MiB of disk space remains.
 - **Trim:** each recent recording has Trim, which opens its timeline with Start and End handles and a preview of the frame at either point. Export writes the kept range, re-encoded as VP8/Opus WebM with every track, to a file you choose, through a hidden partial file renamed once complete. Cancelling or a failed export removes that file; the recording itself is never changed. Disabling the feature or quitting cancels a running export.
 
@@ -210,7 +315,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 
 - **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command scratchpad.open`.
 - **Configuration:** `[scratchpad] max_notes` (1–50; default 20), `max_note_bytes` (1 KiB–1 MiB; default 256 KiB), and `max_age_days` (0–365; default 0, never), also editable on the Notes page.
-- Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`.
+- Tabbed notes autosave shortly after you stop typing to `$XDG_DATA_HOME/kestrel/scratchpad.json` (folder 0700, file 0600, replaced atomically). A failed save shows a warning in the panel; an unreadable file is kept aside as `scratchpad.json.corrupt-<time>`. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 - Alt+Up and Alt+Down move the current line or selected lines; Ctrl+Z undoes a move and restores the selection.
 - Shift+Return continues a bulleted, numbered, or task list: the new item gets the same bullet, the next number (later numbers shift up), or an unticked `[ ]`. On an empty item it ends the list.
 - Preview renders the note's Markdown, with each `- [ ]` or `- [x]` task as a checkbox; clicking one changes only that task's marker in the note. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
@@ -278,7 +383,7 @@ settings together. On narrow windows the sidebar and the page take turns.
 - Kestrel keeps warnings, errors, and features starting, stopping, or changing capability in `$XDG_STATE_HOME/kestrel/logs` (usually `~/.local/state/kestrel/logs`; debug builds use `kestrel-devel`). The folder is 0700 and files are 0600. A new file starts each day, or when a file reaches a quarter of the size limit.
 - Debug logging adds operation names and timings. It applies at once, and `KESTREL_LOG=debug` turns it on for one run without changing the setting.
 - Files older than the retention period are deleted at startup and every hour, and the oldest go first when the folder passes the size limit. Settings shows the folder with **Open folder** and **Clear logs**.
-- Logs never record clipboard, snippet, or note text, OCR or QR results, command-bar searches, window titles, network addresses, or paths in your home folder, and never leave the computer. A failed operation is logged by name only, such as `kestrel-audio-output-switch failed`; its reason, which can name a process or device, appears only in the window. When Kestrel runs from a terminal, warnings and errors also appear there.
+- Logs never record clipboard, snippet, or note text, OCR or QR results, command-bar searches, window titles, network addresses, or paths in your home folder, and never leave the computer. A failed operation is logged by name only, such as `kestrel-audio-output-switch failed`; its reason, which can name a process or device, appears only in the window. When Kestrel runs from a terminal, warnings and errors also appear there. See [What Kestrel stores and sends](#what-kestrel-stores-and-sends).
 
 ### Keyboard shortcuts
 
