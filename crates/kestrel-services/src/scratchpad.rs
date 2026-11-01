@@ -141,6 +141,7 @@ impl ScratchpadService {
         policy
             .validate()
             .map_err(|_| ScratchpadError::LimitExceeded)?;
+        remove_stale_temporaries(&path);
         let (state, warning) = load_state(&path, &policy)?;
         let (sender, receiver) = mpsc::channel();
         let worker_path = path;
@@ -436,6 +437,32 @@ fn worker_loop(
                 let _ = reply.send(result);
                 return;
             }
+        }
+    }
+}
+
+/// Removes this file's crashed autosave temporaries; other files stay.
+fn remove_stale_temporaries(path: &Path) {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let prefix = format!(".{name}.tmp-");
+    let Ok(listing) = fs::read_dir(parent) else {
+        return;
+    };
+    for item in listing.flatten() {
+        let temporary = item.file_name();
+        let Some(suffix) = temporary
+            .to_str()
+            .and_then(|name| name.strip_prefix(prefix.as_str()))
+        else {
+            continue;
+        };
+        if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+            let _ = fs::remove_file(item.path());
         }
     }
 }
@@ -781,6 +808,32 @@ mod tests {
                 .contains("corrupt-")
         }));
     }
+    #[test]
+    fn load_removes_stale_autosave_temporaries_and_keeps_other_files() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("scratchpad.json");
+        fs::write(dir.path().join(".scratchpad.json.tmp-1234"), b"partial").unwrap();
+        fs::write(dir.path().join(".scratchpad.json.tmp-old"), b"keep").unwrap();
+        fs::write(dir.path().join("scratchpad.json.corrupt-1"), b"keep").unwrap();
+        fs::write(dir.path().join("notes.txt"), b"keep").unwrap();
+
+        let _service = ScratchpadService::open(path, policy()).unwrap();
+
+        let mut names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                ".scratchpad.json.tmp-old".to_owned(),
+                "notes.txt".to_owned(),
+                "scratchpad.json.corrupt-1".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn debounce_flushes_on_drop() {
         let dir = TempDir::new().unwrap();

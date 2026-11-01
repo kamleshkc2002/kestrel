@@ -4,7 +4,9 @@ use std::{
     collections::HashMap,
     fmt, fs,
     io::{self, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -291,23 +293,10 @@ impl CaptureHistory {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("capture");
-        let temporary = parent.join(format!(".{name}.tmp"));
-        let result = (|| {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|error| io_error("create export temporary", error))?;
-            // The exported file keeps the user's default permissions.
-            file.write_all(&data)
-                .map_err(|error| io_error("write export", error))?;
-            file.sync_all()
-                .map_err(|error| io_error("sync export", error))?;
-            drop(file);
-            fs::rename(&temporary, destination).map_err(|error| io_error("commit export", error))
-        })();
+        let (temporary, file) = create_export_temporary(parent, name)?;
+        let result = write_export(file, &data, &temporary, destination);
         if result.is_err() {
-            let _ = fs::remove_file(temporary);
+            let _ = fs::remove_file(&temporary);
         }
         result
     }
@@ -378,10 +367,76 @@ fn io_error(operation: &'static str, error: io::Error) -> HistoryError {
     }
 }
 
+/// Temporary-name attempts before failure.
+const EXPORT_ATTEMPTS: u32 = 16;
+static EXPORT_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// A private, uniquely named temporary file beside the destination.
+fn create_export_temporary(parent: &Path, name: &str) -> Result<(PathBuf, fs::File), HistoryError> {
+    for _ in 0..EXPORT_ATTEMPTS {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.subsec_nanos())
+            .unwrap_or(0);
+        let serial = EXPORT_SERIAL.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".{name}.tmp-{}-{nanos:09}-{serial}",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io_error("create export temporary", error)),
+        }
+    }
+    Err(io_error(
+        "create export temporary",
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "no unused temporary file name was available",
+        ),
+    ))
+}
+
+/// Writes and commits the export; the destination keeps the user's umask.
+fn write_export(
+    mut file: fs::File,
+    data: &[u8],
+    temporary: &Path,
+    destination: &Path,
+) -> Result<(), HistoryError> {
+    file.write_all(data)
+        .map_err(|error| io_error("write export", error))?;
+    file.sync_all()
+        .map_err(|error| io_error("sync export", error))?;
+    fs::set_permissions(temporary, fs::Permissions::from_mode(default_file_mode()))
+        .map_err(|error| io_error("set export permissions", error))?;
+    drop(file);
+    fs::rename(temporary, destination).map_err(|error| io_error("commit export", error))
+}
+
+/// The mode a plainly created file gets under the current umask.
+fn default_file_mode() -> u32 {
+    let umask = fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("Umask:")
+                    .and_then(|value| u32::from_str_radix(value.trim(), 8).ok())
+            })
+        })
+        .unwrap_or(0o022);
+    0o666 & !umask
+}
+
 fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
     }
     #[cfg(not(unix))]
@@ -857,5 +912,23 @@ mod tests {
         assert!(matches!(result, Err(HistoryError::Io { .. })), "{result:?}");
         assert_eq!(fs::read(&destination).unwrap(), b"previous");
         assert_eq!(file_names(out.path()), vec!["shot.png".to_owned()]);
+    }
+
+    #[test]
+    fn failed_export_leaves_no_temporary_file() {
+        let root = TempDir::new().unwrap();
+        let mut history = CaptureHistory::open(capture_dir(&root), roomy()).unwrap();
+        let entry = history.insert(&png(2, 2), meta(2, 2), moment(0)).unwrap();
+        let out = TempDir::new().unwrap();
+        let destination = out.path().join("shot.png");
+        // A non-empty directory at the destination makes the commit fail.
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("blocker"), b"").unwrap();
+
+        let result = history.export(entry.id, &destination);
+
+        assert!(matches!(result, Err(HistoryError::Io { .. })), "{result:?}");
+        assert_eq!(file_names(out.path()), vec!["shot.png".to_owned()]);
+        assert_eq!(fs::read(destination.join("blocker")).unwrap(), b"");
     }
 }
