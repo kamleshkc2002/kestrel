@@ -10,6 +10,8 @@ Every feature says whether it works on your session, what it needs, and what
 to install or allow when it doesn't; everything runs as your normal user, with
 no root helpers, accounts, or telemetry.
 
+![Kestrel's Overview page: the sidebar of pages, one-click tools, and quick toggles such as Keep awake and Desktop dark mode](docs/images/overview.png)
+
 ## What's in it
 
 - [Monitoring and alerts](docs/features.md#monitoring--systemmonitor): CPU, memory, disk, network, temperature, battery, GPU and accessory readings, with sustained alert rules and tray readouts; history stays in memory.
