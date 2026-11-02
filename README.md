@@ -45,7 +45,7 @@ Set `VERSION` to the latest preview on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
-VERSION="0.6.0-preview.3"
+VERSION="0.6.0-preview.4"
 FILE="Kestrel-$VERSION-x86_64.AppImage"
 URL="https://github.com/kamleshkc2002/kestrel/releases/download/v$VERSION"
 curl -LO "$URL/$FILE"
