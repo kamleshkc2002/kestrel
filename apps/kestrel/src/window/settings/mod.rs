@@ -244,7 +244,7 @@ fn add_logging_group(
     let sender = commands.clone();
     storage_button.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::OpenUri(
-            "https://github.com/kamleshkc2002/kestrel#whats-stored-and-sent".to_owned(),
+            "https://github.com/kamleshkc2002/kestrel/blob/main/docs/privacy.md".to_owned(),
         ));
     });
     storage.add_suffix(&storage_button);
