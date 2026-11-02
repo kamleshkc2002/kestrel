@@ -49,7 +49,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 - `crates/kestrel-services/tests/`: production-backend integration tests; currently clipboard lifecycle only.
 - `scripts/`: packaging automation (the AppImage builder), the clipboard clean-session QA runner, and the layer-shell smoke check.
 - `data/`: desktop metadata and icons used by packaging, and `release-notes.toml`, the upcoming release's notes that Overview offers after an update. A user-visible change adds a one-sentence entry tagged with its feature ID (or `kestrel` for app-wide changes); the file is cleared after each release, so it only ever holds one release.
-- `docs/`: product requirements and architecture contracts.
+- `docs/`: user documentation (`features.md`, `privacy.md`, `configuration.md`, `development.md`), plus the product requirements and architecture contracts. `README.md` stays a short landing page; feature detail goes in `docs/features.md`.
 
 ## Development Commands
 
