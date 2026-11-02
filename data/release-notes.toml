@@ -3,15 +3,3 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
-
-[[change]]
-feature = "power.keep-awake"
-text = "Keep awake can run for a set time, from 15 minutes to 8 hours or a custom length up to 24 hours, from Overview, the command bar, or the tray menu; it shows the time left, including in the status bar overlay, and says when it ends."
-
-[[change]]
-feature = "kestrel"
-text = "Settings links to a new page listing everything that is stored, where, for how long, and what is sent; settings files are now private and written safely."
-
-[[change]]
-feature = "kestrel"
-text = "Messages describe what is happening directly, without referring to Kestrel by name."
