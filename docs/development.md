@@ -27,8 +27,10 @@ Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the 
 
 Tagged versions are published as x86_64 AppImage previews on GitHub Releases.
 Ubuntu 24.04 builds bundle GTK4/libadwaita; the matching `.sha256` file verifies
-downloads. The AppImage uses the system's GStreamer (present on mainstream
-desktops), so screen recording uses the host's plugins.
+downloads. The AppImage does not bundle GStreamer: it needs the system's
+GStreamer 1.x runtime to start (`libgstreamer1.0-0` and
+`libgstreamer-plugins-base1.0-0` on Debian and Ubuntu), and screen recording
+uses the host's plugins.
 
 ```bash
 bash scripts/build-appimage.sh 0.1.0

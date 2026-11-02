@@ -39,20 +39,23 @@ Known limits are listed in [docs/features.md](docs/features.md#known-limits).
 
 ## Install
 
-Download the AppImage and its `.sha256` file from
+Set `VERSION` to the latest preview on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
-curl -LO https://github.com/kamleshkc2002/kestrel/releases/download/<tag>/Kestrel-<version>-x86_64.AppImage
-curl -LO https://github.com/kamleshkc2002/kestrel/releases/download/<tag>/Kestrel-<version>-x86_64.AppImage.sha256
-sha256sum -c Kestrel-<version>-x86_64.AppImage.sha256
-chmod +x Kestrel-<version>-x86_64.AppImage
-./Kestrel-<version>-x86_64.AppImage
+VERSION="0.6.0-preview.3"
+FILE="Kestrel-$VERSION-x86_64.AppImage"
+URL="https://github.com/kamleshkc2002/kestrel/releases/download/v$VERSION"
+curl -LO "$URL/$FILE"
+curl -LO "$URL/$FILE.sha256"
+sha256sum -c "$FILE.sha256"
+chmod +x "$FILE"
+./"$FILE"
 ```
 
-If it does not mount, run it with `--appimage-extract-and-run`. No root is
-needed. Screen recording uses your system's GStreamer with its PipeWire, Base,
-and Good plugins. To build from source, see [docs/development.md](docs/development.md).
+- **Requires:** the system's GStreamer 1.x runtime, which the AppImage does not bundle; without it the app does not start. On Debian and Ubuntu that is `libgstreamer1.0-0` and `libgstreamer-plugins-base1.0-0`. Screen recording also needs the PipeWire, Base, and Good plugins; see [Screen recording](docs/features.md#screen-recording--capturerecording).
+- If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
+- To build from source, see [docs/development.md](docs/development.md).
 
 ## Privacy
 
