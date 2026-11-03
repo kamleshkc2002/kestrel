@@ -1,5 +1,7 @@
 //! Schema versions, migrations, and the current document dispatch.
 
+use kestrel_core::CloseAction;
+
 use super::{
     ConfigurationLoadError, LoadedConfiguration,
     audio::parse_audio,
@@ -108,12 +110,29 @@ pub(super) fn parse_v2(
     parse_ui(&mut loaded, document.get("ui"));
     parse_startup(&mut loaded, document.get("startup"));
     retire_battery_alerts_toggle(&mut loaded);
+    ask_for_legacy_minimize(&mut loaded);
     Ok(loaded)
+}
+
+pub(super) fn parse_v3(
+    document: toml::Table,
+) -> Result<LoadedConfiguration, ConfigurationLoadError> {
+    let mut loaded = parse_current(document)?;
+    ask_for_legacy_minimize(&mut loaded);
+    Ok(loaded)
+}
+
+/// Older builds wrote the default `minimize` to every file, so it cannot be
+/// told apart from a deliberate choice; those files ask once instead.
+fn ask_for_legacy_minimize(loaded: &mut LoadedConfiguration) {
+    if loaded.configuration.ui.close_action == CloseAction::Minimize {
+        loaded.configuration.ui.close_action = CloseAction::Ask;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use kestrel_core::{AppearancePreference, CURRENT_CONFIGURATION_SCHEMA_VERSION};
+    use kestrel_core::{AppearancePreference, CURRENT_CONFIGURATION_SCHEMA_VERSION, CloseAction};
 
     use crate::config::parse;
 
@@ -159,6 +178,31 @@ autostart = true
             AppearancePreference::Dark
         );
         assert!(loaded.configuration.startup.autostart);
+    }
+
+    #[test]
+    fn legacy_minimize_asks_once_and_current_choices_are_kept() {
+        for (version, close_action, expected) in [
+            (2, "minimize", CloseAction::Ask),
+            (3, "minimize", CloseAction::Ask),
+            (3, "quit", CloseAction::Quit),
+            (4, "minimize", CloseAction::Minimize),
+            (4, "quit", CloseAction::Quit),
+            (4, "ask", CloseAction::Ask),
+        ] {
+            let loaded = parse(&format!(
+                "schema_version = {version}\n[ui]\nclose_action = \"{close_action}\"\n"
+            ))
+            .expect("valid configuration");
+            assert_eq!(
+                loaded.configuration.ui.close_action, expected,
+                "version {version} with {close_action}"
+            );
+            assert_eq!(
+                loaded.configuration.schema_version,
+                CURRENT_CONFIGURATION_SCHEMA_VERSION
+            );
+        }
     }
 
     #[test]

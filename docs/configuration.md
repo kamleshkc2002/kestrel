@@ -8,6 +8,12 @@ application-owned preferences; it excludes clipboard content, runtime
 snapshots, credentials, and resolved executable paths. See
 [What's stored and sent](privacy.md#whats-stored-and-sent).
 
+`[ui] close_action` is `ask` (the default), `minimize`, or `quit`. With `ask`,
+the first close asks whether to keep running in the background and saves that
+answer as `minimize` or `quit`. Files written by older builds contain
+`minimize` even when nobody chose it, so the question appears once after the
+upgrade.
+
 Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub marks each feature as running, needing
 attention (a missing dependency or permission, or a fix to apply), unavailable

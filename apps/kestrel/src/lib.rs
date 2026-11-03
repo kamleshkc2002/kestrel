@@ -2,7 +2,6 @@
 
 pub mod appearance;
 mod autostart;
-pub mod background_notice;
 pub mod bug_report;
 mod command_bar;
 pub mod command_line;

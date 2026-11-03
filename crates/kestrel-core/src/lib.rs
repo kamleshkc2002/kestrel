@@ -79,7 +79,7 @@ impl CapabilityEvidence {
 }
 
 /// The current version of Kestrel's non-sensitive configuration schema.
-pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 4;
 
 pub const MIN_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 250;
 pub const MAX_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 60_000;
@@ -410,8 +410,10 @@ pub enum AppearancePreference {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CloseAction {
-    /// Minimize the window; Kestrel keeps running in the taskbar.
+    /// Ask on the first close, then remember which action was chosen.
     #[default]
+    Ask,
+    /// Minimize the window; Kestrel keeps running in the taskbar.
     Minimize,
     Quit,
 }

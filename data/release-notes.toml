@@ -3,3 +3,7 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "kestrel"
+text = "Closing the window the first time asks whether to keep running in the background or quit, and remembers the answer; the dock's own Quit item now leads to that question too."

@@ -593,30 +593,33 @@ fn add_general_rows(
     ));
     group.add(&appearance);
 
+    let close_actions = [CloseAction::Ask, CloseAction::Minimize, CloseAction::Quit];
     let close_button = adw::ComboRow::builder()
         .title("Close button")
-        .subtitle("Minimizing keeps the app running in the taskbar.")
+        .subtitle(close_action_subtitle(view_model.close_action))
         .model(&gtk::StringList::new(&[
+            "Ask the first time",
             "Minimize to the taskbar",
-            "Quit Kestrel",
+            "Quit",
         ]))
-        .selected(match view_model.close_action {
-            CloseAction::Minimize => 0,
-            CloseAction::Quit => 1,
-        })
+        .selected(
+            close_actions
+                .iter()
+                .position(|action| *action == view_model.close_action)
+                .unwrap_or(0) as u32,
+        )
         .build();
     let sender = commands.clone();
     close_button.connect_selected_notify(move |row| {
-        let action = if row.selected() == 1 {
-            CloseAction::Quit
-        } else {
-            CloseAction::Minimize
+        let Some(action) = close_actions.get(row.selected() as usize) else {
+            return;
         };
-        let _ = sender.try_send(ApplicationCommand::SetCloseAction(action));
+        row.set_subtitle(close_action_subtitle(*action));
+        let _ = sender.try_send(ApplicationCommand::SetCloseAction(*action));
     });
     filter_rows.push((
         close_button.clone().upcast(),
-        "close button minimize taskbar quit exit window".to_owned(),
+        "close button ask background keep running minimize taskbar quit exit window".to_owned(),
     ));
     group.add(&close_button);
 
@@ -713,6 +716,15 @@ fn add_general_rows(
         "run setup again first launch presets welcome".to_owned(),
     ));
     group.add(&setup_row);
+}
+
+fn close_action_subtitle(action: CloseAction) -> &'static str {
+    match action {
+        CloseAction::Ask => "Asks whether to keep running the next time the window closes.",
+        CloseAction::Minimize | CloseAction::Quit => {
+            "Minimizing keeps the app running in the taskbar."
+        }
+    }
 }
 
 fn add_whats_new_group(
