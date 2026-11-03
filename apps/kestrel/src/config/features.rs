@@ -9,7 +9,8 @@ use super::{
 };
 
 const APPEARANCE_MESSAGE: &str = "Appearance preference is invalid and defaults were retained";
-const CLOSE_ACTION_MESSAGE: &str = "Must be \"minimize\" or \"quit\"; the default was retained.";
+const CLOSE_ACTION_MESSAGE: &str =
+    "Must be \"ask\", \"minimize\", or \"quit\"; the default was retained.";
 const AUTOSTART_MESSAGE: &str = "Autostart preference is invalid and defaults were retained";
 
 pub(super) fn parse_features(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -89,27 +90,30 @@ whats_new = false
     }
 
     #[test]
-    fn close_action_defaults_to_minimize_and_rejects_unknown_values() {
-        let default = parse("schema_version = 3\n").expect("valid");
+    fn close_action_defaults_to_ask_and_rejects_unknown_values() {
+        let default = parse("schema_version = 4\n").expect("valid");
         assert_eq!(
             default.configuration.ui.close_action,
-            kestrel_core::CloseAction::Minimize
+            kestrel_core::CloseAction::Ask
         );
-        let quit = parse("schema_version = 3\n[ui]\nclose_action = \"quit\"\n").expect("valid");
-        assert_eq!(
-            quit.configuration.ui.close_action,
-            kestrel_core::CloseAction::Quit
-        );
-        let reloaded =
-            parse(&export_string(&quit.configuration).expect("exports")).expect("parses");
-        assert_eq!(
-            reloaded.configuration.ui.close_action,
-            kestrel_core::CloseAction::Quit
-        );
-        let bad = parse("schema_version = 3\n[ui]\nclose_action = \"hide\"\n").expect("valid TOML");
+        for (name, expected) in [
+            ("ask", kestrel_core::CloseAction::Ask),
+            ("minimize", kestrel_core::CloseAction::Minimize),
+            ("quit", kestrel_core::CloseAction::Quit),
+        ] {
+            let loaded = parse(&format!(
+                "schema_version = 4\n[ui]\nclose_action = \"{name}\"\n"
+            ))
+            .expect("valid");
+            assert_eq!(loaded.configuration.ui.close_action, expected);
+            let reloaded =
+                parse(&export_string(&loaded.configuration).expect("exports")).expect("parses");
+            assert_eq!(reloaded.configuration.ui.close_action, expected);
+        }
+        let bad = parse("schema_version = 4\n[ui]\nclose_action = \"hide\"\n").expect("valid TOML");
         assert_eq!(
             bad.configuration.ui.close_action,
-            kestrel_core::CloseAction::Minimize
+            kestrel_core::CloseAction::Ask
         );
         assert!(
             bad.warnings

@@ -7,7 +7,7 @@ debug builds use `kestrel-devel` instead.
 |---|---|---|
 | Config | `$XDG_CONFIG_HOME/kestrel` (usually `~/.config/kestrel`) | `config.toml` |
 | Data | `$XDG_DATA_HOME/kestrel` (usually `~/.local/share/kestrel`) | captures, scratchpad, snippets, command ranking |
-| State | `$XDG_STATE_HOME/kestrel` (usually `~/.local/state/kestrel`) | logs, and the `setup`, `last-version`, and `background-notice` files |
+| State | `$XDG_STATE_HOME/kestrel` (usually `~/.local/state/kestrel`) | logs, and the `setup` and `last-version` files |
 | Videos | `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`; `Kestrel (Development)` in debug builds) | recordings, and trim exports you save there |
 
 The autostart entry is the one file outside these folders: it lives in
@@ -29,12 +29,12 @@ The autostart entry is the one file outside these folders: it lives in
 | Command ranking | `command_ranking.toml` | Command IDs, usage counts, and pins; never search text | 0600 file, 0700 folder | 200 commands | Nothing; it is rewritten as you use commands |
 | Setup | `setup` | Whether setup was offered, and whether it finished or was skipped | 0600 | One line | Nothing |
 | What's new | `last-version` | The version you last ran | 0600 | One line | Nothing |
-| Background notice | `background-notice` | Whether the keep-running notice was shown | 0600 | One line | Nothing |
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
 | Settings export | The file you choose in Settings → Export | Your settings as TOML, the same contents as `config.toml`, including any command-bar file roots and scripts | Your umask | None | You |
 
+- Older builds may have left a `background-notice` file in the state folder. It is no longer read or written, and it can be deleted.
 - Recordings have no automatic retention: they stay until you delete them.
 - Files are replaced through a hidden temporary beside them and then renamed, so a crash can leave one behind. It is never read back: the scratchpad removes its own on the next load, screenshots remove theirs when the folder is opened, and the rest can be deleted by hand.
 - Turning a feature off does not delete what it stored. Captures, recordings, notes, snippets, ranking, state files, and settings stay until you remove them.
@@ -70,7 +70,7 @@ Only clipboard history is zeroized: its entries and the live selection it owns a
 |---|---|---|
 | Alert notifications, while monitoring runs and a rule fires | The rule's label and its reading, such as "CPU is at 95%" | Your desktop's notification service |
 | Screenshot-saved notification, when `capture.after_screenshot` is `notify` (the default) | "Screenshot saved", and whether it was added to recent captures; Open, Edit, and Copy actions when the service supports actions | Your desktop's notification service |
-| Keep awake ended and the keep-running notice | Fixed text only | Your desktop's notification service |
+| Keep awake ended | Fixed text only | Your desktop's notification service |
 | Tray readouts, for each readout you configure | The label, value, and detail line, which can name a filesystem and mount point, a battery, a sensor, or a GPU | The tray host over the session bus |
 | Clipboard re-own, while clipboard history runs | The selection just captured, written back unchanged | The clipboard, and so any application that reads it |
 | Keyboard shortcut registration, when `global.shortcuts` starts | The app ID, and each command's ID, description, and preferred key combination | The desktop's GlobalShortcuts portal |

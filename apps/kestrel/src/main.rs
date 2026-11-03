@@ -849,6 +849,24 @@ enum ControllerOperation {
     Scratchpad(kestrel::ScratchpadCommand),
 }
 
+/// What a close request does before the window closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseOutcome {
+    Ask,
+    Ignore,
+    Minimize,
+    Quit,
+}
+
+fn close_outcome(action: CloseAction, dialog_open: bool) -> CloseOutcome {
+    match (action, dialog_open) {
+        (CloseAction::Ask, true) => CloseOutcome::Ignore,
+        (CloseAction::Ask, false) => CloseOutcome::Ask,
+        (CloseAction::Minimize, _) => CloseOutcome::Minimize,
+        (CloseAction::Quit, _) => CloseOutcome::Quit,
+    }
+}
+
 struct ControllerContext {
     config_path: Option<PathBuf>,
     /// First launch: setup waits for the window to be presented.
@@ -865,9 +883,8 @@ struct ControllerContext {
 struct ApplicationController {
     state: SharedState,
     config_path: Option<PathBuf>,
-    /// The one-time notice that the window is hidden and Kestrel runs.
-    background_notice_path: Option<PathBuf>,
-    background_notice_shown: Cell<bool>,
+    /// A close-request dialog is showing; another request waits.
+    close_dialog_open: Cell<bool>,
     /// First launch: setup opens once the window is first presented.
     setup_pending: Cell<bool>,
     window: RefCell<Option<WindowView>>,
@@ -982,10 +999,6 @@ impl ApplicationController {
         let keep_awake_timed = runtime.keep_awake_is_timed();
         let overlay_modules = configuration.overlay;
         let state_commands = commands.clone();
-        let background_notice_path = kestrel::background_notice::state_path();
-        let background_notice_shown = Cell::new(kestrel::background_notice::shown(
-            background_notice_path.as_deref(),
-        ));
         Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
                 runtime,
@@ -1014,8 +1027,7 @@ impl ApplicationController {
                 command_results: Vec::new(),
             })),
             config_path,
-            background_notice_path,
-            background_notice_shown,
+            close_dialog_open: Cell::new(false),
             setup_pending: Cell::new(offer_setup),
             window: RefCell::new(None),
             floating: RefCell::new(None),
@@ -1107,8 +1119,6 @@ impl ApplicationController {
             let Some(controller) = weak_controller.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            // The camera never keeps running behind a closed or minimized window.
-            controller.camera_request(kestrel::CameraRequest::Stop);
             let close_action = controller
                 .state
                 .lock()
@@ -1116,35 +1126,28 @@ impl ApplicationController {
                 .configuration
                 .ui
                 .close_action;
-            if close_action == CloseAction::Minimize {
-                let already_shown = controller.background_notice_shown.get();
-                if kestrel::background_notice::should_send_background_notice(
-                    close_action,
-                    already_shown,
-                ) {
-                    controller.background_notice_shown.set(true);
-                    kestrel::background_notice::record_shown(
-                        controller.background_notice_path.as_deref(),
-                    );
-                    // The blocking notification call must not hold the close.
-                    let notification = AlertNotification {
-                        summary: kestrel::background_notice::SUMMARY.to_owned(),
-                        body: kestrel::background_notice::BODY.to_owned(),
-                    };
-                    let notifier = Arc::clone(&controller.capture_notifier);
-                    let _ = thread::Builder::new()
-                        .name("kestrel-background-notice".to_owned())
-                        .spawn(move || {
-                            if let Err(error) = notifier.notify(&notification) {
-                                log::debug!(target: "window.close", "Could not show the background notice: {error}");
-                            }
-                        });
+            match close_outcome(close_action, controller.close_dialog_open.get()) {
+                CloseOutcome::Ignore => glib::Propagation::Stop,
+                CloseOutcome::Minimize => {
+                    // The camera never keeps running behind a minimized window.
+                    controller.camera_request(kestrel::CameraRequest::Stop);
+                    window.minimize();
+                    glib::Propagation::Stop
                 }
-                window.minimize();
-                return glib::Propagation::Stop;
+                CloseOutcome::Quit => {
+                    // The camera never keeps running behind a closed window.
+                    controller.camera_request(kestrel::CameraRequest::Stop);
+                    controller.window.borrow_mut().take();
+                    glib::Propagation::Proceed
+                }
+                CloseOutcome::Ask => {
+                    controller.close_dialog_open.set(true);
+                    window.unminimize();
+                    window.present();
+                    controller.show_close_dialog(window);
+                    glib::Propagation::Stop
+                }
             }
-            controller.window.borrow_mut().take();
-            glib::Propagation::Proceed
         });
         if let Some(token) = &token {
             view.window.set_startup_id(token);
@@ -1162,6 +1165,61 @@ impl ApplicationController {
                 window::open_setup(&window, &view_model, &self.commands);
             }
         }
+    }
+
+    /// Asks what the first close does and saves the answer.
+    fn show_close_dialog(self: &Rc<Self>, window: &adw::ApplicationWindow) {
+        let dialog = adw::AlertDialog::builder()
+            .heading("Keep running in the background?")
+            .body(
+                "Monitoring alerts, clipboard history, and recordings keep working with the \
+                 window closed. Quit later from the tray, the dock's Quit Kestrel, or Ctrl+Q. \
+                 Settings → Close button changes this.",
+            )
+            .build();
+        dialog.add_response("quit", "Quit");
+        dialog.add_response("keep-running", "Keep running");
+        dialog.set_response_appearance("keep-running", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("keep-running"));
+        dialog.set_close_response("cancel");
+
+        let weak_controller = Rc::downgrade(self);
+        let dialog_window = window.clone();
+        dialog.connect_response(None, move |dialog, response| {
+            dialog.close();
+            let Some(controller) = weak_controller.upgrade() else {
+                return;
+            };
+            controller.close_dialog_open.set(false);
+            match response {
+                "keep-running" => {
+                    if let Err(error) = controller.commit_close_action(CloseAction::Minimize) {
+                        log::warn!(target: "window.close", "Could not save the close button choice: {error}");
+                    }
+                    controller.camera_request(kestrel::CameraRequest::Stop);
+                    dialog_window.minimize();
+                }
+                "quit" => {
+                    if let Err(error) = controller.commit_close_action(CloseAction::Quit) {
+                        log::warn!(target: "window.close", "Could not save the close button choice: {error}");
+                    }
+                    let _ = controller.commands.try_send(ApplicationCommand::Quit);
+                }
+                _ => {}
+            }
+        });
+        dialog.present(Some(window));
+    }
+
+    /// Saves the close button choice before the window acts on it.
+    fn commit_close_action(&self, close_action: CloseAction) -> Result<(), String> {
+        let message = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .commit_close_action(close_action, self.config_path.as_deref())?;
+        self.finish_refresh(Ok((self.current_view_model(), message)));
+        Ok(())
     }
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
@@ -2395,16 +2453,7 @@ impl ControllerState {
                 "Appearance updated".to_owned()
             }
             ControllerOperation::SetCloseAction(close_action) => {
-                let old = self.configuration.clone();
-                self.configuration.ui.close_action = close_action;
-                if let Err(error) = persist(config_path, &self.configuration) {
-                    self.configuration = old;
-                    return Err(format!("The close button setting was not saved: {error}"));
-                }
-                match close_action {
-                    CloseAction::Minimize => "The close button minimizes the window".to_owned(),
-                    CloseAction::Quit => "The close button quits the app".to_owned(),
-                }
+                self.commit_close_action(close_action, config_path)?
             }
             ControllerOperation::SetAutostart(enabled) => {
                 self.set_autostart(enabled, config_path)?;
@@ -3296,6 +3345,23 @@ impl ControllerState {
             }
         }
         Ok((self.view_model(), message))
+    }
+    fn commit_close_action(
+        &mut self,
+        close_action: CloseAction,
+        config_path: Option<&Path>,
+    ) -> Result<String, String> {
+        let old = self.configuration.clone();
+        self.configuration.ui.close_action = close_action;
+        if let Err(error) = persist(config_path, &self.configuration) {
+            self.configuration = old;
+            return Err(format!("The close button setting was not saved: {error}"));
+        }
+        Ok(match close_action {
+            CloseAction::Ask => "The close button asks whether to keep running".to_owned(),
+            CloseAction::Minimize => "The close button minimizes the window".to_owned(),
+            CloseAction::Quit => "The close button quits the app".to_owned(),
+        })
     }
     fn commit_configuration(
         &mut self,
@@ -4202,9 +4268,27 @@ fn dispatch_tick_results(controller: &Rc<ApplicationController>, receiver: Recei
 
 #[cfg(test)]
 mod tests {
-    use super::{load_startup_configuration, persist};
+    use super::{CloseOutcome, close_outcome, load_startup_configuration, persist};
     use kestrel::{MonitorReadout, PanelMoveDirection};
-    use kestrel_core::ApplicationConfiguration;
+    use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    #[test]
+    fn close_decision_asks_once_and_ignores_a_second_request() {
+        for (action, dialog_open, expected) in [
+            (CloseAction::Ask, false, CloseOutcome::Ask),
+            (CloseAction::Ask, true, CloseOutcome::Ignore),
+            (CloseAction::Minimize, false, CloseOutcome::Minimize),
+            (CloseAction::Minimize, true, CloseOutcome::Minimize),
+            (CloseAction::Quit, false, CloseOutcome::Quit),
+            (CloseAction::Quit, true, CloseOutcome::Quit),
+        ] {
+            assert_eq!(
+                close_outcome(action, dialog_open),
+                expected,
+                "{action:?} with dialog open: {dialog_open}"
+            );
+        }
+    }
 
     #[test]
     fn capture_follow_up_runs_once_for_new_screenshot() {
