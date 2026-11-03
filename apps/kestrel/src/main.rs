@@ -867,6 +867,35 @@ fn close_outcome(action: CloseAction, dialog_open: bool) -> CloseOutcome {
     }
 }
 
+/// What happens once the close dialog's save finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterCloseSave {
+    Quit,
+}
+
+/// The close dialog's choice, waiting for the running operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParkedCloseSave {
+    action: CloseAction,
+    after: Option<AfterCloseSave>,
+}
+
+/// What a finished operation does with the close dialog's save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseSaveStep {
+    Start(ParkedCloseSave),
+    Park(ParkedCloseSave),
+    Idle,
+}
+
+fn close_save_step(busy: bool, parked: Option<ParkedCloseSave>) -> CloseSaveStep {
+    match parked {
+        Some(parked) if busy => CloseSaveStep::Park(parked),
+        Some(parked) => CloseSaveStep::Start(parked),
+        None => CloseSaveStep::Idle,
+    }
+}
+
 struct ControllerContext {
     config_path: Option<PathBuf>,
     /// First launch: setup waits for the window to be presented.
@@ -885,6 +914,10 @@ struct ApplicationController {
     config_path: Option<PathBuf>,
     /// A close-request dialog is showing; another request waits.
     close_dialog_open: Cell<bool>,
+    /// The close dialog's choice waits for the running operation.
+    pending_close_save: Cell<Option<ParkedCloseSave>>,
+    /// What follows the close save's result; cleared when consumed.
+    pending_after_close_save: Cell<Option<AfterCloseSave>>,
     /// First launch: setup opens once the window is first presented.
     setup_pending: Cell<bool>,
     window: RefCell<Option<WindowView>>,
@@ -1028,6 +1061,8 @@ impl ApplicationController {
             })),
             config_path,
             close_dialog_open: Cell::new(false),
+            pending_close_save: Cell::new(None),
+            pending_after_close_save: Cell::new(None),
             setup_pending: Cell::new(offer_setup),
             window: RefCell::new(None),
             floating: RefCell::new(None),
@@ -1193,17 +1228,12 @@ impl ApplicationController {
             controller.close_dialog_open.set(false);
             match response {
                 "keep-running" => {
-                    if let Err(error) = controller.commit_close_action(CloseAction::Minimize) {
-                        log::warn!(target: "window.close", "Could not save the close button choice: {error}");
-                    }
                     controller.camera_request(kestrel::CameraRequest::Stop);
                     dialog_window.minimize();
+                    controller.save_close_action(CloseAction::Minimize, None);
                 }
                 "quit" => {
-                    if let Err(error) = controller.commit_close_action(CloseAction::Quit) {
-                        log::warn!(target: "window.close", "Could not save the close button choice: {error}");
-                    }
-                    let _ = controller.commands.try_send(ApplicationCommand::Quit);
+                    controller.save_close_action(CloseAction::Quit, Some(AfterCloseSave::Quit));
                 }
                 _ => {}
             }
@@ -1211,15 +1241,29 @@ impl ApplicationController {
         dialog.present(Some(window));
     }
 
-    /// Saves the close button choice before the window acts on it.
-    fn commit_close_action(&self, close_action: CloseAction) -> Result<(), String> {
-        let message = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .commit_close_action(close_action, self.config_path.as_deref())?;
-        self.finish_refresh(Ok((self.current_view_model(), message)));
-        Ok(())
+    /// Saves the close button choice on a worker, parking it while one runs.
+    fn save_close_action(&self, close_action: CloseAction, after: Option<AfterCloseSave>) {
+        self.pending_close_save.set(Some(ParkedCloseSave {
+            action: close_action,
+            after,
+        }));
+        self.dispatch_pending_close_action();
+    }
+
+    /// Starts the parked close save once no other operation runs.
+    fn dispatch_pending_close_action(&self) {
+        let parked = self.pending_close_save.take();
+        match close_save_step(self.refreshing.get(), parked) {
+            CloseSaveStep::Start(parked) => {
+                self.pending_after_close_save.set(parked.after);
+                self.start_operation(
+                    ControllerOperation::SetCloseAction(parked.action),
+                    "kestrel-close-action",
+                );
+            }
+            CloseSaveStep::Park(parked) => self.pending_close_save.set(Some(parked)),
+            CloseSaveStep::Idle => {}
+        }
     }
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
@@ -1428,12 +1472,18 @@ impl ApplicationController {
     }
 
     fn request_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
-        if self.refreshing.replace(true) {
+        if self.refreshing.get() {
             if let Some(view) = self.window.borrow().as_ref() {
                 view.show_message("Another operation is still running");
             }
             return;
         }
+        self.start_operation(operation, worker_name);
+    }
+
+    /// Runs `operation` on its worker; callers gate on `refreshing`.
+    fn start_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
+        self.refreshing.set(true);
         if let Some(view) = self.window.borrow().as_ref() {
             view.set_refreshing(true);
         }
@@ -1518,6 +1568,11 @@ impl ApplicationController {
 
     fn finish_refresh(&self, result: RefreshResult) {
         self.apply_refresh_result(result);
+        // The close dialog's save may have failed; the choice to quit stands.
+        if self.pending_after_close_save.take() == Some(AfterCloseSave::Quit) {
+            let _ = self.commands.try_send(ApplicationCommand::Quit);
+        }
+        self.dispatch_pending_close_action();
         self.dispatch_pending_command_query();
     }
 
@@ -4286,6 +4341,34 @@ mod tests {
                 close_outcome(action, dialog_open),
                 expected,
                 "{action:?} with dialog open: {dialog_open}"
+            );
+        }
+    }
+
+    #[test]
+    fn close_save_starts_only_when_no_operation_runs() {
+        use super::{AfterCloseSave, CloseSaveStep, ParkedCloseSave, close_save_step};
+
+        let minimize = ParkedCloseSave {
+            action: CloseAction::Minimize,
+            after: None,
+        };
+        let quit = ParkedCloseSave {
+            action: CloseAction::Quit,
+            after: Some(AfterCloseSave::Quit),
+        };
+        for (busy, parked, expected) in [
+            (false, None, CloseSaveStep::Idle),
+            (true, None, CloseSaveStep::Idle),
+            (false, Some(minimize), CloseSaveStep::Start(minimize)),
+            (true, Some(minimize), CloseSaveStep::Park(minimize)),
+            (false, Some(quit), CloseSaveStep::Start(quit)),
+            (true, Some(quit), CloseSaveStep::Park(quit)),
+        ] {
+            assert_eq!(
+                close_save_step(busy, parked),
+                expected,
+                "busy: {busy}, parked: {parked:?}"
             );
         }
     }
