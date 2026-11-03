@@ -849,13 +849,13 @@ enum ControllerOperation {
     Scratchpad(kestrel::ScratchpadCommand),
 }
 
-/// What a close request does before the window closes.
+/// What a close request does; quitting ends the application, not only the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CloseOutcome {
     Ask,
     Ignore,
     Minimize,
-    Quit,
+    QuitApplication,
 }
 
 fn close_outcome(action: CloseAction, dialog_open: bool) -> CloseOutcome {
@@ -863,7 +863,7 @@ fn close_outcome(action: CloseAction, dialog_open: bool) -> CloseOutcome {
         (CloseAction::Ask, true) => CloseOutcome::Ignore,
         (CloseAction::Ask, false) => CloseOutcome::Ask,
         (CloseAction::Minimize, _) => CloseOutcome::Minimize,
-        (CloseAction::Quit, _) => CloseOutcome::Quit,
+        (CloseAction::Quit, _) => CloseOutcome::QuitApplication,
     }
 }
 
@@ -1169,11 +1169,13 @@ impl ApplicationController {
                     window.minimize();
                     glib::Propagation::Stop
                 }
-                CloseOutcome::Quit => {
+                CloseOutcome::QuitApplication => {
                     // The camera never keeps running behind a closed window.
                     controller.camera_request(kestrel::CameraRequest::Stop);
-                    controller.window.borrow_mut().take();
-                    glib::Propagation::Proceed
+                    // Floating surfaces keep the application alive after the
+                    // main window closes, so quit the whole app.
+                    let _ = controller.commands.try_send(ApplicationCommand::Quit);
+                    glib::Propagation::Stop
                 }
                 CloseOutcome::Ask => {
                     controller.close_dialog_open.set(true);
@@ -4334,8 +4336,8 @@ mod tests {
             (CloseAction::Ask, true, CloseOutcome::Ignore),
             (CloseAction::Minimize, false, CloseOutcome::Minimize),
             (CloseAction::Minimize, true, CloseOutcome::Minimize),
-            (CloseAction::Quit, false, CloseOutcome::Quit),
-            (CloseAction::Quit, true, CloseOutcome::Quit),
+            (CloseAction::Quit, false, CloseOutcome::QuitApplication),
+            (CloseAction::Quit, true, CloseOutcome::QuitApplication),
         ] {
             assert_eq!(
                 close_outcome(action, dialog_open),
