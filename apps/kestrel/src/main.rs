@@ -1568,8 +1568,14 @@ impl ApplicationController {
         self.request_operation(operation, worker_name);
     }
 
+    /// Completes the running operation, then renders its result.
     fn finish_refresh(&self, result: RefreshResult) {
-        self.apply_refresh_result(result);
+        self.refreshing.set(false);
+        if let Some(view) = self.window.borrow().as_ref() {
+            view.set_refreshing(false);
+        }
+        let targeted = self.targeted.replace(TargetedPanel::Full);
+        self.apply_refresh_result(result, targeted);
         // The close dialog's save may have failed; the choice to quit stands.
         if self.pending_after_close_save.take() == Some(AfterCloseSave::Quit) {
             let _ = self.commands.try_send(ApplicationCommand::Quit);
@@ -1578,9 +1584,8 @@ impl ApplicationController {
         self.dispatch_pending_command_query();
     }
 
-    fn apply_refresh_result(&self, result: RefreshResult) {
-        self.refreshing.set(false);
-        let targeted = self.targeted.replace(TargetedPanel::Full);
+    /// Renders a result; operation state stays with `finish_refresh`.
+    fn apply_refresh_result(&self, result: RefreshResult, targeted: TargetedPanel) {
         // The floating surfaces work without the main window.
         if let Some(surface) = self.floating.borrow().as_ref() {
             match &result {
@@ -1611,7 +1616,6 @@ impl ApplicationController {
         let Some(view) = window.as_ref() else {
             return;
         };
-        view.set_refreshing(false);
         apply_targeted_panel(view, &view_model, targeted);
         if let Some(message) = message {
             view.show_message(&message);
@@ -1855,7 +1859,8 @@ impl ApplicationController {
             guard.refresh_command_results();
             guard.view_model()
         };
-        self.finish_refresh(Ok((view_model, String::new())));
+        // A snapshot, not an operation result: a running operation keeps its state.
+        self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Full);
     }
 
     fn finish_tick(&self, update: TickUpdate) {
