@@ -5,9 +5,9 @@ use std::{
     env, fmt,
     io::Read,
     os::unix::process::CommandExt,
-    path::PathBuf,
+    path::Path,
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::mpsc::{self, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
@@ -15,7 +15,7 @@ use std::{
 use kestrel_core::ReleaseInfo;
 use serde::Deserialize;
 
-use crate::applications::resolve_executable;
+use crate::{applications::resolve_executable, cancellation::CancellationToken};
 
 pub const RELEASES_URL: &str =
     "https://api.github.com/repos/kamleshkc2002/kestrel/releases?per_page=20";
@@ -60,6 +60,7 @@ pub enum UpdateFetchErrorKind {
     Http,
     TooLarge,
     Malformed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,12 +87,23 @@ impl fmt::Display for UpdateFetchError {
 impl std::error::Error for UpdateFetchError {}
 
 /// Fetches the recent releases of Kestrel's repository, bounded in time and size.
-pub fn fetch_releases() -> Result<Vec<RawRelease>, UpdateFetchError> {
+pub fn fetch_releases(cancel: &CancellationToken) -> Result<Vec<RawRelease>, UpdateFetchError> {
     let executable =
         resolve_executable("curl", env::var_os("PATH").as_deref()).ok_or_else(|| {
             UpdateFetchError::new(UpdateFetchErrorKind::CurlMissing, "curl is not installed.")
         })?;
-    let mut command = command(&executable);
+    fetch_releases_with(&executable, cancel)
+}
+
+/// Runs the fetch through `executable`; the caller resolves the curl binary.
+pub(crate) fn fetch_releases_with(
+    executable: &Path,
+    cancel: &CancellationToken,
+) -> Result<Vec<RawRelease>, UpdateFetchError> {
+    if cancel.is_cancelled() {
+        return Err(cancelled());
+    }
+    let mut command = command(executable);
     let mut child = crate::spawn_with_busy_retry(&mut command).map_err(|_| {
         UpdateFetchError::new(
             UpdateFetchErrorKind::SpawnFailed,
@@ -106,14 +118,29 @@ pub fn fetch_releases() -> Result<Vec<RawRelease>, UpdateFetchError> {
         )
     })?;
     let receiver = spawn_reader(stdout);
-    let contents = match receiver.recv_timeout(Duration::from_secs(MAX_TIME_SECONDS) + KILL_GRACE) {
-        Ok(Ok(contents)) => contents,
-        Ok(Err(_)) | Err(_) => {
+    let deadline = Instant::now() + Duration::from_secs(MAX_TIME_SECONDS) + KILL_GRACE;
+    let contents = loop {
+        if cancel.is_cancelled() {
             kill_and_reap(&mut child, group);
-            return Err(UpdateFetchError::new(
-                UpdateFetchErrorKind::Network,
-                "The release list could not be read.",
-            ));
+            return Err(cancelled());
+        }
+        match receiver.recv_timeout(POLL_INTERVAL) {
+            Ok(Ok(contents)) => break contents,
+            Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+                kill_and_reap(&mut child, group);
+                return Err(UpdateFetchError::new(
+                    UpdateFetchErrorKind::Network,
+                    "The release list could not be read.",
+                ));
+            }
+            Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => {
+                kill_and_reap(&mut child, group);
+                return Err(UpdateFetchError::new(
+                    UpdateFetchErrorKind::Network,
+                    "The release request did not finish in time.",
+                ));
+            }
+            Err(RecvTimeoutError::Timeout) => {}
         }
     };
     if contents.len() > RESPONSE_LIMIT_BYTES {
@@ -123,7 +150,7 @@ pub fn fetch_releases() -> Result<Vec<RawRelease>, UpdateFetchError> {
             "The release list was too large.",
         ));
     }
-    let status = wait_process(&mut child, group)?;
+    let status = wait_process(&mut child, group, cancel)?;
     if !status.success() {
         return Err(error_for_exit(status.code()));
     }
@@ -135,7 +162,14 @@ pub fn fetch_releases() -> Result<Vec<RawRelease>, UpdateFetchError> {
     })
 }
 
-fn command(executable: &PathBuf) -> Command {
+fn cancelled() -> UpdateFetchError {
+    UpdateFetchError::new(
+        UpdateFetchErrorKind::Cancelled,
+        "The update check was cancelled.",
+    )
+}
+
+fn command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
     command
         .arg("--disable")
@@ -180,9 +214,14 @@ fn spawn_reader(
 fn wait_process(
     child: &mut Child,
     group: libc::pid_t,
+    cancel: &CancellationToken,
 ) -> Result<std::process::ExitStatus, UpdateFetchError> {
     let deadline = Instant::now() + Duration::from_secs(MAX_TIME_SECONDS) + KILL_GRACE;
     loop {
+        if cancel.is_cancelled() {
+            kill_and_reap(child, group);
+            return Err(cancelled());
+        }
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {}
@@ -239,7 +278,86 @@ fn error_for_exit(code: Option<i32>) -> UpdateFetchError {
 
 #[cfg(test)]
 mod tests {
-    use super::RawRelease;
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        time::{Duration, Instant},
+    };
+
+    use tempfile::TempDir;
+
+    use super::{RawRelease, UpdateFetchErrorKind};
+    use crate::cancellation::CancellationToken;
+
+    /// A fake curl that ignores its arguments and runs `body`.
+    fn stub(dir: &TempDir, body: &str) -> PathBuf {
+        let path = dir.path().join("curl");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("stub is written");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("stub is executable");
+        path
+    }
+
+    fn process_is_gone(pid: i32) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.trim_start().chars().next())
+                .is_none_or(|state| state == 'Z'),
+        }
+    }
+
+    fn wait_for_pid(path: &Path) -> i32 {
+        for _ in 0..200 {
+            if let Some(pid) = fs::read_to_string(path)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return pid;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the stub never recorded its descendant");
+    }
+
+    #[test]
+    fn cancelling_ends_the_fetch_and_its_whole_process_group() {
+        let dir = TempDir::new().expect("temp dir");
+        let pid_file = dir.path().join("descendant.pid");
+        let executable = stub(
+            &dir,
+            &format!("sleep 30 & echo $! > {}; wait", pid_file.display()),
+        );
+        let cancel = CancellationToken::new();
+        let canceller = cancel.clone();
+        let watched = pid_file.clone();
+        let watcher = std::thread::spawn(move || {
+            let pid = wait_for_pid(&watched);
+            canceller.cancel();
+            pid
+        });
+
+        let started = Instant::now();
+        let error =
+            super::fetch_releases_with(&executable, &cancel).expect_err("a cancelled fetch fails");
+        let pid = watcher.join().expect("watcher finishes");
+
+        assert_eq!(error.kind, UpdateFetchErrorKind::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the fetch returns promptly"
+        );
+        let mut gone = false;
+        for _ in 0..100 {
+            if process_is_gone(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(gone, "no descendant outlives a cancelled fetch");
+    }
 
     const RELEASES: &str = r#"[
         {
