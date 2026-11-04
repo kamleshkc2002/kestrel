@@ -59,6 +59,13 @@ const KEEP_AWAKE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 
+/// Whether the check may contact GitHub after the attempt record's write
+/// result. A scheduled check without a record would let every launch try
+/// again; a user check was asked for, so it continues.
+fn proceed_after_attempt(trigger: UpdateCheckTrigger, recorded: bool) -> bool {
+    recorded || trigger == UpdateCheckTrigger::User
+}
+
 /// A finished update check, applied on the GTK thread.
 struct UpdateCheckUpdate {
     view_model: ApplicationViewModel,
@@ -1926,6 +1933,35 @@ impl ApplicationController {
         let worker = thread::Builder::new()
             .name("kestrel-update-check".to_owned())
             .spawn(move || {
+                // The attempt reaches disk before curl runs, so a crash or an
+                // unwritable state file cannot make the next launch check again.
+                let recorded = {
+                    let mut guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.runtime.record_update_attempt()
+                };
+                if let Err(error) = recorded {
+                    log::warn!(target: "kestrel.updates", "could not record the update check: {error}");
+                    if !proceed_after_attempt(trigger, false) {
+                        let message = format!("The update check could not be recorded: {error}");
+                        let (view_model, message) = {
+                            let mut guard = state
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            let outcome = guard
+                                .runtime
+                                .abandon_update_check(SystemTime::now(), message);
+                            let message = update_check_message(trigger, outcome);
+                            (guard.view_model(), message)
+                        };
+                        let _ = results.send_blocking(UpdateCheckUpdate {
+                            view_model,
+                            message,
+                        });
+                        return;
+                    }
+                }
                 let result = kestrel_platform::updates::fetch_releases().map(|releases| {
                     releases
                         .into_iter()
@@ -1952,7 +1988,9 @@ impl ApplicationController {
                     .state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let outcome = guard.runtime.abandon_update_check(SystemTime::now());
+                let outcome = guard
+                    .runtime
+                    .abandon_update_check(SystemTime::now(), "The update check could not start.");
                 (guard.view_model(), outcome)
             };
             self.update_checking.set(false);
@@ -4564,6 +4602,24 @@ mod tests {
     use super::{CloseOutcome, close_outcome, load_startup_configuration, persist};
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    #[test]
+    fn only_user_update_checks_ignore_a_failed_attempt_record() {
+        use super::{UpdateCheckTrigger, proceed_after_attempt};
+
+        for (trigger, recorded, expected) in [
+            (UpdateCheckTrigger::Scheduled, true, true),
+            (UpdateCheckTrigger::Scheduled, false, false),
+            (UpdateCheckTrigger::User, true, true),
+            (UpdateCheckTrigger::User, false, true),
+        ] {
+            assert_eq!(
+                proceed_after_attempt(trigger, recorded),
+                expected,
+                "{trigger:?} with attempt recorded: {recorded}"
+            );
+        }
+    }
 
     #[test]
     fn only_user_update_checks_report_their_outcome() {
