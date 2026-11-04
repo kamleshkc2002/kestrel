@@ -2,7 +2,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use kestrel_core::{ReleaseInfo, UpdateCheck};
+use kestrel_core::{ReleaseInfo, UpdateCheck, newest_offer};
 use semver::Version;
 
 /// How often an enabled check may contact GitHub, counted from the last
@@ -63,12 +63,16 @@ pub struct UpdateService {
 }
 
 impl UpdateService {
-    pub fn new(check: UpdateCheck, stored: StoredUpdateState) -> Self {
+    /// A saved offer is kept only while `current` still needs it, so an
+    /// installed release stops being offered at the next launch.
+    pub fn new(check: UpdateCheck, stored: StoredUpdateState, current: &Version) -> Self {
         let mut service = Self {
             check,
             last_attempt: stored.last_attempt,
             last_checked: stored.last_checked,
-            latest: stored.latest,
+            latest: stored
+                .latest
+                .and_then(|release| newest_offer(current, &[release])),
             dismissed: stored.dismissed,
             status: UpdateStatus::Off,
         };
@@ -193,6 +197,10 @@ mod tests {
         }
     }
 
+    fn current(version: &str) -> Version {
+        Version::parse(version).expect("test version parses")
+    }
+
     #[test]
     fn due_checks_run_once_a_day_from_the_last_attempt() {
         let start = at(1_000_000);
@@ -222,6 +230,7 @@ mod tests {
                 latest: Some(release("0.6.0-preview.5")),
                 dismissed: None,
             },
+            &current("0.6.0-preview.4"),
         );
         assert_eq!(
             service
@@ -258,7 +267,11 @@ mod tests {
     #[test]
     fn a_failure_keeps_the_last_known_offer() {
         let now = at(3_000_000);
-        let mut service = UpdateService::new(UpdateCheck::Enabled, StoredUpdateState::default());
+        let mut service = UpdateService::new(
+            UpdateCheck::Enabled,
+            StoredUpdateState::default(),
+            &current("0.6.0-preview.4"),
+        );
         service.record_success(now, Some(release("0.6.0")));
         let later = now + Duration::from_secs(60);
         service.record_failure(later, "GitHub could not be reached.");
@@ -283,7 +296,8 @@ mod tests {
     fn consent_gates_every_check() {
         let now = at(4_000_000);
         for check in [UpdateCheck::Unasked, UpdateCheck::Disabled] {
-            let mut service = UpdateService::new(check, StoredUpdateState::default());
+            let mut service =
+                UpdateService::new(check, StoredUpdateState::default(), &current("0.6.0"));
             assert!(!service.is_due(now), "{check:?} is never due");
             assert!(!service.begin_check(now), "{check:?} cannot start a check");
             assert_eq!(service.snapshot().status, UpdateStatus::Off);
@@ -291,14 +305,43 @@ mod tests {
     }
 
     #[test]
-    fn a_dismissed_offer_survives_a_restart() {
+    fn a_restart_keeps_only_offers_the_running_version_still_needs() {
         let now = at(5_000_000);
-        let mut service = UpdateService::new(UpdateCheck::Enabled, StoredUpdateState::default());
+        let mut service = UpdateService::new(
+            UpdateCheck::Enabled,
+            StoredUpdateState::default(),
+            &current("0.6.0-preview.4"),
+        );
         service.record_success(now, Some(release("0.6.0")));
         service.dismiss_available();
         let stored = service.stored();
-        let restored = UpdateService::new(UpdateCheck::Enabled, stored);
+        let restored =
+            UpdateService::new(UpdateCheck::Enabled, stored, &current("0.6.0-preview.4"));
         assert!(restored.snapshot().banner.is_none());
         assert!(restored.snapshot().available.is_some());
+
+        for (running, offered, kept) in [
+            ("0.6.0-preview.4", "0.6.0-preview.5", true),
+            ("0.6.0-preview.5", "0.6.0-preview.5", false),
+            ("0.6.0-preview.6", "0.6.0-preview.5", false),
+            ("0.6.0", "0.6.0-preview.5", false),
+            ("0.6.0-preview.4", "0.6.0", true),
+        ] {
+            let restored = UpdateService::new(
+                UpdateCheck::Enabled,
+                StoredUpdateState {
+                    latest: Some(release(offered)),
+                    ..StoredUpdateState::default()
+                },
+                &current(running),
+            );
+            let case = format!("{running} with a saved {offered}");
+            assert_eq!(restored.stored().latest.is_some(), kept, "{case}");
+            assert_eq!(
+                restored.snapshot().status == UpdateStatus::Available(release(offered)),
+                kept,
+                "{case}"
+            );
+        }
     }
 }

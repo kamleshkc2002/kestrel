@@ -85,13 +85,24 @@ impl ApplicationRuntime {
         outcome
     }
 
+    /// Writes the attempt that `begin_update_check` set, so the daily
+    /// interval survives a crash and an unwritable state file is noticed
+    /// before the network is contacted.
+    pub fn record_update_attempt(&mut self) -> Result<(), String> {
+        self.write_update_state()
+    }
+
     /// Records a check that could not start, so a worker failure does not
     /// leave the state looking in progress.
-    pub fn abandon_update_check(&mut self, now: SystemTime) -> UpdateCheckOutcome {
+    pub fn abandon_update_check(
+        &mut self,
+        now: SystemTime,
+        message: impl Into<String>,
+    ) -> UpdateCheckOutcome {
         if !self.update_service.is_enabled() {
             return UpdateCheckOutcome::Ignored;
         }
-        let message = "The update check could not start.".to_owned();
+        let message = message.into();
         self.update_service.record_failure(now, message.clone());
         self.persist_update_state();
         UpdateCheckOutcome::Failed(message)
@@ -107,15 +118,71 @@ impl ApplicationRuntime {
     }
 
     fn persist_update_state(&self) {
-        if let Err(error) = crate::update_state::write(
-            self.update_state_path.as_deref(),
-            &self.update_service.stored(),
-        ) {
+        if let Err(error) = self.write_update_state() {
             log::warn!(target: "kestrel.updates", "could not record the update check: {error}");
         }
     }
+
+    fn write_update_state(&self) -> Result<(), String> {
+        crate::update_state::write(
+            self.update_state_path.as_deref(),
+            &self.update_service.stored(),
+        )
+        .map_err(|error| error.to_string())
+    }
 }
 
-fn current_version() -> Version {
+pub(super) fn current_version() -> Version {
     Version::parse(CURRENT_VERSION).expect("the build version is valid semver")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::Path,
+        time::{Duration, UNIX_EPOCH},
+    };
+
+    use kestrel_core::{ApplicationConfiguration, UpdateCheck};
+    use kestrel_services::updates::StoredUpdateState;
+
+    use super::ApplicationRuntime;
+
+    fn enabled_runtime(state_path: &Path) -> ApplicationRuntime {
+        let mut runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        runtime.set_update_check(UpdateCheck::Enabled);
+        runtime.update_state_path = Some(state_path.to_path_buf());
+        runtime
+    }
+
+    #[test]
+    fn the_attempt_reaches_the_state_file_before_any_result() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join("update-check");
+        let mut runtime = enabled_runtime(&path);
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert!(runtime.begin_update_check(now));
+        runtime
+            .record_update_attempt()
+            .expect("the attempt is recorded");
+        assert_eq!(
+            crate::update_state::read(Some(&path)),
+            StoredUpdateState {
+                last_attempt: Some(now),
+                ..StoredUpdateState::default()
+            }
+        );
+    }
+
+    #[test]
+    fn an_unwritable_state_path_reports_the_failure() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let blocker = directory.path().join("blocker");
+        fs::write(&blocker, b"not a directory").expect("the blocker file writes");
+        let mut runtime = enabled_runtime(&blocker.join("update-check"));
+        assert!(runtime.begin_update_check(UNIX_EPOCH + Duration::from_secs(1_700_000_000)));
+        assert!(runtime.record_update_attempt().is_err());
+    }
 }
