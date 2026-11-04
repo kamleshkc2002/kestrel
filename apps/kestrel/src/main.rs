@@ -66,9 +66,9 @@ fn proceed_after_attempt(trigger: UpdateCheckTrigger, recorded: bool) -> bool {
     recorded || trigger == UpdateCheckTrigger::User
 }
 
-/// A finished update check, applied on the GTK thread.
+/// A finished update check's toast text, applied on the GTK thread, which
+/// rebuilds the view model from current state.
 struct UpdateCheckUpdate {
-    view_model: ApplicationViewModel,
     message: String,
 }
 
@@ -1945,20 +1945,16 @@ impl ApplicationController {
                     log::warn!(target: "kestrel.updates", "could not record the update check: {error}");
                     if !proceed_after_attempt(trigger, false) {
                         let message = format!("The update check could not be recorded: {error}");
-                        let (view_model, message) = {
+                        let message = {
                             let mut guard = state
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner());
                             let outcome = guard
                                 .runtime
                                 .abandon_update_check(SystemTime::now(), message);
-                            let message = update_check_message(trigger, outcome);
-                            (guard.view_model(), message)
+                            update_check_message(trigger, outcome)
                         };
-                        let _ = results.send_blocking(UpdateCheckUpdate {
-                            view_model,
-                            message,
-                        });
+                        let _ = results.send_blocking(UpdateCheckUpdate { message });
                         return;
                     }
                 }
@@ -1968,18 +1964,14 @@ impl ApplicationController {
                         .filter_map(kestrel_platform::updates::RawRelease::into_release)
                         .collect::<Vec<_>>()
                 });
-                let (view_model, message) = {
+                let message = {
                     let mut guard = state
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let outcome = guard.runtime.finish_update_check(SystemTime::now(), result);
-                    let message = update_check_message(trigger, outcome);
-                    (guard.view_model(), message)
+                    update_check_message(trigger, outcome)
                 };
-                let _ = results.send_blocking(UpdateCheckUpdate {
-                    view_model,
-                    message,
-                });
+                let _ = results.send_blocking(UpdateCheckUpdate { message });
             });
         if worker.is_err() {
             log::warn!(target: "kestrel.updates", "the update check worker could not start");
@@ -2023,7 +2015,16 @@ impl ApplicationController {
 
     fn finish_update_check(&self, update: UpdateCheckUpdate) {
         self.update_checking.set(false);
-        self.apply_refresh_result(Ok((update.view_model, update.message)), TargetedPanel::Full);
+        // Settings may have changed while curl ran, so the window is built
+        // from current state instead of the worker's snapshot.
+        let view_model = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.view_model()
+        };
+        self.apply_refresh_result(Ok((view_model, update.message)), TargetedPanel::Full);
     }
 
     /// Republishes the whole view model after a session ended on its own.
