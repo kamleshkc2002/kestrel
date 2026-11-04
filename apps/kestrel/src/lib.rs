@@ -14,6 +14,7 @@ mod snippets;
 mod status_notifier;
 pub mod text_lines;
 mod tray_icon;
+mod update_state;
 pub mod view_model;
 pub mod whats_new;
 
@@ -26,7 +27,7 @@ pub use config::{
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
     CaptureAfterScreenshot, ClipboardLayout, CloseAction, KeepAwakeDuration, MonitorReadout,
-    NetworkRateUnit,
+    NetworkRateUnit, UpdateCheck,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -57,7 +58,7 @@ pub use runtime::{
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
     FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayKeepAwake, TrayKeepAwakeSink,
-    TrayReadout, TrayReadoutSink,
+    TrayReadout, TrayReadoutSink, TrayUpdate, TrayUpdateSink,
 };
 pub use view_model::{
     ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
@@ -70,7 +71,8 @@ pub use view_model::{
     RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
     SetupPresetViewModel, SetupSensitiveViewModel, SetupViewModel, ShortcutsViewModel,
     SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
-    WhatsNewSection, WhatsNewViewModel, output_icon, shortcut_label,
+    UpdateOfferViewModel, UpdatesViewModel, WhatsNewSection, WhatsNewViewModel, output_icon,
+    shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -504,6 +506,7 @@ pub enum ApplicationCommand {
     FinishSetup {
         preset: Option<FeaturePreset>,
         left_off: Vec<String>,
+        update_check: kestrel_core::UpdateCheck,
     },
     /// Records setup as done without changing any feature.
     SkipSetup,
@@ -515,6 +518,12 @@ pub enum ApplicationCommand {
     SetWhatsNew(bool),
     /// The user opened this release's notes; record the version as seen.
     MarkWhatsNewRead,
+    /// Saves the answer to the one-time update-check question.
+    SetUpdateCheck(kestrel_core::UpdateCheck),
+    /// Runs an update check now, without waiting for the daily interval.
+    CheckForUpdates,
+    /// Hides the update banner for the offered version.
+    DismissUpdate,
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,

@@ -19,6 +19,7 @@ pub mod screen_tools;
 pub mod snippets;
 pub mod speed_test;
 pub mod system_monitor;
+pub mod updates;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceLifecycle {

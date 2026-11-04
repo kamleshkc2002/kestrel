@@ -22,6 +22,7 @@ mod quick_panel;
 mod shortcuts;
 mod snippets;
 mod speed_test;
+mod updates;
 
 pub(crate) use paths::state_directory;
 pub use paths::{configuration_path, recordings_path};

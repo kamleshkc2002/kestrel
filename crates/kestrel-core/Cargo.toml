@@ -9,4 +9,5 @@ description = "Core feature and capability model for Kestrel"
 path = "src/lib.rs"
 
 [dependencies]
+semver = "1"
 serde = { version = "1", features = ["derive"] }

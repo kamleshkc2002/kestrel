@@ -28,6 +28,7 @@ impl StatusNotifierIntegration {
         let tray = KestrelTray {
             sender: sender.clone(),
             keep_awake: TrayKeepAwake::default(),
+            update: TrayUpdate::default(),
         };
         match tray.spawn() {
             Ok(handle) => Self {
@@ -80,6 +81,14 @@ impl StatusNotifierIntegration {
     /// Publishes the keep-awake menu state; `None` without a tray host.
     pub fn keep_awake_sink(&self) -> Option<TrayKeepAwakeSink> {
         self.handle.as_ref().map(|handle| TrayKeepAwakeSink {
+            handle: handle.clone(),
+            published: Arc::default(),
+        })
+    }
+
+    /// Publishes the update item; `None` without a tray host.
+    pub fn update_sink(&self) -> Option<TrayUpdateSink> {
+        self.handle.as_ref().map(|handle| TrayUpdateSink {
             handle: handle.clone(),
             published: Arc::default(),
         })
@@ -331,10 +340,53 @@ impl TrayKeepAwakeSink {
     }
 }
 
+/// The update item's state pushed to an open tray.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayUpdate {
+    pub version: Option<String>,
+    pub url: Option<String>,
+}
+
+impl TrayUpdate {
+    /// The tray keeps showing the offer after the banner was dismissed.
+    pub fn from_view_model(view_model: &ApplicationViewModel) -> Self {
+        view_model
+            .updates
+            .available
+            .as_ref()
+            .map_or_else(Self::default, |offer| Self {
+                version: Some(offer.version.clone()),
+                url: Some(offer.url.clone()),
+            })
+    }
+}
+
+/// Pushes the update item to an open tray.
+#[derive(Clone)]
+pub struct TrayUpdateSink {
+    handle: Handle<KestrelTray>,
+    published: Arc<Mutex<TrayUpdate>>,
+}
+
+impl TrayUpdateSink {
+    pub fn publish(&self, state: TrayUpdate) {
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *published == state {
+            return;
+        }
+        *published = state.clone();
+        self.handle.update(move |tray| tray.update = state);
+    }
+}
+
 #[derive(Debug)]
 struct KestrelTray {
     sender: Sender<ApplicationCommand>,
     keep_awake: TrayKeepAwake,
+    update: TrayUpdate,
 }
 
 impl Tray for KestrelTray {
@@ -403,6 +455,9 @@ impl Tray for KestrelTray {
             }
             .into(),
         ];
+        if let Some(update) = update_item(&self.sender, &self.update) {
+            items.push(update);
+        }
         if let Some(keep_awake) = keep_awake_item(&self.sender, &self.keep_awake) {
             items.push(keep_awake);
         }
@@ -418,6 +473,28 @@ impl Tray for KestrelTray {
         );
         items
     }
+}
+
+/// The update item while a newer release is available, whether or not the
+/// banner was dismissed.
+fn update_item<T: Tray>(
+    sender: &Sender<ApplicationCommand>,
+    state: &TrayUpdate,
+) -> Option<MenuItem<T>> {
+    let (version, url) = (state.version.as_ref()?, state.url.as_ref()?);
+    let sender = sender.clone();
+    let url = url.clone();
+    Some(
+        StandardItem {
+            label: format!("Update available: {version}"),
+            icon_name: "software-update-available-symbolic".to_owned(),
+            activate: Box::new(move |_: &mut T| {
+                send(&sender, ApplicationCommand::OpenUri(url.clone()))
+            }),
+            ..StandardItem::default()
+        }
+        .into(),
+    )
 }
 
 /// The keep-awake presets and Stop, while its feature runs.

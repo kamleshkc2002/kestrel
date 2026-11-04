@@ -29,6 +29,7 @@ log = "0.4"
 # such as COSMIC raise the window from a tray click.
 ksni = { git = "https://github.com/iovxw/ksni", rev = "547cc42", features = ["blocking"] }
 pangocairo = "0.22"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 

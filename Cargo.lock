@@ -1072,6 +1072,7 @@ dependencies = [
  "log",
  "pangocairo",
  "pkg-config",
+ "semver",
  "serde",
  "tempfile",
  "toml",
@@ -1081,6 +1082,7 @@ dependencies = [
 name = "kestrel-core"
 version = "0.1.0"
 dependencies = [
+ "semver",
  "serde",
 ]
 
@@ -1099,6 +1101,9 @@ dependencies = [
  "libpulse-binding",
  "linuxvideo",
  "png",
+ "semver",
+ "serde",
+ "serde_json",
  "tempfile",
  "wayland-client",
  "wayland-protocols",
@@ -1120,6 +1125,7 @@ dependencies = [
  "pulldown-cmark",
  "qrcode",
  "rqrr",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

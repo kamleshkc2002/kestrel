@@ -10,7 +10,7 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use adw::{glib, prelude::*};
@@ -57,6 +57,12 @@ const RECORDING_APPS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const KEEP_AWAKE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
+
+/// A finished update check, applied on the GTK thread.
+struct UpdateCheckUpdate {
+    view_model: ApplicationViewModel,
+    message: String,
+}
 /// Which deferred reads this tick performs.
 #[derive(Debug, Clone, Copy, Default)]
 struct TickDue {
@@ -761,6 +767,7 @@ enum ControllerOperation {
     FinishSetup {
         preset: Option<FeaturePreset>,
         left_off: Vec<String>,
+        update_check: kestrel_core::UpdateCheck,
     },
     SkipSetup,
     UndoPreset,
@@ -769,6 +776,8 @@ enum ControllerOperation {
     SetAutostart(bool),
     SetWhatsNew(bool),
     MarkWhatsNewRead,
+    SetUpdateCheck(kestrel_core::UpdateCheck),
+    DismissUpdate,
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
@@ -902,6 +911,7 @@ struct ControllerContext {
     offer_setup: bool,
     refresh_results: Sender<RefreshResult>,
     tick_results: Sender<TickUpdate>,
+    update_results: Sender<UpdateCheckUpdate>,
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
@@ -980,6 +990,11 @@ struct ApplicationController {
     tray: RefCell<Option<kestrel::TrayReadoutSink>>,
     /// Pushes the keep-awake submenu to the same tray.
     tray_keep_awake: RefCell<Option<kestrel::TrayKeepAwakeSink>>,
+    /// Pushes the update item to the same tray.
+    tray_update: RefCell<Option<kestrel::TrayUpdateSink>>,
+    /// One update check runs at a time; its result returns to this thread.
+    update_checking: Cell<bool>,
+    update_results: Sender<UpdateCheckUpdate>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
     refresh_results: Sender<RefreshResult>,
@@ -998,6 +1013,7 @@ impl ApplicationController {
             offer_setup,
             refresh_results,
             tick_results,
+            update_results,
             commands,
             notifier,
             capture_notifier,
@@ -1112,6 +1128,13 @@ impl ApplicationController {
                     .as_ref()
                     .and_then(StatusNotifierIntegration::keep_awake_sink),
             ),
+            tray_update: RefCell::new(
+                status_notifier
+                    .as_ref()
+                    .and_then(StatusNotifierIntegration::update_sink),
+            ),
+            update_checking: Cell::new(false),
+            update_results,
             status_notifier: RefCell::new(status_notifier),
             appearance,
             activation_token: RefCell::new(None),
@@ -1612,6 +1635,7 @@ impl ApplicationController {
         self.overlay.set_view_model(&view_model);
         self.reconcile_tray(&view_model);
         self.publish_tray_keep_awake(&view_model);
+        self.publish_tray_update(&view_model);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1633,6 +1657,7 @@ impl ApplicationController {
             let integration = StatusNotifierIntegration::start(self.commands.clone());
             let sink = integration.readout_sink();
             let keep_awake = integration.keep_awake_sink();
+            let update = integration.update_sink();
             if sink.is_none() {
                 log::warn!(
                     target: kestrel::STATUS_NOTIFIER_ID,
@@ -1641,6 +1666,7 @@ impl ApplicationController {
             }
             *self.tray.borrow_mut() = sink;
             *self.tray_keep_awake.borrow_mut() = keep_awake;
+            *self.tray_update.borrow_mut() = update;
             *self.status_notifier.borrow_mut() = Some(integration);
         } else if !wanted && present {
             let _ = self.stop_tray();
@@ -1653,6 +1679,14 @@ impl ApplicationController {
             return;
         };
         sink.publish(kestrel::TrayKeepAwake::from_view_model(view_model));
+    }
+
+    /// Pushes the update item to the tray, if it is open.
+    fn publish_tray_update(&self, view_model: &ApplicationViewModel) {
+        let Some(sink) = self.tray_update.borrow().clone() else {
+            return;
+        };
+        sink.publish(kestrel::TrayUpdate::from_view_model(view_model));
     }
 
     /// Whether `stamp` is not older than the keep-awake state already shown.
@@ -1694,6 +1728,7 @@ impl ApplicationController {
     fn stop_tray(&self) -> Option<thread::JoinHandle<()>> {
         let sink = self.tray.borrow_mut().take();
         let keep_awake = self.tray_keep_awake.borrow_mut().take();
+        let update = self.tray_update.borrow_mut().take();
         let integration = self.status_notifier.borrow_mut().take();
         thread::Builder::new()
             .name("kestrel-tray-stop".to_owned())
@@ -1702,6 +1737,7 @@ impl ApplicationController {
                     sink.close();
                 }
                 drop(keep_awake);
+                drop(update);
                 drop(integration);
             })
             .ok()
@@ -1847,6 +1883,95 @@ impl ApplicationController {
         if worker.is_err() {
             self.monitoring.set(false);
         }
+    }
+
+    /// Starts an update check after consent, off the GTK thread and outside
+    /// the state lock, so the window never waits for the network.
+    fn request_update_check(&self) {
+        if self.update_checking.replace(true) {
+            return;
+        }
+        let (allowed, view_model) = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let allowed = guard.runtime.begin_update_check(SystemTime::now());
+            (allowed, guard.view_model())
+        };
+        if !allowed {
+            self.update_checking.set(false);
+            return;
+        }
+        // Settings shows Checking while curl runs.
+        self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Full);
+        let state = Arc::clone(&self.state);
+        let results = self.update_results.clone();
+        let worker = thread::Builder::new()
+            .name("kestrel-update-check".to_owned())
+            .spawn(move || {
+                let result = kestrel_platform::updates::fetch_releases().map(|releases| {
+                    releases
+                        .into_iter()
+                        .filter_map(kestrel_platform::updates::RawRelease::into_release)
+                        .collect::<Vec<_>>()
+                });
+                let (view_model, message) = {
+                    let mut guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let message = match guard.runtime.finish_update_check(SystemTime::now(), result)
+                    {
+                        Ok(_) => String::new(),
+                        Err(error) => format!("The update check failed: {error}"),
+                    };
+                    (guard.view_model(), message)
+                };
+                let _ = results.send_blocking(UpdateCheckUpdate {
+                    view_model,
+                    message,
+                });
+            });
+        if worker.is_err() {
+            log::warn!(target: "kestrel.updates", "the update check worker could not start");
+            let view_model = {
+                let mut guard = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.runtime.abandon_update_check(SystemTime::now());
+                guard.view_model()
+            };
+            self.update_checking.set(false);
+            self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Full);
+        }
+    }
+
+    /// Applies the daily interval before a timer-triggered check.
+    fn request_update_check_if_due(&self) {
+        let due = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.runtime.update_check_due(SystemTime::now())
+        };
+        if due {
+            self.request_update_check();
+        }
+    }
+
+    fn update_check_enabled(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .update_check_enabled()
+    }
+
+    fn finish_update_check(&self, update: UpdateCheckUpdate) {
+        self.update_checking.set(false);
+        self.apply_refresh_result(Ok((update.view_model, update.message)), TargetedPanel::Full);
     }
 
     /// Republishes the whole view model after a session ended on its own.
@@ -2455,7 +2580,11 @@ impl ControllerState {
                 self.preset_snapshot = Some(snapshot);
                 format!("{} preset applied", preset.label())
             }
-            ControllerOperation::FinishSetup { preset, left_off } => {
+            ControllerOperation::FinishSetup {
+                preset,
+                left_off,
+                update_check,
+            } => {
                 let old = self.configuration.clone();
                 let snapshot = self
                     .runtime
@@ -2464,6 +2593,8 @@ impl ControllerState {
                         self.restore_configuration(old.clone());
                         format!("Could not apply setup: {error:?}")
                     })?;
+                self.configuration.updates.check = update_check;
+                self.runtime.set_update_check(update_check);
                 if let Err(error) = persist(config_path, &self.configuration) {
                     self.restore_configuration(old);
                     return Err(format!("Setup was not saved: {error}"));
@@ -2471,7 +2602,13 @@ impl ControllerState {
                 if preset.is_some() {
                     self.preset_snapshot = Some(snapshot);
                 }
+                self.runtime.mark_setup_done();
                 setup::record_done(setup::state_path().as_deref());
+                if update_check == kestrel::UpdateCheck::Enabled
+                    && self.runtime.update_check_due(SystemTime::now())
+                {
+                    let _ = self.commands.try_send(ApplicationCommand::CheckForUpdates);
+                }
                 match preset {
                     Some(preset) => format!("{} is on. Undo it in Settings.", preset.label()),
                     None => {
@@ -2483,6 +2620,7 @@ impl ControllerState {
                 }
             }
             ControllerOperation::SkipSetup => {
+                self.runtime.mark_setup_done();
                 setup::record_done(setup::state_path().as_deref());
                 String::new()
             }
@@ -2537,6 +2675,30 @@ impl ControllerState {
             ControllerOperation::MarkWhatsNewRead => {
                 self.runtime.mark_whats_new_read();
                 String::new()
+            }
+            ControllerOperation::SetUpdateCheck(check) => {
+                let mut candidate = self.configuration.clone();
+                candidate.updates.check = check;
+                let message = match check {
+                    kestrel::UpdateCheck::Enabled => "Update checks are on",
+                    kestrel::UpdateCheck::Disabled => "Update checks are off",
+                    kestrel::UpdateCheck::Unasked => "Update checks are not set",
+                };
+                let message =
+                    self.commit_configuration(candidate, config_path, message.to_owned())?;
+                if check == kestrel::UpdateCheck::Enabled
+                    && self.runtime.update_check_due(SystemTime::now())
+                {
+                    let _ = self.commands.try_send(ApplicationCommand::CheckForUpdates);
+                }
+                message
+            }
+            ControllerOperation::DismissUpdate => {
+                if self.runtime.dismiss_update() {
+                    "The update banner is hidden until a newer version appears".to_owned()
+                } else {
+                    return Err("There is no update to dismiss".to_owned());
+                }
             }
             ControllerOperation::SetMonitorReadoutVisible { readout, visible } => {
                 let mut candidate = self.configuration.clone();
@@ -3736,6 +3898,7 @@ fn main() -> glib::ExitCode {
 
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
     let (tick_results, tick_receiver) = async_channel::unbounded();
+    let (update_results, update_receiver) = async_channel::unbounded();
     let capture_notifier = Arc::new(DesktopNotifier::new());
     let notifier: Arc<dyn AlertNotifier> = capture_notifier.clone();
     let controller = ApplicationController::new(
@@ -3747,6 +3910,7 @@ fn main() -> glib::ExitCode {
             offer_setup,
             refresh_results,
             tick_results,
+            update_results,
             commands: commands.clone(),
             notifier,
             capture_notifier,
@@ -3762,10 +3926,30 @@ fn main() -> glib::ExitCode {
     dispatch_commands(&application, &controller, command_receiver);
     dispatch_refresh_results(&controller, refresh_receiver);
     dispatch_tick_results(&controller, tick_receiver);
+    dispatch_update_results(&controller, update_receiver);
     let weak_monitor_controller = Rc::downgrade(&controller);
     glib::timeout_add_local(TICK_INTERVAL, move || {
         if let Some(controller) = weak_monitor_controller.upgrade() {
             controller.request_tick();
+        }
+        glib::ControlFlow::Continue
+    });
+    // The first enabled check starts shortly after launch, never in startup.
+    if controller.update_check_enabled() {
+        let weak_update_controller = Rc::downgrade(&controller);
+        glib::timeout_add_seconds_local(30, move || {
+            if let Some(controller) = weak_update_controller.upgrade() {
+                controller.request_update_check_if_due();
+            }
+            glib::ControlFlow::Break
+        });
+    }
+    // The hourly wake decides from the last attempt, so a laptop that slept
+    // through the daily mark checks shortly after waking.
+    let weak_update_controller = Rc::downgrade(&controller);
+    glib::timeout_add_seconds_local(60 * 60, move || {
+        if let Some(controller) = weak_update_controller.upgrade() {
+            controller.request_update_check_if_due();
         }
         glib::ControlFlow::Continue
     });
@@ -3935,11 +4119,18 @@ fn dispatch_commands(
                     ControllerOperation::ApplyPreset(preset),
                     "kestrel-preset-change",
                 ),
-                ApplicationCommand::FinishSetup { preset, left_off } => controller
-                    .request_operation(
-                        ControllerOperation::FinishSetup { preset, left_off },
-                        "kestrel-setup-finish",
-                    ),
+                ApplicationCommand::FinishSetup {
+                    preset,
+                    left_off,
+                    update_check,
+                } => controller.request_operation(
+                    ControllerOperation::FinishSetup {
+                        preset,
+                        left_off,
+                        update_check,
+                    },
+                    "kestrel-setup-finish",
+                ),
                 ApplicationCommand::SkipSetup => controller
                     .request_operation(ControllerOperation::SkipSetup, "kestrel-setup-skip"),
                 ApplicationCommand::UndoPreset => controller
@@ -3963,6 +4154,15 @@ fn dispatch_commands(
                 ApplicationCommand::MarkWhatsNewRead => controller.request_operation(
                     ControllerOperation::MarkWhatsNewRead,
                     "kestrel-whats-new-read",
+                ),
+                ApplicationCommand::SetUpdateCheck(check) => controller.request_operation(
+                    ControllerOperation::SetUpdateCheck(check),
+                    "kestrel-update-consent",
+                ),
+                ApplicationCommand::CheckForUpdates => controller.request_update_check(),
+                ApplicationCommand::DismissUpdate => controller.request_operation(
+                    ControllerOperation::DismissUpdate,
+                    "kestrel-update-dismiss",
                 ),
                 ApplicationCommand::SetMonitorReadoutVisible { readout, visible } => controller
                     .request_operation(
@@ -4328,6 +4528,21 @@ fn dispatch_tick_results(controller: &Rc<ApplicationController>, receiver: Recei
     });
 }
 
+fn dispatch_update_results(
+    controller: &Rc<ApplicationController>,
+    receiver: Receiver<UpdateCheckUpdate>,
+) {
+    let controller = Rc::downgrade(controller);
+    glib::spawn_future_local(async move {
+        while let Ok(update) = receiver.recv().await {
+            let Some(controller) = controller.upgrade() else {
+                break;
+            };
+            controller.finish_update_check(update);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CloseOutcome, close_outcome, load_startup_configuration, persist};
@@ -4490,6 +4705,7 @@ mod tests {
             runtime.start();
             let (commands, _command_receiver) = async_channel::unbounded();
             let (refresh_results, _refresh_receiver) = async_channel::unbounded();
+            let (update_results, _update_receiver) = async_channel::unbounded();
             ApplicationController::new(
                 runtime,
                 configuration.clone(),
@@ -4499,6 +4715,7 @@ mod tests {
                     offer_setup: false,
                     refresh_results,
                     tick_results,
+                    update_results,
                     commands,
                     notifier: Arc::new(SilentNotifier),
                     capture_notifier: Arc::new(DesktopNotifier::new()),

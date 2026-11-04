@@ -58,6 +58,7 @@ mod setup;
 mod shortcuts;
 mod snippets;
 mod speed_test;
+mod updates;
 mod whats_new;
 
 #[cfg(test)]
@@ -136,6 +137,7 @@ pub use snippets::{
 };
 pub(crate) use speed_test::SpeedTestPresentation;
 pub use speed_test::SpeedTestViewModel;
+pub use updates::{UpdateOfferViewModel, UpdatesViewModel};
 pub use whats_new::{WhatsNewSection, WhatsNewViewModel};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +171,7 @@ pub struct ApplicationViewModel {
     pub can_undo: bool,
     pub overview_tools: OverviewToolsViewModel,
     pub whats_new: WhatsNewViewModel,
+    pub updates: UpdatesViewModel,
 }
 
 /// Logging settings and the log folder for the Settings page.
@@ -275,6 +278,7 @@ impl ApplicationViewModel {
             can_undo,
             overview_tools: OverviewToolsViewModel::default(),
             whats_new: WhatsNewViewModel::default(),
+            updates: UpdatesViewModel::default(),
         }
     }
 

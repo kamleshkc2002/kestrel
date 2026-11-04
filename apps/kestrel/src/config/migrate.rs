@@ -18,6 +18,7 @@ use super::{
     shortcuts::parse_shortcuts,
     snippets::parse_snippets,
     speed_test::parse_speed_test,
+    updates::parse_updates,
     warning,
 };
 
@@ -31,6 +32,7 @@ pub(super) fn parse_current(
     parse_features(&mut loaded, document.get("features"));
     parse_ui(&mut loaded, document.get("ui"));
     parse_startup(&mut loaded, document.get("startup"));
+    parse_updates(&mut loaded, document.get("updates"));
     parse_monitoring(&mut loaded, document.get("monitoring"));
     parse_audio(&mut loaded, document.get("audio"));
     parse_speed_test(&mut loaded, document.get("speed_test"));
