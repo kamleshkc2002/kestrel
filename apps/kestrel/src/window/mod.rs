@@ -52,7 +52,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::Rc,
 };
-use widgets::{FilterRows, configure_wrapping_label};
+use widgets::{FilterRows, configure_wrapping_label, plain_row};
 
 pub use floating::{FloatingSurface, QuickPanelEntry};
 pub use overlay::StatusOverlay;
@@ -1033,80 +1033,63 @@ fn build_overview_tools_group(
 fn build_update_banner(
     offer: &UpdateOfferViewModel,
     commands: &Sender<ApplicationCommand>,
-) -> gtk::Box {
-    let banner = gtk::Box::new(Orientation::Horizontal, 12);
-    banner.add_css_class("card");
-    banner.set_margin_top(6);
-    banner.set_margin_bottom(6);
-    banner.set_margin_start(12);
-    banner.set_margin_end(12);
-    let text = gtk::Label::new(Some(&format!("Kestrel {} is available", offer.version)));
-    text.set_xalign(0.0);
-    text.set_hexpand(true);
-    text.set_wrap(true);
-    banner.append(&text);
-
+) -> adw::PreferencesGroup {
+    let row = plain_row()
+        .title(format!("Kestrel {} is available", offer.version))
+        .build();
     let view = gtk::Button::with_label("View release");
     view.add_css_class("suggested-action");
+    view.set_valign(Align::Center);
     let url = offer.url.clone();
     let sender = commands.clone();
     view.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::OpenUri(url.clone()));
     });
-    banner.append(&view);
-
     let dismiss = gtk::Button::with_label("Dismiss");
+    dismiss.set_valign(Align::Center);
     let sender = commands.clone();
     dismiss.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::DismissUpdate);
     });
-    banner.append(&dismiss);
-    banner
+    row.add_suffix(&dismiss);
+    row.add_suffix(&view);
+    let group = adw::PreferencesGroup::new();
+    group.add(&row);
+    group
 }
 
 /// The one-time consent question, answered either way and then gone.
-fn build_update_consent_card(commands: &Sender<ApplicationCommand>) -> gtk::Box {
-    let card = gtk::Box::new(Orientation::Vertical, 6);
-    card.add_css_class("card");
-    card.set_margin_top(6);
-    card.set_margin_bottom(6);
-    card.set_margin_start(12);
-    card.set_margin_end(12);
-    let title = gtk::Label::new(Some("Check for new versions?"));
-    title.add_css_class("heading");
-    title.set_xalign(0.0);
-    card.append(&title);
-    let body = gtk::Label::new(Some(
-        "Once a day, GitHub is asked whether a newer version exists; GitHub sees \
-         your IP address. Nothing else is sent.",
-    ));
-    configure_wrapping_label(&body);
-    body.add_css_class("dim-label");
-    body.set_xalign(0.0);
-    card.append(&body);
-
-    let actions = gtk::Box::new(Orientation::Horizontal, 6);
-    actions.set_halign(Align::End);
-    actions.set_margin_top(6);
+fn build_update_consent_card(commands: &Sender<ApplicationCommand>) -> adw::PreferencesGroup {
+    let row = plain_row()
+        .title("Check for new versions?")
+        .subtitle(
+            "Once a day, GitHub is asked whether a newer version exists; GitHub sees your IP \
+             address. Nothing else is sent.",
+        )
+        .subtitle_lines(0)
+        .build();
     let no = gtk::Button::with_label("No thanks");
+    no.set_valign(Align::Center);
     let sender = commands.clone();
     no.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::SetUpdateCheck(
             kestrel::UpdateCheck::Disabled,
         ));
     });
-    actions.append(&no);
     let check = gtk::Button::with_label("Check");
     check.add_css_class("suggested-action");
+    check.set_valign(Align::Center);
     let sender = commands.clone();
     check.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::SetUpdateCheck(
             kestrel::UpdateCheck::Enabled,
         ));
     });
-    actions.append(&check);
-    card.append(&actions);
-    card
+    row.add_suffix(&no);
+    row.add_suffix(&check);
+    let group = adw::PreferencesGroup::new();
+    group.add(&row);
+    group
 }
 
 fn build_page(
