@@ -478,6 +478,25 @@ pub enum ScratchpadCommand {
         destination: std::path::PathBuf,
     },
 }
+/// Why an update check started. Only a user-started check reports its outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCheckTrigger {
+    /// The startup or hourly timer; its result shows in the surfaces.
+    Scheduled,
+    /// Check now, or enabling the switch; its result also toasts.
+    User,
+}
+
+/// How a finished update check ended, for the caller's message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateCheckOutcome {
+    /// Consent was withdrawn while the check ran; the result is discarded.
+    Ignored,
+    UpToDate,
+    Available(kestrel_core::ReleaseInfo),
+    Failed(String),
+}
+
 /// Command from an application entry surface.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ApplicationCommand {

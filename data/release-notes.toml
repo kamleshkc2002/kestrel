@@ -7,3 +7,7 @@
 [[change]]
 feature = "kestrel"
 text = "Closing the window the first time asks whether to keep running in the background or quit, and remembers the answer; the dock's own Quit item now leads to that question too."
+
+[[change]]
+feature = "kestrel"
+text = "An optional update check, off until you agree, looks for a newer version once a day and shows it on Overview, in the tray menu, and in Settings."

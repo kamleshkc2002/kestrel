@@ -32,15 +32,20 @@ pub(super) fn build_settings_group(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     page: SettingsPage,
-) -> (adw::PreferencesGroup, FilterRows, Option<adw::ActionRow>) {
+) -> (
+    Vec<adw::PreferencesGroup>,
+    FilterRows,
+    Option<adw::ActionRow>,
+) {
     // Feature pages show their nested groups' own titles; the Settings page
-    // adds its app-wide rows directly.
+    // adds its groups as top-level siblings.
     let group = adw::PreferencesGroup::new();
     if page == SettingsPage::Settings {
         group.set_title("General");
     }
     let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
     let mut accessory_row = None;
+    let mut extra_groups = Vec::<adw::PreferencesGroup>::new();
 
     match page {
         SettingsPage::Monitoring => {
@@ -72,25 +77,39 @@ pub(super) fn build_settings_group(
             add_general_rows(&group, view_model, window, commands, &mut filter_rows);
             let io_row = build_configuration_files_row(window, commands, &mut filter_rows);
             group.add(&io_row);
-            add_logging_group(&group, view_model, window, commands, &mut filter_rows);
-            add_whats_new_group(&group, view_model, window, commands, &mut filter_rows);
-            accessory_row = add_overlay_group(&group, view_model, commands, &mut filter_rows);
+            extra_groups.push(add_logging_group(
+                view_model,
+                window,
+                commands,
+                &mut filter_rows,
+            ));
+            extra_groups.push(add_whats_new_group(
+                view_model,
+                window,
+                commands,
+                &mut filter_rows,
+            ));
+            extra_groups.push(add_updates_group(view_model, commands, &mut filter_rows));
+            let (overlay, row) = add_overlay_group(view_model, commands, &mut filter_rows);
+            extra_groups.push(overlay);
+            accessory_row = row;
         }
     }
 
     for (_, keywords) in &mut filter_rows {
         *keywords = keywords.to_lowercase();
     }
-    (group, filter_rows, accessory_row)
+    let mut groups = vec![group];
+    groups.extend(extra_groups);
+    (groups, filter_rows, accessory_row)
 }
 
 fn add_logging_group(
-    group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) {
+) -> adw::PreferencesGroup {
     let logging = &view_model.logging;
     let logs_group = adw::PreferencesGroup::builder()
         .title("Diagnostic logs")
@@ -254,15 +273,14 @@ fn add_logging_group(
         "privacy storage data files retention sends network what kestrel stores".to_owned(),
     ));
     logs_group.add(&storage);
-    group.add(&logs_group);
+    logs_group
 }
 
 fn add_overlay_group(
-    group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) -> Option<adw::ActionRow> {
+) -> (adw::PreferencesGroup, Option<adw::ActionRow>) {
     let overlay = &view_model.overlay;
     let overlay_group = adw::PreferencesGroup::builder()
         .title("Status bar overlay")
@@ -418,8 +436,7 @@ fn add_overlay_group(
         commands,
         filter_rows,
     ));
-    group.add(&overlay_group);
-    Some(accessory_row)
+    (overlay_group, Some(accessory_row))
 }
 
 /// One module's switch; usable only where the overlay can run.
@@ -728,12 +745,11 @@ fn close_action_subtitle(action: CloseAction) -> &'static str {
 }
 
 fn add_whats_new_group(
-    group: &adw::PreferencesGroup,
     view_model: &ApplicationViewModel,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) {
+) -> adw::PreferencesGroup {
     let notes_group = adw::PreferencesGroup::builder().title("What's new").build();
     let notes = plain_row()
         .title(format!("Kestrel {}", view_model.whats_new.version))
@@ -776,7 +792,74 @@ fn add_whats_new_group(
         "what's new whats new banner update release notes".to_owned(),
     ));
     notes_group.add(&offer);
-    group.add(&notes_group);
+    notes_group
+}
+
+fn add_updates_group(
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) -> adw::PreferencesGroup {
+    let updates = &view_model.updates;
+    let updates_group = adw::PreferencesGroup::builder().title("Updates").build();
+
+    let check = plain_row()
+        .title("Check for new versions")
+        .subtitle("Once a day. Contacts api.github.com, which sees your IP address.")
+        .build();
+    let check_switch = gtk::Switch::builder()
+        .active(updates.check == kestrel::UpdateCheck::Enabled)
+        .valign(Align::Center)
+        .build();
+    let sender = commands.clone();
+    check_switch.connect_state_set(move |_, enabled| {
+        let choice = if enabled {
+            kestrel::UpdateCheck::Enabled
+        } else {
+            kestrel::UpdateCheck::Disabled
+        };
+        let _ = sender.try_send(ApplicationCommand::SetUpdateCheck(choice));
+        gtk::glib::Propagation::Proceed
+    });
+    check.add_suffix(&check_switch);
+    check.set_activatable_widget(Some(&check_switch));
+    filter_rows.push((
+        check.clone().upcast(),
+        "updates update check new version github daily".to_owned(),
+    ));
+    updates_group.add(&check);
+
+    let status = plain_row()
+        .title("Status")
+        .subtitle(&updates.status)
+        .build();
+    let actions = gtk::Box::new(Orientation::Horizontal, 6);
+    actions.set_valign(Align::Center);
+    let check_now = gtk::Button::builder()
+        .label("Check now")
+        .sensitive(updates.check == kestrel::UpdateCheck::Enabled)
+        .build();
+    let sender = commands.clone();
+    check_now.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::CheckForUpdates);
+    });
+    actions.append(&check_now);
+    if let Some(offer) = &updates.available {
+        let view = gtk::Button::builder().label("View release").build();
+        let url = offer.url.clone();
+        let sender = commands.clone();
+        view.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::OpenUri(url.clone()));
+        });
+        actions.append(&view);
+    }
+    status.add_suffix(&actions);
+    filter_rows.push((
+        status.clone().upcast(),
+        "updates update check status version release github".to_owned(),
+    ));
+    updates_group.add(&status);
+    updates_group
 }
 
 fn build_configuration_files_row(

@@ -8,6 +8,7 @@ use kestrel_services::updates::UpdateSnapshot;
 use semver::Version;
 
 use super::ApplicationRuntime;
+use crate::UpdateCheckOutcome;
 use crate::whats_new::CURRENT_VERSION;
 
 impl ApplicationRuntime {
@@ -48,28 +49,36 @@ impl ApplicationRuntime {
         &mut self,
         now: SystemTime,
         result: Result<Vec<ReleaseInfo>, UpdateFetchError>,
-    ) -> Result<Option<ReleaseInfo>, String> {
+    ) -> UpdateCheckOutcome {
         if !self.update_service.is_enabled() {
-            return Ok(None);
+            return UpdateCheckOutcome::Ignored;
         }
         let outcome = match result {
             Ok(releases) => {
                 let offer = newest_offer(&current_version(), &releases);
                 match &offer {
-                    Some(release) => log::debug!(
-                        target: "kestrel.updates",
-                        "an update is available: {}",
-                        release.version
-                    ),
-                    None => log::debug!(target: "kestrel.updates", "no newer release is published"),
+                    Some(release) => {
+                        log::debug!(
+                            target: "kestrel.updates",
+                            "an update is available: {}",
+                            release.version
+                        );
+                        self.update_service
+                            .record_success(now, Some(release.clone()));
+                        UpdateCheckOutcome::Available(release.clone())
+                    }
+                    None => {
+                        log::debug!(target: "kestrel.updates", "no newer release is published");
+                        self.update_service.record_success(now, None);
+                        UpdateCheckOutcome::UpToDate
+                    }
                 }
-                self.update_service.record_success(now, offer.clone());
-                Ok(offer)
             }
             Err(error) => {
                 log::warn!(target: "kestrel.updates", "update check failed: {error}");
-                self.update_service.record_failure(now, error.to_string());
-                Err(error.to_string())
+                let message = error.to_string();
+                self.update_service.record_failure(now, message.clone());
+                UpdateCheckOutcome::Failed(message)
             }
         };
         self.persist_update_state();
@@ -78,13 +87,14 @@ impl ApplicationRuntime {
 
     /// Records a check that could not start, so a worker failure does not
     /// leave the state looking in progress.
-    pub fn abandon_update_check(&mut self, now: SystemTime) {
+    pub fn abandon_update_check(&mut self, now: SystemTime) -> UpdateCheckOutcome {
         if !self.update_service.is_enabled() {
-            return;
+            return UpdateCheckOutcome::Ignored;
         }
-        self.update_service
-            .record_failure(now, "The update check could not start.");
+        let message = "The update check could not start.".to_owned();
+        self.update_service.record_failure(now, message.clone());
         self.persist_update_state();
+        UpdateCheckOutcome::Failed(message)
     }
 
     /// Hides the banner for the offered version; the tray and Settings keep it.

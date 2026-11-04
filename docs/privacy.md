@@ -7,7 +7,7 @@ debug builds use `kestrel-devel` instead.
 |---|---|---|
 | Config | `$XDG_CONFIG_HOME/kestrel` (usually `~/.config/kestrel`) | `config.toml` |
 | Data | `$XDG_DATA_HOME/kestrel` (usually `~/.local/share/kestrel`) | captures, scratchpad, snippets, command ranking |
-| State | `$XDG_STATE_HOME/kestrel` (usually `~/.local/state/kestrel`) | logs, and the `setup` and `last-version` files |
+| State | `$XDG_STATE_HOME/kestrel` (usually `~/.local/state/kestrel`) | logs, and the `setup`, `update-check`, and `last-version` files |
 | Videos | `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`; `Kestrel (Development)` in debug builds) | recordings, and trim exports you save there |
 
 The autostart entry is the one file outside these folders: it lives in
@@ -29,6 +29,7 @@ The autostart entry is the one file outside these folders: it lives in
 | Command ranking | `command_ranking.toml` | Command IDs, usage counts, and pins; never search text | 0600 file, 0700 folder | 200 commands | Nothing; it is rewritten as you use commands |
 | Setup | `setup` | Whether setup was offered, and whether it finished or was skipped | 0600 | One line | Nothing |
 | What's new | `last-version` | The version you last ran | 0600 | One line | Nothing |
+| Update check | `update-check` | The last attempt and successful-check times, the offered version and its release page, and the version you dismissed | 0600 | A few lines | Nothing |
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
@@ -75,13 +76,14 @@ Only clipboard history is zeroized: its entries and the live selection it owns a
 | Clipboard re-own, while clipboard history runs | The selection just captured, written back unchanged | The clipboard, and so any application that reads it |
 | Keyboard shortcut registration, when `global.shortcuts` starts | The app ID, and each command's ID, description, and preferred key combination | The desktop's GlobalShortcuts portal |
 | Audio mixer and microphone controls, while they run | Requests that list and change devices, streams, levels, and defaults | Your sound server, through libpulse |
+| Update check, after you turn it on | Once a day, an HTTPS request for the release list; GitHub sees your IP address and curl's user agent | api.github.com |
 
 Nothing else leaves the app without a user action. The sound server connection
 goes wherever libpulse is configured to connect: normally a local socket, or a
 remote host when `PULSE_SERVER` or your PulseAudio configuration names one.
-Apart from that, nothing contacts a network host without a user action. There
-is no update check, telemetry, or crash reporting, and the speed test's `curl`
-is the app's only network client of its own.
+Apart from that connection and the update check once you turn it on, nothing
+contacts a network host without a user action. There is no telemetry or crash
+reporting, and `curl` is used only by the update check and the speed test.
 
 **User-triggered** — each starts from a button, menu, command, or shortcut:
 

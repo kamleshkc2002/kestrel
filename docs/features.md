@@ -173,6 +173,15 @@
 - Settings → What's new reopens the notes at any time, and its switch (`[startup] whats_new`, default true) turns the banner off.
 - The notes are bundled and read locally. The last version you ran is kept in `$XDG_STATE_HOME/kestrel/last-version`; a first run records it without a banner.
 
+## Update check
+
+- Off until you agree. Overview asks once with **Check** and **No thanks**, and the answer is saved; first-run setup offers the same switch on its final page, and Settings → Updates can change it at any time.
+- **Configuration:** `[updates] check` (`unasked`, `enabled`, or `disabled`).
+- While enabled, the first check runs shortly after launch and a check is due once a day from the last attempt, successful or not. Check now starts one immediately.
+- The request goes to `api.github.com` for the recent releases; GitHub sees your IP address and curl's user agent. A pre-release build is offered a newer pre-release or stable release, and a stable build only newer stable releases. Drafts and tags that are not `v<semver>` are ignored.
+- A newer version appears in a banner on Overview with **View release** and **Dismiss**, in the tray menu, and in Settings → Updates with its status and Check now. Dismiss hides the banner until an even newer version appears; the tray and Settings keep showing the offer.
+- The last attempt, the last result, and the dismissed version are kept in `$XDG_STATE_HOME/kestrel/update-check`. See [What's stored and sent](privacy.md#whats-stored-and-sent).
+
 ## Diagnostic logs
 
 - **Configuration:** `[logging] debug` (default false), `retention_days` (1–30; default 7), and `max_total_megabytes` (1–100; default 20), also editable under Settings → Diagnostic logs.

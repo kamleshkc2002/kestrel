@@ -29,8 +29,9 @@ use kestrel::{
     ClipboardLifecycle, ClipboardViewModel, CloseAction, ConfigurationWarning, FeaturePreset,
     LoadedConfiguration, MicrophoneCommand, MonitorReadout, MonitorViewModel, PanelMoveDirection,
     SnippetCommand, SnippetDraft, SnippetLimit, SnippetMatch, SnippetProviderPreference,
-    StatusNotifierIntegration, configuration_path, disable as disable_autostart,
-    enable as enable_autostart, export_file, import_file, load, save, setup,
+    StatusNotifierIntegration, UpdateCheckOutcome, UpdateCheckTrigger, configuration_path,
+    disable as disable_autostart, enable as enable_autostart, export_file, import_file, load, save,
+    setup,
 };
 use kestrel::{
     ApplicationWindowDecision, CaptureId, CaptureRequest, CommandBarCommand, CommandProviderSwitch,
@@ -62,6 +63,21 @@ type RefreshResult = Result<(ApplicationViewModel, String), String>;
 struct UpdateCheckUpdate {
     view_model: ApplicationViewModel,
     message: String,
+}
+
+/// User checks report their result as a toast; scheduled ones stay in the
+/// banner, the tray, and the Settings status.
+fn update_check_message(trigger: UpdateCheckTrigger, outcome: UpdateCheckOutcome) -> String {
+    match (trigger, outcome) {
+        (UpdateCheckTrigger::Scheduled, _) | (_, UpdateCheckOutcome::Ignored) => String::new(),
+        (UpdateCheckTrigger::User, UpdateCheckOutcome::UpToDate) => "Up to date".to_owned(),
+        (UpdateCheckTrigger::User, UpdateCheckOutcome::Available(release)) => {
+            format!("Kestrel {} is available", release.version)
+        }
+        (UpdateCheckTrigger::User, UpdateCheckOutcome::Failed(reason)) => {
+            format!("The update check failed: {reason}")
+        }
+    }
 }
 /// Which deferred reads this tick performs.
 #[derive(Debug, Clone, Copy, Default)]
@@ -1887,7 +1903,7 @@ impl ApplicationController {
 
     /// Starts an update check after consent, off the GTK thread and outside
     /// the state lock, so the window never waits for the network.
-    fn request_update_check(&self) {
+    fn request_update_check(&self, trigger: UpdateCheckTrigger) {
         if self.update_checking.replace(true) {
             return;
         }
@@ -1920,11 +1936,8 @@ impl ApplicationController {
                     let mut guard = state
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    let message = match guard.runtime.finish_update_check(SystemTime::now(), result)
-                    {
-                        Ok(_) => String::new(),
-                        Err(error) => format!("The update check failed: {error}"),
-                    };
+                    let outcome = guard.runtime.finish_update_check(SystemTime::now(), result);
+                    let message = update_check_message(trigger, outcome);
                     (guard.view_model(), message)
                 };
                 let _ = results.send_blocking(UpdateCheckUpdate {
@@ -1934,21 +1947,22 @@ impl ApplicationController {
             });
         if worker.is_err() {
             log::warn!(target: "kestrel.updates", "the update check worker could not start");
-            let view_model = {
+            let (view_model, outcome) = {
                 let mut guard = self
                     .state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.runtime.abandon_update_check(SystemTime::now());
-                guard.view_model()
+                let outcome = guard.runtime.abandon_update_check(SystemTime::now());
+                (guard.view_model(), outcome)
             };
             self.update_checking.set(false);
-            self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Full);
+            let message = update_check_message(trigger, outcome);
+            self.apply_refresh_result(Ok((view_model, message)), TargetedPanel::Full);
         }
     }
 
     /// Applies the daily interval before a timer-triggered check.
-    fn request_update_check_if_due(&self) {
+    fn request_update_check_if_due(&self, trigger: UpdateCheckTrigger) {
         let due = {
             let guard = self
                 .state
@@ -1957,7 +1971,7 @@ impl ApplicationController {
             guard.runtime.update_check_due(SystemTime::now())
         };
         if due {
-            self.request_update_check();
+            self.request_update_check(trigger);
         }
     }
 
@@ -3939,7 +3953,7 @@ fn main() -> glib::ExitCode {
         let weak_update_controller = Rc::downgrade(&controller);
         glib::timeout_add_seconds_local(30, move || {
             if let Some(controller) = weak_update_controller.upgrade() {
-                controller.request_update_check_if_due();
+                controller.request_update_check_if_due(UpdateCheckTrigger::Scheduled);
             }
             glib::ControlFlow::Break
         });
@@ -3949,7 +3963,7 @@ fn main() -> glib::ExitCode {
     let weak_update_controller = Rc::downgrade(&controller);
     glib::timeout_add_seconds_local(60 * 60, move || {
         if let Some(controller) = weak_update_controller.upgrade() {
-            controller.request_update_check_if_due();
+            controller.request_update_check_if_due(UpdateCheckTrigger::Scheduled);
         }
         glib::ControlFlow::Continue
     });
@@ -4159,7 +4173,9 @@ fn dispatch_commands(
                     ControllerOperation::SetUpdateCheck(check),
                     "kestrel-update-consent",
                 ),
-                ApplicationCommand::CheckForUpdates => controller.request_update_check(),
+                ApplicationCommand::CheckForUpdates => {
+                    controller.request_update_check(UpdateCheckTrigger::User)
+                }
                 ApplicationCommand::DismissUpdate => controller.request_operation(
                     ControllerOperation::DismissUpdate,
                     "kestrel-update-dismiss",
@@ -4548,6 +4564,41 @@ mod tests {
     use super::{CloseOutcome, close_outcome, load_startup_configuration, persist};
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    #[test]
+    fn only_user_update_checks_report_their_outcome() {
+        use super::{UpdateCheckOutcome, UpdateCheckTrigger, update_check_message};
+
+        let release = kestrel_core::ReleaseInfo {
+            version: semver::Version::parse("0.6.0-preview.5").expect("version parses"),
+            url: "https://example.invalid/release".to_owned(),
+            prerelease: true,
+        };
+        let available = UpdateCheckOutcome::Available(release);
+        assert!(
+            update_check_message(UpdateCheckTrigger::Scheduled, available.clone()).is_empty(),
+            "a scheduled check stays quiet"
+        );
+        assert_eq!(
+            update_check_message(UpdateCheckTrigger::User, UpdateCheckOutcome::UpToDate),
+            "Up to date"
+        );
+        assert_eq!(
+            update_check_message(UpdateCheckTrigger::User, available),
+            "Kestrel 0.6.0-preview.5 is available"
+        );
+        assert_eq!(
+            update_check_message(
+                UpdateCheckTrigger::User,
+                UpdateCheckOutcome::Failed("GitHub could not be reached.".to_owned())
+            ),
+            "The update check failed: GitHub could not be reached."
+        );
+        assert!(
+            update_check_message(UpdateCheckTrigger::User, UpdateCheckOutcome::Ignored).is_empty(),
+            "a result after consent was withdrawn stays quiet"
+        );
+    }
 
     #[test]
     fn close_decision_asks_once_and_ignores_a_second_request() {
