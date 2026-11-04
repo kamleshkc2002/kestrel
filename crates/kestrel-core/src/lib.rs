@@ -12,6 +12,8 @@ mod keep_awake;
 pub use keep_awake::{
     KEEP_AWAKE_MAX, KEEP_AWAKE_MIN, KEEP_AWAKE_PRESETS, KeepAwakeDuration, KeepAwakeDurationError,
 };
+mod updates;
+pub use updates::{ReleaseInfo, UpdateCheck, UpdatesConfiguration, newest_offer};
 
 /// Debug builds run as a separate application: their own bus name, settings,
 /// and data, so development never touches an installed release.
@@ -497,6 +499,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub startup: StartupConfiguration,
     #[serde(default)]
+    pub updates: UpdatesConfiguration,
+    #[serde(default)]
     pub monitoring: MonitorConfiguration,
     #[serde(default)]
     pub audio: AudioConfiguration,
@@ -535,6 +539,7 @@ impl Default for ApplicationConfiguration {
             features: BTreeMap::new(),
             ui: UiConfiguration::default(),
             startup: StartupConfiguration::default(),
+            updates: UpdatesConfiguration::default(),
             monitoring: MonitorConfiguration::default(),
             audio: AudioConfiguration::default(),
             speed_test: SpeedTestConfiguration::default(),

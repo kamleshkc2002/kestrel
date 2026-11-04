@@ -32,10 +32,12 @@ pub struct SetupPresetViewModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetupViewModel {
     pub presets: Vec<SetupPresetViewModel>,
+    /// The final page's update-check switch starts from this choice.
+    pub update_check: kestrel_core::UpdateCheck,
 }
 
 impl SetupViewModel {
-    pub fn new(features: &[FeatureViewModel]) -> Self {
+    pub fn new(features: &[FeatureViewModel], update_check: kestrel_core::UpdateCheck) -> Self {
         let registered = features
             .iter()
             .filter(|feature| feature.configurable && feature.id != crate::STATUS_NOTIFIER_ID)
@@ -70,7 +72,10 @@ impl SetupViewModel {
             detail: "Nothing changes; pick features in the Feature Hub.".to_owned(),
             sensitive: Vec::new(),
         });
-        Self { presets }
+        Self {
+            presets,
+            update_check,
+        }
     }
 }
 

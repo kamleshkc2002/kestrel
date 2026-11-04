@@ -20,7 +20,7 @@ use crate::{
         RecordingPresentation, RecordingViewModel, ScratchpadPresentation, ScratchpadViewModel,
         ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
         ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
-        SpeedTestViewModel, WhatsNewViewModel,
+        SpeedTestViewModel, UpdatesViewModel, WhatsNewViewModel,
     },
     whats_new::{self, Change},
 };
@@ -273,6 +273,11 @@ pub struct ApplicationRuntime {
     quick_toggles: QuickToggleService,
     /// The length the next keep-awake session uses; memory only.
     keep_awake_choice: KeepAwakeDuration,
+    /// Consent, the last result, and the dismissed version.
+    update_service: kestrel_services::updates::UpdateService,
+    update_state_path: Option<PathBuf>,
+    /// Setup was finished or skipped, so the consent card may show.
+    setup_done: bool,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorTick {
@@ -566,6 +571,10 @@ impl ApplicationRuntime {
         let capture_directory = capture_directory();
         let (shortcut_requests, shortcut_skipped) =
             Self::shortcut_requests(&configuration.shortcuts);
+        let update_state_path = crate::update_state::state_path();
+        let stored_updates = crate::update_state::read(update_state_path.as_deref());
+        let setup_done = crate::setup::state(crate::setup::state_path().as_deref())
+            == crate::setup::SetupState::Done;
 
         let mut runtime = Self {
             registry,
@@ -657,6 +666,12 @@ impl ApplicationRuntime {
             scratchpad_policy: configuration.scratchpad,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
             keep_awake_choice: KeepAwakeDuration::UntilStopped,
+            update_service: kestrel_services::updates::UpdateService::new(
+                configuration.updates.check,
+                stored_updates,
+            ),
+            update_state_path,
+            setup_done,
         };
         runtime.configure_audio_preferences(&configuration.audio);
         Ok(runtime)
@@ -710,6 +725,7 @@ impl ApplicationRuntime {
         configuration: &ApplicationConfiguration,
     ) -> Result<(), RegistryError> {
         let before = self.feature_states();
+        self.update_service.set_check(configuration.updates.check);
         self.screen_tool_settings = configuration.screen_tools.clone();
         self.recording_settings = configuration.recording.clone();
         self.screen_tools
@@ -996,6 +1012,12 @@ impl ApplicationRuntime {
             &model.features,
             configuration,
         );
+        model.updates = UpdatesViewModel::new(
+            self.update_service.check(),
+            &self.update_service.snapshot(),
+            self.setup_done,
+            SystemTime::now(),
+        );
         model
     }
 
@@ -1143,6 +1165,7 @@ mod snippets;
 mod system;
 #[cfg(test)]
 mod test_support;
+mod updates;
 mod window_decision;
 
 use capture::capture_directory;

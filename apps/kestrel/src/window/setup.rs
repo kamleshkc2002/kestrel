@@ -17,7 +17,7 @@ pub(crate) fn open_setup(
     view_model: &ApplicationViewModel,
     commands: &Sender<ApplicationCommand>,
 ) {
-    let choices = SetupViewModel::new(&view_model.features);
+    let choices = SetupViewModel::new(&view_model.features, view_model.updates.check);
     let dialog = adw::Dialog::builder()
         .title("Set up Kestrel")
         .content_width(560)
@@ -26,7 +26,13 @@ pub(crate) fn open_setup(
     let navigation = adw::NavigationView::new();
     dialog.set_child(Some(&navigation));
 
-    let preset_page = preset_step(&dialog, &navigation, commands, choices.presets);
+    let preset_page = preset_step(
+        &dialog,
+        &navigation,
+        commands,
+        choices.presets,
+        choices.update_check,
+    );
     let welcome = welcome_step(&dialog, &navigation, commands, preset_page);
     navigation.push(&welcome);
     dialog.present(Some(window));
@@ -75,6 +81,7 @@ fn preset_step(
     navigation: &adw::NavigationView,
     commands: &Sender<ApplicationCommand>,
     presets: Vec<SetupPresetViewModel>,
+    update_check: kestrel::UpdateCheck,
 ) -> adw::NavigationPage {
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder()
@@ -123,66 +130,88 @@ fn preset_step(
         let Some((preset, sensitive)) = selected else {
             return;
         };
-        match preset {
-            Some(preset) => navigation_for_go.push(&finish_step(
-                &dialog_for_go,
-                preset,
-                sensitive,
-                &commands_for_go,
-            )),
-            None => {
-                let _ = commands_for_go.try_send(ApplicationCommand::FinishSetup {
-                    preset: None,
-                    left_off: Vec::new(),
-                });
-                dialog_for_go.close();
-            }
-        }
+        navigation_for_go.push(&finish_step(
+            &dialog_for_go,
+            preset,
+            sensitive,
+            update_check,
+            &commands_for_go,
+        ));
     });
 
     navigation_page("Choose a preset", &page, &footer_bar(&[&go_on]))
 }
 
-/// Explanation step. Every row starts on; switching one off leaves that
-/// feature out of the preset.
+/// Final step. Every explained feature starts on; switching one off leaves
+/// that feature out of the preset. The update check starts off unless it is
+/// already on.
 fn finish_step(
     dialog: &adw::Dialog,
-    preset: FeaturePreset,
+    preset: Option<FeaturePreset>,
     rows: Vec<SetupSensitiveViewModel>,
+    update_check: kestrel::UpdateCheck,
     commands: &Sender<ApplicationCommand>,
 ) -> adw::NavigationPage {
     let page = adw::PreferencesPage::new();
-    let group = adw::PreferencesGroup::builder()
-        .title("Before you start")
-        .description(
-            "These features use something outside the app. Switch off any you do not want now; \
-             you can turn them on later in the Feature Hub.",
-        )
+    let (title, switches) = match preset {
+        Some(_) => {
+            let group = adw::PreferencesGroup::builder()
+                .title("Before you start")
+                .description(
+                    "These features use something outside the app. Switch off any you do not \
+                     want now; you can turn them on later in the Feature Hub.",
+                )
+                .build();
+            let switches = Rc::new(RefCell::new(Vec::<(String, gtk::Switch)>::new()));
+            for row in rows {
+                let line = adw::ActionRow::builder()
+                    .title(row.label.as_str())
+                    .subtitle(format!("{}\n{}", row.uses, row.keeps))
+                    .subtitle_lines(0)
+                    .build();
+                let toggle = gtk::Switch::builder()
+                    .active(true)
+                    .valign(Align::Center)
+                    .build();
+                line.add_suffix(&toggle);
+                line.set_activatable_widget(Some(&toggle));
+                group.add(&line);
+                switches
+                    .borrow_mut()
+                    .push((row.feature_id.to_owned(), toggle));
+            }
+            if switches.borrow().is_empty() {
+                group.set_description(Some(
+                    "This preset turns on no features that use anything outside the app.",
+                ));
+            }
+            page.add(&group);
+            ("Before you start", switches)
+        }
+        None => {
+            let group = adw::PreferencesGroup::builder()
+                .title("Choose features later")
+                .description("Nothing changes now; pick features in the Feature Hub.")
+                .build();
+            page.add(&group);
+            ("Finish setup", Rc::new(RefCell::new(Vec::new())))
+        }
+    };
+
+    let updates = adw::PreferencesGroup::builder().title("Updates").build();
+    let update_row = adw::ActionRow::builder()
+        .title("Check for new versions")
+        .subtitle("Once a day. Contacts api.github.com, which sees your IP address.")
+        .subtitle_lines(0)
         .build();
-    let switches = Rc::new(RefCell::new(Vec::<(String, gtk::Switch)>::new()));
-    for row in rows {
-        let line = adw::ActionRow::builder()
-            .title(row.label.as_str())
-            .subtitle(format!("{}\n{}", row.uses, row.keeps))
-            .subtitle_lines(0)
-            .build();
-        let toggle = gtk::Switch::builder()
-            .active(true)
-            .valign(Align::Center)
-            .build();
-        line.add_suffix(&toggle);
-        line.set_activatable_widget(Some(&toggle));
-        group.add(&line);
-        switches
-            .borrow_mut()
-            .push((row.feature_id.to_owned(), toggle));
-    }
-    if switches.borrow().is_empty() {
-        group.set_description(Some(
-            "This preset turns on no features that use anything outside the app.",
-        ));
-    }
-    page.add(&group);
+    let update_switch = gtk::Switch::builder()
+        .active(update_check == kestrel::UpdateCheck::Enabled)
+        .valign(Align::Center)
+        .build();
+    update_row.add_suffix(&update_switch);
+    update_row.set_activatable_widget(Some(&update_switch));
+    updates.add(&update_row);
+    page.add(&updates);
 
     let finish = gtk::Button::with_label("Finish");
     finish.add_css_class("suggested-action");
@@ -195,14 +224,20 @@ fn finish_step(
             .filter(|(_, toggle)| !toggle.is_active())
             .map(|(feature_id, _)| feature_id.clone())
             .collect();
+        let update_check = if update_switch.is_active() {
+            kestrel::UpdateCheck::Enabled
+        } else {
+            kestrel::UpdateCheck::Disabled
+        };
         let _ = commands_for_finish.try_send(ApplicationCommand::FinishSetup {
-            preset: Some(preset),
+            preset,
             left_off,
+            update_check,
         });
         dialog_for_finish.close();
     });
 
-    navigation_page("Before you start", &page, &footer_bar(&[&finish]))
+    navigation_page(title, &page, &footer_bar(&[&finish]))
 }
 
 fn navigation_page(

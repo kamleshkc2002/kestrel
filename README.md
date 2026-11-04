@@ -61,8 +61,8 @@ chmod +x "$FILE"
 
 ## Privacy
 
-- No telemetry or accounts, and no update check or crash reporting.
-- Nothing contacts a network host without your action, except the sound-server connection, which goes where libpulse is configured to connect.
+- No telemetry, accounts, or crash reporting. The update check is off until you turn it on.
+- Nothing contacts a network host without your action, except the sound-server connection, which goes where libpulse is configured to connect, and the update check once you turn it on.
 - Clipboard history is memory only; locking the session, sleeping, or quitting wipes it.
 - Settings and data stay in your XDG folders, under a `kestrel` folder.
 

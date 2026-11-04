@@ -14,6 +14,13 @@ answer as `minimize` or `quit`. Files written by older builds contain
 `minimize` even when nobody chose it, so the question appears once after the
 upgrade.
 
+`[updates] check` is `unasked` (the default), `enabled`, or `disabled`. Overview
+asks once and saves either answer, so `unasked` in an existing file shows the
+question; setup's final page saves the switch's answer. While `enabled`, the
+update check is due once a day from the last attempt and contacts
+`api.github.com` for the release list. Settings → Updates shows the state, has
+Check now, and can turn the check off.
+
 Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub marks each feature as running, needing
 attention (a missing dependency or permission, or a fix to apply), unavailable
