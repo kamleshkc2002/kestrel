@@ -9,7 +9,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -113,28 +113,7 @@ impl fmt::Display for SpeedTestError {
 
 impl std::error::Error for SpeedTestError {}
 
-#[derive(Debug, Clone)]
-pub struct CancellationToken(Arc<AtomicBool>);
-
-impl Default for CancellationToken {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl CancellationToken {
-    pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
-    }
-
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
+pub use crate::cancellation::CancellationToken;
 
 pub trait SpeedTestBackend: Send + Sync + 'static {
     fn provider(&self) -> SpeedTestProvider;

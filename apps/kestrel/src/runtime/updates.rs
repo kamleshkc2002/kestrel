@@ -43,6 +43,12 @@ impl ApplicationRuntime {
         self.update_service.begin_check(now)
     }
 
+    /// A cancelled check records nothing new and only drops the in-progress
+    /// status.
+    pub fn cancel_update_check(&mut self) {
+        self.update_service.cancel_check();
+    }
+
     /// Records a finished check. A result that arrives after consent was
     /// withdrawn is ignored, and a failure keeps the last offer.
     pub fn finish_update_check(

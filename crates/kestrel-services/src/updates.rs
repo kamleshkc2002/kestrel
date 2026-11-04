@@ -109,6 +109,12 @@ impl UpdateService {
         true
     }
 
+    /// A cancelled check keeps the last result and only drops the
+    /// in-progress status.
+    pub fn cancel_check(&mut self) {
+        self.restore_status();
+    }
+
     pub fn record_success(&mut self, now: SystemTime, offer: Option<ReleaseInfo>) {
         self.last_attempt = Some(now);
         self.last_checked = Some(now);

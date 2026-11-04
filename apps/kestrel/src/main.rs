@@ -38,6 +38,7 @@ use kestrel::{
     FocusTarget,
 };
 use kestrel_core::{ApplicationConfiguration, FeatureConfigurationSnapshot};
+use kestrel_platform::cancellation::CancellationToken;
 use kestrel_platform::notifications::{
     AlertNotification, AlertNotifier, CaptureNotificationAction, DesktopNotifier, NotificationEvent,
 };
@@ -67,9 +68,11 @@ fn proceed_after_attempt(trigger: UpdateCheckTrigger, recorded: bool) -> bool {
 }
 
 /// A finished update check's toast text, applied on the GTK thread, which
-/// rebuilds the view model from current state.
+/// rebuilds the view model from current state. A cancelled check records
+/// nothing and only clears the in-progress status.
 struct UpdateCheckUpdate {
     message: String,
+    cancelled: bool,
 }
 
 /// User checks report their result as a toast; scheduled ones stay in the
@@ -1017,6 +1020,9 @@ struct ApplicationController {
     tray_update: RefCell<Option<kestrel::TrayUpdateSink>>,
     /// One update check runs at a time; its result returns to this thread.
     update_checking: Cell<bool>,
+    /// The running check, cancelled and joined outside the state lock on
+    /// shutdown; cleared when its result is delivered.
+    update_worker: RefCell<Option<(CancellationToken, thread::JoinHandle<()>)>>,
     update_results: Sender<UpdateCheckUpdate>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
@@ -1157,6 +1163,7 @@ impl ApplicationController {
                     .and_then(StatusNotifierIntegration::update_sink),
             ),
             update_checking: Cell::new(false),
+            update_worker: RefCell::new(None),
             update_results,
             status_notifier: RefCell::new(status_notifier),
             appearance,
@@ -1747,6 +1754,17 @@ impl ApplicationController {
         }
     }
 
+    /// Cancels a running update check and waits for its worker, so curl's
+    /// process group ends with the app. Joins outside the state lock because
+    /// the worker's completion path takes it.
+    fn stop_update_check(&self) {
+        let Some((cancel, worker)) = self.update_worker.borrow_mut().take() else {
+            return;
+        };
+        cancel.cancel();
+        let _ = worker.join();
+    }
+
     /// Removes the tray entry and its readout icons off the GTK thread.
     fn stop_tray(&self) -> Option<thread::JoinHandle<()>> {
         let sink = self.tray.borrow_mut().take();
@@ -1930,6 +1948,8 @@ impl ApplicationController {
         self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Full);
         let state = Arc::clone(&self.state);
         let results = self.update_results.clone();
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
         let worker = thread::Builder::new()
             .name("kestrel-update-check".to_owned())
             .spawn(move || {
@@ -1954,16 +1974,32 @@ impl ApplicationController {
                                 .abandon_update_check(SystemTime::now(), message);
                             update_check_message(trigger, outcome)
                         };
-                        let _ = results.send_blocking(UpdateCheckUpdate { message });
+                        let _ = results.send_blocking(UpdateCheckUpdate {
+                            message,
+                            cancelled: false,
+                        });
                         return;
                     }
                 }
-                let result = kestrel_platform::updates::fetch_releases().map(|releases| {
-                    releases
-                        .into_iter()
-                        .filter_map(kestrel_platform::updates::RawRelease::into_release)
-                        .collect::<Vec<_>>()
-                });
+                let result =
+                    kestrel_platform::updates::fetch_releases(&worker_cancel).map(|releases| {
+                        releases
+                            .into_iter()
+                            .filter_map(kestrel_platform::updates::RawRelease::into_release)
+                            .collect::<Vec<_>>()
+                    });
+                if matches!(
+                    &result,
+                    Err(error) if error.kind == kestrel_platform::updates::UpdateFetchErrorKind::Cancelled
+                ) {
+                    // Quitting cancels the check; nothing new is recorded, and
+                    // the GTK loop may already be gone.
+                    let _ = results.try_send(UpdateCheckUpdate {
+                        message: String::new(),
+                        cancelled: true,
+                    });
+                    return;
+                }
                 let message = {
                     let mut guard = state
                         .lock()
@@ -1971,23 +2007,30 @@ impl ApplicationController {
                     let outcome = guard.runtime.finish_update_check(SystemTime::now(), result);
                     update_check_message(trigger, outcome)
                 };
-                let _ = results.send_blocking(UpdateCheckUpdate { message });
+                let _ = results.send_blocking(UpdateCheckUpdate {
+                    message,
+                    cancelled: false,
+                });
             });
-        if worker.is_err() {
-            log::warn!(target: "kestrel.updates", "the update check worker could not start");
-            let (view_model, outcome) = {
-                let mut guard = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let outcome = guard
-                    .runtime
-                    .abandon_update_check(SystemTime::now(), "The update check could not start.");
-                (guard.view_model(), outcome)
-            };
-            self.update_checking.set(false);
-            let message = update_check_message(trigger, outcome);
-            self.apply_refresh_result(Ok((view_model, message)), TargetedPanel::Full);
+        match worker {
+            Ok(handle) => *self.update_worker.borrow_mut() = Some((cancel, handle)),
+            Err(_) => {
+                log::warn!(target: "kestrel.updates", "the update check worker could not start");
+                let (view_model, outcome) = {
+                    let mut guard = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let outcome = guard.runtime.abandon_update_check(
+                        SystemTime::now(),
+                        "The update check could not start.",
+                    );
+                    (guard.view_model(), outcome)
+                };
+                self.update_checking.set(false);
+                let message = update_check_message(trigger, outcome);
+                self.apply_refresh_result(Ok((view_model, message)), TargetedPanel::Full);
+            }
         }
     }
 
@@ -2014,14 +2057,18 @@ impl ApplicationController {
     }
 
     fn finish_update_check(&self, update: UpdateCheckUpdate) {
+        self.update_worker.borrow_mut().take();
         self.update_checking.set(false);
         // Settings may have changed while curl ran, so the window is built
         // from current state instead of the worker's snapshot.
         let view_model = {
-            let guard = self
+            let mut guard = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if update.cancelled {
+                guard.runtime.cancel_update_check();
+            }
             guard.view_model()
         };
         self.apply_refresh_result(Ok((view_model, update.message)), TargetedPanel::Full);
@@ -4052,6 +4099,7 @@ fn main() -> glib::ExitCode {
     });
 
     let exit = application.run_with_args(&arguments);
+    controller.stop_update_check();
     if let Some(stopping) = controller.stop_tray() {
         let _ = stopping.join();
     }
