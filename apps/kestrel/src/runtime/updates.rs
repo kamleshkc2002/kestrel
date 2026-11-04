@@ -132,7 +132,7 @@ impl ApplicationRuntime {
     }
 }
 
-fn current_version() -> Version {
+pub(super) fn current_version() -> Version {
     Version::parse(CURRENT_VERSION).expect("the build version is valid semver")
 }
 

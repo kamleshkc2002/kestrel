@@ -669,6 +669,7 @@ impl ApplicationRuntime {
             update_service: kestrel_services::updates::UpdateService::new(
                 configuration.updates.check,
                 stored_updates,
+                &updates::current_version(),
             ),
             update_state_path,
             setup_done,
