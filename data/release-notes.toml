@@ -3,15 +3,3 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
-
-[[change]]
-feature = "kestrel"
-text = "Closing the window the first time asks whether to keep running in the background or quit, and remembers the answer; the dock's own Quit item now leads to that question too."
-
-[[change]]
-feature = "kestrel"
-text = "An optional update check, off until you agree, looks for a newer version once a day and shows it on Overview, in the tray menu, and in Settings."
-
-[[change]]
-feature = "audio.mixer"
-text = "Outputs with more than one port, such as speakers and headphones on one sound card, get a port picker, command bar entries, and a shortcut-ready command to switch between them."
