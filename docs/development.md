@@ -36,6 +36,18 @@ uses the host's plugins.
 bash scripts/build-appimage.sh 0.1.0
 ```
 
+Releases from 0.6.0-preview.6 on also carry a minisign signature
+(`Kestrel-<version>-x86_64.AppImage.minisig`), made in the release workflow with
+the `MINISIGN_SECRET_KEY` repository secret. The public key is
+[`data/release-signing.pub`](../data/release-signing.pub); check a download with:
+
+```bash
+minisign -V -p data/release-signing.pub -m Kestrel-<version>-x86_64.AppImage
+```
+
+The `.sha256` file only detects a damaged download. The signature shows the
+release was made with the project's key.
+
 ## Development
 
 To propose a change, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md).
