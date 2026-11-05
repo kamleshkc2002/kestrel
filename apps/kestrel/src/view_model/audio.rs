@@ -1,7 +1,7 @@
 //! Audio mixer and output presentation.
 
 use super::*;
-use kestrel_platform::audio::OutputKind;
+use kestrel_platform::audio::{OutputKind, OutputPort, PortAvailability};
 
 pub(crate) struct AudioPresentation<'a> {
     pub snapshot: Option<&'a AudioSnapshot>,
@@ -99,6 +99,10 @@ pub struct AudioOutputViewModel {
     pub volume_percent: u8,
     pub muted: bool,
     pub kind: OutputKind,
+    /// Ports in server order, as `(server name, label)`.
+    pub ports: Vec<(String, String)>,
+    /// Server name of the active port.
+    pub active_port: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,38 +183,13 @@ impl AudioViewModel {
             };
         };
 
-        let outputs = snapshot
-            .outputs
-            .iter()
-            .map(|output| AudioOutputViewModel {
-                id: output.id,
-                title: output.description.clone(),
-                name: output.name.clone(),
-                detail: audio_output_detail(output),
-                is_default: output.is_default,
-                volume_percent: output.volume_percent,
-                muted: output.muted,
-                kind: output.kind,
-            })
-            .collect::<Vec<_>>();
+        let outputs = snapshot.outputs.iter().map(output_view).collect::<Vec<_>>();
         let output_groups = snapshot
             .outputs_by_card()
             .into_iter()
             .map(|(label, devices)| AudioOutputGroupViewModel {
                 label: label.unwrap_or_else(|| "Other outputs".to_owned()),
-                outputs: devices
-                    .into_iter()
-                    .map(|output| AudioOutputViewModel {
-                        id: output.id,
-                        title: output.description.clone(),
-                        name: output.name.clone(),
-                        detail: audio_output_detail(output),
-                        is_default: output.is_default,
-                        volume_percent: output.volume_percent,
-                        muted: output.muted,
-                        kind: output.kind,
-                    })
-                    .collect(),
+                outputs: devices.into_iter().map(output_view).collect(),
             })
             .collect();
         let favorites = &configuration.mixer_favorites;
@@ -348,6 +327,44 @@ pub fn output_icon(kind: OutputKind) -> &'static str {
         OutputKind::Display => "video-display-symbolic",
         OutputKind::Bluetooth => "bluetooth-active-symbolic",
         OutputKind::Unknown => "audio-card-symbolic",
+    }
+}
+
+fn output_view(output: &kestrel_platform::audio::OutputDevice) -> AudioOutputViewModel {
+    AudioOutputViewModel {
+        id: output.id,
+        title: output.description.clone(),
+        name: output.name.clone(),
+        detail: audio_output_detail(output),
+        is_default: output.is_default,
+        volume_percent: output.volume_percent,
+        muted: output.muted,
+        kind: output.kind,
+        ports: output_ports(output),
+        active_port: output.active_port.clone(),
+    }
+}
+
+/// The ports worth offering, in server order: unplugged ones only while they
+/// are active or nothing else is usable, so the active port stays visible.
+fn output_ports(output: &kestrel_platform::audio::OutputDevice) -> Vec<(String, String)> {
+    let eligible = kestrel_services::audio::eligible_ports(&output.ports);
+    output
+        .ports
+        .iter()
+        .filter(|port| {
+            output.active_port.as_deref() == Some(port.name.as_str())
+                || eligible.iter().any(|candidate| candidate.name == port.name)
+        })
+        .map(|port| (port.name.clone(), audio_port_label(port)))
+        .collect()
+}
+
+/// The port description, marking a port without a plugged-in device.
+fn audio_port_label(port: &OutputPort) -> String {
+    match port.availability {
+        PortAvailability::Unavailable => format!("{} (unplugged)", port.description),
+        PortAvailability::Unknown | PortAvailability::Available => port.description.clone(),
     }
 }
 
@@ -608,6 +625,118 @@ mod tests {
         assert!(
             audio.status.contains("1 playing streams"),
             "the status must count playing streams even when inactive ones are listed"
+        );
+    }
+
+    #[test]
+    fn unplugged_ports_are_omitted_while_another_port_is_usable() {
+        let configuration = ApplicationConfiguration::default();
+        let snapshot = audio_snapshot(Vec::new(), 0);
+        let view_model = AudioViewModel::from_presentation(
+            &configuration.audio,
+            AudioPresentation {
+                snapshot: Some(&snapshot),
+                running: true,
+                policy: AudioPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            view_model.outputs[0].ports,
+            vec![("analog-output-speaker".to_string(), "Speakers".to_string())],
+            "the unplugged headphones are not offered while speakers play"
+        );
+    }
+
+    #[test]
+    fn an_active_unplugged_port_stays_visible_and_labelled() {
+        let configuration = ApplicationConfiguration::default();
+        let mut snapshot = audio_snapshot(Vec::new(), 0);
+        snapshot.outputs[0].active_port = Some("analog-output-headphones".to_string());
+        let view_model = AudioViewModel::from_presentation(
+            &configuration.audio,
+            AudioPresentation {
+                snapshot: Some(&snapshot),
+                running: true,
+                policy: AudioPolicy::default(),
+            },
+        );
+
+        let output = &view_model.outputs[0];
+        assert_eq!(
+            output.ports,
+            vec![
+                ("analog-output-speaker".to_string(), "Speakers".to_string()),
+                (
+                    "analog-output-headphones".to_string(),
+                    "Headphones (unplugged)".to_string()
+                ),
+            ],
+            "the active port stays listed even while it is unplugged"
+        );
+        assert_eq!(
+            output.active_port.as_deref(),
+            Some("analog-output-headphones")
+        );
+    }
+
+    #[test]
+    fn ports_without_jack_detection_are_all_listed() {
+        let configuration = ApplicationConfiguration::default();
+        let mut snapshot = audio_snapshot(Vec::new(), 0);
+        for port in &mut snapshot.outputs[0].ports {
+            port.availability = kestrel_platform::audio::PortAvailability::Unknown;
+        }
+        let view_model = AudioViewModel::from_presentation(
+            &configuration.audio,
+            AudioPresentation {
+                snapshot: Some(&snapshot),
+                running: true,
+                policy: AudioPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            view_model.outputs[0].ports,
+            vec![
+                ("analog-output-speaker".to_string(), "Speakers".to_string()),
+                (
+                    "analog-output-headphones".to_string(),
+                    "Headphones".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_usable_port_offers_no_picker() {
+        let configuration = ApplicationConfiguration::default();
+        let mut snapshot = audio_snapshot(Vec::new(), 0);
+        for output in &mut snapshot.outputs {
+            output.ports.truncate(1);
+        }
+        let view_model = AudioViewModel::from_presentation(
+            &configuration.audio,
+            AudioPresentation {
+                snapshot: Some(&snapshot),
+                running: true,
+                policy: AudioPolicy::default(),
+            },
+        );
+
+        assert!(
+            view_model
+                .outputs
+                .iter()
+                .all(|output| output.ports.len() < 2)
+        );
+        assert!(
+            view_model
+                .output_groups
+                .iter()
+                .flat_map(|group| &group.outputs)
+                .all(|output| output.ports.len() < 2),
+            "the grouped outputs agree"
         );
     }
 

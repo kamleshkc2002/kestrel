@@ -151,6 +151,35 @@ fn contains_folded(haystack: &str, needle: &str) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
+/// Maps the server's jack detection to a port state.
+fn port_availability(available: pulse::def::PortAvailable) -> PortAvailability {
+    match available {
+        pulse::def::PortAvailable::Yes => PortAvailability::Available,
+        pulse::def::PortAvailable::No => PortAvailability::Unavailable,
+        _ => PortAvailability::Unknown,
+    }
+}
+
+/// Whether an output port has a device plugged in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PortAvailability {
+    /// The card has no jack detection for this port.
+    #[default]
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+/// A selectable port of a playback output, such as speakers or headphones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputPort {
+    /// Server port name, used to select the port.
+    pub name: String,
+    /// User-facing port label.
+    pub description: String,
+    pub availability: PortAvailability,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {
     pub id: u32,
@@ -162,6 +191,10 @@ pub struct OutputDevice {
     /// Card label used to group devices.
     pub card_name: Option<String>,
     pub port_description: Option<String>,
+    /// Ports in server order.
+    pub ports: Vec<OutputPort>,
+    /// Name of the active port.
+    pub active_port: Option<String>,
     pub kind: OutputKind,
 }
 
@@ -230,6 +263,8 @@ pub trait AudioBackend {
     fn set_output_mute(&mut self, output_id: u32, muted: bool) -> Result<(), AudioError>;
     /// Sets the named output as the server-wide default.
     fn set_default_output(&mut self, output_name: &str) -> Result<(), AudioError>;
+    /// Switches an output to one of its ports.
+    fn set_output_port(&mut self, output_id: u32, port_name: &str) -> Result<(), AudioError>;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -366,6 +401,22 @@ impl AudioBackend for PulseAudioBackend {
         session.drive_operation(&operation)?;
         accepted(succeeded.get(), || {
             format!("PulseAudio rejected default output {output_name}")
+        })
+    }
+
+    fn set_output_port(&mut self, output_id: u32, port_name: &str) -> Result<(), AudioError> {
+        let succeeded = Rc::new(Cell::new(None));
+        let result = Rc::clone(&succeeded);
+        let mut session = PulseSession::connect()?;
+        let operation = session.context.introspect().set_sink_port_by_index(
+            output_id,
+            port_name,
+            Some(Box::new(move |success| result.set(Some(success)))),
+        );
+        session.drive_operation(&operation)?;
+        accepted(succeeded.get(), || {
+            // Keep the port and device names out of user-visible errors.
+            format!("PulseAudio rejected a port change for output {output_id}")
         })
     }
 }
@@ -716,6 +767,22 @@ impl PulseSession {
                         .active_port
                         .as_ref()
                         .and_then(|port| port.description.as_deref().map(str::to_owned));
+                    let ports = info
+                        .ports
+                        .iter()
+                        .filter_map(|port| {
+                            let name = port.name.as_deref()?;
+                            Some(OutputPort {
+                                name: name.to_owned(),
+                                description: port.description.as_deref().unwrap_or(name).to_owned(),
+                                availability: port_availability(port.available),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let active_port = info
+                        .active_port
+                        .as_ref()
+                        .and_then(|port| port.name.as_deref().map(str::to_owned));
                     let form_factor = info.proplist.get_str(properties::DEVICE_FORM_FACTOR);
                     let bus = info.proplist.get_str(properties::DEVICE_BUS);
                     let kind = output_kind(
@@ -740,6 +807,8 @@ impl PulseSession {
                         is_default,
                         card_name,
                         port_description,
+                        ports,
+                        active_port,
                         kind,
                     });
                 }
@@ -1135,11 +1204,12 @@ pub fn capability_for_error(error: &AudioError) -> CapabilityReport {
 mod tests {
     use super::{
         AudioBackend, AudioDiscovery, AudioErrorKind, AudioServer, InputDevice, InputDiscovery,
-        OutputDevice, OutputKind, PulseAudioBackend, capability_for_discovery, channel_volumes,
-        microphone_capability_for, microphone_capability_for_error, output_kind, volume_percent,
+        OutputDevice, OutputKind, OutputPort, PortAvailability, PulseAudioBackend,
+        capability_for_discovery, channel_volumes, microphone_capability_for,
+        microphone_capability_for_error, output_kind, port_availability, volume_percent,
     };
     use kestrel_core::{CapabilityStatus, MAX_AUDIO_BOOST_PERCENT};
-    use libpulse_binding::volume::Volume;
+    use libpulse_binding::{def::PortAvailable, volume::Volume};
 
     fn output(output_id: u32) -> OutputDevice {
         OutputDevice {
@@ -1151,7 +1221,31 @@ mod tests {
             is_default: output_id == 1,
             card_name: Some("Built-in Audio".to_string()),
             port_description: Some("Headphones".to_string()),
+            ports: vec![
+                OutputPort {
+                    name: "analog-output-speaker".to_string(),
+                    description: "Speakers".to_string(),
+                    availability: PortAvailability::Available,
+                },
+                OutputPort {
+                    name: "analog-output-headphones".to_string(),
+                    description: "Headphones".to_string(),
+                    availability: PortAvailability::Unavailable,
+                },
+            ],
+            active_port: Some("analog-output-speaker".to_string()),
             kind: OutputKind::Unknown,
+        }
+    }
+
+    #[test]
+    fn port_availability_maps_the_server_jack_detection() {
+        for (available, expected) in [
+            (PortAvailable::Unknown, PortAvailability::Unknown),
+            (PortAvailable::Yes, PortAvailability::Available),
+            (PortAvailable::No, PortAvailability::Unavailable),
+        ] {
+            assert_eq!(port_availability(available), expected, "{available:?}");
         }
     }
 
