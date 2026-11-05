@@ -7,8 +7,8 @@ use kestrel_core::{
     CapabilityStatus, MAX_AUDIO_BOOST_PERCENT, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
 };
 use kestrel_platform::audio::{
-    AudioBackend, AudioDiscovery, AudioError, OutputDevice, PlaybackStream, capability_for,
-    capability_for_error,
+    AudioBackend, AudioDiscovery, AudioError, OutputDevice, OutputPort, PlaybackStream,
+    PortAvailability, capability_for, capability_for_error,
 };
 
 /// The hard amplification cap; a policy ceiling can only be lower.
@@ -157,6 +157,30 @@ pub(crate) fn device_set_changed<'a>(
     previous != current
 }
 
+/// Ports a switch may choose, in server order. Unplugged ports are skipped
+/// while any port is plugged in; a card without jack detection lists them all.
+pub fn eligible_ports(ports: &[OutputPort]) -> Vec<&OutputPort> {
+    let all_unavailable = ports
+        .iter()
+        .all(|port| port.availability == PortAvailability::Unavailable);
+    ports
+        .iter()
+        .filter(|port| all_unavailable || port.availability != PortAvailability::Unavailable)
+        .collect()
+}
+
+/// The port after the active one in server order, wrapping around.
+fn next_output_port<'a>(ports: &'a [OutputPort], active: Option<&str>) -> Option<&'a OutputPort> {
+    let eligible = eligible_ports(ports);
+    if eligible.len() < 2 {
+        return None;
+    }
+    let index = active
+        .and_then(|name| eligible.iter().position(|port| port.name == name))
+        .map_or(0, |index| (index + 1) % eligible.len());
+    Some(eligible[index])
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioReconcileOutcome {
     pub lost_output_ids: Vec<u32>,
@@ -209,7 +233,7 @@ impl AudioSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioCommand {
     SetStreamVolume { stream_id: u32, volume_percent: u8 },
     SetStreamMute { stream_id: u32, muted: bool },
@@ -217,7 +241,9 @@ pub enum AudioCommand {
     SetOutputVolume { output_id: u32, volume_percent: u8 },
     SetOutputMute { output_id: u32, muted: bool },
     SetDefaultOutput { output_id: u32 },
+    SetOutputPort { output_id: u32, port: String },
     CycleOutput { direction: AudioCycleDirection },
+    CycleOutputPort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,7 +252,9 @@ pub enum AudioCommandError {
     UnknownStream { stream_id: u32 },
     ReadOnlyStream { stream_id: u32 },
     UnknownOutput { output_id: u32 },
+    UnknownPort { output_id: u32, port: String },
     NoAlternateOutput,
+    NoAlternatePort,
     Backend(AudioError),
     Refresh(AudioError),
 }
@@ -250,8 +278,14 @@ impl fmt::Display for AudioCommandError {
             Self::UnknownOutput { output_id } => {
                 write!(formatter, "output {output_id} is no longer available")
             }
+            Self::UnknownPort { output_id, port } => {
+                write!(formatter, "port {port} is not on output {output_id}")
+            }
             Self::NoAlternateOutput => {
                 formatter.write_str("no other output device is available to switch to")
+            }
+            Self::NoAlternatePort => {
+                formatter.write_str("no other port is available on the default output")
             }
             Self::Backend(error) | Self::Refresh(error) => error.fmt(formatter),
         }
@@ -431,7 +465,7 @@ impl<B: AudioBackend> AudioMixerService<B> {
     }
 
     pub fn execute(&mut self, command: AudioCommand) -> AudioCommandResult {
-        let mutation = self.validate(command).and_then(|()| self.mutate(command));
+        let mutation = self.validate(&command).and_then(|()| self.mutate(command));
 
         let refresh = self.refresh().cloned();
         match (mutation, refresh) {
@@ -506,10 +540,20 @@ impl<B: AudioBackend> AudioMixerService<B> {
                 self.switch_default_output(output_id, AudioSwitchReason::Manual);
                 Ok(())
             }
+            AudioCommand::SetOutputPort { output_id, port } => self
+                .backend
+                .set_output_port(output_id, &port)
+                .map_err(AudioCommandError::Backend),
             AudioCommand::CycleOutput { direction } => {
                 let target = self.cycle_target(direction)?;
                 self.switch_default_output(target, AudioSwitchReason::Manual);
                 Ok(())
+            }
+            AudioCommand::CycleOutputPort => {
+                let (output_id, port) = self.cycle_port_target()?;
+                self.backend
+                    .set_output_port(output_id, &port)
+                    .map_err(AudioCommandError::Backend)
             }
         }
     }
@@ -580,6 +624,18 @@ impl<B: AudioBackend> AudioMixerService<B> {
         Ok(discovery.outputs[next].id)
     }
 
+    /// The default output's next port, with the output ID it belongs to.
+    fn cycle_port_target(&self) -> Result<(u32, String), AudioCommandError> {
+        let output = self
+            .discovered
+            .as_ref()
+            .and_then(|discovery| discovery.outputs.iter().find(|output| output.is_default))
+            .ok_or(AudioCommandError::NoAlternatePort)?;
+        let port = next_output_port(&output.ports, output.active_port.as_deref())
+            .ok_or(AudioCommandError::NoAlternatePort)?;
+        Ok((output.id, port.name.clone()))
+    }
+
     fn lost_output_ids(&self, discovery: &AudioDiscovery) -> Vec<u32> {
         let Some(previous) = self.discovered.as_ref() else {
             return Vec::new();
@@ -643,43 +699,57 @@ impl<B: AudioBackend> AudioMixerService<B> {
         outcome
     }
 
-    fn validate(&self, command: AudioCommand) -> Result<(), AudioCommandError> {
+    fn validate(&self, command: &AudioCommand) -> Result<(), AudioCommandError> {
         match command {
             AudioCommand::SetStreamVolume {
                 stream_id,
                 volume_percent,
             } => {
-                self.check_volume(volume_percent)?;
-                let stream = self.stream(stream_id)?;
+                self.check_volume(*volume_percent)?;
+                let stream = self.stream(*stream_id)?;
                 if !stream.volume_writable {
-                    return Err(AudioCommandError::ReadOnlyStream { stream_id });
+                    return Err(AudioCommandError::ReadOnlyStream {
+                        stream_id: *stream_id,
+                    });
                 }
             }
             AudioCommand::SetStreamMute { stream_id, .. } => {
-                self.stream(stream_id)?;
+                self.stream(*stream_id)?;
             }
             AudioCommand::MoveStream {
                 stream_id,
                 output_id,
             } => {
-                self.stream(stream_id)?;
-                self.output(output_id)?;
+                self.stream(*stream_id)?;
+                self.output(*output_id)?;
             }
             AudioCommand::SetOutputVolume {
                 output_id,
                 volume_percent,
             } => {
-                self.check_volume(volume_percent)?;
-                self.output(output_id)?;
+                self.check_volume(*volume_percent)?;
+                self.output(*output_id)?;
             }
             AudioCommand::SetOutputMute { output_id, .. } => {
-                self.output(output_id)?;
+                self.output(*output_id)?;
             }
             AudioCommand::SetDefaultOutput { output_id } => {
-                self.output(output_id)?;
+                self.output(*output_id)?;
+            }
+            AudioCommand::SetOutputPort { output_id, port } => {
+                let output = self.output(*output_id)?;
+                if !output.ports.iter().any(|candidate| candidate.name == *port) {
+                    return Err(AudioCommandError::UnknownPort {
+                        output_id: *output_id,
+                        port: port.clone(),
+                    });
+                }
             }
             AudioCommand::CycleOutput { direction } => {
-                self.cycle_target(direction)?;
+                self.cycle_target(*direction)?;
+            }
+            AudioCommand::CycleOutputPort => {
+                self.cycle_port_target()?;
             }
         }
         Ok(())
@@ -777,12 +847,12 @@ mod tests {
     use kestrel_core::{AudioDisconnectPolicy, AudioOutputSwitch};
     use kestrel_platform::audio::{
         AudioBackend, AudioDiscovery, AudioError, AudioErrorKind, FEATURE_ID, OutputDevice,
-        OutputKind, PlaybackStream,
+        OutputKind, OutputPort, PlaybackStream, PortAvailability,
     };
 
     use super::{
         AudioAvailability, AudioCommand, AudioCommandError, AudioCycleDirection, AudioMixerService,
-        AudioPolicy, AudioPolicyError, MAX_VOLUME_PERCENT,
+        AudioPolicy, AudioPolicyError, MAX_VOLUME_PERCENT, next_output_port,
     };
 
     #[derive(Default)]
@@ -793,6 +863,7 @@ mod tests {
         output_volume_calls: Vec<(u32, u8)>,
         output_mute_calls: Vec<(u32, bool)>,
         default_calls: Vec<String>,
+        port_calls: Vec<(u32, String)>,
     }
 
     struct FakeBackend {
@@ -874,6 +945,14 @@ mod tests {
                 .push(output_name.to_owned());
             self.mutation_error.clone().map_or(Ok(()), Err)
         }
+
+        fn set_output_port(&mut self, output_id: u32, port_name: &str) -> Result<(), AudioError> {
+            self.log
+                .borrow_mut()
+                .port_calls
+                .push((output_id, port_name.to_owned()));
+            self.mutation_error.clone().map_or(Ok(()), Err)
+        }
     }
 
     fn output(id: u32, is_default: bool, volume_percent: u8) -> OutputDevice {
@@ -885,8 +964,37 @@ mod tests {
             muted: false,
             is_default,
             card_name: Some("Built-in Audio".to_string()),
-            port_description: Some("Headphones".to_string()),
+            port_description: Some("Speakers".to_string()),
+            ports: vec![
+                OutputPort {
+                    name: "analog-output-speaker".to_string(),
+                    description: "Speakers".to_string(),
+                    availability: PortAvailability::Available,
+                },
+                OutputPort {
+                    name: "analog-output-headphones".to_string(),
+                    description: "Headphones".to_string(),
+                    availability: PortAvailability::Unavailable,
+                },
+            ],
+            active_port: Some("analog-output-speaker".to_string()),
             kind: OutputKind::Unknown,
+        }
+    }
+
+    fn port(name: &str, availability: PortAvailability) -> OutputPort {
+        OutputPort {
+            name: name.to_string(),
+            description: name.to_string(),
+            availability,
+        }
+    }
+
+    fn ported_output(id: u32, ports: Vec<OutputPort>, active_port: &str) -> OutputDevice {
+        OutputDevice {
+            ports,
+            active_port: Some(active_port.to_string()),
+            ..output(id, true, 50)
         }
     }
 
@@ -1560,6 +1668,191 @@ mod tests {
 
         assert_eq!(failure.error, AudioCommandError::NoAlternateOutput);
         assert!(log.borrow().default_calls.is_empty());
+    }
+
+    #[test]
+    fn setting_an_output_port_switches_and_refreshes() {
+        let before = ported_output(
+            3,
+            vec![
+                port("speaker", PortAvailability::Available),
+                port("headphones", PortAvailability::Available),
+            ],
+            "speaker",
+        );
+        let after = ported_output(
+            3,
+            vec![
+                port("speaker", PortAvailability::Available),
+                port("headphones", PortAvailability::Available),
+            ],
+            "headphones",
+        );
+        let (backend, log) = fake([
+            discovery(vec![before], vec![]),
+            discovery(vec![after], vec![]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("initial discovery");
+
+        let snapshot = service
+            .execute(AudioCommand::SetOutputPort {
+                output_id: 3,
+                port: "headphones".to_string(),
+            })
+            .expect("the port switch succeeds");
+
+        assert_eq!(log.borrow().port_calls, vec![(3, "headphones".to_string())]);
+        assert_eq!(
+            snapshot.outputs[0].active_port.as_deref(),
+            Some("headphones")
+        );
+    }
+
+    #[test]
+    fn an_unknown_port_is_rejected_without_a_backend_call() {
+        let (backend, log) = fake([standard(50), standard(50)]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("initial discovery");
+
+        let failure = service
+            .execute(AudioCommand::SetOutputPort {
+                output_id: 3,
+                port: "displayport".to_string(),
+            })
+            .expect_err("a port the output does not list is rejected");
+
+        assert_eq!(
+            failure.error,
+            AudioCommandError::UnknownPort {
+                output_id: 3,
+                port: "displayport".to_string(),
+            }
+        );
+        assert!(
+            log.borrow().port_calls.is_empty(),
+            "a rejected port must not reach the backend"
+        );
+    }
+
+    #[test]
+    fn port_cycles_skip_unplugged_ports_and_wrap() {
+        let all_unknown = vec![
+            port("a", PortAvailability::Unknown),
+            port("b", PortAvailability::Unknown),
+            port("c", PortAvailability::Unknown),
+        ];
+        let all_unavailable = vec![
+            port("a", PortAvailability::Unavailable),
+            port("b", PortAvailability::Unavailable),
+        ];
+        let all_unplugged_but_one = vec![
+            port("a", PortAvailability::Unavailable),
+            port("b", PortAvailability::Unavailable),
+            port("c", PortAvailability::Available),
+        ];
+        for (label, ports, active, expected) in [
+            ("forward", all_unknown.clone(), Some("a"), Some("b")),
+            ("forward again", all_unknown.clone(), Some("b"), Some("c")),
+            ("wraps", all_unknown.clone(), Some("c"), Some("a")),
+            (
+                "jumps over an unplugged port",
+                vec![
+                    port("speaker", PortAvailability::Available),
+                    port("headphones", PortAvailability::Unavailable),
+                    port("hdmi", PortAvailability::Available),
+                ],
+                Some("speaker"),
+                Some("hdmi"),
+            ),
+            (
+                "a single plugged-in port has no alternative",
+                vec![
+                    port("speaker", PortAvailability::Available),
+                    port("headphones", PortAvailability::Unavailable),
+                ],
+                Some("speaker"),
+                None,
+            ),
+            (
+                "two of three unplugged leaves no alternative",
+                all_unplugged_but_one,
+                Some("c"),
+                None,
+            ),
+            (
+                "every port unplugged still cycles",
+                all_unavailable.clone(),
+                Some("a"),
+                Some("b"),
+            ),
+            (
+                "one port never cycles",
+                vec![port("a", PortAvailability::Available)],
+                Some("a"),
+                None,
+            ),
+        ] {
+            assert_eq!(
+                next_output_port(&ports, active).map(|port| port.name.as_str()),
+                expected,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn cycling_ports_reaches_the_backend_and_requires_an_alternative() {
+        let ported = ported_output(
+            3,
+            vec![
+                port("speaker", PortAvailability::Available),
+                port("headphones", PortAvailability::Available),
+            ],
+            "speaker",
+        );
+        let switched = ported_output(
+            3,
+            vec![
+                port("speaker", PortAvailability::Available),
+                port("headphones", PortAvailability::Available),
+            ],
+            "headphones",
+        );
+        let (backend, log) = fake([
+            discovery(vec![ported], vec![]),
+            discovery(vec![switched], vec![]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("initial discovery");
+
+        service
+            .execute(AudioCommand::CycleOutputPort)
+            .expect("the cycle switches the default output's port");
+
+        assert_eq!(log.borrow().port_calls, vec![(3, "headphones".to_string())]);
+
+        let single = ported_output(
+            3,
+            vec![
+                port("speaker", PortAvailability::Available),
+                port("headphones", PortAvailability::Unavailable),
+            ],
+            "speaker",
+        );
+        let (backend, log) = fake([
+            discovery(vec![single.clone()], vec![]),
+            discovery(vec![single], vec![]),
+        ]);
+        let mut service = AudioMixerService::new(backend);
+        service.refresh().expect("initial discovery");
+
+        let failure = service
+            .execute(AudioCommand::CycleOutputPort)
+            .expect_err("a lone plugged-in port cannot be cycled");
+
+        assert_eq!(failure.error, AudioCommandError::NoAlternatePort);
+        assert!(log.borrow().port_calls.is_empty());
     }
 
     #[test]

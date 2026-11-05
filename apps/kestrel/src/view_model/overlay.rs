@@ -536,6 +536,8 @@ mod tests {
             volume_percent,
             muted,
             kind: OutputKind::Headphones,
+            ports: Vec::new(),
+            active_port: None,
         }
     }
 

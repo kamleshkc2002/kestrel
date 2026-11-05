@@ -42,6 +42,7 @@ pub enum CommandLineAction {
     Quit,
     NextOutput,
     PreviousOutput,
+    NextOutputPort,
     ToggleMicrophoneMute,
     MuteMicrophone,
     UnmuteMicrophone,
@@ -62,7 +63,7 @@ pub enum CommandLineAction {
     StopKeepAwake,
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 37] = [
+const FIXED_ACTIONS: [CommandLineAction; 38] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::OpenQuickPanel,
@@ -73,6 +74,7 @@ const FIXED_ACTIONS: [CommandLineAction; 37] = [
     CommandLineAction::Quit,
     CommandLineAction::NextOutput,
     CommandLineAction::PreviousOutput,
+    CommandLineAction::NextOutputPort,
     CommandLineAction::ToggleMicrophoneMute,
     CommandLineAction::MuteMicrophone,
     CommandLineAction::UnmuteMicrophone,
@@ -136,6 +138,7 @@ impl CommandLineAction {
             Self::Quit => "app.quit",
             Self::NextOutput => "audio.output-next",
             Self::PreviousOutput => "audio.output-previous",
+            Self::NextOutputPort => "audio.output-port-next",
             Self::ToggleMicrophoneMute => "microphone.toggle-mute",
             Self::MuteMicrophone => "microphone.mute",
             Self::UnmuteMicrophone => "microphone.unmute",
@@ -174,6 +177,7 @@ impl CommandLineAction {
             Self::Quit => "Quit Kestrel".to_owned(),
             Self::NextOutput => "Switch to the next audio output".to_owned(),
             Self::PreviousOutput => "Switch to the previous audio output".to_owned(),
+            Self::NextOutputPort => "Switch the default output to its next port".to_owned(),
             Self::ToggleMicrophoneMute => "Mute or unmute every microphone input".to_owned(),
             Self::MuteMicrophone => "Mute every microphone input".to_owned(),
             Self::UnmuteMicrophone => "Unmute every microphone input".to_owned(),
@@ -254,7 +258,7 @@ impl CommandLineAction {
                 Some(CLIPBOARD_HISTORY_ID)
             }
             Self::ScratchpadOpen => Some("notes.scratchpad"),
-            Self::NextOutput | Self::PreviousOutput => Some(AUDIO_MIXER_ID),
+            Self::NextOutput | Self::PreviousOutput | Self::NextOutputPort => Some(AUDIO_MIXER_ID),
             Self::ToggleMicrophoneMute | Self::MuteMicrophone | Self::UnmuteMicrophone => {
                 Some(MICROPHONE_FEATURE_ID)
             }
@@ -288,6 +292,7 @@ impl CommandLineAction {
             Self::PreviousOutput => ApplicationCommand::Audio(AudioCommand::CycleOutput {
                 direction: AudioCycleDirection::Previous,
             }),
+            Self::NextOutputPort => ApplicationCommand::Audio(AudioCommand::CycleOutputPort),
             Self::ToggleMicrophoneMute => {
                 ApplicationCommand::Microphone(MicrophoneCommand::ToggleMute)
             }
@@ -501,6 +506,7 @@ mod tests {
 
     use kestrel_core::KeepAwakeDuration;
     use kestrel_platform::quick_toggles::QuickToggleId;
+    use kestrel_services::audio::AudioCommand;
 
     use super::{CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments};
     use crate::FocusTarget;
@@ -536,6 +542,11 @@ mod tests {
         assert_eq!(
             parse_arguments(&arguments(&["--command", "microphone.toggle-mute"])),
             Ok(Invocation::Run(CommandLineAction::ToggleMicrophoneMute))
+        );
+        assert_eq!(
+            CommandLineAction::parse("audio.output-port-next").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::Audio(AudioCommand::CycleOutputPort)),
+            "the port cycle keeps its stable ID"
         );
         assert_eq!(
             CommandLineAction::parse("preset.balanced").map(CommandLineAction::to_command),

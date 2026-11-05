@@ -310,6 +310,9 @@ pub(super) fn build_audio_controls(
                 audio.boost_ceiling_percent,
                 commands,
             ));
+            if let Some(picker) = build_output_port_picker(output, commands) {
+                row.add_suffix(&picker);
+            }
             if !output.is_default {
                 let make_default = gtk::Button::with_label("Use");
                 make_default.set_valign(Align::Center);
@@ -394,6 +397,60 @@ pub(super) fn build_audio_controls(
     ));
 
     container
+}
+
+/// A picker for the ports of an output, when it has more than one.
+fn build_output_port_picker(
+    output: &AudioOutputViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> Option<gtk::DropDown> {
+    if output.ports.len() < 2 {
+        return None;
+    }
+    let labels = output
+        .ports
+        .iter()
+        .map(|(_, label)| label.as_str())
+        .collect::<Vec<_>>();
+    let picker = gtk::DropDown::from_strings(&labels);
+    picker.set_valign(Align::Center);
+    let label = format!("Port for {}", output.title);
+    picker.update_property(&[
+        Property::Label(&label),
+        Property::Description("Choose which connector of this output plays audio"),
+    ]);
+    picker.set_tooltip_text(Some(&label));
+    let selected = output
+        .ports
+        .iter()
+        .position(|(name, _)| output.active_port.as_deref() == Some(name.as_str()))
+        .unwrap_or(0);
+    picker.set_selected(selected as u32);
+
+    let names = output
+        .ports
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let active = output.active_port.clone();
+    let output_id = output.id;
+    let sender = commands.clone();
+    picker.connect_selected_notify(move |picker| {
+        let Some(port) = names.get(picker.selected() as usize) else {
+            return;
+        };
+        // Reselecting the current port after a rebuild commands nothing.
+        if active.as_deref() == Some(port.as_str()) {
+            return;
+        }
+        let _ = sender.try_send(ApplicationCommand::Audio(
+            kestrel::AudioCommand::SetOutputPort {
+                output_id,
+                port: port.clone(),
+            },
+        ));
+    });
+    Some(picker)
 }
 
 fn send_on_click(

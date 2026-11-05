@@ -1,7 +1,9 @@
 //! Shared view-model test fixtures.
 
 use super::*;
-use kestrel_platform::audio::{OutputDevice, OutputKind, PlaybackStream};
+use kestrel_platform::audio::{
+    OutputDevice, OutputKind, OutputPort, PlaybackStream, PortAvailability,
+};
 use kestrel_platform::clipboard::{ClipboardEntryKind, ClipboardKindSupport};
 use kestrel_services::audio::{AudioAvailability, AudioReconcileOutcome, AudioSnapshot};
 use kestrel_services::clipboard::{ClipboardItemMetadata, ClipboardMatch, ClipboardSnapshot};
@@ -62,7 +64,20 @@ pub(crate) fn audio_output(
         muted,
         is_default,
         card_name: Some("Built-in Audio".to_string()),
-        port_description: Some("Headphones".to_string()),
+        port_description: Some("Speakers".to_string()),
+        ports: vec![
+            OutputPort {
+                name: "analog-output-speaker".to_string(),
+                description: "Speakers".to_string(),
+                availability: PortAvailability::Available,
+            },
+            OutputPort {
+                name: "analog-output-headphones".to_string(),
+                description: "Headphones".to_string(),
+                availability: PortAvailability::Unavailable,
+            },
+        ],
+        active_port: Some("analog-output-speaker".to_string()),
         kind: OutputKind::Headphones,
     }
 }

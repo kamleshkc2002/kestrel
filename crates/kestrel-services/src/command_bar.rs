@@ -97,6 +97,7 @@ pub enum CommandAction {
     ActivateWindow(u64),
     CopyClipboardEntry { item_id: u64 },
     SetFeatureEnabled { feature_id: String, enabled: bool },
+    SetOutputPort { output_id: u32, port: String },
     OpenFile(PathBuf),
     OpenUrl(String),
 }

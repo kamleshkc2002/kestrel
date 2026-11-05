@@ -295,7 +295,51 @@ impl ApplicationRuntime {
     fn rebuild_command_feature_items(&mut self) {
         self.command_feature_items = Self::feature_items(&self.registry);
         self.command_feature_items.extend(self.tool_items());
+        self.command_feature_items.extend(self.output_port_items());
     }
+
+    /// Port entries for outputs with more than one port.
+    fn output_port_items(&self) -> Vec<CommandItem> {
+        if !self.audio_mixer_is_running() {
+            return Vec::new();
+        }
+        Self::output_port_items_for(self.audio_mixer.latest())
+    }
+
+    fn output_port_items_for(snapshot: &AudioSnapshot) -> Vec<CommandItem> {
+        let mut items = Vec::new();
+        for output in &snapshot.outputs {
+            if output.ports.len() < 2 {
+                continue;
+            }
+            for port in kestrel_services::audio::eligible_ports(&output.ports) {
+                if output.active_port.as_deref() == Some(port.name.as_str()) {
+                    continue;
+                }
+                items.push(
+                    CommandItem::new(
+                        format!("kestrel:output-port:{}:{}", output.id, port.name),
+                        CommandSource::Kestrel,
+                        format!("Switch to {} ({})", port.description, output.description),
+                        "Audio output port",
+                        kestrel_services::command_bar::CommandAction::SetOutputPort {
+                            output_id: output.id,
+                            port: port.name.clone(),
+                        },
+                    )
+                    .with_keywords([
+                        "audio",
+                        "output",
+                        "port",
+                        "speaker",
+                        "headphones",
+                    ]),
+                );
+            }
+        }
+        items
+    }
+
     pub(super) fn snippet_items(library: &SnippetLibrary) -> Vec<CommandItem> {
         library
             .snippets()
@@ -820,6 +864,81 @@ mod tests {
                 .find(|item| item.id == "kestrel:capture.text")
                 .is_some_and(|item| item.keywords.iter().any(|keyword| keyword == "ocr")),
             "OCR keyword is attached to the text tool"
+        );
+    }
+
+    #[test]
+    fn output_port_results_offer_each_alternative_port() {
+        use kestrel_platform::audio::{OutputDevice, OutputKind, OutputPort, PortAvailability};
+        use kestrel_services::audio::AudioAvailability;
+
+        let port = |name: &str, availability: PortAvailability| OutputPort {
+            name: name.to_string(),
+            description: name.to_string(),
+            availability,
+        };
+        let output =
+            |id: u32, description: &str, ports: Vec<OutputPort>, active: &str| OutputDevice {
+                id,
+                name: format!("output-{id}"),
+                description: description.to_string(),
+                volume_percent: 50,
+                muted: false,
+                is_default: id == 3,
+                card_name: None,
+                port_description: None,
+                ports,
+                active_port: Some(active.to_string()),
+                kind: OutputKind::Unknown,
+            };
+        let snapshot = AudioSnapshot {
+            availability: AudioAvailability::Ready,
+            outputs: vec![
+                output(
+                    3,
+                    "Built-in Audio",
+                    vec![
+                        port("speaker", PortAvailability::Available),
+                        port("headphones", PortAvailability::Unavailable),
+                        port("hdmi", PortAvailability::Available),
+                    ],
+                    "speaker",
+                ),
+                output(
+                    5,
+                    "Optical",
+                    vec![
+                        port("a", PortAvailability::Unavailable),
+                        port("b", PortAvailability::Unavailable),
+                    ],
+                    "a",
+                ),
+            ],
+            streams: Vec::new(),
+            inactive_streams: 0,
+            boost_ceiling_percent: 130,
+            last_switch: None,
+            last_reconcile: None,
+        };
+
+        let items = ApplicationRuntime::output_port_items_for(&snapshot);
+        let titles = items
+            .iter()
+            .map(|item| item.title.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            titles,
+            ["Switch to hdmi (Built-in Audio)", "Switch to b (Optical)"],
+            "the active port is left out and an unplugged port is skipped while a \
+             plugged-in one exists; a fully unplugged card still offers its ports"
+        );
+        assert_eq!(
+            items[0].action,
+            CommandAction::SetOutputPort {
+                output_id: 3,
+                port: "hdmi".to_string(),
+            }
         );
     }
 

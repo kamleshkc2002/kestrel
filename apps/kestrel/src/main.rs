@@ -287,6 +287,22 @@ impl ControllerState {
                     }
                 )
             }
+            CommandAction::SetOutputPort { output_id, port } => {
+                let queued = self
+                    .commands
+                    .try_send(ApplicationCommand::Audio(
+                        kestrel::AudioCommand::SetOutputPort {
+                            output_id: *output_id,
+                            port: port.clone(),
+                        },
+                    ))
+                    .is_ok();
+                if queued {
+                    "Port switch queued".to_owned()
+                } else {
+                    "Port switch could not be queued".to_owned()
+                }
+            }
             CommandAction::OpenFile(path) => {
                 match self
                     .runtime
@@ -2886,7 +2902,7 @@ impl ControllerState {
                 )?
             }
             ControllerOperation::Audio(command) => {
-                let summary = audio_command_summary(command);
+                let summary = audio_command_summary(&command);
                 match self.runtime.execute_audio_command(command) {
                     Some(Ok(_)) => format!("{summary} updated"),
                     Some(Err(failure)) => format!("{summary} failed: {}", failure.error),
@@ -3752,7 +3768,7 @@ fn set_autostart_side_effect(enabled: bool) -> Result<(), String> {
     }
 }
 
-fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
+fn audio_command_summary(command: &kestrel::AudioCommand) -> &'static str {
     match command {
         kestrel::AudioCommand::SetStreamVolume { .. } => "Stream volume",
         kestrel::AudioCommand::SetStreamMute { .. } => "Stream mute",
@@ -3760,7 +3776,9 @@ fn audio_command_summary(command: kestrel::AudioCommand) -> &'static str {
         kestrel::AudioCommand::SetOutputVolume { .. } => "Output volume",
         kestrel::AudioCommand::SetOutputMute { .. } => "Output mute",
         kestrel::AudioCommand::SetDefaultOutput { .. } => "Default output",
+        kestrel::AudioCommand::SetOutputPort { .. } => "Port switch",
         kestrel::AudioCommand::CycleOutput { .. } => "Output cycle",
+        kestrel::AudioCommand::CycleOutputPort => "Port cycle",
     }
 }
 
