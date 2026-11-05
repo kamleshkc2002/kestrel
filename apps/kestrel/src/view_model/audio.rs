@@ -340,13 +340,24 @@ fn output_view(output: &kestrel_platform::audio::OutputDevice) -> AudioOutputVie
         volume_percent: output.volume_percent,
         muted: output.muted,
         kind: output.kind,
-        ports: output
-            .ports
-            .iter()
-            .map(|port| (port.name.clone(), audio_port_label(port)))
-            .collect(),
+        ports: output_ports(output),
         active_port: output.active_port.clone(),
     }
+}
+
+/// The ports worth offering, in server order: unplugged ones only while they
+/// are active or nothing else is usable, so the active port stays visible.
+fn output_ports(output: &kestrel_platform::audio::OutputDevice) -> Vec<(String, String)> {
+    let eligible = kestrel_services::audio::eligible_ports(&output.ports);
+    output
+        .ports
+        .iter()
+        .filter(|port| {
+            output.active_port.as_deref() == Some(port.name.as_str())
+                || eligible.iter().any(|candidate| candidate.name == port.name)
+        })
+        .map(|port| (port.name.clone(), audio_port_label(port)))
+        .collect()
 }
 
 /// The port description, marking a port without a plugged-in device.
@@ -618,7 +629,27 @@ mod tests {
     }
 
     #[test]
-    fn output_ports_mark_an_unplugged_port_and_keep_the_active_one() {
+    fn unplugged_ports_are_omitted_while_another_port_is_usable() {
+        let configuration = ApplicationConfiguration::default();
+        let snapshot = audio_snapshot(Vec::new(), 0);
+        let view_model = AudioViewModel::from_presentation(
+            &configuration.audio,
+            AudioPresentation {
+                snapshot: Some(&snapshot),
+                running: true,
+                policy: AudioPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            view_model.outputs[0].ports,
+            vec![("analog-output-speaker".to_string(), "Speakers".to_string())],
+            "the unplugged headphones are not offered while speakers play"
+        );
+    }
+
+    #[test]
+    fn an_active_unplugged_port_stays_visible_and_labelled() {
         let configuration = ApplicationConfiguration::default();
         let mut snapshot = audio_snapshot(Vec::new(), 0);
         snapshot.outputs[0].active_port = Some("analog-output-headphones".to_string());
@@ -640,17 +671,45 @@ mod tests {
                     "analog-output-headphones".to_string(),
                     "Headphones (unplugged)".to_string()
                 ),
-            ]
+            ],
+            "the active port stays listed even while it is unplugged"
         );
         assert_eq!(
             output.active_port.as_deref(),
-            Some("analog-output-headphones"),
-            "the active port stays listed even while it is unplugged"
+            Some("analog-output-headphones")
         );
     }
 
     #[test]
-    fn an_output_with_one_port_offers_no_picker() {
+    fn ports_without_jack_detection_are_all_listed() {
+        let configuration = ApplicationConfiguration::default();
+        let mut snapshot = audio_snapshot(Vec::new(), 0);
+        for port in &mut snapshot.outputs[0].ports {
+            port.availability = kestrel_platform::audio::PortAvailability::Unknown;
+        }
+        let view_model = AudioViewModel::from_presentation(
+            &configuration.audio,
+            AudioPresentation {
+                snapshot: Some(&snapshot),
+                running: true,
+                policy: AudioPolicy::default(),
+            },
+        );
+
+        assert_eq!(
+            view_model.outputs[0].ports,
+            vec![
+                ("analog-output-speaker".to_string(), "Speakers".to_string()),
+                (
+                    "analog-output-headphones".to_string(),
+                    "Headphones".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_single_usable_port_offers_no_picker() {
         let configuration = ApplicationConfiguration::default();
         let mut snapshot = audio_snapshot(Vec::new(), 0);
         for output in &mut snapshot.outputs {
