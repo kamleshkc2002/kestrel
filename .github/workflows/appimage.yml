@@ -34,7 +34,7 @@ jobs:
             desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
             libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            meson ninja-build libwayland-dev wayland-protocols sway
+            meson ninja-build libwayland-dev wayland-protocols sway minisign
       - name: Build gtk4-layer-shell
         run: |
           git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
@@ -90,6 +90,27 @@ jobs:
           test "$status" -eq 0 -o "$status" -eq 124
           ! grep -q 'No IM module matching' appimage-smoke.log
 
+      - name: Sign AppImage
+        # Releases must carry a signature; builds without the secret (forks) skip it.
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          appimage="$(find dist -maxdepth 1 -name '*.AppImage' -print -quit)"
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            if [ "$IS_RELEASE" = "true" ]; then
+              echo "MINISIGN_SECRET_KEY is required to publish a release" >&2
+              exit 1
+            fi
+            echo "No signing key in this build; the AppImage stays unsigned."
+            exit 0
+          fi
+          key="$RUNNER_TEMP/release-signing.key"
+          (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
+          minisign -S -s "$key" -m "$appimage" -t "$(basename "$appimage")"
+          rm -f "$key"
+          minisign -V -p data/release-signing.pub -m "$appimage"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
@@ -97,6 +118,7 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.sha256
+            dist/*.minisig
           if-no-files-found: error
           retention-days: 30
 
@@ -106,7 +128,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/*.AppImage dist/*.sha256 \
+            dist/*.AppImage dist/*.sha256 dist/*.minisig \
             --repo "$GITHUB_REPOSITORY" \
             --title "Kestrel ${GITHUB_REF_NAME#v} preview" \
             --generate-notes \
