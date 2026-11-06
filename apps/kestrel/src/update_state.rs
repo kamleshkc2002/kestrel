@@ -35,6 +35,9 @@ pub fn write(path: Option<&Path>, state: &StoredUpdateState) -> std::io::Result<
 }
 
 fn serialize(state: &StoredUpdateState) -> String {
+    // Install assets are deliberately not written: the next check re-fetches
+    // them, so an offer restored from disk names its version without
+    // offering a download until then.
     let mut contents = String::new();
     if let Some(seconds) = state.last_attempt.and_then(seconds) {
         contents.push_str(&format!("attempt={seconds}\n"));
@@ -93,6 +96,7 @@ fn release(value: &str) -> Option<kestrel_core::ReleaseInfo> {
         version,
         prerelease,
         url: url.to_owned(),
+        install: None,
     })
 }
 
@@ -114,6 +118,7 @@ mod tests {
                 version: Version::parse("0.6.0-preview.5").expect("version parses"),
                 prerelease: true,
                 url: "https://example.invalid/preview-5".to_owned(),
+                install: None,
             }),
             dismissed: Some(Version::parse("0.6.0-preview.5").expect("version parses")),
         }

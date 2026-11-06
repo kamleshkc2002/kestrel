@@ -38,7 +38,7 @@ use kestrel::{
     ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureRequest,
     CaptureViewModel, FocusTarget, MicrophoneViewModel, MonitorViewModel, OverviewTool,
     OverviewToolsViewModel, RecordingRequest, RecordingSource, ScreenToolRequest,
-    ShortcutsViewModel, SpeedTestViewModel, UpdateOfferViewModel,
+    ShortcutsViewModel, SpeedTestViewModel, UpdateOfferViewModel, UpdatesViewModel,
     view_model::accessory_module_status,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
@@ -171,6 +171,8 @@ pub struct WindowView {
     scratchpad_panel: std::cell::RefCell<Option<ScratchpadPanel>>,
     /// The Settings row whose subtitle follows the monitor's provider state.
     accessory_row: std::cell::RefCell<Option<adw::ActionRow>>,
+    /// The Settings update status row, refreshed as a download progresses.
+    update_status_row: std::cell::RefCell<Option<adw::ActionRow>>,
     /// Overview's keep-awake row, updated while its countdown runs.
     keep_awake_row: std::cell::RefCell<Option<adw::ActionRow>>,
 }
@@ -353,6 +355,7 @@ impl WindowView {
             scratchpad_panel: std::cell::RefCell::new(build.scratchpad_panel),
             command_panel: std::cell::RefCell::new(build.command_panel),
             accessory_row: std::cell::RefCell::new(build.accessory_row),
+            update_status_row: std::cell::RefCell::new(build.update_status_row),
             keep_awake_row: std::cell::RefCell::new(build.keep_awake_row),
         }
     }
@@ -398,6 +401,14 @@ impl WindowView {
         self.select_page(selected);
     }
 
+    /// Updates only the widgets the update surfaces own, so a download's
+    /// progress never rebuilds the other pages.
+    pub fn set_updates(&self, updates: &UpdatesViewModel) {
+        if let Some(row) = self.update_status_row.borrow().as_ref() {
+            row.set_subtitle(&updates.status);
+        }
+    }
+
     fn replace_page_state(&self, page: SidebarPage, build: PageBuild) {
         match page {
             SidebarPage::Monitoring => {
@@ -424,7 +435,10 @@ impl WindowView {
             }
             SidebarPage::CommandBar => *self.command_panel.borrow_mut() = build.command_panel,
             SidebarPage::Processes => *self.processes_panel.borrow_mut() = build.processes_panel,
-            SidebarPage::Settings => *self.accessory_row.borrow_mut() = build.accessory_row,
+            SidebarPage::Settings => {
+                *self.accessory_row.borrow_mut() = build.accessory_row;
+                *self.update_status_row.borrow_mut() = build.update_status_row;
+            }
             SidebarPage::Overview => *self.keep_awake_row.borrow_mut() = build.keep_awake_row,
             SidebarPage::FeatureHub => {}
         }
@@ -783,6 +797,8 @@ struct PageBuild {
     scratchpad_panel: Option<ScratchpadPanel>,
     /// The accessory batteries row, updated from monitor ticks.
     accessory_row: Option<adw::ActionRow>,
+    /// The Settings status row, updated as an update downloads.
+    update_status_row: Option<adw::ActionRow>,
     /// The keep-awake row, updated while its countdown runs.
     keep_awake_row: Option<adw::ActionRow>,
     filter_rows: FilterRows,
@@ -884,6 +900,7 @@ impl Default for PageBuild {
             command_panel: None,
             scratchpad_panel: None,
             accessory_row: None,
+            update_status_row: None,
             keep_awake_row: None,
             filter_rows: FilterRows::new(),
         }
@@ -933,6 +950,7 @@ impl PageBuild {
         self.command_panel = self.command_panel.take().or(other.command_panel);
         self.scratchpad_panel = self.scratchpad_panel.take().or(other.scratchpad_panel);
         self.accessory_row = self.accessory_row.take().or(other.accessory_row);
+        self.update_status_row = self.update_status_row.take().or(other.update_status_row);
     }
 }
 
@@ -1376,12 +1394,14 @@ fn append_settings(
     commands: &Sender<ApplicationCommand>,
     page: SettingsPage,
 ) {
-    let (groups, rows, accessory_row) = build_settings_group(view_model, window, commands, page);
+    let (groups, rows, accessory_row, update_status_row) =
+        build_settings_group(view_model, window, commands, page);
     for group in groups {
         body.append(&group);
     }
     build.filter_rows.extend(rows);
     build.accessory_row = accessory_row;
+    build.update_status_row = update_status_row;
 }
 
 /// Names a query can use for the whole page; row keywords match single rows.

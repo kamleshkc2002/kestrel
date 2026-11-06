@@ -344,6 +344,10 @@ pub enum CommandLineError {
     /// A `keep-awake.start-` ID whose length is malformed or outside 1m–24h.
     InvalidKeepAwakeDuration(String),
     MissingCommandId,
+    /// `--after-exit` was given without a process ID.
+    MissingAfterExitPid,
+    /// The hand-off PID is not a positive integer; shown truncated and escaped.
+    InvalidAfterExitPid(String),
     UnexpectedArgument(String),
 }
 
@@ -368,6 +372,13 @@ impl fmt::Display for CommandLineError {
                  keep-awake.start-90m",
             ),
             Self::MissingCommandId => formatter.write_str("--command needs a command ID"),
+            Self::MissingAfterExitPid => {
+                formatter.write_str("--after-exit needs the process ID to wait for")
+            }
+            Self::InvalidAfterExitPid(value) => write!(
+                formatter,
+                "malformed process ID \"{value}\"; --after-exit needs a positive integer"
+            ),
             Self::UnexpectedArgument(argument) => {
                 write!(formatter, "unexpected argument \"{}\"", bounded(argument))
             }
@@ -455,6 +466,33 @@ fn bounded(value: &str) -> String {
         .collect()
 }
 
+/// The restart hand-off's internal flag; it is stripped before GApplication
+/// sees the arguments.
+pub const AFTER_EXIT_FLAG: &str = "--after-exit";
+
+/// Removes `--after-exit <pid>` and returns the process to wait for. The
+/// replaced instance passes its own PID, so the new launch registers only
+/// after the old one leaves the session bus.
+pub fn take_after_exit(arguments: &mut Vec<OsString>) -> Result<Option<u32>, CommandLineError> {
+    let Some(index) = arguments
+        .iter()
+        .position(|argument| argument.as_os_str() == std::ffi::OsStr::new(AFTER_EXIT_FLAG))
+    else {
+        return Ok(None);
+    };
+    let value = arguments
+        .get(index + 1)
+        .cloned()
+        .ok_or(CommandLineError::MissingAfterExitPid)?;
+    let pid = value
+        .to_str()
+        .and_then(|text| text.parse::<u32>().ok())
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| CommandLineError::InvalidAfterExitPid(bounded(&value.to_string_lossy())))?;
+    arguments.drain(index..index + 2);
+    Ok(Some(pid))
+}
+
 /// Parses the arguments after the program name.
 pub fn parse_arguments(arguments: &[OsString]) -> Result<Invocation, CommandLineError> {
     let arguments = arguments
@@ -508,7 +546,10 @@ mod tests {
     use kestrel_platform::quick_toggles::QuickToggleId;
     use kestrel_services::audio::AudioCommand;
 
-    use super::{CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments};
+    use super::{
+        CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments,
+        take_after_exit,
+    };
     use crate::FocusTarget;
     use crate::{ApplicationCommand, FeaturePreset};
 
@@ -722,5 +763,32 @@ mod tests {
         }
         assert_eq!(CommandGate::from_exit_status(0, "clipboard.history"), None);
         assert_eq!(CommandGate::from_exit_status(1, "clipboard.history"), None);
+    }
+
+    #[test]
+    fn the_after_exit_flag_is_stripped_and_validated() {
+        let mut forwarded = arguments(&["--after-exit", "4321", "--command", "app.quit"]);
+        assert_eq!(take_after_exit(&mut forwarded), Ok(Some(4321)));
+        assert_eq!(forwarded, arguments(&["--command", "app.quit"]));
+
+        let mut none = arguments(&["--command", "app.quit"]);
+        assert_eq!(take_after_exit(&mut none), Ok(None));
+        assert_eq!(none, arguments(&["--command", "app.quit"]));
+
+        for (case, values) in [
+            ("a missing value", vec!["--after-exit"]),
+            ("zero", vec!["--after-exit", "0"]),
+            ("a negative value", vec!["--after-exit", "-3"]),
+            ("a word", vec!["--after-exit", "abc"]),
+            ("an empty value", vec!["--after-exit", ""]),
+            ("a decimal", vec!["--after-exit", "1.5"]),
+        ] {
+            let mut forwarded = arguments(&values);
+            assert!(
+                take_after_exit(&mut forwarded).is_err(),
+                "{case} is rejected"
+            );
+            assert_eq!(CommandLineError::EXIT_STATUS, 2);
+        }
     }
 }

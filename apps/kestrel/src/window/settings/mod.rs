@@ -36,6 +36,7 @@ pub(super) fn build_settings_group(
     Vec<adw::PreferencesGroup>,
     FilterRows,
     Option<adw::ActionRow>,
+    Option<adw::ActionRow>,
 ) {
     // Feature pages show their nested groups' own titles; the Settings page
     // adds its groups as top-level siblings.
@@ -45,6 +46,7 @@ pub(super) fn build_settings_group(
     }
     let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
     let mut accessory_row = None;
+    let mut update_status_row = None;
     let mut extra_groups = Vec::<adw::PreferencesGroup>::new();
 
     match page {
@@ -89,7 +91,10 @@ pub(super) fn build_settings_group(
                 commands,
                 &mut filter_rows,
             ));
-            extra_groups.push(add_updates_group(view_model, commands, &mut filter_rows));
+            let (updates_group, status_row) =
+                add_updates_group(view_model, commands, &mut filter_rows);
+            extra_groups.push(updates_group);
+            update_status_row = Some(status_row);
             let (overlay, row) = add_overlay_group(view_model, commands, &mut filter_rows);
             extra_groups.push(overlay);
             accessory_row = row;
@@ -101,7 +106,7 @@ pub(super) fn build_settings_group(
     }
     let mut groups = vec![group];
     groups.extend(extra_groups);
-    (groups, filter_rows, accessory_row)
+    (groups, filter_rows, accessory_row, update_status_row)
 }
 
 fn add_logging_group(
@@ -799,7 +804,7 @@ fn add_updates_group(
     view_model: &ApplicationViewModel,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) -> adw::PreferencesGroup {
+) -> (adw::PreferencesGroup, adw::ActionRow) {
     let updates = &view_model.updates;
     let updates_group = adw::PreferencesGroup::builder().title("Updates").build();
 
@@ -859,7 +864,7 @@ fn add_updates_group(
         "updates update check status version release github".to_owned(),
     ));
     updates_group.add(&status);
-    updates_group
+    (updates_group, status)
 }
 
 fn build_configuration_files_row(

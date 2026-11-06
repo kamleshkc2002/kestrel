@@ -575,6 +575,16 @@ impl ApplicationRuntime {
         let stored_updates = crate::update_state::read(update_state_path.as_deref());
         let setup_done = crate::setup::state(crate::setup::state_path().as_deref())
             == crate::setup::SetupState::Done;
+        let mut update_service = kestrel_services::updates::UpdateService::new(
+            configuration.updates.check,
+            stored_updates,
+            &updates::current_version(),
+        );
+        // Self-update is offered only to a running AppImage; a packaged or
+        // development build cannot replace itself.
+        update_service.set_self_update_available(
+            kestrel_platform::update_install::running_appimage().is_some(),
+        );
 
         let mut runtime = Self {
             registry,
@@ -666,11 +676,7 @@ impl ApplicationRuntime {
             scratchpad_policy: configuration.scratchpad,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
             keep_awake_choice: KeepAwakeDuration::UntilStopped,
-            update_service: kestrel_services::updates::UpdateService::new(
-                configuration.updates.check,
-                stored_updates,
-                &updates::current_version(),
-            ),
+            update_service,
             update_state_path,
             setup_done,
         };

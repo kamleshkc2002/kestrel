@@ -5,6 +5,8 @@ use std::time::{Duration, SystemTime};
 use kestrel_core::{ReleaseInfo, UpdateCheck, newest_offer};
 use semver::Version;
 
+use crate::update_install::{self, InstallPhase};
+
 /// How often an enabled check may contact GitHub, counted from the last
 /// attempt whichever way it ended.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -29,10 +31,16 @@ pub struct UpdateSnapshot {
     pub banner: Option<ReleaseInfo>,
     /// The offer stays visible in the tray and Settings after a dismissal.
     pub available: Option<ReleaseInfo>,
+    /// The explicit download and install step, when one was asked for.
+    pub install: InstallPhase,
+    /// Kestrel runs from a writable AppImage and the offer publishes one.
+    pub can_self_update: bool,
 }
 
 /// What survives a restart: the last attempt, the last result, and the
-/// dismissed version.
+/// dismissed version. A release's install assets are not stored; the next
+/// check re-fetches them, so a restored offer shows its version without
+/// offering a download until then.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StoredUpdateState {
     pub last_attempt: Option<SystemTime>,
@@ -60,6 +68,9 @@ pub struct UpdateService {
     latest: Option<ReleaseInfo>,
     dismissed: Option<Version>,
     status: UpdateStatus,
+    install: InstallPhase,
+    /// The running file can be replaced by an AppImage update.
+    self_update_available: bool,
 }
 
 impl UpdateService {
@@ -75,6 +86,8 @@ impl UpdateService {
                 .and_then(|release| newest_offer(current, &[release])),
             dismissed: stored.dismissed,
             status: UpdateStatus::Off,
+            install: InstallPhase::Idle,
+            self_update_available: false,
         };
         service.restore_status();
         service
@@ -143,6 +156,95 @@ impl UpdateService {
         }
     }
 
+    /// Records whether this launch can replace the AppImage it runs from.
+    pub fn set_self_update_available(&mut self, available: bool) {
+        self.self_update_available = available;
+    }
+
+    /// Whether the surfaces may offer a download: the running file is a
+    /// writable AppImage and the offer publishes signed assets.
+    pub fn can_self_update(&self) -> bool {
+        self.self_update_available
+            && self
+                .latest
+                .as_ref()
+                .is_some_and(|release| release.install.is_some())
+    }
+
+    /// The explicit download and install step.
+    pub fn install_phase(&self) -> &InstallPhase {
+        &self.install
+    }
+
+    /// The offered release, as the last check reported it.
+    pub fn offer(&self) -> Option<&ReleaseInfo> {
+        self.latest.as_ref()
+    }
+
+    /// Starts a download after an explicit command; `false` means there is no
+    /// offer with signed assets or a step is already running.
+    pub fn begin_install_download(&mut self) -> bool {
+        match update_install::download_started(&self.install, self.latest.as_ref()) {
+            Some(phase) => {
+                self.install = phase;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn record_download_progress(&mut self, received: u64, total: u64) {
+        if let Some(phase) = update_install::download_progress(&self.install, received, total) {
+            self.install = phase;
+        }
+    }
+
+    /// The files are on disk and their signature is being checked.
+    pub fn begin_install_verify(&mut self) -> bool {
+        match update_install::verify_started(&self.install) {
+            Some(phase) => {
+                self.install = phase;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The signature matched, so the install command may run.
+    pub fn record_install_verified(&mut self, version: Version) -> bool {
+        match update_install::verify_finished(&self.install, &version) {
+            Some(phase) => {
+                self.install = phase;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The new AppImage replaced the running one; a restart finishes it.
+    pub fn record_installed(&mut self) -> bool {
+        match update_install::install_finished(&self.install) {
+            Some(phase) => {
+                self.install = phase;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn record_install_failure(&mut self, reason: impl Into<String>) {
+        if let Some(phase) = update_install::failed(&self.install, reason) {
+            self.install = phase;
+        }
+    }
+
+    /// A cancelled download or verification returns to Idle.
+    pub fn cancel_install(&mut self) {
+        if let Some(phase) = update_install::cancelled(&self.install) {
+            self.install = phase;
+        }
+    }
+
     pub fn snapshot(&self) -> UpdateSnapshot {
         let banner = self
             .latest
@@ -153,6 +255,8 @@ impl UpdateService {
             last_checked: self.last_checked,
             banner,
             available: self.latest.clone(),
+            install: self.install.clone(),
+            can_self_update: self.can_self_update(),
         }
     }
 
@@ -190,6 +294,7 @@ mod tests {
     use semver::Version;
 
     use super::{CHECK_INTERVAL, StoredUpdateState, UpdateService, UpdateStatus, is_due};
+    use crate::update_install::InstallPhase;
 
     fn at(seconds: u64) -> std::time::SystemTime {
         UNIX_EPOCH + Duration::from_secs(seconds)
@@ -200,6 +305,19 @@ mod tests {
             version: Version::parse(version).expect("test version parses"),
             url: format!("https://example.invalid/{version}"),
             prerelease: version.contains('-'),
+            install: None,
+        }
+    }
+
+    fn installable(version: &str) -> ReleaseInfo {
+        ReleaseInfo {
+            install: Some(kestrel_core::InstallAssets {
+                appimage_url: "https://example.invalid/download".to_owned(),
+                appimage_size: 42,
+                signature_url: "https://example.invalid/download.minisig".to_owned(),
+                file_name: format!("Kestrel-{version}-x86_64.AppImage"),
+            }),
+            ..release(version)
         }
     }
 
@@ -349,5 +467,119 @@ mod tests {
                 "{case}"
             );
         }
+    }
+
+    #[test]
+    fn the_install_step_follows_only_explicit_commands() {
+        let now = at(6_000_000);
+        let mut service = UpdateService::new(
+            UpdateCheck::Enabled,
+            StoredUpdateState {
+                last_attempt: Some(now),
+                last_checked: Some(now),
+                latest: Some(installable("0.6.0")),
+                dismissed: None,
+            },
+            &current("0.6.0-preview.4"),
+        );
+        assert!(
+            !service.can_self_update(),
+            "only an AppImage may self-update"
+        );
+        service.set_self_update_available(true);
+        assert!(service.can_self_update());
+
+        assert!(service.begin_install_download(), "the command starts it");
+        assert_eq!(
+            service.install_phase(),
+            &InstallPhase::Downloading {
+                received: 0,
+                total: 42
+            }
+        );
+        assert!(
+            !service.begin_install_download(),
+            "a second download is rejected"
+        );
+
+        // A scheduled check finishing mid-download changes nothing.
+        service.record_success(now, Some(installable("0.6.0")));
+        assert!(matches!(
+            service.install_phase(),
+            InstallPhase::Downloading { .. }
+        ));
+
+        service.record_download_progress(21, 42);
+        assert_eq!(
+            service.install_phase(),
+            &InstallPhase::Downloading {
+                received: 21,
+                total: 42
+            }
+        );
+        assert!(
+            !service.record_installed(),
+            "install before verifying fails"
+        );
+        assert!(service.begin_install_verify());
+        service.record_success(now, Some(installable("0.6.0")));
+        assert_eq!(service.install_phase(), &InstallPhase::Verifying);
+        assert!(service.record_install_verified(current("0.6.0")));
+        assert_eq!(
+            service.install_phase(),
+            &InstallPhase::Ready {
+                version: current("0.6.0")
+            }
+        );
+        service.record_success(now, Some(installable("0.6.0")));
+        assert!(
+            matches!(service.install_phase(), InstallPhase::Ready { .. }),
+            "a check result does not reset a ready download"
+        );
+        assert!(service.record_installed());
+        assert_eq!(
+            service.install_phase(),
+            &InstallPhase::Installed {
+                version: current("0.6.0")
+            }
+        );
+        assert!(service.snapshot().can_self_update);
+        assert_eq!(service.snapshot().install, *service.install_phase());
+    }
+
+    #[test]
+    fn a_download_without_assets_is_rejected_and_cancel_returns_to_idle() {
+        let now = at(7_000_000);
+        let mut service = UpdateService::new(
+            UpdateCheck::Enabled,
+            StoredUpdateState {
+                latest: Some(release("0.6.0")),
+                ..StoredUpdateState::default()
+            },
+            &current("0.6.0-preview.4"),
+        );
+        service.set_self_update_available(true);
+        assert!(
+            !service.begin_install_download(),
+            "an offer without signed assets cannot download"
+        );
+        assert!(!service.can_self_update());
+        assert_eq!(service.install_phase(), &InstallPhase::Idle);
+
+        service.record_success(now, Some(installable("0.6.0")));
+        assert!(service.begin_install_download());
+        service.record_install_failure("The download failed.");
+        assert_eq!(
+            service.install_phase(),
+            &InstallPhase::Failed("The download failed.".to_owned())
+        );
+        assert!(
+            service.begin_install_download(),
+            "a failed download can be retried"
+        );
+        service.cancel_install();
+        assert_eq!(service.install_phase(), &InstallPhase::Idle);
+        service.cancel_install();
+        assert_eq!(service.install_phase(), &InstallPhase::Idle);
     }
 }

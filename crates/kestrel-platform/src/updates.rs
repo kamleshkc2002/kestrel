@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use kestrel_core::ReleaseInfo;
+use kestrel_core::{InstallAssets, ReleaseInfo};
 use serde::Deserialize;
 
 use crate::{applications::resolve_executable, cancellation::CancellationToken};
@@ -34,6 +34,17 @@ pub struct RawRelease {
     #[serde(default)]
     pub draft: bool,
     pub html_url: String,
+    #[serde(default)]
+    pub assets: Vec<RawAsset>,
+}
+
+/// One downloadable file of a release.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RawAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    #[serde(default)]
+    pub size: u64,
 }
 
 impl RawRelease {
@@ -44,10 +55,32 @@ impl RawRelease {
             return None;
         }
         let version: semver::Version = self.tag_name.strip_prefix('v')?.parse().ok()?;
+        let install = self.install_assets(&version, std::env::consts::ARCH);
         Some(ReleaseInfo {
             prerelease: self.prerelease || !version.pre.is_empty(),
             version,
             url: self.html_url,
+            install,
+        })
+    }
+
+    /// The signed AppImage pair, published only for x86_64.
+    fn install_assets(&self, version: &semver::Version, arch: &str) -> Option<InstallAssets> {
+        if arch != "x86_64" {
+            return None;
+        }
+        let file_name = format!("Kestrel-{version}-x86_64.AppImage");
+        let signature_name = format!("{file_name}.minisig");
+        let appimage = self.assets.iter().find(|asset| asset.name == file_name)?;
+        let signature = self
+            .assets
+            .iter()
+            .find(|asset| asset.name == signature_name)?;
+        Some(InstallAssets {
+            appimage_url: appimage.browser_download_url.clone(),
+            appimage_size: appimage.size,
+            signature_url: signature.browser_download_url.clone(),
+            file_name,
         })
     }
 }
@@ -436,9 +469,96 @@ mod tests {
             prerelease: true,
             draft: false,
             html_url: "https://example.invalid/release".to_owned(),
+            assets: Vec::new(),
         }
         .into_release()
         .expect("the tag parses");
         assert!(release.prerelease);
+    }
+
+    const ASSETS: &str = r#"[
+        {
+            "tag_name": "v0.7.0",
+            "prerelease": false,
+            "draft": false,
+            "html_url": "https://example.invalid/v0.7.0",
+            "assets": [
+                {
+                    "name": "Kestrel-0.7.0-x86_64.AppImage",
+                    "browser_download_url": "https://example.invalid/download/appimage",
+                    "size": 73400320
+                },
+                {
+                    "name": "Kestrel-0.7.0-x86_64.AppImage.sha256",
+                    "browser_download_url": "https://example.invalid/download/checksum",
+                    "size": 96
+                },
+                {
+                    "name": "Kestrel-0.7.0-x86_64.AppImage.minisig",
+                    "browser_download_url": "https://example.invalid/download/signature",
+                    "size": 291
+                }
+            ]
+        },
+        {
+            "tag_name": "v0.8.0",
+            "prerelease": false,
+            "draft": false,
+            "html_url": "https://example.invalid/v0.8.0",
+            "assets": [
+                {
+                    "name": "Kestrel-0.8.0-x86_64.AppImage",
+                    "browser_download_url": "https://example.invalid/download/unsigned",
+                    "size": 73400320
+                }
+            ]
+        }
+    ]"#;
+
+    #[test]
+    fn a_release_with_a_signed_appimage_offers_its_assets() {
+        let releases =
+            serde_json::from_str::<Vec<RawRelease>>(ASSETS).expect("the fixture is a release list");
+        let install = releases
+            .into_iter()
+            .find(|release| release.tag_name == "v0.7.0")
+            .and_then(RawRelease::into_release)
+            .and_then(|release| release.install)
+            .expect("the signed release offers an install");
+        assert_eq!(install.file_name, "Kestrel-0.7.0-x86_64.AppImage");
+        assert_eq!(
+            install.appimage_url,
+            "https://example.invalid/download/appimage"
+        );
+        assert_eq!(install.appimage_size, 73_400_320);
+        assert_eq!(
+            install.signature_url,
+            "https://example.invalid/download/signature"
+        );
+    }
+
+    #[test]
+    fn an_appimage_without_its_signature_offers_no_install() {
+        let releases =
+            serde_json::from_str::<Vec<RawRelease>>(ASSETS).expect("the fixture is a release list");
+        let unsigned = releases
+            .into_iter()
+            .find(|release| release.tag_name == "v0.8.0")
+            .expect("the unsigned release is listed")
+            .into_release()
+            .expect("the tag parses");
+        assert!(unsigned.install.is_none());
+    }
+
+    #[test]
+    fn another_architecture_offers_no_install() {
+        let release = serde_json::from_str::<Vec<RawRelease>>(ASSETS)
+            .expect("the fixture is a release list")
+            .into_iter()
+            .find(|release| release.tag_name == "v0.7.0")
+            .expect("the signed release is listed");
+        let version = semver::Version::parse("0.7.0").expect("version parses");
+        assert!(release.install_assets(&version, "x86_64").is_some());
+        assert!(release.install_assets(&version, "aarch64").is_none());
     }
 }

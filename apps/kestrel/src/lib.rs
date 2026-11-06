@@ -543,6 +543,14 @@ pub enum ApplicationCommand {
     CheckForUpdates,
     /// Hides the update banner for the offered version.
     DismissUpdate,
+    /// Downloads the offered AppImage and checks its signature.
+    DownloadUpdate,
+    /// Stops a running update download and removes its temporary files.
+    CancelUpdateDownload,
+    /// Installs the verified AppImage and restarts into it.
+    InstallUpdateAndRestart,
+    /// Restores the previous AppImage and restarts into it.
+    RollBackUpdate,
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
