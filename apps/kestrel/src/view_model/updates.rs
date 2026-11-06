@@ -94,6 +94,7 @@ mod tests {
             version: Version::parse(version).expect("test version parses"),
             url: "https://example.invalid/release".to_owned(),
             prerelease: version.contains('-'),
+            install: None,
         }
     }
 
@@ -127,6 +128,8 @@ mod tests {
                 last_checked,
                 banner: available.clone(),
                 available,
+                install: kestrel_services::update_install::InstallPhase::Idle,
+                can_self_update: false,
             };
             let model = UpdatesViewModel::new(UpdateCheck::Enabled, &snapshot, true, now);
             assert_eq!(model.status, expected);
@@ -140,6 +143,8 @@ mod tests {
             last_checked: None,
             banner: None,
             available: None,
+            install: kestrel_services::update_install::InstallPhase::Idle,
+            can_self_update: false,
         };
         let now = at(1_000_000);
         assert!(

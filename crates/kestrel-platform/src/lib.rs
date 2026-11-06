@@ -17,6 +17,7 @@ pub mod logind_session;
 pub mod network_addresses;
 pub mod notifications;
 pub mod nvml;
+pub mod process_exit;
 pub mod processes;
 pub mod quick_toggles;
 pub mod recording;
@@ -27,6 +28,7 @@ pub mod system_monitor;
 #[cfg(test)]
 mod test_bus;
 pub mod tray_host;
+pub mod update_install;
 pub mod updates;
 pub mod upower;
 pub mod windows;

@@ -13,7 +13,7 @@ pub use keep_awake::{
     KEEP_AWAKE_MAX, KEEP_AWAKE_MIN, KEEP_AWAKE_PRESETS, KeepAwakeDuration, KeepAwakeDurationError,
 };
 mod updates;
-pub use updates::{ReleaseInfo, UpdateCheck, UpdatesConfiguration, newest_offer};
+pub use updates::{InstallAssets, ReleaseInfo, UpdateCheck, UpdatesConfiguration, newest_offer};
 
 /// Debug builds run as a separate application: their own bus name, settings,
 /// and data, so development never touches an installed release.

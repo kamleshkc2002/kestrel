@@ -4,6 +4,7 @@ use std::time::SystemTime;
 
 use kestrel_core::{ReleaseInfo, UpdateCheck, newest_offer};
 use kestrel_platform::updates::UpdateFetchError;
+use kestrel_services::update_install::InstallPhase;
 use kestrel_services::updates::UpdateSnapshot;
 use semver::Version;
 
@@ -121,6 +122,55 @@ impl ApplicationRuntime {
         }
         self.persist_update_state();
         true
+    }
+
+    /// The offered release, with its install assets when the check saw them.
+    pub fn update_offer(&self) -> Option<ReleaseInfo> {
+        self.update_service.offer().cloned()
+    }
+
+    /// Whether this launch may offer to update itself.
+    pub fn can_self_update(&self) -> bool {
+        self.update_service.can_self_update()
+    }
+
+    pub fn update_install_state(&self) -> InstallPhase {
+        self.update_service.install_phase().clone()
+    }
+
+    /// Starts a download after an explicit command; `false` means no offer
+    /// with signed assets exists or a step is already running.
+    pub fn begin_update_download(&mut self) -> bool {
+        self.update_service.begin_install_download()
+    }
+
+    pub fn record_update_download_progress(&mut self, received: u64, total: u64) {
+        self.update_service
+            .record_download_progress(received, total);
+    }
+
+    pub fn begin_update_verify(&mut self) -> bool {
+        self.update_service.begin_install_verify()
+    }
+
+    /// The signature matched the downloaded file and its trusted comment.
+    pub fn finish_update_verify(&mut self, version: Version) -> bool {
+        self.update_service.record_install_verified(version)
+    }
+
+    pub fn record_update_install_failure(&mut self, reason: impl Into<String>) {
+        self.update_service.record_install_failure(reason);
+    }
+
+    /// A cancelled download returns the phase to Idle; the worker has
+    /// already removed its temporary files.
+    pub fn cancel_update_download(&mut self) {
+        self.update_service.cancel_install();
+    }
+
+    /// The new AppImage replaced the running file; the restart is pending.
+    pub fn finish_update_install(&mut self) -> bool {
+        self.update_service.record_installed()
     }
 
     fn persist_update_state(&self) {

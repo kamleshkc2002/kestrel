@@ -6,7 +6,9 @@ mod window;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
     rc::Rc,
     sync::{Arc, Mutex},
     thread,
@@ -18,7 +20,7 @@ use async_channel::{Receiver, Sender};
 use kestrel::appearance::AppearanceStyles;
 use kestrel::command_line::{
     CommandGate, CommandLineAction, CommandLineError, Invocation, command_list, parse_arguments,
-    usage,
+    take_after_exit, usage,
 };
 use kestrel::view_model::{
     ClipboardQuery, CommandBarQuery, MicrophoneViewModel, ShortcutsViewModel, SnippetQuery,
@@ -42,7 +44,9 @@ use kestrel_platform::cancellation::CancellationToken;
 use kestrel_platform::notifications::{
     AlertNotification, AlertNotifier, CaptureNotificationAction, DesktopNotifier, NotificationEvent,
 };
+use kestrel_platform::update_install::{DownloadedUpdate, UpdateInstallErrorKind};
 use kestrel_services::alerts::notification_text;
+use kestrel_services::update_install::InstallPhase;
 
 use window::{FloatingSurface, QuickPanelEntry, StatusOverlay, WindowView};
 
@@ -57,6 +61,9 @@ const AUDIO_FEEDBACK_INTERVAL: Duration = Duration::from_millis(500);
 const RECORDING_APPS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// How often a timed keep-awake session checks its deadline and the countdown.
 const KEEP_AWAKE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+/// How long a restarted instance waits for the replaced one before starting
+/// anyway; the forwarding then just raises the old window.
+const AFTER_EXIT_WAIT: Duration = Duration::from_secs(15);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 
@@ -73,6 +80,23 @@ fn proceed_after_attempt(trigger: UpdateCheckTrigger, recorded: bool) -> bool {
 struct UpdateCheckUpdate {
     message: String,
     cancelled: bool,
+}
+
+/// One event from the download, verify, or install worker, applied on the GTK
+/// thread.
+enum UpdateInstallUpdate {
+    Progress {
+        received: u64,
+        total: u64,
+    },
+    /// The signature matched; the files wait for the install command.
+    Downloaded {
+        download: DownloadedUpdate,
+    },
+    Cancelled,
+    Failed(String),
+    Installed,
+    RolledBack,
 }
 
 /// User checks report their result as a toast; scheduled ones stay in the
@@ -747,6 +771,8 @@ enum TargetedPanel {
     Capture,
     Processes,
     Scratchpad,
+    /// The update surfaces only, while a download reports progress.
+    Updates,
 }
 
 /// Fingerprinting avoids rebuilding presentation on every worker poll.
@@ -954,6 +980,8 @@ struct ControllerContext {
     refresh_results: Sender<RefreshResult>,
     tick_results: Sender<TickUpdate>,
     update_results: Sender<UpdateCheckUpdate>,
+    update_install_results: Sender<UpdateInstallUpdate>,
+    update_install_receiver: Receiver<UpdateInstallUpdate>,
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
@@ -1039,7 +1067,17 @@ struct ApplicationController {
     /// The running check, cancelled and joined outside the state lock on
     /// shutdown; cleared when its result is delivered.
     update_worker: RefCell<Option<(CancellationToken, thread::JoinHandle<()>)>>,
+    /// The running download-and-verify worker, cancelled and joined the same
+    /// way.
+    update_download_worker: RefCell<Option<(CancellationToken, thread::JoinHandle<()>)>>,
+    /// The verified download waiting for an explicit install command.
+    downloaded_update: RefCell<Option<DownloadedUpdate>>,
+    /// The running install or rollback worker.
+    update_install_worker: RefCell<Option<thread::JoinHandle<()>>>,
     update_results: Sender<UpdateCheckUpdate>,
+    update_install_results: Sender<UpdateInstallUpdate>,
+    /// Kept to drain a completion queued while the app was quitting.
+    update_install_receiver: Receiver<UpdateInstallUpdate>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
     refresh_results: Sender<RefreshResult>,
@@ -1059,6 +1097,8 @@ impl ApplicationController {
             refresh_results,
             tick_results,
             update_results,
+            update_install_results,
+            update_install_receiver,
             commands,
             notifier,
             capture_notifier,
@@ -1180,7 +1220,12 @@ impl ApplicationController {
             ),
             update_checking: Cell::new(false),
             update_worker: RefCell::new(None),
+            update_download_worker: RefCell::new(None),
+            downloaded_update: RefCell::new(None),
+            update_install_worker: RefCell::new(None),
             update_results,
+            update_install_results,
+            update_install_receiver,
             status_notifier: RefCell::new(status_notifier),
             appearance,
             activation_token: RefCell::new(None),
@@ -2088,6 +2133,357 @@ impl ApplicationController {
             guard.view_model()
         };
         self.apply_refresh_result(Ok((view_model, update.message)), TargetedPanel::Full);
+    }
+
+    /// Starts the explicit download and signature check off the GTK thread.
+    /// Reached only from the download command.
+    fn request_update_download(&self) {
+        if self.update_download_worker.borrow().is_some() {
+            return;
+        }
+        let Some(current) = kestrel_platform::update_install::running_appimage() else {
+            self.show_message("Kestrel can only update itself when it runs as an AppImage.");
+            return;
+        };
+        let Some(dest_dir) = current.parent().map(Path::to_path_buf) else {
+            self.show_message("Kestrel's folder cannot be updated.");
+            return;
+        };
+        let prepared = {
+            let mut guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let offer = guard.runtime.update_offer();
+            let assets = offer.as_ref().and_then(|offer| offer.install.clone());
+            match (offer, assets) {
+                (Some(offer), Some(assets)) => {
+                    if guard.runtime.begin_update_download() {
+                        Some((assets, offer.version, guard.view_model()))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
+        };
+        let Some((assets, version, view_model)) = prepared else {
+            self.show_message("There is no update to download.");
+            return;
+        };
+        self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Updates);
+        let state = Arc::clone(&self.state);
+        let results = self.update_install_results.clone();
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let worker = thread::Builder::new()
+            .name("kestrel-update-download".to_owned())
+            .spawn(move || {
+                let progress_results = results.clone();
+                let last_progress = Cell::new(u64::MAX);
+                let progress = |received: u64, total: u64| {
+                    if last_progress.get() == received {
+                        return;
+                    }
+                    last_progress.set(received);
+                    let _ = progress_results
+                        .try_send(UpdateInstallUpdate::Progress { received, total });
+                };
+                let download = match kestrel_platform::update_install::download_update(
+                    &assets,
+                    &dest_dir,
+                    &worker_cancel,
+                    &progress,
+                ) {
+                    Ok(download) => download,
+                    Err(error) if error.kind == UpdateInstallErrorKind::Cancelled => {
+                        let _ = results.try_send(UpdateInstallUpdate::Cancelled);
+                        return;
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let mut guard = state
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        guard.runtime.record_update_install_failure(message.clone());
+                        drop(guard);
+                        let _ = results.try_send(UpdateInstallUpdate::Failed(message));
+                        return;
+                    }
+                };
+                {
+                    let mut guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.runtime.begin_update_verify();
+                }
+                if let Err(error) =
+                    kestrel_platform::update_install::verify_update(&download, &assets.file_name)
+                {
+                    let message = error.to_string();
+                    let mut guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.runtime.record_update_install_failure(message.clone());
+                    drop(guard);
+                    let _ = results.try_send(UpdateInstallUpdate::Failed(message));
+                    return;
+                }
+                if worker_cancel.is_cancelled() {
+                    // Quitting during verification: the guard removes the
+                    // staged files as it drops.
+                    drop(download);
+                    let _ = results.try_send(UpdateInstallUpdate::Cancelled);
+                    return;
+                }
+                {
+                    let mut guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.runtime.finish_update_verify(version);
+                }
+                // A failed send returns the update; its guard removes the
+                // staged files as the error drops.
+                let _ = results.try_send(UpdateInstallUpdate::Downloaded { download });
+            });
+        match worker {
+            Ok(handle) => *self.update_download_worker.borrow_mut() = Some((cancel, handle)),
+            Err(_) => {
+                log::warn!(
+                    target: "kestrel.updates",
+                    "the update download worker could not start"
+                );
+                self.record_update_failure("The update download could not start.");
+                self.apply_update_refresh();
+            }
+        }
+    }
+
+    /// Cancels the running download; the worker removes its temporary files
+    /// and reports the cancellation.
+    fn cancel_update_download(&self) {
+        if let Some((cancel, _)) = self.update_download_worker.borrow().as_ref() {
+            cancel.cancel();
+        }
+    }
+
+    /// Installs the verified download and restarts into it.
+    fn request_update_install(&self) {
+        if self.update_install_worker.borrow().is_some() {
+            return;
+        }
+        let ready = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            matches!(
+                guard.runtime.update_install_state(),
+                InstallPhase::Ready { .. }
+            )
+        };
+        let Some(current) = kestrel_platform::update_install::running_appimage() else {
+            self.show_message("Kestrel can only update itself when it runs as an AppImage.");
+            return;
+        };
+        let Some(download) = self.downloaded_update.borrow_mut().take() else {
+            self.show_message("There is no verified update to install.");
+            return;
+        };
+        if !ready {
+            *self.downloaded_update.borrow_mut() = Some(download);
+            self.show_message("There is no verified update to install.");
+            return;
+        }
+        let state = Arc::clone(&self.state);
+        let results = self.update_install_results.clone();
+        let worker = thread::Builder::new()
+            .name("kestrel-update-install".to_owned())
+            .spawn(move || {
+                match kestrel_platform::update_install::install_update(&current, download) {
+                    Ok(_) => {
+                        {
+                            let mut guard = state
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            guard.runtime.finish_update_install();
+                        }
+                        let _ = results.try_send(UpdateInstallUpdate::Installed);
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let mut guard = state
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        guard.runtime.record_update_install_failure(message.clone());
+                        drop(guard);
+                        let _ = results.try_send(UpdateInstallUpdate::Failed(message));
+                    }
+                }
+            });
+        match worker {
+            Ok(handle) => *self.update_install_worker.borrow_mut() = Some(handle),
+            Err(_) => {
+                log::warn!(
+                    target: "kestrel.updates",
+                    "the update install worker could not start"
+                );
+                self.record_update_failure("The update could not be installed.");
+                self.apply_update_refresh();
+            }
+        }
+    }
+
+    /// Restores the previous AppImage and restarts into it.
+    fn request_update_rollback(&self) {
+        if self.update_install_worker.borrow().is_some() {
+            return;
+        }
+        let Some(current) = kestrel_platform::update_install::running_appimage() else {
+            self.show_message("Kestrel can only restore itself when it runs as an AppImage.");
+            return;
+        };
+        if !kestrel_platform::update_install::previous_version_available(&current) {
+            self.show_message("There is no earlier version to restore.");
+            return;
+        }
+        let state = Arc::clone(&self.state);
+        let results = self.update_install_results.clone();
+        let worker = thread::Builder::new()
+            .name("kestrel-update-install".to_owned())
+            .spawn(
+                move || match kestrel_platform::update_install::roll_back(&current) {
+                    Ok(()) => {
+                        let _ = results.try_send(UpdateInstallUpdate::RolledBack);
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let mut guard = state
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        guard.runtime.record_update_install_failure(message.clone());
+                        drop(guard);
+                        let _ = results.try_send(UpdateInstallUpdate::Failed(message));
+                    }
+                },
+            );
+        match worker {
+            Ok(handle) => *self.update_install_worker.borrow_mut() = Some(handle),
+            Err(_) => {
+                log::warn!(
+                    target: "kestrel.updates",
+                    "the update install worker could not start"
+                );
+                self.record_update_failure("The earlier version could not be restored.");
+                self.apply_update_refresh();
+            }
+        }
+    }
+
+    /// Applies one worker event on the GTK thread.
+    fn finish_update_install_update(&self, update: UpdateInstallUpdate) {
+        match update {
+            UpdateInstallUpdate::Progress { received, total } => {
+                {
+                    let mut guard = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard
+                        .runtime
+                        .record_update_download_progress(received, total);
+                }
+                self.apply_update_refresh();
+            }
+            UpdateInstallUpdate::Downloaded { download } => {
+                self.update_download_worker.borrow_mut().take();
+                *self.downloaded_update.borrow_mut() = Some(download);
+                self.apply_update_refresh();
+            }
+            UpdateInstallUpdate::Cancelled => {
+                self.update_download_worker.borrow_mut().take();
+                {
+                    let mut guard = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.runtime.cancel_update_download();
+                }
+                self.apply_update_refresh();
+            }
+            UpdateInstallUpdate::Failed(message) => {
+                self.update_download_worker.borrow_mut().take();
+                self.update_install_worker.borrow_mut().take();
+                self.apply_update_refresh();
+                self.show_message(&format!("The update could not be completed: {message}"));
+            }
+            UpdateInstallUpdate::Installed | UpdateInstallUpdate::RolledBack => {
+                self.update_install_worker.borrow_mut().take();
+                self.apply_update_refresh();
+                self.restart_into_appimage();
+            }
+        }
+    }
+
+    fn record_update_failure(&self, message: &str) {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.runtime.record_update_install_failure(message);
+    }
+
+    /// Repaints the update surfaces without rebuilding the other pages.
+    fn apply_update_refresh(&self) {
+        let view_model = self.current_view_model();
+        self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Updates);
+    }
+
+    /// Launches the AppImage after this process exits, then quits through the
+    /// normal path. A failed launch leaves the change installed for the next
+    /// start.
+    fn restart_into_appimage(&self) {
+        let Some(current) = kestrel_platform::update_install::running_appimage() else {
+            self.show_message("Restart Kestrel to finish.");
+            return;
+        };
+        match spawn_after_exit(&current) {
+            Ok(()) => {
+                log::info!(target: "kestrel.updates", "restarting into the installed AppImage");
+                let _ = self.commands.try_send(ApplicationCommand::Quit);
+            }
+            Err(_) => {
+                log::warn!(
+                    target: "kestrel.updates",
+                    "the installed AppImage could not be launched"
+                );
+                self.show_message("The change is installed; restart Kestrel to use it.");
+            }
+        }
+    }
+
+    /// Cancels and joins the download worker, then drops every staged update
+    /// the app will not install.
+    fn stop_update_download(&self) {
+        if let Some((cancel, worker)) = self.update_download_worker.borrow_mut().take() {
+            cancel.cancel();
+            let _ = worker.join();
+        }
+        // A completion queued while the app was quitting was never received;
+        // dropping it lets its guard remove the staged files.
+        while let Ok(update) = self.update_install_receiver.try_recv() {
+            drop(update);
+        }
+        if let Some(download) = self.downloaded_update.borrow_mut().take() {
+            drop(download);
+        }
+    }
+
+    /// Waits for an install or rollback worker that is still running.
+    fn stop_update_install(&self) {
+        if let Some(worker) = self.update_install_worker.borrow_mut().take() {
+            let _ = worker.join();
+        }
     }
 
     /// Republishes the whole view model after a session ended on its own.
@@ -3810,6 +4206,7 @@ fn apply_targeted_panel(
             view.set_listeners(&view_model.listeners);
         }
         TargetedPanel::Scratchpad => view.set_scratchpad(&view_model.scratchpad),
+        TargetedPanel::Updates => view.set_updates(&view_model.updates),
     }
 }
 
@@ -3873,10 +4270,24 @@ fn load_startup_configuration(
 }
 
 fn main() -> glib::ExitCode {
-    let arguments = std::env::args().collect::<Vec<_>>();
+    // The restart hand-off names the process it replaces. The flag is
+    // internal, stripped before GApplication sees the arguments.
+    let mut forwarded = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let after_exit = match take_after_exit(&mut forwarded) {
+        Ok(pid) => pid,
+        Err(error) => {
+            eprintln!("kestrel: {error}");
+            eprint!("{}", usage());
+            return glib::ExitCode::from(CommandLineError::EXIT_STATUS);
+        }
+    };
+    let arguments = std::iter::once(std::env::args_os().next().unwrap_or_default())
+        .chain(forwarded.iter().cloned())
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     // Answer help, version, listing, and invalid IDs locally, before touching
     // D-Bus or building the runtime.
-    let requested = match parse_arguments(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+    let requested = match parse_arguments(&forwarded) {
         Ok(Invocation::Help) => {
             print!("{}", usage());
             return glib::ExitCode::SUCCESS;
@@ -3915,6 +4326,19 @@ fn main() -> glib::ExitCode {
     }));
     let initial_appearance = loaded.configuration.ui.appearance;
     let appearance_styles = Rc::new(AppearanceStyles::new());
+    if let Some(pid) = after_exit {
+        // The replaced instance still owns the session bus until it exits, so
+        // waiting here makes this launch the primary one. Past the cap the
+        // launch continues anyway and the forwarding just raises its window.
+        if kestrel_platform::process_exit::wait_for_exit(pid, AFTER_EXIT_WAIT) {
+            log::debug!(target: "kestrel.updates", "the previous instance exited");
+        } else {
+            log::warn!(
+                target: "kestrel.updates",
+                "the previous instance did not exit in time; starting anyway"
+            );
+        }
+    }
     let application = adw::Application::builder()
         .application_id(kestrel_core::APPLICATION_ID)
         .flags(adw::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
@@ -4017,6 +4441,7 @@ fn main() -> glib::ExitCode {
     let (refresh_results, refresh_receiver) = async_channel::unbounded();
     let (tick_results, tick_receiver) = async_channel::unbounded();
     let (update_results, update_receiver) = async_channel::unbounded();
+    let (update_install_results, update_install_receiver) = async_channel::unbounded();
     let capture_notifier = Arc::new(DesktopNotifier::new());
     let notifier: Arc<dyn AlertNotifier> = capture_notifier.clone();
     let controller = ApplicationController::new(
@@ -4029,6 +4454,8 @@ fn main() -> glib::ExitCode {
             refresh_results,
             tick_results,
             update_results,
+            update_install_results,
+            update_install_receiver: update_install_receiver.clone(),
             commands: commands.clone(),
             notifier,
             capture_notifier,
@@ -4045,6 +4472,7 @@ fn main() -> glib::ExitCode {
     dispatch_refresh_results(&controller, refresh_receiver);
     dispatch_tick_results(&controller, tick_receiver);
     dispatch_update_results(&controller, update_receiver);
+    dispatch_update_install_results(&controller, update_install_receiver);
     let weak_monitor_controller = Rc::downgrade(&controller);
     glib::timeout_add_local(TICK_INTERVAL, move || {
         if let Some(controller) = weak_monitor_controller.upgrade() {
@@ -4118,6 +4546,8 @@ fn main() -> glib::ExitCode {
 
     let exit = application.run_with_args(&arguments);
     controller.stop_update_check();
+    controller.stop_update_download();
+    controller.stop_update_install();
     if let Some(stopping) = controller.stop_tray() {
         let _ = stopping.join();
     }
@@ -4285,6 +4715,10 @@ fn dispatch_commands(
                     ControllerOperation::DismissUpdate,
                     "kestrel-update-dismiss",
                 ),
+                ApplicationCommand::DownloadUpdate => controller.request_update_download(),
+                ApplicationCommand::CancelUpdateDownload => controller.cancel_update_download(),
+                ApplicationCommand::InstallUpdateAndRestart => controller.request_update_install(),
+                ApplicationCommand::RollBackUpdate => controller.request_update_rollback(),
                 ApplicationCommand::SetMonitorReadoutVisible { readout, visible } => controller
                     .request_operation(
                         ControllerOperation::SetMonitorReadoutVisible { readout, visible },
@@ -4664,6 +5098,44 @@ fn dispatch_update_results(
     });
 }
 
+fn dispatch_update_install_results(
+    controller: &Rc<ApplicationController>,
+    receiver: Receiver<UpdateInstallUpdate>,
+) {
+    let controller = Rc::downgrade(controller);
+    glib::spawn_future_local(async move {
+        while let Ok(update) = receiver.recv().await {
+            let Some(controller) = controller.upgrade() else {
+                break;
+            };
+            controller.finish_update_install_update(update);
+        }
+    });
+}
+
+/// Launches the installed AppImage in its own session, so the replaced
+/// process's exit cannot signal it, with no inherited standard streams.
+fn spawn_after_exit(current: &Path) -> std::io::Result<()> {
+    let mut command = Command::new(current);
+    command
+        .arg(kestrel::command_line::AFTER_EXIT_FLAG)
+        .arg(std::process::id().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: `setsid` is async-signal-safe and touches no memory shared with
+    // the parent; the child only detaches from this terminal session.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    drop(child);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CloseOutcome, close_outcome, load_startup_configuration, persist};
@@ -4696,6 +5168,7 @@ mod tests {
             version: semver::Version::parse("0.6.0-preview.5").expect("version parses"),
             url: "https://example.invalid/release".to_owned(),
             prerelease: true,
+            install: None,
         };
         let available = UpdateCheckOutcome::Available(release);
         assert!(
@@ -4880,6 +5353,7 @@ mod tests {
             let (commands, _command_receiver) = async_channel::unbounded();
             let (refresh_results, _refresh_receiver) = async_channel::unbounded();
             let (update_results, _update_receiver) = async_channel::unbounded();
+            let (update_install_results, update_install_receiver) = async_channel::unbounded();
             ApplicationController::new(
                 runtime,
                 configuration.clone(),
@@ -4890,6 +5364,8 @@ mod tests {
                     refresh_results,
                     tick_results,
                     update_results,
+                    update_install_results,
+                    update_install_receiver,
                     commands,
                     notifier: Arc::new(SilentNotifier),
                     capture_notifier: Arc::new(DesktopNotifier::new()),

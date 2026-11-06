@@ -26,6 +26,20 @@ pub struct ReleaseInfo {
     pub version: semver::Version,
     pub url: String,
     pub prerelease: bool,
+    /// The signed AppImage assets, when the release publishes them for this
+    /// architecture.
+    pub install: Option<InstallAssets>,
+}
+
+/// The download locations of a release's signed AppImage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallAssets {
+    pub appimage_url: String,
+    pub appimage_size: u64,
+    pub signature_url: String,
+    /// The AppImage's file name, which the signature's trusted comment must
+    /// repeat.
+    pub file_name: String,
 }
 
 /// The newest release worth offering: any newer release on a pre-release
@@ -51,6 +65,7 @@ mod tests {
             version: Version::parse(version).expect("test versions parse"),
             url: format!("https://example.invalid/{version}"),
             prerelease,
+            install: None,
         }
     }
 
