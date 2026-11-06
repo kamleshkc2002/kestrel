@@ -981,6 +981,7 @@ struct ControllerContext {
     tick_results: Sender<TickUpdate>,
     update_results: Sender<UpdateCheckUpdate>,
     update_install_results: Sender<UpdateInstallUpdate>,
+    update_install_receiver: Receiver<UpdateInstallUpdate>,
     commands: Sender<ApplicationCommand>,
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
@@ -1075,6 +1076,8 @@ struct ApplicationController {
     update_install_worker: RefCell<Option<thread::JoinHandle<()>>>,
     update_results: Sender<UpdateCheckUpdate>,
     update_install_results: Sender<UpdateInstallUpdate>,
+    /// Kept to drain a completion queued while the app was quitting.
+    update_install_receiver: Receiver<UpdateInstallUpdate>,
     /// The latest XDG activation token from a tray host, used once.
     activation_token: RefCell<Option<String>>,
     refresh_results: Sender<RefreshResult>,
@@ -1095,6 +1098,7 @@ impl ApplicationController {
             tick_results,
             update_results,
             update_install_results,
+            update_install_receiver,
             commands,
             notifier,
             capture_notifier,
@@ -1221,6 +1225,7 @@ impl ApplicationController {
             update_install_worker: RefCell::new(None),
             update_results,
             update_install_results,
+            update_install_receiver,
             status_notifier: RefCell::new(status_notifier),
             appearance,
             activation_token: RefCell::new(None),
@@ -2215,7 +2220,6 @@ impl ApplicationController {
                 if let Err(error) =
                     kestrel_platform::update_install::verify_update(&download, &assets.file_name)
                 {
-                    download.remove_files();
                     let message = error.to_string();
                     let mut guard = state
                         .lock()
@@ -2225,12 +2229,21 @@ impl ApplicationController {
                     let _ = results.try_send(UpdateInstallUpdate::Failed(message));
                     return;
                 }
+                if worker_cancel.is_cancelled() {
+                    // Quitting during verification: the guard removes the
+                    // staged files as it drops.
+                    drop(download);
+                    let _ = results.try_send(UpdateInstallUpdate::Cancelled);
+                    return;
+                }
                 {
                     let mut guard = state
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     guard.runtime.finish_update_verify(version);
                 }
+                // A failed send returns the update; its guard removes the
+                // staged files as the error drops.
                 let _ = results.try_send(UpdateInstallUpdate::Downloaded { download });
             });
         match worker {
@@ -2287,7 +2300,7 @@ impl ApplicationController {
         let worker = thread::Builder::new()
             .name("kestrel-update-install".to_owned())
             .spawn(move || {
-                match kestrel_platform::update_install::install_update(&current, &download) {
+                match kestrel_platform::update_install::install_update(&current, download) {
                     Ok(_) => {
                         {
                             let mut guard = state
@@ -2449,14 +2462,20 @@ impl ApplicationController {
         }
     }
 
-    /// Cancels and joins the download worker, then removes whatever it left.
+    /// Cancels and joins the download worker, then drops every staged update
+    /// the app will not install.
     fn stop_update_download(&self) {
         if let Some((cancel, worker)) = self.update_download_worker.borrow_mut().take() {
             cancel.cancel();
             let _ = worker.join();
         }
+        // A completion queued while the app was quitting was never received;
+        // dropping it lets its guard remove the staged files.
+        while let Ok(update) = self.update_install_receiver.try_recv() {
+            drop(update);
+        }
         if let Some(download) = self.downloaded_update.borrow_mut().take() {
-            download.remove_files();
+            drop(download);
         }
     }
 
@@ -4436,6 +4455,7 @@ fn main() -> glib::ExitCode {
             tick_results,
             update_results,
             update_install_results,
+            update_install_receiver: update_install_receiver.clone(),
             commands: commands.clone(),
             notifier,
             capture_notifier,
@@ -5333,7 +5353,7 @@ mod tests {
             let (commands, _command_receiver) = async_channel::unbounded();
             let (refresh_results, _refresh_receiver) = async_channel::unbounded();
             let (update_results, _update_receiver) = async_channel::unbounded();
-            let (update_install_results, _update_install_receiver) = async_channel::unbounded();
+            let (update_install_results, update_install_receiver) = async_channel::unbounded();
             ApplicationController::new(
                 runtime,
                 configuration.clone(),
@@ -5345,6 +5365,7 @@ mod tests {
                     tick_results,
                     update_results,
                     update_install_results,
+                    update_install_receiver,
                     commands,
                     notifier: Arc::new(SilentNotifier),
                     capture_notifier: Arc::new(DesktopNotifier::new()),

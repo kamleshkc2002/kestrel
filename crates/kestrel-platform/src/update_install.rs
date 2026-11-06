@@ -121,15 +121,31 @@ fn directory_is_writable(path: &Path) -> bool {
 }
 
 /// A downloaded AppImage and its signature, still under temporary names.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Dropping an unconsumed update removes both files, so quitting or a failed
+/// install cannot leave a staged download beside the running AppImage.
+#[derive(Debug, PartialEq, Eq)]
 pub struct DownloadedUpdate {
     pub appimage: PathBuf,
     pub signature: PathBuf,
+    /// Set once the AppImage has been renamed into place.
+    consumed: bool,
 }
 
 impl DownloadedUpdate {
-    /// Removes the temporary files, whatever the caller decides next.
-    pub fn remove_files(&self) {
+    fn staged(appimage: PathBuf, signature: PathBuf) -> Self {
+        Self {
+            appimage,
+            signature,
+            consumed: false,
+        }
+    }
+}
+
+impl Drop for DownloadedUpdate {
+    fn drop(&mut self) {
+        if self.consumed {
+            return;
+        }
         let _ = fs::remove_file(&self.appimage);
         let _ = fs::remove_file(&self.signature);
     }
@@ -174,10 +190,7 @@ pub(crate) fn download_update_with(
             return Err(error);
         }
     };
-    let downloaded = DownloadedUpdate {
-        appimage,
-        signature,
-    };
+    let downloaded = DownloadedUpdate::staged(appimage, signature);
     let attempt = (|| {
         transfer(
             executable,
@@ -201,10 +214,8 @@ pub(crate) fn download_update_with(
     })();
     match attempt {
         Ok(()) => Ok(downloaded),
-        Err(error) => {
-            downloaded.remove_files();
-            Err(error)
-        }
+        // The guard removes both staged files as it drops.
+        Err(error) => Err(error),
     }
 }
 
@@ -491,28 +502,11 @@ pub struct InstalledUpdate {
 }
 
 /// Replaces `current` with the verified download, keeping the old file as
-/// `<name>.previous`.
+/// `<name>.previous`. The staged files belong to `downloaded`, which removes
+/// whatever the install did not consume.
 pub fn install_update(
     current: &Path,
-    downloaded: &DownloadedUpdate,
-) -> Result<InstalledUpdate, UpdateInstallError> {
-    match install_files(current, downloaded) {
-        Ok(installed) => Ok(installed),
-        Err(error) => {
-            // The signature is spent either way. The AppImage temporary file
-            // is removed only while the rename has not moved it into place.
-            if downloaded.appimage.exists() {
-                let _ = fs::remove_file(&downloaded.appimage);
-            }
-            let _ = fs::remove_file(&downloaded.signature);
-            Err(error)
-        }
-    }
-}
-
-fn install_files(
-    current: &Path,
-    downloaded: &DownloadedUpdate,
+    mut downloaded: DownloadedUpdate,
 ) -> Result<InstalledUpdate, UpdateInstallError> {
     let previous = previous_path(current);
     set_mode(&downloaded.appimage, APPIMAGE_MODE)?;
@@ -530,11 +524,14 @@ fn install_files(
     }
     fs::rename(&downloaded.appimage, current)
         .map_err(|_| UpdateInstallError::io("The update could not replace Kestrel."))?;
-    if let Some(directory) = current.parent() {
-        sync_directory(directory)?;
-    }
+    // The file at the running path is now the one the guard held.
+    downloaded.consumed = true;
+    let synced = match current.parent() {
+        Some(directory) => sync_directory(directory),
+        None => Ok(()),
+    };
     let _ = fs::remove_file(&downloaded.signature);
-    Ok(InstalledUpdate { previous })
+    synced.map(|()| InstalledUpdate { previous })
 }
 
 /// Restores `<name>.previous` over `current` after an install.
@@ -623,10 +620,7 @@ mod tests {
         let signature_path = directory.path().join(format!("{FILE_NAME}.minisig"));
         fs::copy(fixture(FILE_NAME), &appimage).expect("the fixture copies");
         fs::copy(fixture(signature), &signature_path).expect("the signature copies");
-        DownloadedUpdate {
-            appimage,
-            signature: signature_path,
-        }
+        DownloadedUpdate::staged(appimage, signature_path)
     }
 
     fn verify(directory: &TempDir, signature: &str) -> Result<(), super::UpdateInstallError> {
@@ -763,8 +757,20 @@ mod tests {
                 .any(|(_, total)| *total == payload.len() as u64),
             "progress reports the expected size"
         );
-        download.remove_files();
+        drop(download);
         assert!(temporary_files(directory.path()).is_empty());
+    }
+
+    #[test]
+    fn dropping_a_staged_download_removes_both_files() {
+        let directory = TempDir::new().expect("temporary directory");
+        let download = downloaded(&directory, "Kestrel-9.9.9-x86_64.AppImage.minisig");
+        let appimage = download.appimage.clone();
+        let signature = download.signature.clone();
+        assert!(appimage.exists() && signature.exists(), "the files staged");
+        drop(download);
+        assert!(!appimage.exists(), "the staged AppImage is removed");
+        assert!(!signature.exists(), "the staged signature is removed");
     }
 
     #[test]
@@ -829,10 +835,10 @@ mod tests {
         let current = directory.path().join("Kestrel.AppImage");
         fs::write(&current, b"old version").expect("the current file writes");
         fs::set_permissions(&current, fs::Permissions::from_mode(0o755)).expect("mode is set");
-        let download = DownloadedUpdate {
-            appimage: directory.path().join("download.AppImage"),
-            signature: directory.path().join("download.AppImage.minisig"),
-        };
+        let download = DownloadedUpdate::staged(
+            directory.path().join("download.AppImage"),
+            directory.path().join("download.AppImage.minisig"),
+        );
         fs::write(&download.appimage, b"new version").expect("the download writes");
         fs::write(&download.signature, b"signature").expect("the signature writes");
         (current, download)
@@ -842,7 +848,9 @@ mod tests {
     fn installing_replaces_the_file_and_keeps_the_previous_one() {
         let directory = TempDir::new().expect("temporary directory");
         let (current, download) = installed_fixture(&directory);
-        let installed = install_update(&current, &download).expect("the install succeeds");
+        let staged_appimage = download.appimage.clone();
+        let staged_signature = download.signature.clone();
+        let installed = install_update(&current, download).expect("the install succeeds");
         assert_eq!(fs::read(&current).expect("the file reads"), b"new version");
         let mode = fs::metadata(&current)
             .expect("the file is readable")
@@ -859,8 +867,11 @@ mod tests {
             b"old version"
         );
         assert!(previous_version_available(&current));
-        assert!(!download.appimage.exists(), "the temporary file moved");
-        assert!(!download.signature.exists(), "the signature was removed");
+        assert!(
+            !staged_appimage.exists(),
+            "the consumed staged AppImage stays installed"
+        );
+        assert!(!staged_signature.exists(), "the signature was removed");
 
         roll_back(&current).expect("the rollback succeeds");
         assert_eq!(fs::read(&current).expect("the file reads"), b"old version");
@@ -868,18 +879,37 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_install_removes_the_staged_files() {
+        let directory = TempDir::new().expect("temporary directory");
+        let (_, download) = installed_fixture(&directory);
+        let staged_appimage = download.appimage.clone();
+        let staged_signature = download.signature.clone();
+        let missing = directory.path().join("missing").join("Kestrel.AppImage");
+        let error = install_update(&missing, download).expect_err("the install fails");
+        assert_eq!(error.kind, UpdateInstallErrorKind::Io);
+        assert!(
+            !staged_appimage.exists(),
+            "a failed install removes the staged AppImage"
+        );
+        assert!(
+            !staged_signature.exists(),
+            "a failed install removes the staged signature"
+        );
+    }
+
+    #[test]
     fn a_second_install_replaces_the_previous_copy() {
         let directory = TempDir::new().expect("temporary directory");
         let (current, download) = installed_fixture(&directory);
-        install_update(&current, &download).expect("the install succeeds");
+        install_update(&current, download).expect("the install succeeds");
 
-        let next = DownloadedUpdate {
-            appimage: directory.path().join("next.AppImage"),
-            signature: directory.path().join("next.AppImage.minisig"),
-        };
+        let next = DownloadedUpdate::staged(
+            directory.path().join("next.AppImage"),
+            directory.path().join("next.AppImage.minisig"),
+        );
         fs::write(&next.appimage, b"newest version").expect("the download writes");
         fs::write(&next.signature, b"signature").expect("the signature writes");
-        let installed = install_update(&current, &next).expect("the second install succeeds");
+        let installed = install_update(&current, next).expect("the second install succeeds");
         assert_eq!(
             fs::read(&installed.previous).expect("the previous file reads"),
             b"new version",
