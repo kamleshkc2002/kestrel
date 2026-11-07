@@ -5,7 +5,8 @@ mod panels;
 mod tools;
 
 use crate::window::widgets::{
-    FilterRows, choose_path, icon_button, on_spin_row_settled, plain_row, stacked_row,
+    FilterRows, choose_path, configure_wrapping_label, icon_button, on_spin_row_settled, plain_row,
+    stacked_row,
 };
 use adw::prelude::*;
 use async_channel::Sender;
@@ -25,6 +26,15 @@ pub(super) enum SettingsPage {
     Settings,
 }
 
+/// The groups and update widgets a settings page contributes.
+pub(super) struct SettingsBuild {
+    pub groups: Vec<adw::PreferencesGroup>,
+    pub rows: FilterRows,
+    pub accessory_row: Option<adw::ActionRow>,
+    pub update_status_row: Option<adw::ActionRow>,
+    pub update_actions_row: Option<super::UpdateActionsRow>,
+}
+
 /// Builds a page's settings group and returns its rows with their lowercase
 /// search keywords; the window's single search handler filters them.
 pub(super) fn build_settings_group(
@@ -32,12 +42,7 @@ pub(super) fn build_settings_group(
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     page: SettingsPage,
-) -> (
-    Vec<adw::PreferencesGroup>,
-    FilterRows,
-    Option<adw::ActionRow>,
-    Option<adw::ActionRow>,
-) {
+) -> SettingsBuild {
     // Feature pages show their nested groups' own titles; the Settings page
     // adds its groups as top-level siblings.
     let group = adw::PreferencesGroup::new();
@@ -47,6 +52,7 @@ pub(super) fn build_settings_group(
     let mut filter_rows = Vec::<(gtk::Widget, String)>::new();
     let mut accessory_row = None;
     let mut update_status_row = None;
+    let mut update_actions_row = None;
     let mut extra_groups = Vec::<adw::PreferencesGroup>::new();
 
     match page {
@@ -91,10 +97,11 @@ pub(super) fn build_settings_group(
                 commands,
                 &mut filter_rows,
             ));
-            let (updates_group, status_row) =
-                add_updates_group(view_model, commands, &mut filter_rows);
+            let (updates_group, status_row, actions_row) =
+                add_updates_group(view_model, window, commands, &mut filter_rows);
             extra_groups.push(updates_group);
             update_status_row = Some(status_row);
+            update_actions_row = Some(actions_row);
             let (overlay, row) = add_overlay_group(view_model, commands, &mut filter_rows);
             extra_groups.push(overlay);
             accessory_row = row;
@@ -106,7 +113,13 @@ pub(super) fn build_settings_group(
     }
     let mut groups = vec![group];
     groups.extend(extra_groups);
-    (groups, filter_rows, accessory_row, update_status_row)
+    SettingsBuild {
+        groups,
+        rows: filter_rows,
+        accessory_row,
+        update_status_row,
+        update_actions_row,
+    }
 }
 
 fn add_logging_group(
@@ -802,9 +815,14 @@ fn add_whats_new_group(
 
 fn add_updates_group(
     view_model: &ApplicationViewModel,
+    window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
     filter_rows: &mut Vec<(gtk::Widget, String)>,
-) -> (adw::PreferencesGroup, adw::ActionRow) {
+) -> (
+    adw::PreferencesGroup,
+    adw::ActionRow,
+    super::UpdateActionsRow,
+) {
     let updates = &view_model.updates;
     let updates_group = adw::PreferencesGroup::builder().title("Updates").build();
 
@@ -864,7 +882,67 @@ fn add_updates_group(
         "updates update check status version release github".to_owned(),
     ));
     updates_group.add(&status);
-    (updates_group, status)
+
+    let phase_row = super::UpdateActionsRow::new();
+    super::fill_update_actions(&phase_row, updates.install_row.as_ref(), commands);
+    updates_group.add(&phase_row.row);
+
+    if !updates.can_self_update && updates.available.is_some() {
+        let note = gtk::Label::new(Some(
+            "Installing from here works only for the AppImage; download this copy's update from \
+             the release page.",
+        ));
+        configure_wrapping_label(&note);
+        note.add_css_class("dim-label");
+        note.set_margin_top(6);
+        note.set_margin_bottom(6);
+        note.set_margin_start(12);
+        note.set_margin_end(12);
+        updates_group.add(&note);
+    }
+
+    if updates.previous_available {
+        let previous = plain_row()
+            .title("Previous version")
+            .subtitle("Return to the version that ran before the last update.")
+            .build();
+        let go_back = gtk::Button::builder()
+            .label("Go back")
+            .valign(Align::Center)
+            .build();
+        let window = window.clone();
+        let sender = commands.clone();
+        go_back.connect_clicked(move |_| show_rollback_dialog(&window, &sender));
+        previous.add_suffix(&go_back);
+        previous.set_activatable_widget(Some(&go_back));
+        filter_rows.push((
+            previous.clone().upcast(),
+            "updates previous version rollback go back downgrade".to_owned(),
+        ));
+        updates_group.add(&previous);
+    }
+    (updates_group, status, phase_row)
+}
+
+/// Confirms the rollback, which restarts into the earlier AppImage.
+fn show_rollback_dialog(window: &adw::ApplicationWindow, commands: &Sender<ApplicationCommand>) {
+    let dialog = adw::AlertDialog::builder()
+        .heading("Go back to the previous version?")
+        .body("Kestrel restarts with the version that ran before the last update.")
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("go-back", "Go back");
+    dialog.set_response_appearance("go-back", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        dialog.close();
+        if response == "go-back" {
+            let _ = commands.try_send(ApplicationCommand::RollBackUpdate);
+        }
+    });
+    dialog.present(Some(window));
 }
 
 fn build_configuration_files_row(

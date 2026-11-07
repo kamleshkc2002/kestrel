@@ -64,6 +64,8 @@ const KEEP_AWAKE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// How long a restarted instance waits for the replaced one before starting
 /// anyway; the forwarding then just raises the old window.
 const AFTER_EXIT_WAIT: Duration = Duration::from_secs(15);
+/// Repaint rate while a download reports progress.
+const UPDATE_PROGRESS_REFRESH: Duration = Duration::from_millis(250);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 
@@ -448,6 +450,9 @@ impl ControllerState {
             "reset_ranking" => ApplicationCommand::ResetCommandRanking,
             "microphone_toggle" => ApplicationCommand::Microphone(MicrophoneCommand::ToggleMute),
             "speed_test" => ApplicationCommand::StartSpeedTest,
+            "update.get" => ApplicationCommand::DownloadUpdate,
+            "update.cancel" => ApplicationCommand::CancelUpdateDownload,
+            "update.install" => ApplicationCommand::InstallUpdateAndRestart,
             _ => return None,
         };
 
@@ -1074,6 +1079,9 @@ struct ApplicationController {
     downloaded_update: RefCell<Option<DownloadedUpdate>>,
     /// The running install or rollback worker.
     update_install_worker: RefCell<Option<thread::JoinHandle<()>>>,
+    /// Bounds update-surface repaints while a download reports progress.
+    update_progress_refresh_scheduled: Cell<bool>,
+    update_progress_refreshed_at: Cell<Option<Instant>>,
     update_results: Sender<UpdateCheckUpdate>,
     update_install_results: Sender<UpdateInstallUpdate>,
     /// Kept to drain a completion queued while the app was quitting.
@@ -1223,6 +1231,8 @@ impl ApplicationController {
             update_download_worker: RefCell::new(None),
             downloaded_update: RefCell::new(None),
             update_install_worker: RefCell::new(None),
+            update_progress_refresh_scheduled: Cell::new(false),
+            update_progress_refreshed_at: Cell::new(None),
             update_results,
             update_install_results,
             update_install_receiver,
@@ -2267,21 +2277,61 @@ impl ApplicationController {
         }
     }
 
+    /// Asks before restarting during a recording, whose take the quit path
+    /// still saves.
+    fn request_update_install_or_confirm(self: &Rc<Self>) {
+        if !self.recording_running.get() {
+            self.request_update_install();
+            return;
+        }
+        let Some(window) = self
+            .window
+            .borrow()
+            .as_ref()
+            .map(|view| view.window.clone())
+        else {
+            self.request_update_install();
+            return;
+        };
+        let dialog = adw::AlertDialog::builder()
+            .heading("A recording is in progress")
+            .body("Restarting stops it; what is recorded so far is saved.")
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("stop-and-restart", "Stop and restart");
+        dialog.set_response_appearance("stop-and-restart", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let weak_controller = Rc::downgrade(self);
+        dialog.connect_response(None, move |dialog, response| {
+            dialog.close();
+            if response == "stop-and-restart" {
+                if let Some(controller) = weak_controller.upgrade() {
+                    controller.request_update_install();
+                }
+            }
+        });
+        dialog.present(Some(&window));
+    }
+
     /// Installs the verified download and restarts into it.
     fn request_update_install(&self) {
         if self.update_install_worker.borrow().is_some() {
             return;
         }
-        let ready = {
+        let phase = {
             let guard = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            matches!(
-                guard.runtime.update_install_state(),
-                InstallPhase::Ready { .. }
-            )
+            guard.runtime.update_install_state()
         };
+        // Installed already means only the hand-off is left.
+        if matches!(phase, InstallPhase::Installed { .. }) {
+            self.restart_into_appimage();
+            return;
+        }
+        let ready = matches!(phase, InstallPhase::Ready { .. });
         let Some(current) = kestrel_platform::update_install::running_appimage() else {
             self.show_message("Kestrel can only update itself when it runs as an AppImage.");
             return;
@@ -2381,7 +2431,7 @@ impl ApplicationController {
     }
 
     /// Applies one worker event on the GTK thread.
-    fn finish_update_install_update(&self, update: UpdateInstallUpdate) {
+    fn finish_update_install_update(self: &Rc<Self>, update: UpdateInstallUpdate) {
         match update {
             UpdateInstallUpdate::Progress { received, total } => {
                 {
@@ -2393,7 +2443,7 @@ impl ApplicationController {
                         .runtime
                         .record_update_download_progress(received, total);
                 }
-                self.apply_update_refresh();
+                self.schedule_update_progress_refresh();
             }
             UpdateInstallUpdate::Downloaded { download } => {
                 self.update_download_worker.borrow_mut().take();
@@ -2437,6 +2487,36 @@ impl ApplicationController {
     fn apply_update_refresh(&self) {
         let view_model = self.current_view_model();
         self.apply_refresh_result(Ok((view_model, String::new())), TargetedPanel::Updates);
+    }
+
+    /// Progress repaints at most four times a second; the last event before
+    /// the interval ends repaints once on schedule.
+    fn schedule_update_progress_refresh(self: &Rc<Self>) {
+        if self.update_progress_refresh_scheduled.get() {
+            return;
+        }
+        let now = Instant::now();
+        let due = self
+            .update_progress_refreshed_at
+            .get()
+            .is_none_or(|last| now.duration_since(last) >= UPDATE_PROGRESS_REFRESH);
+        if due {
+            self.update_progress_refreshed_at.set(Some(now));
+            self.apply_update_refresh();
+            return;
+        }
+        self.update_progress_refresh_scheduled.set(true);
+        let weak_controller = Rc::downgrade(self);
+        glib::timeout_add_local_once(UPDATE_PROGRESS_REFRESH, move || {
+            let Some(controller) = weak_controller.upgrade() else {
+                return;
+            };
+            controller.update_progress_refresh_scheduled.set(false);
+            controller
+                .update_progress_refreshed_at
+                .set(Some(Instant::now()));
+            controller.apply_update_refresh();
+        });
     }
 
     /// Launches the AppImage after this process exits, then quits through the
@@ -4717,7 +4797,9 @@ fn dispatch_commands(
                 ),
                 ApplicationCommand::DownloadUpdate => controller.request_update_download(),
                 ApplicationCommand::CancelUpdateDownload => controller.cancel_update_download(),
-                ApplicationCommand::InstallUpdateAndRestart => controller.request_update_install(),
+                ApplicationCommand::InstallUpdateAndRestart => {
+                    controller.request_update_install_or_confirm()
+                }
                 ApplicationCommand::RollBackUpdate => controller.request_update_rollback(),
                 ApplicationCommand::SetMonitorReadoutVisible { readout, visible } => controller
                     .request_operation(

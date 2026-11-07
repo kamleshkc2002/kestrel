@@ -137,7 +137,10 @@ pub use snippets::{
 };
 pub(crate) use speed_test::SpeedTestPresentation;
 pub use speed_test::SpeedTestViewModel;
-pub use updates::{UpdateOfferViewModel, UpdatesViewModel};
+pub use updates::{
+    UpdateAction, UpdateInstallViewModel, UpdateOfferViewModel, UpdatePhaseViewModel,
+    UpdatesViewModel,
+};
 pub use whats_new::{WhatsNewSection, WhatsNewViewModel};
 
 #[derive(Debug, Clone, PartialEq)]

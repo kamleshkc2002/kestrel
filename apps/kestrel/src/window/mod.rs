@@ -38,7 +38,7 @@ use kestrel::{
     ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureRequest,
     CaptureViewModel, FocusTarget, MicrophoneViewModel, MonitorViewModel, OverviewTool,
     OverviewToolsViewModel, RecordingRequest, RecordingSource, ScreenToolRequest,
-    ShortcutsViewModel, SpeedTestViewModel, UpdateOfferViewModel, UpdatesViewModel,
+    ShortcutsViewModel, SpeedTestViewModel, UpdateAction, UpdatePhaseViewModel, UpdatesViewModel,
     view_model::accessory_module_status,
 };
 use monitor::{build_monitor_group, build_speed_test_group};
@@ -173,6 +173,10 @@ pub struct WindowView {
     accessory_row: std::cell::RefCell<Option<adw::ActionRow>>,
     /// The Settings update status row, refreshed as a download progresses.
     update_status_row: std::cell::RefCell<Option<adw::ActionRow>>,
+    /// The Settings phase actions, refreshed as a download progresses.
+    update_actions_row: std::cell::RefCell<Option<UpdateActionsRow>>,
+    /// The Overview banner slot, refreshed as a download progresses.
+    update_banner_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Overview's keep-awake row, updated while its countdown runs.
     keep_awake_row: std::cell::RefCell<Option<adw::ActionRow>>,
 }
@@ -356,6 +360,8 @@ impl WindowView {
             command_panel: std::cell::RefCell::new(build.command_panel),
             accessory_row: std::cell::RefCell::new(build.accessory_row),
             update_status_row: std::cell::RefCell::new(build.update_status_row),
+            update_actions_row: std::cell::RefCell::new(build.update_actions_row),
+            update_banner_container: std::cell::RefCell::new(build.update_banner_container),
             keep_awake_row: std::cell::RefCell::new(build.keep_awake_row),
         }
     }
@@ -407,6 +413,12 @@ impl WindowView {
         if let Some(row) = self.update_status_row.borrow().as_ref() {
             row.set_subtitle(&updates.status);
         }
+        if let Some(container) = self.update_banner_container.borrow().as_ref() {
+            fill_update_banner(container, updates.banner.as_ref(), &self.commands);
+        }
+        if let Some(row) = self.update_actions_row.borrow().as_ref() {
+            fill_update_actions(row, updates.install_row.as_ref(), &self.commands);
+        }
     }
 
     fn replace_page_state(&self, page: SidebarPage, build: PageBuild) {
@@ -438,8 +450,12 @@ impl WindowView {
             SidebarPage::Settings => {
                 *self.accessory_row.borrow_mut() = build.accessory_row;
                 *self.update_status_row.borrow_mut() = build.update_status_row;
+                *self.update_actions_row.borrow_mut() = build.update_actions_row;
             }
-            SidebarPage::Overview => *self.keep_awake_row.borrow_mut() = build.keep_awake_row,
+            SidebarPage::Overview => {
+                *self.keep_awake_row.borrow_mut() = build.keep_awake_row;
+                *self.update_banner_container.borrow_mut() = build.update_banner_container;
+            }
             SidebarPage::FeatureHub => {}
         }
     }
@@ -464,6 +480,10 @@ impl WindowView {
     pub fn focus(&self, target: FocusTarget) -> bool {
         match target {
             FocusTarget::QuickPanel | FocusTarget::CommandBar => false,
+            FocusTarget::Overview => {
+                self.select_page(SidebarPage::Overview);
+                true
+            }
             FocusTarget::Capture => self.reveal_section(
                 SidebarPage::Capture,
                 self.capture_container.borrow().as_ref(),
@@ -779,6 +799,24 @@ impl WindowView {
     }
 }
 
+/// The Settings row whose title, subtitle, and buttons follow the install
+/// phase without rebuilding the page.
+struct UpdateActionsRow {
+    row: adw::ActionRow,
+    actions: gtk::Box,
+}
+
+impl UpdateActionsRow {
+    fn new() -> Self {
+        let row = plain_row().build();
+        row.set_visible(false);
+        let actions = gtk::Box::new(Orientation::Horizontal, 6);
+        actions.set_valign(Align::Center);
+        row.add_suffix(&actions);
+        Self { row, actions }
+    }
+}
+
 struct PageBuild {
     scrolled: gtk::ScrolledWindow,
     monitor_container: Option<gtk::Box>,
@@ -799,6 +837,10 @@ struct PageBuild {
     accessory_row: Option<adw::ActionRow>,
     /// The Settings status row, updated as an update downloads.
     update_status_row: Option<adw::ActionRow>,
+    /// The Settings phase actions, updated in place as a download progresses.
+    update_actions_row: Option<UpdateActionsRow>,
+    /// The Overview banner slot, filled while an update phase is presented.
+    update_banner_container: Option<gtk::Box>,
     /// The keep-awake row, updated while its countdown runs.
     keep_awake_row: Option<adw::ActionRow>,
     filter_rows: FilterRows,
@@ -901,6 +943,8 @@ impl Default for PageBuild {
             scratchpad_panel: None,
             accessory_row: None,
             update_status_row: None,
+            update_actions_row: None,
+            update_banner_container: None,
             keep_awake_row: None,
             filter_rows: FilterRows::new(),
         }
@@ -951,6 +995,11 @@ impl PageBuild {
         self.scratchpad_panel = self.scratchpad_panel.take().or(other.scratchpad_panel);
         self.accessory_row = self.accessory_row.take().or(other.accessory_row);
         self.update_status_row = self.update_status_row.take().or(other.update_status_row);
+        self.update_actions_row = self.update_actions_row.take().or(other.update_actions_row);
+        self.update_banner_container = self
+            .update_banner_container
+            .take()
+            .or(other.update_banner_container);
     }
 }
 
@@ -1047,33 +1096,129 @@ fn build_overview_tools_group(
     group
 }
 
-/// A newer release, with the release page and the per-version dismissal.
+/// A phase-dependent row: the Overview banner and the Settings install row.
 fn build_update_banner(
-    offer: &UpdateOfferViewModel,
+    phase: &UpdatePhaseViewModel,
     commands: &Sender<ApplicationCommand>,
 ) -> adw::PreferencesGroup {
-    let row = plain_row()
-        .title(format!("Kestrel {} is available", offer.version))
-        .build();
-    let view = gtk::Button::with_label("View release");
-    view.add_css_class("suggested-action");
-    view.set_valign(Align::Center);
-    let url = offer.url.clone();
-    let sender = commands.clone();
-    view.connect_clicked(move |_| {
-        let _ = sender.try_send(ApplicationCommand::OpenUri(url.clone()));
-    });
-    let dismiss = gtk::Button::with_label("Dismiss");
-    dismiss.set_valign(Align::Center);
-    let sender = commands.clone();
-    dismiss.connect_clicked(move |_| {
-        let _ = sender.try_send(ApplicationCommand::DismissUpdate);
-    });
-    row.add_suffix(&dismiss);
-    row.add_suffix(&view);
+    let row = build_update_row(phase, commands);
     let group = adw::PreferencesGroup::new();
     group.add(&row);
     group
+}
+
+fn build_update_row(
+    phase: &UpdatePhaseViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> adw::ActionRow {
+    let mut builder = plain_row().title(&phase.title);
+    if let Some(subtitle) = &phase.subtitle {
+        builder = builder.subtitle(subtitle);
+    }
+    let row = builder.build();
+    if let Some(percent) = phase.percent {
+        row.add_suffix(&update_progress_bar(percent));
+    }
+    for action in &phase.actions {
+        let button = update_action_button(
+            *action,
+            phase.url.as_deref(),
+            phase.suggested == Some(*action),
+            commands,
+        );
+        row.add_suffix(&button);
+    }
+    row
+}
+
+fn update_progress_bar(percent: u8) -> gtk::ProgressBar {
+    let bar = gtk::ProgressBar::new();
+    bar.set_fraction(f64::from(percent) / 100.0);
+    bar.set_valign(Align::Center);
+    bar.set_size_request(140, -1);
+    bar
+}
+
+fn update_action_button(
+    action: UpdateAction,
+    url: Option<&str>,
+    suggested: bool,
+    commands: &Sender<ApplicationCommand>,
+) -> gtk::Button {
+    let button = gtk::Button::with_label(action.label());
+    button.set_valign(Align::Center);
+    if suggested {
+        button.add_css_class("suggested-action");
+    }
+    let sender = commands.clone();
+    let url = url.map(str::to_owned);
+    button.connect_clicked(move |_| {
+        let command = match action {
+            UpdateAction::GetUpdate | UpdateAction::TryAgain => ApplicationCommand::DownloadUpdate,
+            UpdateAction::ViewRelease => match &url {
+                Some(url) => ApplicationCommand::OpenUri(url.clone()),
+                None => return,
+            },
+            UpdateAction::Dismiss => ApplicationCommand::DismissUpdate,
+            UpdateAction::CancelDownload => ApplicationCommand::CancelUpdateDownload,
+            UpdateAction::InstallAndRestart | UpdateAction::RestartToFinish => {
+                ApplicationCommand::InstallUpdateAndRestart
+            }
+        };
+        let _ = sender.try_send(command);
+    });
+    button
+}
+
+/// Replaces the Overview banner in place, hiding the slot when there is none.
+fn fill_update_banner(
+    container: &gtk::Box,
+    phase: Option<&UpdatePhaseViewModel>,
+    commands: &Sender<ApplicationCommand>,
+) {
+    clear_children(container);
+    match phase {
+        Some(phase) => {
+            container.append(&build_update_banner(phase, commands));
+            container.set_visible(true);
+        }
+        None => container.set_visible(false),
+    }
+}
+
+/// Follows the phase in the Settings row without touching the rest of the page.
+fn fill_update_actions(
+    row: &UpdateActionsRow,
+    phase: Option<&UpdatePhaseViewModel>,
+    commands: &Sender<ApplicationCommand>,
+) {
+    clear_children(&row.actions);
+    let Some(phase) = phase else {
+        row.row.set_visible(false);
+        return;
+    };
+    row.row.set_visible(true);
+    row.row.set_title(&phase.title);
+    row.row
+        .set_subtitle(phase.subtitle.as_deref().unwrap_or_default());
+    if let Some(percent) = phase.percent {
+        row.actions.append(&update_progress_bar(percent));
+    }
+    for action in &phase.actions {
+        let button = update_action_button(
+            *action,
+            phase.url.as_deref(),
+            phase.suggested == Some(*action),
+            commands,
+        );
+        row.actions.append(&button);
+    }
+}
+
+fn clear_children(container: &gtk::Box) {
+    while let Some(child) = container.first_child() {
+        child.unparent();
+    }
 }
 
 /// The one-time consent question, answered either way and then gone.
@@ -1140,9 +1285,10 @@ fn build_page(
             });
             body.append(&banner);
         }
-        if let Some(offer) = &view_model.updates.banner {
-            body.append(&build_update_banner(offer, commands));
-        }
+        let update_banner = gtk::Box::new(Orientation::Vertical, 0);
+        fill_update_banner(&update_banner, view_model.updates.banner.as_ref(), commands);
+        body.append(&update_banner);
+        build.update_banner_container = Some(update_banner);
         let heading = gtk::Label::new(Some(kestrel_core::APPLICATION_NAME));
         heading.add_css_class("title-1");
         heading.set_halign(Align::Start);
@@ -1394,14 +1540,14 @@ fn append_settings(
     commands: &Sender<ApplicationCommand>,
     page: SettingsPage,
 ) {
-    let (groups, rows, accessory_row, update_status_row) =
-        build_settings_group(view_model, window, commands, page);
-    for group in groups {
+    let settings = build_settings_group(view_model, window, commands, page);
+    for group in settings.groups {
         body.append(&group);
     }
-    build.filter_rows.extend(rows);
-    build.accessory_row = accessory_row;
-    build.update_status_row = update_status_row;
+    build.filter_rows.extend(settings.rows);
+    build.accessory_row = settings.accessory_row;
+    build.update_status_row = settings.update_status_row;
+    build.update_actions_row = settings.update_actions_row;
 }
 
 /// Names a query can use for the whole page; row keywords match single rows.

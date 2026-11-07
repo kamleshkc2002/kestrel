@@ -1,6 +1,6 @@
 use crate::{
-    ApplicationCommand, ApplicationViewModel, KeepAwakeStamp, QuickToggleId, QuickToggleViewModel,
-    tray_icon::readout_icon,
+    ApplicationCommand, ApplicationViewModel, FocusTarget, KeepAwakeStamp, QuickToggleId,
+    QuickToggleViewModel, tray_icon::readout_icon,
 };
 use async_channel::Sender;
 use kestrel_core::{CapabilityReport, CapabilityStatus, KEEP_AWAKE_PRESETS};
@@ -345,6 +345,8 @@ impl TrayKeepAwakeSink {
 pub struct TrayUpdate {
     pub version: Option<String>,
     pub url: Option<String>,
+    /// The item opens the Overview banner instead of the release page.
+    pub can_self_update: bool,
 }
 
 impl TrayUpdate {
@@ -357,6 +359,7 @@ impl TrayUpdate {
             .map_or_else(Self::default, |offer| Self {
                 version: Some(offer.version.clone()),
                 url: Some(offer.url.clone()),
+                can_self_update: view_model.updates.can_self_update,
             })
     }
 }
@@ -476,25 +479,32 @@ impl Tray for KestrelTray {
 }
 
 /// The update item while a newer release is available, whether or not the
-/// banner was dismissed.
+/// banner was dismissed. Where Kestrel can update itself it opens the banner;
+/// it never starts a download.
 fn update_item<T: Tray>(
     sender: &Sender<ApplicationCommand>,
     state: &TrayUpdate,
 ) -> Option<MenuItem<T>> {
-    let (version, url) = (state.version.as_ref()?, state.url.as_ref()?);
+    let version = state.version.as_ref()?;
     let sender = sender.clone();
-    let url = url.clone();
+    let command = update_item_command(state);
     Some(
         StandardItem {
             label: format!("Update available: {version}"),
             icon_name: "software-update-available-symbolic".to_owned(),
-            activate: Box::new(move |_: &mut T| {
-                send(&sender, ApplicationCommand::OpenUri(url.clone()))
-            }),
+            activate: Box::new(move |_: &mut T| send(&sender, command.clone())),
             ..StandardItem::default()
         }
         .into(),
     )
+}
+
+fn update_item_command(state: &TrayUpdate) -> ApplicationCommand {
+    if state.can_self_update {
+        ApplicationCommand::Focus(FocusTarget::Overview)
+    } else {
+        ApplicationCommand::OpenUri(state.url.clone().unwrap_or_default())
+    }
 }
 
 /// The keep-awake presets and Stop, while its feature runs.
@@ -630,8 +640,11 @@ impl Tray for ReadoutTray {
 mod tests {
     use kestrel_core::CapabilityStatus;
 
-    use super::{FEATURE_ID, Published, TrayKeepAwake, accept, unavailable_capability};
-    use crate::KeepAwakeStamp;
+    use super::{
+        FEATURE_ID, Published, TrayKeepAwake, TrayUpdate, accept, unavailable_capability,
+        update_item_command,
+    };
+    use crate::{ApplicationCommand, FocusTarget, KeepAwakeStamp};
     use std::time::Duration;
 
     fn stamp(revision: u64, observed_at: u64) -> Option<KeepAwakeStamp> {
@@ -684,6 +697,28 @@ mod tests {
 
         assert!(!published.state.active);
         assert_eq!(published.state.label, "Keep awake");
+    }
+
+    #[test]
+    fn the_update_item_opens_the_overview_banner_when_the_appimage_can_install() {
+        let state = TrayUpdate {
+            version: Some("0.6.0".to_owned()),
+            url: Some("https://example.invalid/release".to_owned()),
+            can_self_update: true,
+        };
+        assert_eq!(
+            update_item_command(&state),
+            ApplicationCommand::Focus(FocusTarget::Overview)
+        );
+
+        let state = TrayUpdate {
+            can_self_update: false,
+            ..state
+        };
+        assert_eq!(
+            update_item_command(&state),
+            ApplicationCommand::OpenUri("https://example.invalid/release".to_owned())
+        );
     }
 
     #[test]

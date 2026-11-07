@@ -1,6 +1,8 @@
 //! Command bar runtime features.
 
 use super::*;
+use kestrel_services::update_install::InstallPhase;
+
 #[derive(Clone, Copy)]
 struct ToolAvailability {
     capture_running: bool,
@@ -117,6 +119,64 @@ impl ApplicationRuntime {
             keep_awake_running: running(kestrel_platform::quick_toggles::KEEP_AWAKE_ID),
             keep_awake_active: self.keep_awake_is_active(),
         })
+        .into_iter()
+        .chain(self.update_items())
+        .collect()
+    }
+
+    /// One command per explicit update step, offered only in its phase.
+    fn update_items(&self) -> Vec<CommandItem> {
+        let version = self.update_offer().map(|offer| offer.version.to_string());
+        Self::update_items_for(
+            &self.update_install_state(),
+            version.as_deref(),
+            self.can_self_update(),
+        )
+    }
+
+    fn update_items_for(
+        phase: &InstallPhase,
+        version: Option<&str>,
+        can_self_update: bool,
+    ) -> Vec<CommandItem> {
+        let item =
+            |id: &str, title: String, subtitle: &str, action: &str, keywords: &[&'static str]| {
+                CommandItem::new(
+                    id,
+                    CommandSource::Kestrel,
+                    title,
+                    subtitle,
+                    kestrel_services::command_bar::CommandAction::Kestrel(action.to_owned()),
+                )
+                .with_keywords(keywords.iter().copied())
+            };
+        match phase {
+            InstallPhase::Idle => match (version, can_self_update) {
+                (Some(version), true) => vec![item(
+                    "kestrel:update-get",
+                    format!("Get update {version}"),
+                    "Download it and check the release signature",
+                    "update.get",
+                    &["update", "download", "install", "appimage", "version"],
+                )],
+                _ => Vec::new(),
+            },
+            InstallPhase::Downloading { .. } | InstallPhase::Verifying => vec![item(
+                "kestrel:update-cancel",
+                "Cancel update download".to_owned(),
+                "Stop the download and remove its temporary files",
+                "update.cancel",
+                &["update", "download", "cancel", "stop"],
+            )],
+            InstallPhase::Ready { .. } => vec![item(
+                "kestrel:update-install",
+                "Install update and restart".to_owned(),
+                "Install the checked AppImage and restart into it",
+                "update.install",
+                &["update", "install", "restart", "appimage"],
+            )],
+            InstallPhase::Installed { .. } | InstallPhase::Failed(_) => Vec::new(),
+        }
     }
 
     fn tool_items_for(availability: ToolAvailability) -> Vec<CommandItem> {
@@ -1012,5 +1072,69 @@ mod tests {
             keep_awake_active: false,
         });
         assert_eq!(active[0].title, "Stop recording");
+    }
+
+    #[test]
+    fn update_commands_appear_only_in_their_phase() {
+        use kestrel_services::update_install::InstallPhase;
+
+        let idle = ApplicationRuntime::update_items_for(&InstallPhase::Idle, Some("0.6.0"), true);
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].title, "Get update 0.6.0");
+        assert_eq!(
+            idle[0].action,
+            CommandAction::Kestrel("update.get".to_owned())
+        );
+        assert!(
+            ApplicationRuntime::update_items_for(&InstallPhase::Idle, Some("0.6.0"), false)
+                .is_empty(),
+            "a copy that cannot install itself offers no download"
+        );
+        assert!(
+            ApplicationRuntime::update_items_for(&InstallPhase::Idle, None, true).is_empty(),
+            "a download needs an offered version"
+        );
+
+        for phase in [
+            InstallPhase::Downloading {
+                received: 1,
+                total: 2,
+            },
+            InstallPhase::Verifying,
+        ] {
+            let items = ApplicationRuntime::update_items_for(&phase, None, true);
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].title, "Cancel update download");
+            assert_eq!(
+                items[0].action,
+                CommandAction::Kestrel("update.cancel".to_owned())
+            );
+        }
+
+        let ready = ApplicationRuntime::update_items_for(
+            &InstallPhase::Ready {
+                version: semver::Version::new(0, 6, 0),
+            },
+            None,
+            true,
+        );
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].title, "Install update and restart");
+        assert_eq!(
+            ready[0].action,
+            CommandAction::Kestrel("update.install".to_owned())
+        );
+
+        for phase in [
+            InstallPhase::Installed {
+                version: semver::Version::new(0, 6, 0),
+            },
+            InstallPhase::Failed("It did not finish.".to_owned()),
+        ] {
+            assert!(
+                ApplicationRuntime::update_items_for(&phase, None, true).is_empty(),
+                "a finished or failed step offers no download action"
+            );
+        }
     }
 }

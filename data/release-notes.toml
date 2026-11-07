@@ -3,3 +3,7 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "kestrel"
+text = "When running the AppImage, a new version can be downloaded, checked against the release signature, and installed with Install and restart; Settings can go back to the previous version."
