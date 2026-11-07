@@ -5201,7 +5201,19 @@ fn spawn_after_exit(current: &Path) -> std::io::Result<()> {
     let mut command = Command::new(current);
     command
         .arg(kestrel::command_line::AFTER_EXIT_FLAG)
-        .arg(std::process::id().to_string())
+        .arg(std::process::id().to_string());
+    // The old AppImage's mount disappears with this process, so its paths
+    // must not follow the restart into the new one.
+    if let Some(appdir) = std::env::var_os("APPDIR").filter(|value| !value.is_empty()) {
+        command.env_clear();
+        for (key, value) in kestrel_platform::update_install::sanitized_environment(
+            std::env::vars_os(),
+            Path::new(&appdir),
+        ) {
+            command.env(key, value);
+        }
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

@@ -4,7 +4,9 @@
 //! user command and installs only after another one.
 
 use std::{
-    env, fmt, fs,
+    env,
+    ffi::OsString,
+    fmt, fs,
     io::{self, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     os::unix::process::CommandExt,
@@ -555,6 +557,48 @@ pub fn previous_version_available(current: &Path) -> bool {
     previous_path(current).is_file()
 }
 
+/// The environment a restarted copy receives, without the paths that point
+/// into the AppImage mount the old process used.
+///
+/// The runtime sets `APPDIR`, `APPIMAGE`, `ARGV0`, and `OWD` itself, so those
+/// are dropped. A value that is wholly under `appdir` goes, and a
+/// colon-separated list keeps only the entries outside it; a list left empty
+/// is dropped too. Everything else is unchanged.
+pub fn sanitized_environment(
+    vars: impl Iterator<Item = (OsString, OsString)>,
+    appdir: &Path,
+) -> Vec<(OsString, OsString)> {
+    const RUNTIME_VARS: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
+    vars.filter_map(|(key, value)| {
+        if key.to_str().is_some_and(|key| RUNTIME_VARS.contains(&key)) {
+            return None;
+        }
+        if Path::new(&value).starts_with(appdir) {
+            return None;
+        }
+        let Some(text) = value.to_str() else {
+            return Some((key, value));
+        };
+        if !text.contains(':') {
+            return Some((key, value));
+        }
+        let entries = text.split(':').collect::<Vec<_>>();
+        let kept = entries
+            .iter()
+            .copied()
+            .filter(|entry| !Path::new(entry).starts_with(appdir))
+            .collect::<Vec<_>>();
+        if kept.len() == entries.len() {
+            return Some((key, value));
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        Some((key, OsString::from(kept.join(":"))))
+    })
+    .collect()
+}
+
 fn previous_path(current: &Path) -> PathBuf {
     let name = current
         .file_name()
@@ -599,7 +643,7 @@ mod tests {
 
     use super::{
         DownloadedUpdate, UpdateInstallErrorKind, install_update, previous_version_available,
-        roll_back, validated_appimage, verify_update_with_key,
+        roll_back, sanitized_environment, validated_appimage, verify_update_with_key,
     };
     use crate::cancellation::CancellationToken;
 
@@ -929,5 +973,71 @@ mod tests {
         assert!(!previous_version_available(&current));
         let error = roll_back(&current).expect_err("there is nothing to restore");
         assert_eq!(error.kind, UpdateInstallErrorKind::Io);
+    }
+
+    #[test]
+    fn a_restarted_copy_drops_the_dead_appimage_mount() {
+        use std::ffi::OsString;
+
+        let appdir = Path::new("/tmp/.mount_Kestre1");
+        let environment = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(key, value)| (OsString::from(*key), OsString::from(*value)))
+                .collect::<Vec<_>>()
+        };
+        let cases = [
+            (
+                vec![
+                    ("APPDIR", "/tmp/.mount_Kestre1"),
+                    ("APPIMAGE", "/tmp/Kestrel.AppImage"),
+                    ("ARGV0", "Kestrel"),
+                    ("OWD", "/home/kamlesh"),
+                    ("HOME", "/home/kamlesh"),
+                ],
+                vec![("HOME", "/home/kamlesh")],
+            ),
+            (
+                vec![
+                    (
+                        "GDK_PIXBUF_MODULE_FILE",
+                        "/tmp/.mount_Kestre1/usr/lib/loaders.cache",
+                    ),
+                    ("HOME", "/home/kamlesh"),
+                ],
+                vec![("HOME", "/home/kamlesh")],
+            ),
+            (
+                vec![
+                    ("PATH", "/usr/bin:/tmp/.mount_Kestre1/usr/bin:/bin"),
+                    ("XDG_DATA_DIRS", "/usr/share:/tmp/.mount_Kestre1/usr/share"),
+                    ("GSETTINGS_SCHEMA_DIR", "/tmp/.mount_Kestre1/schemas"),
+                    ("HOME", "/home/kamlesh"),
+                ],
+                vec![
+                    ("PATH", "/usr/bin:/bin"),
+                    ("XDG_DATA_DIRS", "/usr/share"),
+                    ("HOME", "/home/kamlesh"),
+                ],
+            ),
+            (
+                vec![
+                    (
+                        "LD_LIBRARY_PATH",
+                        "/tmp/.mount_Kestre1/a:/tmp/.mount_Kestre1/b",
+                    ),
+                    ("PATH", "/tmp/.mount_Kestre1AB/bin:/usr/bin"),
+                    ("HOME", "/tmp/.mount_Kestre1AB/home"),
+                ],
+                vec![
+                    ("PATH", "/tmp/.mount_Kestre1AB/bin:/usr/bin"),
+                    ("HOME", "/tmp/.mount_Kestre1AB/home"),
+                ],
+            ),
+        ];
+        for (input, expected) in cases {
+            let actual = sanitized_environment(environment(&input).into_iter(), appdir);
+            assert_eq!(actual, environment(&expected), "{input:?}");
+        }
     }
 }
