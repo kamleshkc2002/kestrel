@@ -5223,7 +5223,7 @@ fn spawn_after_exit(current: &Path) -> std::io::Result<()> {
     unsafe {
         command.pre_exec(|| {
             libc::setsid();
-            close_inherited_fds();
+            mark_inherited_fds_cloexec();
             Ok(())
         });
     }
@@ -5232,15 +5232,22 @@ fn spawn_after_exit(current: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Closes every descriptor above stdio before the exec.
+/// Marks every descriptor above stdio close-on-exec before the exec.
 ///
 /// The AppImage runtime keeps a handle on its mount, so an inherited copy
-/// would keep the mount the old process used alive.
-fn close_inherited_fds() {
-    // SAFETY: `close_range`, `getrlimit`, and `close` are async-signal-safe,
+/// would keep the mount the old process used alive. Marking rather than
+/// closing keeps std's exec-error pipe working until the exec.
+fn mark_inherited_fds_cloexec() {
+    // SAFETY: `close_range`, `getrlimit`, and `fcntl` are async-signal-safe,
     // and this runs after `fork` in the child.
     unsafe {
-        if libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) == 0 {
+        if libc::syscall(
+            libc::SYS_close_range,
+            3_u32,
+            u32::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        ) == 0
+        {
             return;
         }
         let mut limit = libc::rlimit {
@@ -5253,7 +5260,11 @@ fn close_inherited_fds() {
             1_024
         };
         for fd in 3..=bound {
-            libc::close(fd as libc::c_int);
+            let fd = fd as libc::c_int;
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
         }
     }
 }
@@ -5549,16 +5560,16 @@ mod tests {
         let descriptor = unsafe { libc::dup(file.as_raw_fd()) };
         assert!(descriptor >= 3, "the marker must sit above stdio");
 
-        let listing = |close: bool| {
+        let listing = |mark: bool| {
             let mut command = Command::new("/bin/sh");
             command
                 .arg("-c")
                 .arg("ls -l /proc/self/fd")
                 .stdout(Stdio::piped());
-            if close {
+            if mark {
                 unsafe {
                     command.pre_exec(|| {
-                        super::close_inherited_fds();
+                        super::mark_inherited_fds_cloexec();
                         Ok(())
                     });
                 }
@@ -5569,7 +5580,7 @@ mod tests {
         let path = marker.to_string_lossy();
         assert!(
             listing(false).contains(path.as_ref()),
-            "the marker is inherited without the close"
+            "the marker is inherited without the close-on-exec mark"
         );
         assert!(
             !listing(true).contains(path.as_ref()),
@@ -5578,5 +5589,29 @@ mod tests {
 
         unsafe { libc::close(descriptor) };
         std::fs::remove_file(&marker).expect("the marker is removed");
+    }
+
+    #[test]
+    fn a_failed_exec_still_reaches_the_caller() {
+        use std::{
+            os::unix::process::CommandExt,
+            process::{Command, Stdio},
+        };
+
+        let mut missing = Command::new("/nonexistent/kestrel-restart-check");
+        missing
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            missing.pre_exec(|| {
+                super::mark_inherited_fds_cloexec();
+                Ok(())
+            });
+        }
+        assert!(
+            missing.spawn().is_err(),
+            "a failed exec must not look like a started copy"
+        );
     }
 }
