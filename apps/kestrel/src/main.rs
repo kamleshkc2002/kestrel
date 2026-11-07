@@ -5217,17 +5217,45 @@ fn spawn_after_exit(current: &Path) -> std::io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    // SAFETY: `setsid` is async-signal-safe and touches no memory shared with
-    // the parent; the child only detaches from this terminal session.
+    // SAFETY: `setsid` and the descriptor loop are async-signal-safe and touch
+    // no memory shared with the parent; the child detaches from this terminal
+    // session and drops every handle the new runtime must not inherit.
     unsafe {
         command.pre_exec(|| {
             libc::setsid();
+            close_inherited_fds();
             Ok(())
         });
     }
     let child = command.spawn()?;
     drop(child);
     Ok(())
+}
+
+/// Closes every descriptor above stdio before the exec.
+///
+/// The AppImage runtime keeps a handle on its mount, so an inherited copy
+/// would keep the mount the old process used alive.
+fn close_inherited_fds() {
+    // SAFETY: `close_range`, `getrlimit`, and `close` are async-signal-safe,
+    // and this runs after `fork` in the child.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, 3_u32, u32::MAX, 0_u32) == 0 {
+            return;
+        }
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let bound = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+            limit.rlim_cur.min(65_536) as u32
+        } else {
+            1_024
+        };
+        for fd in 3..=bound {
+            libc::close(fd as libc::c_int);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5497,5 +5525,58 @@ mod tests {
             enabled_receiver.recv_blocking().is_ok(),
             "an enabled monitor publishes its tick result"
         );
+    }
+
+    #[test]
+    fn a_restarted_child_does_not_inherit_open_handles() {
+        use std::{
+            fs::File,
+            os::{fd::AsRawFd, unix::process::CommandExt},
+            process::{Command, Stdio},
+        };
+
+        let marker = std::env::temp_dir().join(format!(
+            "kestrel-inherited-fd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .expect("the clock is after the epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&marker, b"").expect("the marker file writes");
+        let file = File::open(&marker).expect("the marker opens");
+        // `dup` drops the close-on-exec flag that `File` sets.
+        let descriptor = unsafe { libc::dup(file.as_raw_fd()) };
+        assert!(descriptor >= 3, "the marker must sit above stdio");
+
+        let listing = |close: bool| {
+            let mut command = Command::new("/bin/sh");
+            command
+                .arg("-c")
+                .arg("ls -l /proc/self/fd")
+                .stdout(Stdio::piped());
+            if close {
+                unsafe {
+                    command.pre_exec(|| {
+                        super::close_inherited_fds();
+                        Ok(())
+                    });
+                }
+            }
+            let output = command.output().expect("the child runs");
+            String::from_utf8(output.stdout).expect("the listing is UTF-8")
+        };
+        let path = marker.to_string_lossy();
+        assert!(
+            listing(false).contains(path.as_ref()),
+            "the marker is inherited without the close"
+        );
+        assert!(
+            !listing(true).contains(path.as_ref()),
+            "the marker must not reach the restarted copy"
+        );
+
+        unsafe { libc::close(descriptor) };
+        std::fs::remove_file(&marker).expect("the marker is removed");
     }
 }
