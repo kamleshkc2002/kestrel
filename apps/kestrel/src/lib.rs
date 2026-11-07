@@ -71,8 +71,8 @@ pub use view_model::{
     RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
     SetupPresetViewModel, SetupSensitiveViewModel, SetupViewModel, ShortcutsViewModel,
     SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
-    UpdateOfferViewModel, UpdatesViewModel, WhatsNewSection, WhatsNewViewModel, output_icon,
-    shortcut_label,
+    UpdateAction, UpdateInstallViewModel, UpdateOfferViewModel, UpdatePhaseViewModel,
+    UpdatesViewModel, WhatsNewSection, WhatsNewViewModel, output_icon, shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -411,6 +411,8 @@ pub fn move_entry<T: PartialEq>(list: &mut [T], entry: &T, toward: PanelMoveDire
 /// A window control a command can focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
+    /// The Overview page, where the update banner is.
+    Overview,
     CommandBar,
     QuickPanel,
     Clipboard,

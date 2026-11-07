@@ -5,7 +5,7 @@
 - Not yet tried on real hardware: keyboard lights, Bluetooth accessory batteries, and the Edit and Copy buttons in screenshot notifications.
 - The status overlay needs layer-shell (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors), so it is unavailable on GNOME.
 - Keyboard shortcuts need the desktop's shortcuts portal (KDE Plasma, GNOME 48+, Hyprland) or X11; elsewhere, bind `kestrel --command` in your desktop's shortcut settings.
-- There is no automatic update; download each preview by hand.
+- Downloads and installs are never automatic: the AppImage can update itself only after **Get update** and **Install and restart** (see [Update check](#update-check)); otherwise download each preview by hand.
 
 ## Monitoring — `system.monitor`
 
@@ -182,6 +182,14 @@
 - The request goes to `api.github.com` for the recent releases; GitHub sees your IP address and curl's user agent. A pre-release build is offered a newer pre-release or stable release, and a stable build only newer stable releases. Drafts and tags that are not `v<semver>` are ignored.
 - A newer version appears in a banner on Overview with **View release** and **Dismiss**, in the tray menu, and in Settings → Updates with its status and Check now. Dismiss hides the banner until an even newer version appears; the tray and Settings keep showing the offer.
 - The last attempt, the last result, and the dismissed version are kept in `$XDG_STATE_HOME/kestrel/update-check`. See [What's stored and sent](privacy.md#whats-stored-and-sent).
+
+### Installing an update
+
+- This works only when running from the AppImage, which is replaced beside itself; an installed copy updates from the release page by hand. Settings says so when it can't.
+- **Get update** in the Overview banner, Settings → Updates, the command bar, or the tray's **Update available: {version}** entry starts the download; nothing downloads on its own. The banner shows the progress and **Cancel**, which stops it and removes the temporary files.
+- The download is checked against the release's signature before it can be installed; a mismatch leaves **Try again**. **Install and restart** moves the new AppImage into place and relaunches the app. If a screen recording is running, a confirmation comes first; restarting stops it and the take so far is saved.
+- The replaced AppImage is kept beside the new one, so Settings → Updates → **Previous version** → **Go back** returns to it and restarts. It is kept until the next update or a rollback.
+- The staged file and its `.previous` companion live beside the AppImage; see [What's stored and sent](privacy.md#whats-stored-and-sent).
 
 ## Diagnostic logs
 

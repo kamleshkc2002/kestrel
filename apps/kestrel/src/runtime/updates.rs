@@ -138,6 +138,14 @@ impl ApplicationRuntime {
         self.update_service.install_phase().clone()
     }
 
+    /// An earlier AppImage waits beside the running one, so a rollback can
+    /// restore it.
+    pub fn previous_update_available(&self) -> bool {
+        kestrel_platform::update_install::running_appimage().is_some_and(|current| {
+            kestrel_platform::update_install::previous_version_available(&current)
+        })
+    }
+
     /// Starts a download after an explicit command; `false` means no offer
     /// with signed assets exists or a step is already running.
     pub fn begin_update_download(&mut self) -> bool {

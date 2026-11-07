@@ -30,6 +30,8 @@ The autostart entry is the one file outside these folders: it lives in
 | Setup | `setup` | Whether setup was offered, and whether it finished or was skipped | 0600 | One line | Nothing |
 | What's new | `last-version` | The version you last ran | 0600 | One line | Nothing |
 | Update check | `update-check` | The last attempt and successful-check times, the offered version and its release page, and the version you dismissed | 0600 | A few lines | Nothing |
+| Update download | The AppImage's folder | `.kestrel-update-<pid>-<n>-appimage.part` and `.kestrel-update-<pid>-<n>-signature.part`: the AppImage being downloaded and its release signature | 0600 | Until the step ends | Removed when the download is cancelled or fails, and after an install; never read back |
+| Previous version | Beside the AppImage: `<AppImage>.previous` | The AppImage the last update replaced | A copy is 0600; a hard link keeps the old file's mode | One previous version, about the AppImage's size | Replaced by the next update, or renamed over the AppImage by Go back |
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
@@ -87,6 +89,7 @@ reporting, and `curl` is used only by the update check and the speed test.
 
 **User-triggered** — each starts from a button, menu, command, or shortcut:
 
+- **Get update:** downloads the AppImage and its signature over HTTPS from github.com (redirected to GitHub's file servers), which see your IP address.
 - **Speed test:** `curl` makes HTTPS requests to `speed.cloudflare.com`, which sees your IP address. The latency phase and the download fetch data from `__down` and discard it; the upload posts the configured number of zero bytes to `__up`. `curl` runs with `--proto =https` and ignores `~/.curlrc`, but it inherits the app's environment, including any proxy variables.
 - **Report a problem:** opens the GitHub issue form in your browser with the app's version, your desktop session (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`), and your distribution's name from `/etc/os-release` in the link. GitHub, and the browser, see them.
 - **QR Open:** a QR result that is an `http://` or `https://` address with no whitespace opens in your browser, which then contacts that host.

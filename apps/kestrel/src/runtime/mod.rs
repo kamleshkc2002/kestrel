@@ -1023,6 +1023,7 @@ impl ApplicationRuntime {
             self.update_service.check(),
             &self.update_service.snapshot(),
             self.setup_done,
+            self.previous_update_available(),
             SystemTime::now(),
         );
         model
