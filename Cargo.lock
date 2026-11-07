@@ -1059,7 +1059,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel"
-version = "0.6.0-preview.5"
+version = "0.6.0-preview.6"
 dependencies = [
  "async-channel",
  "gtk4",
