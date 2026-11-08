@@ -16,7 +16,7 @@ pub fn item_label(kind: UninstallItemKind) -> &'static str {
         UninstallItemKind::Data => "Saved data",
         UninstallItemKind::State => "State and logs",
         UninstallItemKind::Cache => "Cache",
-        UninstallItemKind::Recordings => "Screen recordings",
+        UninstallItemKind::Recordings => "Your recordings (kept unless selected)",
         UninstallItemKind::Autostart => "Autostart entry",
         UninstallItemKind::DesktopEntry => "Desktop entry",
         UninstallItemKind::Icon => "Application icon",
@@ -61,9 +61,12 @@ fn format_preview(preview: &UninstallPreview) -> String {
         }
         BinaryInstallation::AppImage { .. }
         | BinaryInstallation::Local { .. }
-        | BinaryInstallation::Executable { .. } => text
-            .push_str("The binary is unchecked by default; selecting it deletes the file too.\n"),
+        | BinaryInstallation::Executable { .. } => {}
     }
+    text.push_str(
+        "Your recordings, and the binary when it is one of the listed files, are unchecked by \
+         default.\n",
+    );
     text
 }
 

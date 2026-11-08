@@ -64,8 +64,9 @@ fn show_uninstall_dialog(
     let group = adw::PreferencesGroup::builder()
         .title("Kestrel's files")
         .description(
-            "Everything Kestrel owns starts selected. Deleting cannot be undone, and Kestrel \
-             quits when it finishes. No step asks for root.",
+            "Kestrel's settings and data start selected; your recordings and the binary stay \
+             unchecked unless you choose them. Deleting cannot be undone, and Kestrel quits \
+             when it finishes. No step asks for root.",
         )
         .build();
     let checks = Rc::new(RefCell::new(Vec::<(UninstallItem, gtk::CheckButton)>::new()));

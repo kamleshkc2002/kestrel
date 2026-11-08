@@ -34,12 +34,17 @@ pub enum UninstallItemKind {
 }
 
 impl UninstallItemKind {
-    /// Folder and metadata items start selected; the binary is the user's
-    /// choice, since running it is how the flow was reached.
+    /// Folder and metadata items start selected; recordings and the binary
+    /// are the user's choice, since they hold the user's own content and
+    /// running the binary is how the flow was reached.
     pub fn starts_selected(self) -> bool {
         !matches!(
             self,
-            Self::AppImage | Self::PreviousAppImage | Self::LocalBinary | Self::Executable
+            Self::Recordings
+                | Self::AppImage
+                | Self::PreviousAppImage
+                | Self::LocalBinary
+                | Self::Executable
         )
     }
 }
@@ -536,12 +541,23 @@ mod tests {
                 .unwrap_or_else(|| panic!("{kind:?} is listed"));
             assert_eq!(item.path, path, "{kind:?}");
             assert!(item.size > 0, "{kind:?} has a size");
+            let expected_selected = !matches!(
+                kind,
+                UninstallItemKind::Recordings
+                    | UninstallItemKind::AppImage
+                    | UninstallItemKind::PreviousAppImage
+                    | UninstallItemKind::LocalBinary
+                    | UninstallItemKind::Executable
+            );
             assert_eq!(
                 item.kind.starts_selected(),
-                kind != UninstallItemKind::LocalBinary,
+                expected_selected,
                 "{kind:?} default"
             );
         }
+        assert!(!UninstallItemKind::Recordings.starts_selected());
+        assert!(!UninstallItemKind::LocalBinary.starts_selected());
+        assert!(UninstallItemKind::Configuration.starts_selected());
         assert_eq!(
             preview.binary,
             BinaryInstallation::Local {
