@@ -28,7 +28,7 @@ rm -rf "$build_dir"
 mkdir -p "$appdir" "$tools_dir" "$dist_dir"
 rm -f "$artifact" "$artifact.sha256"
 
-KESTREL_LAYER_SHELL=required cargo build --locked --release --package kestrel
+KESTREL_LAYER_SHELL=required cargo build --locked --release --package kestrel --package kestrel-record
 
 curl --fail --location --retry 3 \
   --output "$linuxdeploy" \
@@ -39,6 +39,9 @@ curl --fail --location --retry 3 \
 chmod +x "$linuxdeploy" "$gtk_plugin"
 
 # Keep GStreamer host plugins matched to the core library; report missing plugins from the host registry.
+# linuxdeploy inspects only kestrel first; the helper joins the AppDir
+# afterwards, so both its scans exclude libgst and the helper loads the host
+# runtime at run time.
 env DEPLOY_GTK_VERSION=4 \
   "$linuxdeploy" --appimage-extract-and-run \
   --appdir "$appdir" \
@@ -51,6 +54,9 @@ if ! find "$appdir/usr/lib" -name 'libgtk4-layer-shell.so.0*' -print -quit | gre
   printf 'linuxdeploy did not bundle libgtk4-layer-shell.so.0\n' >&2
   exit 1
 fi
+
+# The helper must sit beside kestrel so current_exe finds it.
+install -Dm755 "$root_dir/target/release/kestrel-record" "$appdir/usr/bin/kestrel-record"
 
 # Libadwaita owns its stylesheet; GTK selects the user's Wayland or X11 session.
 sed -i '/^export GTK_THEME=/d; /^export GDK_BACKEND=/d' \
@@ -69,6 +75,7 @@ find "$appdir/usr/lib/gtk-4.0" -name 'libmedia-gstreamer.so' -delete 2>/dev/null
 env ARCH="$architecture" VERSION="$version" \
   "$linuxdeploy" --appimage-extract-and-run \
   --appdir "$appdir" \
+  --exclude-library 'libgst*' \
   --output appimage
 
 generated="$(find "$root_dir" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"

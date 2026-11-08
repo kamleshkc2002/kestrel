@@ -361,6 +361,7 @@ mod tests {
             cursor_modes: 0,
             pipewire_socket: true,
             gstreamer_error: None,
+            helper_missing: false,
             missing_elements: Vec::new(),
             system_audio: AudioAvailability::Available,
             microphone: AudioAvailability::Available,

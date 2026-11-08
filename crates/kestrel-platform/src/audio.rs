@@ -1071,7 +1071,7 @@ fn accepted(success: Option<bool>, message: impl FnOnce() -> String) -> Result<(
 }
 
 /// Indices of playback streams playing with `identity`.
-pub(crate) fn application_streams(identity: &str) -> Result<Vec<u32>, AudioError> {
+pub fn application_streams(identity: &str) -> Result<Vec<u32>, AudioError> {
     if identity.is_empty() {
         return Ok(Vec::new());
     }

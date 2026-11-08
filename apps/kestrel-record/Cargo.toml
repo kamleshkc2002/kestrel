@@ -1,0 +1,17 @@
+[package]
+name = "kestrel-record"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "GStreamer recording helper for Kestrel"
+
+[dependencies]
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+kestrel-platform = { path = "../../crates/kestrel-platform" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

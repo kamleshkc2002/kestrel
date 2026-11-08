@@ -15,7 +15,8 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Str};
 
 use super::{
     ActiveRecording, CURSOR_EMBEDDED, CaptureSession, RecordingError, RecordingErrorKind,
-    RecordingPlan, RecordingSource, SOURCE_MONITOR, SOURCE_WINDOW, VideoFrame, pipeline,
+    RecordingPlan, RecordingSource, SOURCE_MONITOR, SOURCE_WINDOW, VideoFrame,
+    helper::RecordingHelper,
 };
 use crate::capture::CaptureCancel;
 use crate::capture::portal::{
@@ -32,17 +33,22 @@ const STILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct PortalScreenCast {
     address: Option<String>,
+    helper: RecordingHelper,
 }
 
 impl PortalScreenCast {
-    pub fn new() -> Self {
-        Self { address: None }
+    pub fn new(helper: RecordingHelper) -> Self {
+        Self {
+            address: None,
+            helper,
+        }
     }
 
     #[cfg(test)]
-    fn with_bus_address(address: &str) -> Self {
+    fn with_bus_address(address: &str, helper: RecordingHelper) -> Self {
         Self {
             address: Some(address.to_owned()),
+            helper,
         }
     }
 
@@ -79,6 +85,7 @@ impl PortalScreenCast {
                 remote: Some(remote),
                 closed,
                 watcher: Some(watcher),
+                helper: self.helper.clone(),
             }),
             Err(error) => {
                 if let Some(session) = session {
@@ -97,7 +104,7 @@ impl PortalScreenCast {
 
 impl Default for PortalScreenCast {
     fn default() -> Self {
-        Self::new()
+        Self::new(RecordingHelper::discover())
     }
 }
 
@@ -301,6 +308,7 @@ pub struct ScreenCastSession {
     remote: Option<OwnedFd>,
     closed: Arc<AtomicBool>,
     watcher: Option<JoinHandle<()>>,
+    helper: RecordingHelper,
 }
 
 impl ScreenCastSession {
@@ -316,25 +324,16 @@ impl ScreenCastSession {
 impl CaptureSession for ScreenCastSession {
     fn still(&mut self) -> Result<VideoFrame, RecordingError> {
         let remote = self.fresh_remote()?;
-        pipeline::grab_still(
-            pipeline::VideoInput::PipeWire {
-                fd: remote.as_raw_fd(),
-                node: self.node,
-            },
-            STILL_TIMEOUT,
-        )
+        self.helper
+            .still(remote.as_raw_fd(), self.node, STILL_TIMEOUT)
     }
 
     fn record(&mut self, plan: &RecordingPlan) -> Result<Box<dyn ActiveRecording>, RecordingError> {
         let remote = self.fresh_remote()?;
-        let recording = pipeline::GstRecording::start(
-            pipeline::VideoInput::PipeWire {
-                fd: remote.as_raw_fd(),
-                node: self.node,
-            },
-            plan,
-        )?;
-        Ok(Box::new(recording.owning(remote)))
+        let recording = self
+            .helper
+            .start_recording(remote.as_raw_fd(), self.node, plan)?;
+        Ok(Box::new(recording))
     }
 
     fn ended_by_desktop(&self) -> bool {
@@ -560,12 +559,16 @@ mod tests {
         false
     }
 
+    fn helper() -> RecordingHelper {
+        RecordingHelper::at("/nonexistent/kestrel-record")
+    }
+
     #[test]
     fn a_shared_monitor_yields_its_node_and_closing_ends_the_session() {
         let Some((bus, observed)) = fake(StartReply::Share) else {
             return;
         };
-        let mut session = PortalScreenCast::with_bus_address(&bus.address)
+        let mut session = PortalScreenCast::with_bus_address(&bus.address, helper())
             .open(RecordingSource::Area, true, &CaptureCancel::new())
             .expect("sharing succeeds");
         assert_eq!(session.node, 42);
@@ -602,7 +605,7 @@ mod tests {
             let Some((bus, observed)) = fake(StartReply::Code(code)) else {
                 return;
             };
-            let error = PortalScreenCast::with_bus_address(&bus.address)
+            let error = PortalScreenCast::with_bus_address(&bus.address, helper())
                 .open(RecordingSource::Window, false, &CaptureCancel::new())
                 .err()
                 .expect("sharing fails");
@@ -623,7 +626,7 @@ mod tests {
         let Some((bus, _observed)) = fake(StartReply::ShareThenClose) else {
             return;
         };
-        let session = PortalScreenCast::with_bus_address(&bus.address)
+        let session = PortalScreenCast::with_bus_address(&bus.address, helper())
             .open(RecordingSource::Screen, false, &CaptureCancel::new())
             .expect("sharing succeeds");
         assert!(wait_for(|| session.ended_by_desktop()));
@@ -633,7 +636,7 @@ mod tests {
     fn cancelling_before_the_request_opens_nothing() {
         let cancel = CaptureCancel::new();
         cancel.cancel();
-        let error = PortalScreenCast::with_bus_address("unix:path=/nonexistent")
+        let error = PortalScreenCast::with_bus_address("unix:path=/nonexistent", helper())
             .open(RecordingSource::Screen, false, &cancel)
             .err()
             .expect("cancelled");

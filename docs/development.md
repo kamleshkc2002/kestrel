@@ -3,6 +3,7 @@
 ## Workspace
 
 - `apps/kestrel`: GTK/libadwaita application, configuration I/O, and window.
+- `apps/kestrel-record`: GStreamer recorder helper the app starts on demand.
 - `crates/kestrel-core`: UI-agnostic feature and capability model.
 - `crates/kestrel-platform`: capability probes and OS/session adapters.
 - `crates/kestrel-services`: feature registry and worker lifecycles.
@@ -21,16 +22,15 @@ bash scripts/install-local.sh --uninstall
 
 The script builds a release binary and installs it to `~/.local/bin/kestrel`, with a desktop entry and icon under `~/.local/share`. Settings and data stay in `~/.config/kestrel` and `~/.local/share/kestrel`.
 
-Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the ID `io.github.kamleshkc2002.Kestrel.Devel` and separate `kestrel-devel` config and data folders. They run next to the installed copy without sharing settings, captures, or the single-instance bus name. Release builds, including the AppImage, use the regular ID and folders.
+Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the ID `io.github.kamleshkc2002.Kestrel.Devel` and separate `kestrel-devel` config and data folders. They run next to the installed copy without sharing settings, captures, or the single-instance bus name. Release builds, including the AppImage, use the regular ID and folders. Screen recording in a debug run needs `cargo build -p kestrel-record` once, so the helper sits beside the binary; without it recording reports that the helper is missing.
 
 ## AppImage preview
 
 Tagged versions are published as x86_64 AppImage previews on GitHub Releases.
 Ubuntu 24.04 builds bundle GTK4/libadwaita; the matching `.sha256` file verifies
-downloads. The AppImage does not bundle GStreamer: it needs the system's
-GStreamer 1.x runtime to start (`libgstreamer1.0-0` and
-`libgstreamer-plugins-base1.0-0` on Debian and Ubuntu), and screen recording
-uses the host's plugins.
+downloads. The AppImage does not bundle GStreamer: screen recording uses the
+host's GStreamer 1.x runtime, while everything else starts without it and
+recording reports what to install.
 
 ```bash
 bash scripts/build-appimage.sh 0.1.0

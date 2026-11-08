@@ -147,6 +147,14 @@ The application crate is the composition root:
 - optionally hosts an SNI integration when the target session provides one;
 - translates user interactions into core commands and renders results.
 
+### 4.5 `apps/kestrel-record`
+
+The recording helper is an executable started on demand by `apps/kestrel`. It
+links GStreamer and owns every recording, still, and export pipeline; the main
+binary and `kestrel-platform` do not. It reads the line protocol exported by
+`kestrel-platform::recording::helper`, takes its PipeWire remote as fd 3, and
+exits when the app closes the pipes or kills it.
+
 ## 5. Core domain contracts
 
 ### 5.1 Identifiers and registry
@@ -666,10 +674,21 @@ disabled.
 
 `capture.recording` reads the ScreenCast portal's `version`,
 `AvailableSourceTypes`, and `AvailableCursorModes`, the PipeWire socket, the
-GStreamer registry (`pipewiresrc`, `vp8enc`, `webmmux`, `videocrop`, Opus
-elements), and the PulseAudio default output and inputs; it opens no dialog
-and no stream. Screen, Window, and Area follow the source types; Area needs
-monitors and `videocrop`; each audio track needs its device and elements.
+PulseAudio default output and inputs, and asks the `kestrel-record` helper
+which elements its GStreamer registry lacks (`pipewiresrc`, `vp8enc`,
+`webmmux`, `videocrop`, Opus elements); it opens no dialog and no stream.
+Screen, Window, and Area follow the source types; Area needs monitors and
+`videocrop`; each audio track needs its device and elements.
+
+The helper is a separate executable beside `kestrel`, so the main binary links
+no GStreamer and starts without it; `kestrel-platform` discovers it through
+`current_exe`. `RecordingHelper` starts it on demand with stdin and stdout as a
+line-delimited JSON protocol and the PipeWire remote duped to fd 3. Start,
+pause, resume, poll, and finish are requests; pictures are a `Frame` line
+followed by their raw RGBA bytes. The helper is killed and reaped when the
+recording ends, and exits on EOF if the app dies. A missing helper or one
+whose GStreamer cannot load reports `Unavailable` with the packages to
+install, while the rest of the window keeps running.
 
 `RecordingService` runs one session on the `kestrel-recording` worker:
 `CreateSession` → `SelectSources` (`persist_mode` 0) → `Start` →
@@ -705,7 +724,7 @@ recording and every second; below 512 MiB the take is finished. `shutdown`
 session still asking or choosing, and joins the worker; the recorder drops
 before the session, which closes the portal session.
 
-Trimming reads takes through `GstTakeEditor` (`filesrc` → `decodebin`, which
+Trimming reads takes through `HelperTakeEditor` (`filesrc` → `decodebin`, which
 holds PAUSED until every decoded stream is linked): the duration from a
 preroll, a preview frame from an accurate seek into an RGBA `appsink`, and an
 export that decodes from the start, drops buffers outside the range in a
