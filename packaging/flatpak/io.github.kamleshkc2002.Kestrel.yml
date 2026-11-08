@@ -1,0 +1,86 @@
+app-id: io.github.kamleshkc2002.Kestrel
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: kestrel
+
+# Every permission below exists because one shipped feature needs it; the
+# features the sandbox cannot serve are documented in docs/privacy.md.
+finish-args:
+  # Wayland is the primary session; X11 stays available where Wayland is not.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # The X11 path needs the shared-memory extension.
+  - --share=ipc
+  # GTK4 renders through the GPU.
+  - --device=dri
+  # Audio mixer, microphone controls, and the audio tracks of a recording.
+  - --socket=pulseaudio
+  # Speed test, and the update check while it is switched on.
+  - --share=network
+  # Alerts and capture notifications.
+  - --talk-name=org.freedesktop.Notifications
+  # Tray; the item registers the bus connection's unique name.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # "Show in" from the shelf.
+  - --talk-name=org.freedesktop.FileManager1
+  # Keep awake, screen lock, and the clipboard wipe on lock or sleep.
+  - --system-talk-name=org.freedesktop.login1
+  # Wi-Fi quick toggle.
+  - --system-talk-name=org.freedesktop.NetworkManager
+  # Bluetooth quick toggle.
+  - --system-talk-name=org.bluez
+  # Eject from the storage readout.
+  - --system-talk-name=org.freedesktop.UDisks2
+  # Accessory battery readouts.
+  - --system-talk-name=org.freedesktop.UPower
+  # Recordings and trim exports under Videos, shared with the desktop.
+  - --filesystem=xdg-videos:create
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/kestrel/cargo
+    # The linker and pkg-config find gtk4-layer-shell beside the runtime.
+    PKG_CONFIG_PATH: /app/lib/pkgconfig:/app/lib/x86_64-linux-gnu/pkgconfig:/app/share/pkgconfig
+    # A build without the overlay library would quietly drop the overlay.
+    KESTREL_LAYER_SHELL: required
+
+modules:
+  - name: gtk4-layer-shell
+    buildsystem: meson
+    config-opts:
+      - -Ddocs=false
+      - -Dexamples=false
+      - -Dintrospection=false
+      - -Dsmoke-tests=false
+      - -Dtests=false
+      - -Dvapi=false
+    sources:
+      - type: archive
+        url: https://github.com/wmww/gtk4-layer-shell/archive/refs/tags/v1.3.0.tar.gz
+        sha256: 1ebb01ab14e98afd1727f68f64981c37bd23305b1f131f5667c02b94cf593192
+        strip-components: 1
+
+  - name: kestrel
+    buildsystem: simple
+    build-commands:
+      # The app starts the recorder from beside its own executable.
+      - cargo build --release --locked --offline --package kestrel --package kestrel-record
+      - install -Dm755 target/release/kestrel /app/bin/kestrel
+      - install -Dm755 target/release/kestrel-record /app/bin/kestrel-record
+      - install -Dm644 data/io.github.kamleshkc2002.Kestrel.desktop
+        /app/share/applications/io.github.kamleshkc2002.Kestrel.desktop
+      - install -Dm644 data/io.github.kamleshkc2002.Kestrel.metainfo.xml
+        /app/share/metainfo/io.github.kamleshkc2002.Kestrel.metainfo.xml
+      - install -Dm644 data/icons/io.github.kamleshkc2002.Kestrel.svg
+        /app/share/icons/hicolor/scalable/apps/io.github.kamleshkc2002.Kestrel.svg
+      - install -Dm644 LICENSE /app/share/licenses/io.github.kamleshkc2002.Kestrel/LICENSE
+    sources:
+      # Generated from Cargo.lock by scripts/flatpak-sources.sh.
+      - cargo-sources.json
+      # Release source. scripts/flatpak-build.sh swaps this for the checkout.
+      # The tag is the release being cut.
+      - type: git
+        url: https://github.com/kamleshkc2002/kestrel.git
+        tag: v0.9.0

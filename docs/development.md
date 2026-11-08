@@ -94,6 +94,101 @@ For a release:
 4. Copy `PKGBUILD` and `.SRCINFO` into the `kestrel-desktop` AUR repository
    and push with the maintainer's AUR SSH key. Publishing is a maintainer step.
 
+## Flatpak package
+
+`packaging/flatpak` holds a GNOME 50 manifest, `cargo-sources.json` for an
+offline Cargo build, and a `gtk4-layer-shell` module. GNOME 50 is the runtime
+the sandbox behaviour was checked on; the manifest lint reports when a newer
+one exists, and moving to it needs a fresh sandbox pass. The Flatpak is a
+restricted build: the sandbox blocks some features and the app marks them
+Unavailable or Limited with the reason. [Privacy](privacy.md#flatpak-permissions)
+lists each permission and the feature that needs it.
+
+The committed manifest names the tagged release as its source, which is the
+form Flathub builds. `scripts/flatpak-build.sh` replaces that one source with a
+`dir` source from the checkout, so a local build and a pull request compile
+their own tree; the rewritten manifest stays in `build/flatpak/`.
+
+### Regenerate the Cargo sources
+
+`packaging/flatpak/cargo-sources.json` vendors every crate in `Cargo.lock` for
+the offline build. Regenerate it whenever `Cargo.lock` changes:
+
+```bash
+bash scripts/flatpak-sources.sh
+```
+
+The script downloads flatpak-builder-tools' cargo generator into a temporary
+directory and needs `uv`, `git`, `curl`, and `sed`. CI runs the same script
+with `--check` and fails when the committed file is stale.
+
+### Build locally
+
+Install the runtime, SDK, and Rust extension, then build and add the bundle to
+your user installation:
+
+```bash
+flatpak install flathub org.gnome.Platform//50 org.gnome.Sdk//50 \
+  org.freedesktop.Sdk.Extension.rust-stable//25.08
+bash scripts/flatpak-build.sh --install
+flatpak run io.github.kamleshkc2002.Kestrel --version
+```
+
+The script uses `flatpak-builder` when it is installed and the
+`org.flatpak.Builder` application otherwise, and needs `jq`. The bundle is
+written to `dist/`. Remove it with
+`flatpak uninstall io.github.kamleshkc2002.Kestrel`.
+
+`--system-talk-name=org.freedesktop.login1` covers keep awake, screen lock,
+and the clipboard wipe; no portal provides those. The linter treats logind
+access as an error that needs an exception, so
+`packaging/flatpak/linter-exceptions.json` records it for the CI lint. Flathub
+reads exceptions from the linter repository, which is the submission step
+below.
+
+### Release
+
+The manifest names the release tag it is cut with. Set `tag` to the tag being
+created in the release change; the tag is made on that change, so the manifest
+inside the tag builds its own tree. Regenerate `cargo-sources.json` in the same
+change if `Cargo.lock` moved, and bump the release version and the screenshot
+in the metainfo.
+
+The Flatpak workflow builds the bundle from the tagged checkout and uploads it
+as an artifact; attach it to the release with
+`gh release upload vX.Y.Z Kestrel-X.Y.Z-x86_64.flatpak`.
+
+### Flathub submission
+
+Publishing is a maintainer step; this repository's CI never pushes to Flathub.
+
+1. Fork `flathub/flathub` and create a branch from `new-pr`, not `main`.
+2. Add `io.github.kamleshkc2002.Kestrel.yml` at the repository root with the
+   release tag source and `cargo-sources.json` next to it. The manifest
+   identifies the release by tag, so the submitted copy needs no change.
+3. Open a pull request against `flathub/flatpak-builder-lint` adding
+   `finish-args-login1-system-talk-name` for the app id to
+   `flatpak_builder_lint/staticfiles/exceptions.json`. The reason: keep awake,
+   screen lock, and the clipboard wipe use logind, and no portal provides
+   them.
+4. Open a pull request against the `new-pr` branch and answer the build test
+   the bot starts.
+
+Reviewers will ask for:
+
+- the release tag source and a `cargo-sources.json` generated from the same
+  `Cargo.lock`;
+- screenshots, a release entry with a date, a developer id, and a launchable
+  entry in the metainfo;
+- the desktop entry, icon, metainfo, and license installed under `/app`;
+- the smallest `finish-args` with a reason for each, and no `dir` or local
+  sources in the submitted manifest;
+- a build that starts without the checkout, which the workflow's bundle run
+  already checks by installing and running it.
+
+Only the overview screenshot is referenced today; add feature screenshots
+before submitting if the reviewers ask for more.
+
 ## Development
 
 To propose a change, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md).

@@ -51,3 +51,7 @@ text = "Kestrel starts without GStreamer: screen recording and trimming run in a
 [[change]]
 feature = "kestrel"
 text = "The background tick runs once a second instead of four times when no feature or overlay needs polling, so an idle window wakes the processor less often."
+
+[[change]]
+feature = "kestrel"
+text = "Kestrel also ships as a Flatpak with a restricted sandbox, which marks the features the sandbox blocks and links to the release page instead of updating itself."
