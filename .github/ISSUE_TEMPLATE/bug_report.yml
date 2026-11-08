@@ -40,12 +40,28 @@ body:
         - install-local.sh from source
         - cargo run
         - other
-  - type: input
-    id: desktop-session
+  - type: dropdown
+    id: desktop
     attributes:
-      label: Desktop and session
-      description: "For example: GNOME 46, Wayland. `echo $XDG_CURRENT_DESKTOP $XDG_SESSION_TYPE` prints the values that end up in the report."
-      placeholder: GNOME 46, Wayland
+      label: Desktop
+      description: "The desktop or compositor you were running. `echo $XDG_CURRENT_DESKTOP` prints the value that ends up in the report."
+      options:
+        - COSMIC
+        - Sway
+        - Hyprland
+        - KDE Plasma
+        - GNOME
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: session-type
+    attributes:
+      label: Session type
+      description: "`echo $XDG_SESSION_TYPE` prints the value that ends up in the report."
+      options:
+        - Wayland
+        - X11
     validations:
       required: true
   - type: input

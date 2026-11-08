@@ -10,23 +10,54 @@ const MAX_OS_RELEASE_BYTES: u64 = 64 * 1024;
 /// Session values that a report shares publicly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReportEnvironment {
-    pub desktop_session: Option<String>,
+    pub desktop: Option<String>,
+    pub session_type: Option<String>,
     pub distribution: Option<String>,
 }
 
 impl ReportEnvironment {
     /// Reads the values from the session that is running Kestrel.
     pub fn from_system() -> Self {
-        let desktop_session = ["XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"]
-            .into_iter()
-            .filter_map(|name| std::env::var(name).ok())
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
         Self {
-            desktop_session: (!desktop_session.is_empty()).then(|| desktop_session.join(", ")),
+            desktop: std::env::var("XDG_CURRENT_DESKTOP")
+                .ok()
+                .and_then(|value| desktop_option(&value)),
+            session_type: std::env::var("XDG_SESSION_TYPE")
+                .ok()
+                .and_then(|value| session_type_option(&value)),
             distribution: read_distribution(),
         }
+    }
+}
+
+/// Maps a desktop name to an option in the bug report form.
+fn desktop_option(value: &str) -> Option<String> {
+    let normalized = value.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    let option = if normalized.contains("cosmic") {
+        "COSMIC"
+    } else if normalized.contains("sway") {
+        "Sway"
+    } else if normalized.contains("hyprland") {
+        "Hyprland"
+    } else if normalized.contains("kde") || normalized.contains("plasma") {
+        "KDE Plasma"
+    } else if normalized.contains("gnome") {
+        "GNOME"
+    } else {
+        "Other"
+    };
+    Some(option.to_owned())
+}
+
+/// Maps a session type to an option in the bug report form.
+fn session_type_option(value: &str) -> Option<String> {
+    match value.trim().to_lowercase().as_str() {
+        "wayland" => Some("Wayland".to_owned()),
+        "x11" => Some("X11".to_owned()),
+        _ => None,
     }
 }
 
@@ -35,7 +66,8 @@ pub fn bug_report_url(environment: &ReportEnvironment) -> String {
     let mut url = String::from(REPORT_URL);
     for (field, value) in [
         ("kestrel-version", Some(env!("CARGO_PKG_VERSION"))),
-        ("desktop-session", environment.desktop_session.as_deref()),
+        ("desktop", environment.desktop.as_deref()),
+        ("session-type", environment.session_type.as_deref()),
         ("distribution", environment.distribution.as_deref()),
     ] {
         let Some(value) = value.filter(|value| !value.trim().is_empty()) else {
@@ -119,14 +151,19 @@ fn unquote(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReportEnvironment, bug_report_url};
+    use super::{ReportEnvironment, bug_report_url, desktop_option, session_type_option};
 
     const BASE: &str =
         "https://github.com/kamleshkc2002/kestrel/issues/new?template=bug_report.yml";
 
-    fn environment(desktop_session: Option<&str>, distribution: Option<&str>) -> ReportEnvironment {
+    fn environment(
+        desktop: Option<&str>,
+        session_type: Option<&str>,
+        distribution: Option<&str>,
+    ) -> ReportEnvironment {
         ReportEnvironment {
-            desktop_session: desktop_session.map(str::to_owned),
+            desktop: desktop.map(str::to_owned),
+            session_type: session_type.map(str::to_owned),
             distribution: distribution.map(str::to_owned),
         }
     }
@@ -136,35 +173,39 @@ mod tests {
         let version = env!("CARGO_PKG_VERSION");
         let cases = [
             (
-                Some("COSMIC, wayland"),
+                Some("COSMIC"),
+                Some("Wayland"),
                 Some("Pop!_OS 24.04 LTS"),
-                "&desktop-session=COSMIC%2C%20wayland&distribution=Pop%21_OS%2024.04%20LTS",
+                "&desktop=COSMIC&session-type=Wayland&distribution=Pop%21_OS%2024.04%20LTS",
             ),
             (
-                Some("GNOME 46, Wayland & X11"),
+                Some("GNOME"),
+                Some("X11"),
                 Some("Café Linux"),
-                "&desktop-session=GNOME%2046%2C%20Wayland%20%26%20X11&distribution=Caf%C3%A9%20Linux",
+                "&desktop=GNOME&session-type=X11&distribution=Caf%C3%A9%20Linux",
             ),
-            (Some("KDE, x11"), None, "&desktop-session=KDE%2C%20x11"),
+            (Some("KDE Plasma"), None, None, "&desktop=KDE%20Plasma"),
+            (None, Some("Wayland"), None, "&session-type=Wayland"),
             (
+                None,
                 None,
                 Some("Fedora Linux 40"),
                 "&distribution=Fedora%20Linux%2040",
             ),
-            (None, None, ""),
-            (Some("  "), Some(""), ""),
+            (None, None, None, ""),
+            (Some("  "), Some(""), Some(""), ""),
         ];
-        for (desktop_session, distribution, suffix) in cases {
-            let url = bug_report_url(&environment(desktop_session, distribution));
+        for (desktop, session_type, distribution, suffix) in cases {
+            let url = bug_report_url(&environment(desktop, session_type, distribution));
             assert_eq!(
                 url,
                 format!("{BASE}&kestrel-version={version}{suffix}"),
-                "desktop {desktop_session:?}, distribution {distribution:?}"
+                "desktop {desktop:?}, session {session_type:?}, distribution {distribution:?}"
             );
         }
 
         let long = "é".repeat(150);
-        let url = bug_report_url(&environment(None, Some(&long)));
+        let url = bug_report_url(&environment(None, None, Some(&long)));
         assert_eq!(
             url,
             format!(
@@ -172,5 +213,37 @@ mod tests {
                 "%C3%A9".repeat(100)
             )
         );
+    }
+
+    #[test]
+    fn report_options_match_the_form() {
+        let desktops = [
+            ("COSMIC", Some("COSMIC")),
+            ("cosmic", Some("COSMIC")),
+            ("sway", Some("Sway")),
+            ("Hyprland", Some("Hyprland")),
+            ("KDE", Some("KDE Plasma")),
+            ("plasma", Some("KDE Plasma")),
+            ("ubuntu:GNOME", Some("GNOME")),
+            ("GNOME-Classic:GNOME", Some("GNOME")),
+            ("X-Cinnamon", Some("Other")),
+            ("", None),
+            ("  ", None),
+        ];
+        for (value, expected) in desktops {
+            assert_eq!(desktop_option(value).as_deref(), expected, "{value:?}");
+        }
+
+        let sessions = [
+            ("wayland", Some("Wayland")),
+            ("Wayland", Some("Wayland")),
+            ("x11", Some("X11")),
+            ("X11", Some("X11")),
+            ("tty", None),
+            ("", None),
+        ];
+        for (value, expected) in sessions {
+            assert_eq!(session_type_option(value).as_deref(), expected, "{value:?}");
+        }
     }
 }

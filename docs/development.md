@@ -120,3 +120,38 @@ becomes an overlay (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA drivers):
 ```bash
 bash scripts/layer-shell-smoke.sh target/debug/kestrel
 ```
+
+## Compatibility table
+
+`docs/compatibility.md` records what has been tested or reported for each
+desktop. Capability probes decide support at run time, so the table is
+evidence, not a promise.
+
+A feature ID registered in `apps/kestrel/src/runtime/mod.rs` gets a row, with
+every desktop Untested until there is evidence.
+
+To update the table from a report:
+
+1. Read the desktop, desktop version, session type, feature ID, and result.
+   The compatibility report form asks for all of them; the bug report form
+   carries the desktop and session type in their own fields.
+2. Open the Feature Hub on a session of that desktop and copy the feature's
+   status line. An Unsupported cell uses that reason, such as no
+   wlr-layer-shell, no GlobalShortcuts portal, or no data-control.
+3. Change the cell:
+   - **Tested** needs a version and a date from a maintainer run. A CI or
+     QA-script run names the script instead, as the headless Sway cells do.
+   - **Reported** needs a link to the issue or comment.
+   - **Unsupported** needs a reason that the probe reports on that desktop
+     every time. A dependency the user can install, such as Tesseract or a
+     portal backend, stays Untested.
+   - **Untested** covers everything else.
+4. Keep one of those four forms in every cell, and do not infer support from
+   a desktop name.
+5. If a reason changes, update the matching entry under
+   [Known limits](features.md#known-limits).
+
+The Tested cells come from `scripts/clipboard-clean-session.sh`,
+`scripts/layer-shell-smoke.sh`, and the workflows that run them. Extending
+what CI exercises is the way to add a Tested cell without a person on that
+desktop.
