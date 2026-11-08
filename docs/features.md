@@ -294,3 +294,21 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 - Files you saved to folders you chose — capture exports, trim exports, clipboard images, note and settings exports — are not listed; those folders are yours, not Kestrel's.
 - Remove stops running features and releases clipboard ownership, shortcut registration, recordings, and other session resources first, then deletes only the chosen paths. Each result is listed, with the path to remove by hand when one fails, and Kestrel quits when the report closes. Cancel changes nothing, nothing asks for root, and symlinks are unlinked rather than followed.
 - `kestrel --uninstall-preview` prints the same list without deleting anything, so it works when no window can open. It is not a `--command` ID.
+
+## Idle cost
+
+`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the CI session has no logind, so clipboard history does not run there. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
+
+Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer:
+
+| Preset | Window | CPU % | Wakeups/s | RSS | Threads |
+|---|---|---|---|---|---|
+| Essentials | open | 2.60 | 8.2 | 409 MiB | 81 |
+| Essentials | closed | 1.45 | 8.5 | 411 MiB | 81 |
+| Balanced | open | 12.20 | 15.3 | 420 MiB | 84 |
+| Balanced | closed | 6.45 | 15.9 | 419 MiB | 85 |
+| Everything | open | 15.65 | 113.7 | 420 MiB | 85 |
+| Everything | closed | 9.65 | 116.6 | 420 MiB | 85 |
+
+- The tick follows what is running: with the window open and no overlay or job needing a live control, Essentials went from 14.2 to 8.2 wakeups/s and from 3.15% to 2.60% CPU when the fixed 250 ms interval became a one-second pace outside live feedback; with the window closed it went from 15.2 to 8.5 wakeups/s. Balanced and Everything stay inside run-to-run noise; the clipboard watcher and its D-Bus privacy monitor dominate their cost.
+- Turning features off stops their threads and timers: applying `kestrel --command preset.essentials` to a running Everything window dropped it from 84 to 80 threads and from 111 to 17 wakeups/s within 25 seconds.

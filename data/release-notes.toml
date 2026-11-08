@@ -43,3 +43,7 @@ text = "Settings → Remove Kestrel's data… lists every file and folder Kestre
 [[change]]
 feature = "kestrel"
 text = "Kestrel starts without GStreamer: screen recording and trimming run in a separate helper, and recording says which packages to install when GStreamer is missing."
+
+[[change]]
+feature = "kestrel"
+text = "The background tick runs once a second instead of four times when no feature or overlay needs polling, so an idle window wakes the processor less often."
