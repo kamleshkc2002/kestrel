@@ -28,6 +28,15 @@ pub(super) fn build_shelf_page(
     status.set_wrap(true);
     status.add_css_class("dim-label");
     header.append(&status);
+    let open_float = gtk::Button::with_label("Open floating shelf");
+    open_float.set_valign(Align::Center);
+    open_float.set_sensitive(model.running);
+    open_float.set_tooltip_text(Some("Open the shelf beside your other windows"));
+    let sender = commands.clone();
+    open_float.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::OpenShelfFloat);
+    });
+    header.append(&open_float);
     let clear = gtk::Button::with_label("Clear…");
     clear.set_valign(Align::Center);
     clear.set_sensitive(model.running && !model.items.is_empty());
@@ -50,11 +59,8 @@ pub(super) fn build_shelf_page(
         if let Some(turn_on) = &model.turn_on {
             container.append(&turn_on_row(turn_on, commands));
         }
-    } else if model.items.is_empty() {
-        container.append(&build_drop_area());
     } else {
-        container.append(&build_shelf_list(model, commands));
-        container.append(&build_drop_area());
+        container.append(&build_shelf_entries(model, commands, None));
     }
     container.append(&build_shelf_settings(model, commands));
     attach_shelf_drop_target(&container, commands);
@@ -89,17 +95,51 @@ pub(crate) fn build_drop_area() -> gtk::Box {
     area
 }
 
-/// The entries as rows; part 2's floating shelf reuses this list.
+/// What a row's drag is doing, for a surface that follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShelfDragEvent {
+    Began,
+    Ended,
+}
+
+pub(crate) type ShelfDragHook = std::rc::Rc<dyn Fn(ShelfDragEvent)>;
+
+/// The list and drop area together; the floating shelf reuses this.
+pub(crate) fn build_shelf_entries(
+    model: &ShelfViewModel,
+    commands: &Sender<ApplicationCommand>,
+    drag_hook: Option<&ShelfDragHook>,
+) -> gtk::Box {
+    let entries = gtk::Box::new(Orientation::Vertical, 12);
+    if !model.items.is_empty() {
+        match drag_hook {
+            Some(hook) => entries.append(&build_shelf_list_with(model, commands, Some(hook))),
+            None => entries.append(&build_shelf_list(model, commands)),
+        }
+    }
+    entries.append(&build_drop_area());
+    entries
+}
+
+/// The entries as rows.
 pub(crate) fn build_shelf_list(
     model: &ShelfViewModel,
     commands: &Sender<ApplicationCommand>,
+) -> gtk::ListBox {
+    build_shelf_list_with(model, commands, None)
+}
+
+fn build_shelf_list_with(
+    model: &ShelfViewModel,
+    commands: &Sender<ApplicationCommand>,
+    drag_hook: Option<&ShelfDragHook>,
 ) -> gtk::ListBox {
     let list = gtk::ListBox::new();
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk::SelectionMode::None);
     list.set_valign(Align::Start);
     for item in &model.items {
-        list.append(&build_shelf_row(item, commands));
+        list.append(&build_shelf_row(item, commands, drag_hook));
     }
     list
 }
@@ -107,6 +147,7 @@ pub(crate) fn build_shelf_list(
 fn build_shelf_row(
     item: &ShelfItemViewModel,
     commands: &Sender<ApplicationCommand>,
+    drag_hook: Option<&ShelfDragHook>,
 ) -> adw::ActionRow {
     let row = adw::ActionRow::new();
     row.set_title(&item.name);
@@ -129,6 +170,15 @@ fn build_shelf_row(
     copy.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::CopyShelfItem(id));
     });
+    if editable_image(item) {
+        let edit = icon_button("document-edit-symbolic", "Open in the capture editor", true);
+        let sender = commands.clone();
+        let id = item.id;
+        edit.connect_clicked(move |_| {
+            let _ = sender.try_send(ApplicationCommand::EditShelfImage(id));
+        });
+        row.add_suffix(&edit);
+    }
     let pin = icon_button(
         "view-pin-symbolic",
         if item.pinned {
@@ -161,8 +211,31 @@ fn build_shelf_row(
     source.set_actions(gdk::DragAction::COPY);
     let content = item.content.clone();
     source.connect_prepare(move |_, _, _| content_provider(&content));
+    if let Some(hook) = drag_hook {
+        let began = std::rc::Rc::clone(hook);
+        source.connect_drag_begin(move |_, _| began(ShelfDragEvent::Began));
+        let ended = std::rc::Rc::clone(hook);
+        source.connect_drag_end(move |_, _, _| ended(ShelfDragEvent::Ended));
+    }
     row.add_controller(source);
     row
+}
+
+/// An image entry, or a file entry the editor can load as an image.
+fn editable_image(item: &ShelfItemViewModel) -> bool {
+    match &item.content {
+        ShelfContent::Image { .. } => true,
+        ShelfContent::File { path, .. } => path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "png" | "jpg" | "jpeg" | "webp"
+                )
+            }),
+        _ => false,
+    }
 }
 
 fn kind_icon(item: &ShelfItemViewModel) -> &'static str {
@@ -194,6 +267,16 @@ fn build_shelf_settings(
         let _ = sender.try_send(ApplicationCommand::SetShelfKeep(row.is_active()));
     });
     group.add(&keep);
+    let screenshots = adw::SwitchRow::builder()
+        .title("Add new screenshots")
+        .subtitle("Each screenshot you take is added to the shelf.")
+        .active(model.limits.add_screenshots)
+        .build();
+    let sender = commands.clone();
+    screenshots.connect_active_notify(move |row| {
+        let _ = sender.try_send(ApplicationCommand::SetShelfAddScreenshots(row.is_active()));
+    });
+    group.add(&screenshots);
     group
 }
 

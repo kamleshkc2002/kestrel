@@ -48,7 +48,7 @@ use kestrel_platform::update_install::{DownloadedUpdate, UpdateInstallErrorKind}
 use kestrel_services::alerts::notification_text;
 use kestrel_services::update_install::InstallPhase;
 
-use window::{FloatingSurface, QuickPanelEntry, StatusOverlay, WindowView};
+use window::{FloatingSurface, QuickPanelEntry, ShelfSurface, StatusOverlay, WindowView};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
 /// Poll interval for mixer and microphone state, which other mixers and
@@ -69,7 +69,7 @@ const UPDATE_PROGRESS_REFRESH: Duration = Duration::from_millis(250);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 
-/// Toast text after staging entries.
+/// Toast text after adding entries.
 fn added_message(added: usize) -> String {
     let entries = if added == 1 { "entry" } else { "entries" };
     format!("Added {added} shelf {entries}")
@@ -499,6 +499,36 @@ fn capture_follow_up_decision<T: Copy + PartialEq>(
         .map(|id| (id, after))
 }
 
+/// Loads a shelf image file through the desktop's image loader, within the
+/// shelf's image bound.
+fn load_shelf_image(path: &Path, max_bytes: u32) -> Result<kestrel::RgbaImage, String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|_| "That image file is no longer there".to_owned())?;
+    if metadata.len() > u64::from(max_bytes) {
+        return Err(format!(
+            "The image is {} and the shelf accepts up to {}; raise the image limit in the \
+             shelf settings.",
+            kestrel_core::format_size(metadata.len()),
+            kestrel_core::format_size(u64::from(max_bytes))
+        ));
+    }
+    let texture = adw::gdk::Texture::from_filename(path)
+        .map_err(|_| "That file is not an image Kestrel can open".to_owned())?;
+    let png = texture.save_to_png_bytes();
+    kestrel::decode_png(&png).map_err(|error| error.to_string())
+}
+
+/// A new screenshot is added to the shelf only when the preference is on.
+fn shelf_capture_add<T: Copy>(
+    configuration: &kestrel_core::ShelfConfiguration,
+    shelf_running: bool,
+    captured: Option<T>,
+) -> Option<T> {
+    (configuration.add_screenshots && shelf_running)
+        .then_some(captured)
+        .flatten()
+}
+
 /// Samples state and notifies while the controller lock is released.
 fn run_tick(
     state: &SharedState,
@@ -578,6 +608,19 @@ fn run_tick(
         );
         if let Some((id, _)) = decision {
             guard.last_capture_follow_up = Some(id);
+        }
+        let shelf_capture = shelf_capture_add(
+            &guard.configuration.shelf,
+            guard.runtime.shelf_is_running(),
+            decision.map(|(id, _)| id),
+        );
+        if let Some(id) = shelf_capture {
+            if guard.runtime.shelf_add_capture(id).is_err() {
+                log::warn!(
+                    target: kestrel_services::shelf::FEATURE_ID,
+                    "the screenshot was not added to the shelf"
+                );
+            }
         }
         let (capture_to_notify, capture_follow_up) = match decision {
             Some((id, kestrel::CaptureAfterScreenshot::Notify)) => (Some(id), None),
@@ -954,6 +997,7 @@ enum ShelfOperation {
     Pin(u64, bool),
     Clear { include_pinned: bool },
     SetKeep(bool),
+    SetAddScreenshots(bool),
 }
 
 /// What a close request does; quitting ends the application, not only the window.
@@ -1032,6 +1076,8 @@ struct ApplicationController {
     setup_pending: Cell<bool>,
     window: RefCell<Option<WindowView>>,
     floating: RefCell<Option<FloatingSurface>>,
+    /// The floating shelf, open independently of the main window.
+    shelf_float: RefCell<Option<ShelfSurface>>,
     /// Works with or without the main window.
     overlay: StatusOverlay,
     refreshing: Cell<bool>,
@@ -1092,6 +1138,8 @@ struct ApplicationController {
     tray_keep_awake: RefCell<Option<kestrel::TrayKeepAwakeSink>>,
     /// Pushes the update item to the same tray.
     tray_update: RefCell<Option<kestrel::TrayUpdateSink>>,
+    /// Pushes the Shelf item to the same tray.
+    tray_shelf: RefCell<Option<kestrel::TrayShelfSink>>,
     /// One update check runs at a time; its result returns to this thread.
     update_checking: Cell<bool>,
     /// The running check, cancelled and joined outside the state lock on
@@ -1200,6 +1248,7 @@ impl ApplicationController {
             setup_pending: Cell::new(offer_setup),
             window: RefCell::new(None),
             floating: RefCell::new(None),
+            shelf_float: RefCell::new(None),
             overlay: StatusOverlay::new(commands.clone()),
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
@@ -1250,6 +1299,11 @@ impl ApplicationController {
                 status_notifier
                     .as_ref()
                     .and_then(StatusNotifierIntegration::update_sink),
+            ),
+            tray_shelf: RefCell::new(
+                status_notifier
+                    .as_ref()
+                    .and_then(StatusNotifierIntegration::shelf_sink),
             ),
             update_checking: Cell::new(false),
             update_worker: RefCell::new(None),
@@ -1418,6 +1472,10 @@ impl ApplicationController {
     }
 
     fn focus(self: &Rc<Self>, application: &adw::Application, target: FocusTarget) {
+        if target == FocusTarget::ShelfFloat {
+            self.toggle_shelf_float(application);
+            return;
+        }
         if matches!(target, FocusTarget::CommandBar | FocusTarget::QuickPanel) {
             self.open_floating(application, target);
             return;
@@ -1504,6 +1562,64 @@ impl ApplicationController {
         self.floating.replace(Some(surface));
     }
 
+    /// Opens the floating shelf, or closes it when it is already open.
+    fn toggle_shelf_float(self: &Rc<Self>, application: &adw::Application) {
+        if self.shelf_float.borrow().is_some() {
+            self.close_shelf_float();
+            return;
+        }
+        self.open_shelf_float(application);
+    }
+
+    /// Opens the floating shelf and leaves an open one where it is.
+    fn open_shelf_float(self: &Rc<Self>, application: &adw::Application) {
+        let startup_id = self.activation_token.take();
+        if let Some(surface) = self.shelf_float.borrow().as_ref() {
+            present_with(&surface.window, startup_id.as_deref());
+            return;
+        }
+        let view_model = self.current_view_model();
+        if !view_model.shelf.running {
+            self.show_message("Shelf is off; enable files.shelf in the Feature Hub.");
+            return;
+        }
+        let parent = self
+            .window
+            .borrow()
+            .as_ref()
+            .map(|view| view.window.clone().upcast::<gtk::Window>());
+        let surface = ShelfSurface::new(
+            application,
+            parent.as_ref(),
+            startup_id.as_deref(),
+            &self.commands,
+            &view_model.shelf,
+        );
+        let weak_controller = Rc::downgrade(self);
+        surface.window.connect_close_request(move |closing| {
+            let Some(controller) = weak_controller.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let owned = controller
+                .shelf_float
+                .borrow()
+                .as_ref()
+                .is_some_and(|surface| &surface.window == closing);
+            if owned {
+                controller.shelf_float.borrow_mut().take();
+            }
+            glib::Propagation::Proceed
+        });
+        self.shelf_float.replace(Some(surface));
+    }
+
+    fn close_shelf_float(&self) {
+        let surface = self.shelf_float.borrow_mut().take();
+        if let Some(surface) = surface {
+            surface.window.close();
+        }
+    }
+
     /// Favorites in saved order, each with its current gate.
     fn quick_panel_entries(&self) -> Vec<QuickPanelEntry> {
         let favorites = self
@@ -1585,13 +1701,26 @@ impl ApplicationController {
             .and_then(|png| kestrel::decode_png(&png).map_err(|error| error.to_string()))
         {
             Ok(image) => {
-                let text = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .runtime
-                    .editor_text_recognizer();
-                capture_editor::open(&view.window, id, image, text, self.commands.clone());
+                let (text, shelf) = {
+                    let guard = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let shelf = guard
+                        .runtime
+                        .shelf_is_running()
+                        .then(|| guard.configuration.shelf.limits());
+                    (guard.runtime.editor_text_recognizer(), shelf)
+                };
+                capture_editor::open(
+                    view.window.upcast_ref(),
+                    Some(id),
+                    image,
+                    text,
+                    self.commands.clone(),
+                    None,
+                    shelf,
+                );
             }
             Err(error) => view.show_message(&error),
         }
@@ -1753,6 +1882,12 @@ impl ApplicationController {
             Ok((view_model, message)) => (view_model, (!message.is_empty()).then_some(message)),
             Err(message) => (self.current_view_model(), Some(message)),
         };
+        if let Some(surface) = self.shelf_float.borrow().as_ref() {
+            // Rebuilding the rows would destroy the drag's source.
+            if !surface.is_dragging() {
+                surface.set_shelf(&view_model.shelf);
+            }
+        }
         apply_color_scheme(view_model.appearance);
         self.appearance.follow(view_model.appearance);
         let mut view_model = view_model;
@@ -1762,6 +1897,7 @@ impl ApplicationController {
         self.reconcile_tray(&view_model);
         self.publish_tray_keep_awake(&view_model);
         self.publish_tray_update(&view_model);
+        self.publish_tray_shelf(&view_model);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -1784,6 +1920,7 @@ impl ApplicationController {
             let sink = integration.readout_sink();
             let keep_awake = integration.keep_awake_sink();
             let update = integration.update_sink();
+            let shelf = integration.shelf_sink();
             if sink.is_none() {
                 log::warn!(
                     target: kestrel::STATUS_NOTIFIER_ID,
@@ -1793,6 +1930,7 @@ impl ApplicationController {
             *self.tray.borrow_mut() = sink;
             *self.tray_keep_awake.borrow_mut() = keep_awake;
             *self.tray_update.borrow_mut() = update;
+            *self.tray_shelf.borrow_mut() = shelf;
             *self.status_notifier.borrow_mut() = Some(integration);
         } else if !wanted && present {
             let _ = self.stop_tray();
@@ -1813,6 +1951,14 @@ impl ApplicationController {
             return;
         };
         sink.publish(kestrel::TrayUpdate::from_view_model(view_model));
+    }
+
+    /// Pushes the Shelf item's availability to the tray, if it is open.
+    fn publish_tray_shelf(&self, view_model: &ApplicationViewModel) {
+        let Some(sink) = self.tray_shelf.borrow().clone() else {
+            return;
+        };
+        sink.publish(kestrel::TrayShelf::from_view_model(view_model));
     }
 
     /// Whether `stamp` is not older than the keep-awake state already shown.
@@ -1866,6 +2012,7 @@ impl ApplicationController {
         let sink = self.tray.borrow_mut().take();
         let keep_awake = self.tray_keep_awake.borrow_mut().take();
         let update = self.tray_update.borrow_mut().take();
+        let shelf = self.tray_shelf.borrow_mut().take();
         let integration = self.status_notifier.borrow_mut().take();
         thread::Builder::new()
             .name("kestrel-tray-stop".to_owned())
@@ -1875,6 +2022,7 @@ impl ApplicationController {
                 }
                 drop(keep_awake);
                 drop(update);
+                drop(shelf);
                 drop(integration);
             })
             .ok()
@@ -3067,14 +3215,78 @@ impl ApplicationController {
             self.show_message("That shelf entry is no longer there");
             return;
         };
-        let copied = self
-            .window
-            .borrow()
-            .as_ref()
-            .is_some_and(|view| window::copy_shelf_content(&view.window, &item.content));
+        let copied = {
+            let window = self.window.borrow();
+            if let Some(view) = window.as_ref() {
+                window::copy_shelf_content(&view.window, &item.content)
+            } else if let Some(surface) = self.shelf_float.borrow().as_ref() {
+                window::copy_shelf_content(&surface.window, &item.content)
+            } else {
+                false
+            }
+        };
         if !copied {
             self.show_message("The shelf entry could not be copied; check the clipboard session");
         }
+    }
+
+    /// Opens a shelf image, or an image file entry, in the capture editor.
+    fn edit_shelf_image(&self, id: u64) {
+        let (item, limits, text) = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                guard.runtime.shelf_item(id),
+                guard.configuration.shelf.limits(),
+                guard.runtime.editor_text_recognizer(),
+            )
+        };
+        let Some(item) = item else {
+            self.show_message("That shelf entry is no longer there");
+            return;
+        };
+        let loaded = match &item.content {
+            kestrel_core::ShelfContent::Image { png, .. } => kestrel::decode_png(png)
+                .map(|image| (image, None))
+                .map_err(|error| error.to_string()),
+            kestrel_core::ShelfContent::File { path, .. } => {
+                load_shelf_image(path, limits.max_image_bytes)
+                    .map(|image| (image, Some(path.clone())))
+            }
+            _ => return,
+        };
+        let (image, source) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.show_message(&error);
+                return;
+            }
+        };
+        let parent = self
+            .window
+            .borrow()
+            .as_ref()
+            .map(|view| view.window.clone().upcast::<gtk::Window>())
+            .or_else(|| {
+                self.shelf_float
+                    .borrow()
+                    .as_ref()
+                    .map(|surface| surface.window.clone())
+            });
+        let Some(parent) = parent else {
+            return;
+        };
+        capture_editor::open(
+            &parent,
+            None,
+            image,
+            text,
+            self.commands.clone(),
+            source,
+            Some(limits),
+        );
     }
 
     /// Runs a confirmed action on a worker without holding the controller
@@ -4324,6 +4536,19 @@ impl ControllerState {
                 self.runtime.shelf_set_keep(keep)?;
                 Ok(message)
             }
+            ShelfOperation::SetAddScreenshots(add) => {
+                let mut candidate = self.configuration.clone();
+                candidate.shelf.add_screenshots = add;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    if add {
+                        "New screenshots are added to the shelf".to_owned()
+                    } else {
+                        "New screenshots are not added to the shelf".to_owned()
+                    },
+                )
+            }
         }
     }
 
@@ -5349,8 +5574,20 @@ fn dispatch_commands(
                     ControllerOperation::Shelf(ShelfOperation::SetKeep(keep)),
                     "kestrel-shelf-keep",
                 ),
+                ApplicationCommand::SetShelfAddScreenshots(add) => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::SetAddScreenshots(add)),
+                    "kestrel-shelf-screenshots",
+                ),
                 ApplicationCommand::CopyShelfItem(id) => {
                     controller.copy_shelf_item(id);
+                    continue;
+                }
+                ApplicationCommand::EditShelfImage(id) => {
+                    controller.edit_shelf_image(id);
+                    continue;
+                }
+                ApplicationCommand::OpenShelfFloat => {
+                    controller.open_shelf_float(&application);
                     continue;
                 }
                 ApplicationCommand::Scratchpad(command) => match command {
@@ -5501,9 +5738,21 @@ fn mark_inherited_fds_cloexec() {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseOutcome, close_outcome, load_startup_configuration, persist};
+    use super::{
+        CloseOutcome, close_outcome, load_startup_configuration, persist, shelf_capture_add,
+    };
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    #[test]
+    fn screenshots_join_the_shelf_only_when_asked_and_running() {
+        let mut shelf = kestrel_core::ShelfConfiguration::default();
+        assert_eq!(shelf_capture_add(&shelf, true, Some(7)), None);
+        shelf.add_screenshots = true;
+        assert_eq!(shelf_capture_add(&shelf, false, Some(7)), None);
+        assert_eq!(shelf_capture_add(&shelf, true, Some(7)), Some(7));
+        assert_eq!(shelf_capture_add::<u64>(&shelf, true, None), None);
+    }
 
     #[test]
     fn only_user_update_checks_ignore_a_failed_attempt_record() {

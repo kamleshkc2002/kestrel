@@ -34,6 +34,9 @@ const MAX_DISPLAY_NAME_CHARS: usize = 80;
 pub struct ShelfConfiguration {
     #[serde(default)]
     pub keep_across_restarts: bool,
+    /// Every new screenshot is added to the shelf as it is taken.
+    #[serde(default)]
+    pub add_screenshots: bool,
     #[serde(default = "default_shelf_max_items")]
     pub max_items: u32,
     #[serde(default = "default_shelf_text_megabytes")]
@@ -58,6 +61,7 @@ impl Default for ShelfConfiguration {
     fn default() -> Self {
         Self {
             keep_across_restarts: false,
+            add_screenshots: false,
             max_items: DEFAULT_SHELF_MAX_ITEMS,
             max_text_megabytes: DEFAULT_SHELF_TEXT_MEGABYTES,
             max_image_megabytes: DEFAULT_SHELF_IMAGE_MEGABYTES,

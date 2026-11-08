@@ -16,6 +16,7 @@ mod screen_tools;
 mod settings;
 mod setup;
 mod shelf;
+mod shelf_float;
 mod snippets;
 mod trim;
 mod whats_new;
@@ -60,6 +61,7 @@ pub use floating::{FloatingSurface, QuickPanelEntry};
 pub use overlay::StatusOverlay;
 pub(crate) use setup::open_setup;
 pub(crate) use shelf::copy_shelf_content;
+pub use shelf_float::ShelfSurface;
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
@@ -488,7 +490,7 @@ impl WindowView {
 
     pub fn focus(&self, target: FocusTarget) -> bool {
         match target {
-            FocusTarget::QuickPanel | FocusTarget::CommandBar => false,
+            FocusTarget::QuickPanel | FocusTarget::CommandBar | FocusTarget::ShelfFloat => false,
             FocusTarget::Overview => {
                 self.select_page(SidebarPage::Overview);
                 true
@@ -1573,7 +1575,7 @@ fn page_keywords(page: SidebarPage) -> String {
         SidebarPage::Monitoring => "monitoring monitor system speed test",
         SidebarPage::Audio => "audio sound mixer microphone volume",
         SidebarPage::Clipboard => "clipboard history",
-        SidebarPage::Shelf => "shelf files text links drops staging",
+        SidebarPage::Shelf => "shelf files text links drops copies",
         SidebarPage::CommandBar => "command bar launcher quick panel",
         SidebarPage::Capture => "capture screenshots screen tools recording camera",
         SidebarPage::Notes => "notes snippets scratchpad",

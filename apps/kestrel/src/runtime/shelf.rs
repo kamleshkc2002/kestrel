@@ -45,6 +45,22 @@ impl ApplicationRuntime {
         Ok(added)
     }
 
+    /// Adds a stored screenshot as a file reference, or its pixels when the
+    /// capture has no path.
+    pub fn shelf_add_capture(&mut self, id: CaptureId) -> Result<usize, String> {
+        if let Some(path) = self.capture_path(id) {
+            return self.shelf_add(ShelfInput::Files(vec![path]));
+        }
+        let png = self.capture_png(id)?;
+        let image = kestrel_services::capture::image::decode_png(&png)
+            .map_err(|error| error.to_string())?;
+        self.shelf_add(ShelfInput::Image {
+            png,
+            width: image.width,
+            height: image.height,
+        })
+    }
+
     /// Reads the current selection once: files, then text or a link.
     pub fn shelf_add_clipboard(&mut self) -> Result<usize, String> {
         if !self.shelf_is_running() {

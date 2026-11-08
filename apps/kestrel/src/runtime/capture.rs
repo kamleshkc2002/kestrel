@@ -84,6 +84,11 @@ impl ApplicationRuntime {
         self.capture.read_png(id).map_err(|error| error.to_string())
     }
 
+    /// The stored PNG's path, when the capture service still has it.
+    pub fn capture_path(&self, id: CaptureId) -> Option<PathBuf> {
+        self.capture.path(id)
+    }
+
     pub fn export_capture(&self, id: CaptureId, destination: &Path) -> Result<(), String> {
         self.require_capture()?;
         self.capture

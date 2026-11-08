@@ -12,6 +12,11 @@ pub(super) fn parse_shelf(loaded: &mut LoadedConfiguration, value: Option<&toml:
         super::fields::BOOL_MESSAGE,
         &mut shelf.keep_across_restarts,
     );
+    section.read(
+        "add_screenshots",
+        super::fields::BOOL_MESSAGE,
+        &mut shelf.add_screenshots,
+    );
     section.in_range(
         "max_items",
         kestrel_core::MIN_SHELF_MAX_ITEMS..=kestrel_core::MAX_SHELF_MAX_ITEMS,
@@ -50,6 +55,7 @@ mod tests {
 schema_version = 4
 [shelf]
 keep_across_restarts = true
+add_screenshots = true
 max_items = 500
 max_text_megabytes = 2
 max_image_megabytes = 0
@@ -60,6 +66,7 @@ bool_for_text = true
         .expect("document itself is valid TOML");
         let shelf = loaded.configuration.shelf;
         assert!(shelf.keep_across_restarts);
+        assert!(shelf.add_screenshots);
         assert_eq!(shelf.max_items, kestrel_core::DEFAULT_SHELF_MAX_ITEMS);
         assert_eq!(shelf.max_text_megabytes, 2);
         assert_eq!(
@@ -91,6 +98,7 @@ keep_across_restarts = "yes"
         )
         .expect("document itself is valid TOML");
         assert!(!loaded.configuration.shelf.keep_across_restarts);
+        assert!(!loaded.configuration.shelf.add_screenshots);
         assert_eq!(loaded.warnings.len(), 1);
         assert_eq!(loaded.warnings[0].feature_id, "shelf.keep_across_restarts");
     }

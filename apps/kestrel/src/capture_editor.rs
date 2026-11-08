@@ -23,8 +23,9 @@ use kestrel::{
 };
 use kestrel_platform::capture::{CaptureCancel, MAX_CAPTURE_DIMENSION};
 use kestrel_platform::screen_tools::WordBox;
-use kestrel_services::capture::image::{border_colour, crop_image, encode_png};
+use kestrel_services::capture::image::{apply, border_colour, crop_image, encode_png};
 use kestrel_services::screen_tools::TextRecognizer;
+use kestrel_services::shelf::ShelfInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -254,11 +255,13 @@ impl Viewport {
 }
 
 pub fn open(
-    parent: &adw::ApplicationWindow,
-    id: CaptureId,
+    parent: &gtk::Window,
+    id: Option<CaptureId>,
     image: RgbaImage,
     text: Result<Arc<dyn TextRecognizer>, String>,
     commands: Sender<ApplicationCommand>,
+    source_file: Option<std::path::PathBuf>,
+    shelf: Option<kestrel_core::ShelfLimits>,
 ) {
     let Some(surface) = surface_from(&image) else {
         return;
@@ -286,11 +289,17 @@ pub fn open(
     let save = gtk::Button::with_label("Save copy");
     save.add_css_class("suggested-action");
     save.set_sensitive(false);
+    save.set_visible(id.is_some());
     save.update_property(&[Property::Description(
         "Adds the edited image to recent captures and keeps the original",
     )]);
+    let add_to_shelf = gtk::Button::with_label("Add to shelf");
+    add_to_shelf.set_tooltip_text(Some("Keep this image on the shelf"));
+    add_to_shelf.update_property(&[Property::Label("Add this image to the shelf")]);
+    add_to_shelf.set_visible(shelf.is_some());
     header.pack_start(&cancel);
     header.pack_end(&save);
+    header.pack_end(&add_to_shelf);
 
     let area = gtk::DrawingArea::builder()
         .hexpand(true)
@@ -686,9 +695,13 @@ pub fn open(
         cancel_text.cancel();
         glib::Propagation::Proceed
     });
+    let shelf_commands = commands.clone();
     {
         let (window, state) = (window.clone(), Rc::clone(&state));
         save.connect_clicked(move |_| {
+            let Some(id) = id else {
+                return;
+            };
             let plan = {
                 let mut state = state.borrow_mut();
                 // The service would refuse it after the window closed.
@@ -703,6 +716,53 @@ pub fn open(
                 plan,
             }));
             window.close();
+        });
+    }
+    if let Some(limits) = shelf {
+        let state = Rc::clone(&state);
+        let source = Arc::clone(&source);
+        let hint = hint.clone();
+        let commands = shelf_commands;
+        add_to_shelf.connect_clicked(move |_| {
+            let input = {
+                let mut state = state.borrow_mut();
+                state.place();
+                let edited = state.edited() || !state.plan.pasted.is_empty();
+                if let (Some(path), false) = (&source_file, edited) {
+                    ShelfInput::Files(vec![path.clone()])
+                } else {
+                    let edited = match apply(&source, &state.plan) {
+                        Ok(edited) => edited,
+                        Err(_) => {
+                            hint.set_text("The edited image could not be prepared for the shelf.");
+                            return;
+                        }
+                    };
+                    let png = match encode_png(&edited) {
+                        Ok(png) => png,
+                        Err(_) => {
+                            hint.set_text("The edited image could not be prepared for the shelf.");
+                            return;
+                        }
+                    };
+                    if png.len() > limits.max_image_bytes as usize {
+                        hint.set_text(&format!(
+                            "The edited image is {} and the shelf accepts up to {}; raise the \
+                             image limit in the shelf settings.",
+                            kestrel_core::format_size(png.len() as u64),
+                            kestrel_core::format_size(u64::from(limits.max_image_bytes))
+                        ));
+                        return;
+                    }
+                    ShelfInput::Image {
+                        png,
+                        width: edited.width,
+                        height: edited.height,
+                    }
+                }
+            };
+            let _ = commands.try_send(ApplicationCommand::AddToShelf(input));
+            hint.set_text("Added to the shelf.");
         });
     }
 

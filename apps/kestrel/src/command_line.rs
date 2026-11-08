@@ -38,6 +38,7 @@ pub enum CommandLineAction {
     QuickPaste,
     ScratchpadOpen,
     ShelfOpen,
+    ShelfPage,
     ShelfClear,
     ShelfAddClipboard,
     ProcessesOpen,
@@ -66,7 +67,7 @@ pub enum CommandLineAction {
     StopKeepAwake,
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 41] = [
+const FIXED_ACTIONS: [CommandLineAction; 42] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::OpenQuickPanel,
@@ -74,6 +75,7 @@ const FIXED_ACTIONS: [CommandLineAction; 41] = [
     CommandLineAction::ProcessesOpen,
     CommandLineAction::ScratchpadOpen,
     CommandLineAction::ShelfOpen,
+    CommandLineAction::ShelfPage,
     CommandLineAction::ShelfClear,
     CommandLineAction::ShelfAddClipboard,
     CommandLineAction::RefreshCapabilities,
@@ -141,6 +143,7 @@ impl CommandLineAction {
             Self::ProcessesOpen => "processes.open",
             Self::ScratchpadOpen => "scratchpad.open",
             Self::ShelfOpen => "shelf.open",
+            Self::ShelfPage => "shelf.page",
             Self::ShelfClear => "shelf.clear",
             Self::ShelfAddClipboard => "shelf.add-clipboard",
             Self::RefreshCapabilities => "capabilities.refresh",
@@ -182,7 +185,8 @@ impl CommandLineAction {
             Self::QuickPaste => "Search clipboard history to copy an entry".to_owned(),
             Self::ProcessesOpen => "Open the process inspector".to_owned(),
             Self::ScratchpadOpen => "Open the scratchpad editor".to_owned(),
-            Self::ShelfOpen => "Open the shelf".to_owned(),
+            Self::ShelfOpen => "Open the floating shelf".to_owned(),
+            Self::ShelfPage => "Show the Shelf page".to_owned(),
             Self::ShelfClear => "Remove every unpinned shelf entry".to_owned(),
             Self::ShelfAddClipboard => "Add the clipboard to the shelf".to_owned(),
             Self::RefreshCapabilities => "Re-run capability probes".to_owned(),
@@ -270,7 +274,9 @@ impl CommandLineAction {
                 Some(CLIPBOARD_HISTORY_ID)
             }
             Self::ScratchpadOpen => Some("notes.scratchpad"),
-            Self::ShelfOpen | Self::ShelfClear | Self::ShelfAddClipboard => Some("files.shelf"),
+            Self::ShelfOpen | Self::ShelfPage | Self::ShelfClear | Self::ShelfAddClipboard => {
+                Some("files.shelf")
+            }
             Self::NextOutput | Self::PreviousOutput | Self::NextOutputPort => Some(AUDIO_MIXER_ID),
             Self::ToggleMicrophoneMute | Self::MuteMicrophone | Self::UnmuteMicrophone => {
                 Some(MICROPHONE_FEATURE_ID)
@@ -296,7 +302,8 @@ impl CommandLineAction {
             Self::OpenQuickPanel => ApplicationCommand::Focus(FocusTarget::QuickPanel),
             Self::ProcessesOpen => ApplicationCommand::Focus(FocusTarget::Processes),
             Self::ScratchpadOpen => ApplicationCommand::Focus(FocusTarget::Scratchpad),
-            Self::ShelfOpen => ApplicationCommand::Focus(FocusTarget::Shelf),
+            Self::ShelfOpen => ApplicationCommand::Focus(FocusTarget::ShelfFloat),
+            Self::ShelfPage => ApplicationCommand::Focus(FocusTarget::Shelf),
             Self::ShelfClear => ApplicationCommand::ClearShelf {
                 include_pinned: false,
             },
@@ -634,6 +641,10 @@ mod tests {
         );
         assert_eq!(
             CommandLineAction::parse("shelf.open").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::Focus(FocusTarget::ShelfFloat))
+        );
+        assert_eq!(
+            CommandLineAction::parse("shelf.page").map(CommandLineAction::to_command),
             Ok(ApplicationCommand::Focus(FocusTarget::Shelf))
         );
         assert_eq!(

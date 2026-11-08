@@ -59,7 +59,7 @@ pub use runtime::{
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
     FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayKeepAwake, TrayKeepAwakeSink,
-    TrayReadout, TrayReadoutSink, TrayUpdate, TrayUpdateSink,
+    TrayReadout, TrayReadoutSink, TrayShelf, TrayShelfSink, TrayUpdate, TrayUpdateSink,
 };
 pub use view_model::{
     ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
@@ -417,8 +417,10 @@ pub enum FocusTarget {
     CommandBar,
     QuickPanel,
     Clipboard,
-    /// The Shelf page, where staged entries are listed.
+    /// The Shelf page, where entries are listed.
     Shelf,
+    /// The floating shelf surface, opened beside other windows.
+    ShelfFloat,
     Capture,
     Processes,
     Scratchpad,
@@ -668,9 +670,9 @@ pub enum ApplicationCommand {
     SetSnippetProvider(SnippetProviderPreference),
     /// Scratchpad tab and editor actions.
     Scratchpad(ScratchpadCommand),
-    /// Stages dropped or pasted content on the shelf.
+    /// Adds dropped or pasted content to the shelf.
     AddToShelf(kestrel_services::shelf::ShelfInput),
-    /// Stages the current clipboard text, link, or files.
+    /// Adds the current clipboard text, link, or files.
     AddClipboardToShelf,
     RemoveShelfItem(u64),
     PinShelfItem(u64, bool),
@@ -679,8 +681,14 @@ pub enum ApplicationCommand {
     },
     /// Copies one entry through the window's clipboard.
     CopyShelfItem(u64),
+    /// Opens one image entry, or an image file entry, in the capture editor.
+    EditShelfImage(u64),
     /// Keeps entries in a private file across restarts.
     SetShelfKeep(bool),
+    /// Adds every new screenshot to the shelf.
+    SetShelfAddScreenshots(bool),
+    /// Opens the floating shelf without closing it when it is already open.
+    OpenShelfFloat,
     SetSnippetExpansionTiming(SnippetExpansionTiming),
     /// Runs the command bar query whose results the window shows.
     CommandQuery(String),

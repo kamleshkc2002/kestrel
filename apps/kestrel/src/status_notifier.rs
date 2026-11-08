@@ -29,6 +29,7 @@ impl StatusNotifierIntegration {
             sender: sender.clone(),
             keep_awake: TrayKeepAwake::default(),
             update: TrayUpdate::default(),
+            shelf: TrayShelf::default(),
         };
         match tray.spawn() {
             Ok(handle) => Self {
@@ -89,6 +90,14 @@ impl StatusNotifierIntegration {
     /// Publishes the update item; `None` without a tray host.
     pub fn update_sink(&self) -> Option<TrayUpdateSink> {
         self.handle.as_ref().map(|handle| TrayUpdateSink {
+            handle: handle.clone(),
+            published: Arc::default(),
+        })
+    }
+
+    /// Publishes whether the Shelf item shows; `None` without a tray host.
+    pub fn shelf_sink(&self) -> Option<TrayShelfSink> {
+        self.handle.as_ref().map(|handle| TrayShelfSink {
             handle: handle.clone(),
             published: Arc::default(),
         })
@@ -385,11 +394,50 @@ impl TrayUpdateSink {
     }
 }
 
+/// Whether the tray offers its Shelf item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrayShelf {
+    pub available: bool,
+}
+
+impl TrayShelf {
+    pub fn from_view_model(view_model: &ApplicationViewModel) -> Self {
+        Self {
+            available: view_model
+                .features
+                .iter()
+                .any(|feature| feature.id == crate::runtime::SHELF_ID && feature.running),
+        }
+    }
+}
+
+/// Pushes the Shelf item's availability to an open tray.
+#[derive(Clone)]
+pub struct TrayShelfSink {
+    handle: Handle<KestrelTray>,
+    published: Arc<Mutex<TrayShelf>>,
+}
+
+impl TrayShelfSink {
+    pub fn publish(&self, state: TrayShelf) {
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *published == state {
+            return;
+        }
+        *published = state;
+        self.handle.update(move |tray| tray.shelf = state);
+    }
+}
+
 #[derive(Debug)]
 struct KestrelTray {
     sender: Sender<ApplicationCommand>,
     keep_awake: TrayKeepAwake,
     update: TrayUpdate,
+    shelf: TrayShelf,
 }
 
 impl Tray for KestrelTray {
@@ -460,6 +508,20 @@ impl Tray for KestrelTray {
         ];
         if let Some(update) = update_item(&self.sender, &self.update) {
             items.push(update);
+        }
+        if self.shelf.available {
+            let sender = self.sender.clone();
+            items.push(
+                StandardItem {
+                    label: "Shelf".to_owned(),
+                    icon_name: "folder-symbolic".to_owned(),
+                    activate: Box::new(move |_: &mut Self| {
+                        send(&sender, ApplicationCommand::OpenShelfFloat)
+                    }),
+                    ..StandardItem::default()
+                }
+                .into(),
+            );
         }
         if let Some(keep_awake) = keep_awake_item(&self.sender, &self.keep_awake) {
             items.push(keep_awake);
