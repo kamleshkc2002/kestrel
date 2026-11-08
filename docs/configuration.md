@@ -58,7 +58,7 @@ Settings) and shows one at a time. Each feature's settings sit on its own page,
 and the Settings page keeps app-wide choices. The sidebar search filters pages
 and settings together. On narrow windows the sidebar and the page take turns.
 
-`shelf` holds the staging shelf's bounds and whether its entries survive a
+`shelf` holds the shelf's bounds and whether its entries survive a
 restart: `keep_across_restarts` (default `false`), `max_items` (1–200; default
 50), `max_text_megabytes` (1–4; default 1), `max_image_megabytes` (1–64; default
 16), and `max_age_hours` (0–720; default 0, never). The switch on the Shelf page

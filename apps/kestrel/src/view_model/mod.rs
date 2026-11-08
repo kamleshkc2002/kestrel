@@ -390,7 +390,7 @@ impl ApplicationViewModel {
             features,
             crate::runtime::SHELF_ID,
             "Shelf is off",
-            "Stage files, text, and links for another app.",
+            "Keep files, text, and links ready to drag into another app.",
         );
         if let Some(status) =
             disabled_status_for(features, crate::runtime::SHELF_ID, "Shelf is off")

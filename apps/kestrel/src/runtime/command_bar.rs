@@ -318,14 +318,14 @@ impl ApplicationRuntime {
                 (
                     "kestrel:shelf-open",
                     "Open shelf",
-                    "Stage files, text, and links for another app",
+                    "Keep files, text, and links ready to drag into another app",
                     "shelf.open",
                     &["shelf", "stage", "files", "links", "drop"][..],
                 ),
                 (
                     "kestrel:shelf-add-clipboard",
                     "Add clipboard to shelf",
-                    "Stage the current clipboard text or files",
+                    "Add the current clipboard text, link, or files to the shelf",
                     "shelf.add-clipboard",
                     &["shelf", "clipboard", "paste", "stage"][..],
                 ),

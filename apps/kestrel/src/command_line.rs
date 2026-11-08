@@ -184,7 +184,7 @@ impl CommandLineAction {
             Self::ScratchpadOpen => "Open the scratchpad editor".to_owned(),
             Self::ShelfOpen => "Open the shelf".to_owned(),
             Self::ShelfClear => "Remove every unpinned shelf entry".to_owned(),
-            Self::ShelfAddClipboard => "Stage the clipboard on the shelf".to_owned(),
+            Self::ShelfAddClipboard => "Add the clipboard to the shelf".to_owned(),
             Self::RefreshCapabilities => "Re-run capability probes".to_owned(),
             Self::Quit => "Quit Kestrel".to_owned(),
             Self::NextOutput => "Switch to the next audio output".to_owned(),
