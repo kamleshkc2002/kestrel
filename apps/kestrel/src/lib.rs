@@ -746,6 +746,8 @@ pub enum CaptureRequest {
     Cancel,
     /// Puts the image on the clipboard.
     Copy(CaptureId),
+    /// Recognizes the stored image's text and puts it on the clipboard.
+    CopyText(CaptureId),
     Save {
         id: CaptureId,
         destination: std::path::PathBuf,

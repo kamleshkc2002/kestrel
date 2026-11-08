@@ -18,6 +18,7 @@ pub(crate) fn test_capture_presentation() -> super::CapturePresentation {
         provider: None,
         modes: Vec::new(),
         thumbnails: Vec::new(),
+        ocr_unavailable: None,
         limits: kestrel_core::CaptureConfiguration::default(),
         now: std::time::SystemTime::UNIX_EPOCH,
     }

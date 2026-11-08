@@ -864,6 +864,7 @@ impl ClipboardFingerprint {
 enum CaptureOperation {
     Begin(Option<kestrel::CaptureMode>),
     Cancel,
+    CopyText(CaptureId),
     Save {
         id: CaptureId,
         destination: PathBuf,
@@ -3739,6 +3740,20 @@ impl ControllerState {
                     self.runtime.cancel_capture();
                     "Screenshot cancellation requested".to_owned()
                 }
+                CaptureOperation::CopyText(id) => match self.runtime.capture_text(id) {
+                    Ok(Some(text)) => {
+                        let characters = text.chars().count();
+                        // The text reaches the clipboard only; it is not kept.
+                        match self.commands.try_send(ApplicationCommand::CopyText(text)) {
+                            Ok(()) => {
+                                format!("Copied {characters} characters of text from the capture")
+                            }
+                            Err(_) => "The text could not be copied".to_owned(),
+                        }
+                    }
+                    Ok(None) => "No text found in this capture".to_owned(),
+                    Err(error) => error,
+                },
                 CaptureOperation::Save { id, destination } => self
                     .runtime
                     .export_capture(id, &destination)
@@ -5407,6 +5422,7 @@ fn dispatch_commands(
                         }
                         CaptureRequest::Begin(mode) => CaptureOperation::Begin(mode),
                         CaptureRequest::Cancel => CaptureOperation::Cancel,
+                        CaptureRequest::CopyText(id) => CaptureOperation::CopyText(id),
                         CaptureRequest::Save { id, destination } => {
                             CaptureOperation::Save { id, destination }
                         }

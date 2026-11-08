@@ -81,7 +81,12 @@ pub(super) fn build_capture_group(
         recent.add_row(&plain_row().title("No captures yet").build());
     }
     for entry in &capture.entries {
-        recent.add_row(&build_capture_row(entry, window, commands));
+        recent.add_row(&build_capture_row(
+            entry,
+            capture.ocr_unavailable.as_deref(),
+            window,
+            commands,
+        ));
     }
     if !capture.entries.is_empty() {
         let clear = gtk::Button::with_label("Clear all");
@@ -102,6 +107,7 @@ const CAPTURE_THUMBNAIL_SIZE: i32 = 72;
 
 fn build_capture_row(
     entry: &CaptureEntryViewModel,
+    ocr_unavailable: Option<&str>,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
 ) -> adw::ActionRow {
@@ -142,6 +148,20 @@ fn build_capture_row(
         "Copy",
         CaptureRequest::Copy(id),
     ));
+    let copy_text = gtk::Button::with_label("Copy text");
+    copy_text.set_valign(Align::Center);
+    copy_text.add_css_class("flat");
+    copy_text.set_sensitive(ocr_unavailable.is_none());
+    copy_text.set_tooltip_text(Some(match ocr_unavailable {
+        Some(reason) => reason,
+        None => "Read this capture's text locally and copy it",
+    }));
+    copy_text.update_property(&[Property::Label("Copy text from this capture")]);
+    let sender = commands.clone();
+    copy_text.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::CopyText(id)));
+    });
+    row.add_suffix(&copy_text);
     let save = gtk::Button::from_icon_name("document-save-as-symbolic");
     save.set_valign(Align::Center);
     save.add_css_class("flat");
