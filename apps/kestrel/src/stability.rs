@@ -62,6 +62,7 @@ mod tests {
         "clipboard.quick-paste",
         "clipboard.wipe",
         "command-bar.open",
+        "diagnostics.dump-state",
         "keep-awake.start-15m",
         "keep-awake.start-1h",
         "keep-awake.start-2h",
@@ -239,10 +240,12 @@ mod tests {
 
     #[test]
     fn released_command_ids_stay_available() {
-        let live = CommandLineAction::all()
+        let mut live = CommandLineAction::all()
             .into_iter()
             .map(CommandLineAction::id)
-            .collect();
+            .collect::<BTreeSet<_>>();
+        // The recovery checks query; hidden from `--list-commands`.
+        live.insert(crate::command_line::DIAGNOSTICS_COMMAND_ID.to_owned());
         compare("command ID", live, RELEASED_COMMAND_IDS);
     }
 

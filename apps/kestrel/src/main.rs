@@ -1727,6 +1727,18 @@ impl ApplicationController {
             .command_gate(action)
     }
 
+    /// Writes the feature state through the invoking command line, so a
+    /// remote `--command diagnostics.dump-state` reaches the caller's stdout.
+    fn print_diagnostics(&self, command_line: &adw::gio::ApplicationCommandLine) {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .diagnostics_state();
+        print_command_line(command_line, &state);
+    }
+
     fn capture_png(&self, id: CaptureId) -> Result<Vec<u8>, String> {
         self.state
             .lock()
@@ -5110,7 +5122,9 @@ fn main() -> glib::ExitCode {
             eprint!("{}", usage());
             return glib::ExitCode::from(CommandLineError::EXIT_STATUS);
         }
-        Ok(invocation @ (Invocation::Present | Invocation::Run(_))) => invocation,
+        Ok(
+            invocation @ (Invocation::Present | Invocation::Run(_) | Invocation::DumpDiagnostics),
+        ) => invocation,
     };
 
     let (mut loaded, config_path) = load_startup_configuration(configuration_path());
@@ -5322,6 +5336,7 @@ fn main() -> glib::ExitCode {
         };
         match invocation {
             Invocation::Present => controller.present(application),
+            Invocation::DumpDiagnostics => controller.print_diagnostics(command_line),
             Invocation::Run(action) => {
                 // A command that started Kestrel opens the window so the
                 // instance stays alive and the result is visible.
@@ -5401,6 +5416,25 @@ fn add_command_action(
         let _ = commands.try_send(command.clone());
     });
     application.add_action(&action);
+}
+
+/// Writes each line to the invoking process's stdout. The GLib printer is
+/// variadic, so the format is a literal taking one string argument.
+fn print_command_line(command_line: &adw::gio::ApplicationCommandLine, text: &str) {
+    for line in text.lines() {
+        let Ok(line) = std::ffi::CString::new(line) else {
+            continue;
+        };
+        // SAFETY: `command_line` is alive for the call and `c"%s\n"` takes
+        // exactly the string passed next.
+        unsafe {
+            adw::gio::ffi::g_application_command_line_print(
+                command_line.as_ptr().cast(),
+                c"%s\n".as_ptr(),
+                line.as_ptr(),
+            );
+        }
+    }
 }
 
 /// Opens a link in the desktop's handler; a failure shows a copyable link.

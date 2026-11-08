@@ -29,6 +29,10 @@ const TOGGLE_PREFIX: &str = "toggle.";
 const KEEP_AWAKE_START_PREFIX: &str = "keep-awake.start-";
 const KEEP_AWAKE_STOP_ID: &str = "keep-awake.stop";
 
+/// Hidden query for the recovery checks. It is not listed and cannot be bound
+/// or added to favorites.
+pub const DIAGNOSTICS_COMMAND_ID: &str = "diagnostics.dump-state";
+
 /// One action a command line can trigger, identified by a stable ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandLineAction {
@@ -356,6 +360,8 @@ impl CommandLineAction {
 pub enum Invocation {
     Present,
     Run(CommandLineAction),
+    /// Print lifecycle and capability state for every feature.
+    DumpDiagnostics,
     ListCommands,
     Help,
     Version,
@@ -538,16 +544,24 @@ pub fn parse_arguments(arguments: &[OsString]) -> Result<Invocation, CommandLine
         ["--list-commands"] => Ok(Invocation::ListCommands),
         ["--uninstall-preview"] => Ok(Invocation::UninstallPreview),
         ["--command"] => Err(CommandLineError::MissingCommandId),
-        ["--command", id] => CommandLineAction::parse(id).map(Invocation::Run),
+        ["--command", id] => parse_command(id),
         [single] if single.starts_with("--command=") => {
             let id = &single["--command=".len()..];
             if id.is_empty() {
                 return Err(CommandLineError::MissingCommandId);
             }
-            CommandLineAction::parse(id).map(Invocation::Run)
+            parse_command(id)
         }
         [first, ..] => Err(CommandLineError::UnexpectedArgument((*first).to_owned())),
     }
+}
+
+/// Diagnostics is a command-line query, not an action shortcuts can run.
+fn parse_command(id: &str) -> Result<Invocation, CommandLineError> {
+    if id == DIAGNOSTICS_COMMAND_ID {
+        return Ok(Invocation::DumpDiagnostics);
+    }
+    CommandLineAction::parse(id).map(Invocation::Run)
 }
 
 /// Usage text for `--help`.
@@ -576,8 +590,8 @@ mod tests {
     use kestrel_services::audio::AudioCommand;
 
     use super::{
-        CommandGate, CommandLineAction, CommandLineError, Invocation, parse_arguments,
-        take_after_exit,
+        CommandGate, CommandLineAction, CommandLineError, Invocation, command_list,
+        parse_arguments, take_after_exit,
     };
     use crate::FocusTarget;
     use crate::{ApplicationCommand, FeaturePreset};
@@ -675,6 +689,29 @@ mod tests {
             Ok(ApplicationCommand::FlipQuickToggle(
                 QuickToggleId::KeepAwake
             ))
+        );
+    }
+
+    #[test]
+    fn diagnostics_is_a_hidden_query_not_a_shortcut_action() {
+        assert_eq!(
+            parse_arguments(&arguments(&["--command", "diagnostics.dump-state"])),
+            Ok(Invocation::DumpDiagnostics)
+        );
+        assert_eq!(
+            parse_arguments(&arguments(&["--command=diagnostics.dump-state"])),
+            Ok(Invocation::DumpDiagnostics)
+        );
+        assert_eq!(
+            CommandLineAction::parse("diagnostics.dump-state"),
+            Err(CommandLineError::UnknownCommand(
+                "diagnostics.dump-state".to_owned()
+            )),
+            "shortcuts and favorites cannot run the diagnostics query"
+        );
+        assert!(
+            !command_list().contains("diagnostics.dump-state"),
+            "--list-commands stays a user-facing table"
         );
     }
 

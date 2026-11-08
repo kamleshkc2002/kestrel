@@ -62,6 +62,18 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets
 
+      - name: Install recovery-check packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            sway wl-clipboard pulseaudio pulseaudio-utils python3-gi \
+            libglib2.0-bin
+
+      - name: Validate recovery from device, session, and permission changes
+        run: |
+          KESTREL_REQUIRE_RECOVERY_CHECKS=1 \
+            bash scripts/recovery-checks.sh target/debug/kestrel
+
   clipboard-clean-session:
     name: Clipboard clean session
     runs-on: ubuntu-latest

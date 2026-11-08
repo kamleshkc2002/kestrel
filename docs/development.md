@@ -125,6 +125,66 @@ becomes an overlay (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA drivers):
 bash scripts/layer-shell-smoke.sh target/debug/kestrel
 ```
 
+### Recovery checks
+
+`scripts/recovery-checks.sh` exercises what happens when the session changes
+under a running instance. It uses a private headless Sway compositor, private
+D-Bus session and system buses, private XDG directories, and a fake logind
+under `scripts/fakes/`:
+
+```bash
+bash scripts/recovery-checks.sh target/debug/kestrel
+```
+
+It needs `sway`, `dbus-daemon`, `gdbus`, `python3-gi`, `wl-copy`, and
+`wl-paste`; `pulseaudio` with `pactl` adds the audio scenario. Missing tools
+skip the run, and `KESTREL_REQUIRE_RECOVERY_CHECKS=1` makes them fatal, which
+is how CI runs it. `SWAY_FLAGS` passes options to Sway.
+
+The checks read feature state through the hidden
+`kestrel --command diagnostics.dump-state` query. It prints one tab-separated
+line per feature with lifecycle, enablement, capability kind, and typed
+counters; clipboard content, device names, and paths never appear. It is not
+listed by `--list-commands` and cannot be bound to a shortcut.
+
+Each scenario prints PASS or FAIL with its expected outcome:
+
+1. **Suspend and resume.** The fake logind raises `PrepareForSleep(true)` and
+   then `(false)`. Clipboard history is wiped, the live selection is released,
+   and an active keep-awake inhibitor is still held after resume.
+2. **SIGKILL and restart.** A kept-awake instance is killed with `SIGKILL` and
+   restarted. The fake logind sees the inhibitor descriptor close, no
+   temporary files remain under Kestrel's directories, no selection is still
+   served, and a stale partial recording is removed without appearing as a
+   completed take.
+3. **Dependency appears and disappears.** `grim` and `slurp` are added to a
+   directory on `PATH` after startup. Refresh reports the screenshot provider
+   as limited, then supported; removing `grim` returns it to unsupported.
+4. **Compositor restart.** Killing the private compositor ends Kestrel with
+   status 0 or 1 and never by a signal. A fresh instance runs against a
+   restarted compositor.
+5. **Audio device disappears and returns.** A PulseAudio null sink is removed
+   and another is loaded. Refresh reports the changed output count.
+6. **Permission revoked.** The fake logind answers `Inhibit` with
+   `AccessDenied`. Keep awake reports `error=permission-denied`, the process
+   keeps running, and the action works once access returns.
+
+Scenarios that need a real desktop session stay manual:
+
+- Suspend the machine and resume; clipboard history is wiped and a keep-awake
+  session is still held.
+- Revoke Kestrel's Screen Capture, ScreenCast, or Global Shortcuts grant in
+  the desktop's privacy settings while it runs, then Refresh: the feature
+  reports the missing permission instead of stale state.
+- Restart the real compositor or its portal service and confirm every open
+  surface and capture flow still works.
+- Unplug and replug a physical output, microphone, or camera and check the
+  mixer, microphone, and recording panels.
+- Revoke Logind, NetworkManager, or BlueZ access with polkit while the feature
+  is open.
+- Kill Kestrel during a real recording and restart it: the hidden `.partial`
+  file is removed on a later start and no incomplete take is listed.
+
 ## Compatibility table
 
 `docs/compatibility.md` records what has been tested or reported for each
