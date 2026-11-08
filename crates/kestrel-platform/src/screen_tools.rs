@@ -19,6 +19,10 @@ pub const TEXT_FEATURE_ID: &str = "capture.text";
 pub const QR_FEATURE_ID: &str = "capture.qr";
 pub const COLOR_FEATURE_ID: &str = "capture.color";
 
+/// How to install the missing OCR dependency; every OCR action shows it.
+pub const TESSERACT_REMEDIATION: &str = "Install Tesseract and a language pack, for example \
+     `sudo apt install tesseract-ocr tesseract-ocr-eng`, then refresh.";
+
 /// Largest recognized text kept from one OCR run.
 pub const MAX_OCR_OUTPUT_BYTES: usize = 256 * 1024;
 /// Largest word-position table kept from one OCR run: one row per word, so a
@@ -127,10 +131,7 @@ pub fn screen_tool_capability(
                 },
                 "Reading text needs Tesseract.",
             )
-            .with_remediation(
-                "Install Tesseract and a language pack, for example \
-                 `sudo apt install tesseract-ocr tesseract-ocr-eng`, then refresh.",
-            ),
+            .with_remediation(TESSERACT_REMEDIATION),
         },
         ScreenTool::Qr => CapabilityReport::new(
             feature,
@@ -179,8 +180,8 @@ impl TesseractAdapter {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_executable(executable: PathBuf) -> Self {
+    /// Uses an explicit executable path instead of discovering one on `PATH`.
+    pub fn with_executable(executable: PathBuf) -> Self {
         Self {
             executable: Some(executable),
         }
@@ -397,6 +398,63 @@ mod tests {
         assert_eq!(
             fs::read_to_string(log).expect("args").trim(),
             "stdin stdout -l eng tsv"
+        );
+    }
+
+    #[test]
+    fn a_saved_capture_png_is_read_with_the_configured_ocr() {
+        let dir = TempDir::new().expect("temp dir");
+        let saved = dir.path().join("1000-1-area.png");
+        fs::write(&saved, b"saved capture bytes").expect("capture written");
+        let png = fs::read(&saved).expect("capture read");
+        let log = dir.path().join("args");
+        let tesseract = script(
+            &dir,
+            &format!(
+                "echo \"$@\" > '{}'; input=$(cat); printf 'from %s\\n\\f' \"$input\"",
+                log.display()
+            ),
+        );
+        let text = TesseractAdapter::with_executable(tesseract)
+            .recognize(&png, "deu", Duration::from_secs(5), &CaptureCancel::new())
+            .expect("saved capture read");
+        assert_eq!(text, "from saved capture bytes");
+        assert_eq!(
+            fs::read_to_string(log).expect("args").trim(),
+            "stdin stdout -l deu"
+        );
+
+        let dir = TempDir::new().expect("temp dir");
+        let empty =
+            TesseractAdapter::with_executable(script(&dir, "cat >/dev/null; printf ' \\n\\f'"));
+        assert_eq!(
+            empty
+                .recognize(&png, "eng", Duration::from_secs(5), &CaptureCancel::new())
+                .expect("empty saved capture"),
+            ""
+        );
+
+        let dir = TempDir::new().expect("temp dir");
+        let stalled = TesseractAdapter::with_executable(script(&dir, "sleep 30"));
+        assert_eq!(
+            stalled
+                .recognize(
+                    &png,
+                    "eng",
+                    Duration::from_millis(200),
+                    &CaptureCancel::new()
+                )
+                .unwrap_err()
+                .kind,
+            CaptureErrorKind::Timeout
+        );
+
+        assert_eq!(
+            TesseractAdapter::default()
+                .recognize(&png, "eng", Duration::from_secs(1), &CaptureCancel::new())
+                .unwrap_err()
+                .kind,
+            CaptureErrorKind::Unavailable
         );
     }
 

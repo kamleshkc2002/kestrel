@@ -269,6 +269,8 @@ pub fn open(
     let width = image.width;
     let height = image.height;
     let source = Arc::new(image);
+    let recognizer = text.as_ref().map(Arc::clone).ok();
+    let ocr_reason = text.as_ref().err().cloned();
     let thickness = (width.max(height) / 400).max(3);
     let state = Rc::new(RefCell::new(EditorState::new(Tool::Redact)));
     let viewport = Rc::new(Cell::new(Viewport {
@@ -300,6 +302,15 @@ pub fn open(
     header.pack_start(&cancel);
     header.pack_end(&save);
     header.pack_end(&add_to_shelf);
+    let copy_text = gtk::Button::with_label("Copy text");
+    copy_text.add_css_class("flat");
+    copy_text.set_sensitive(recognizer.is_some());
+    copy_text.set_tooltip_text(Some(match &ocr_reason {
+        Some(reason) => reason.as_str(),
+        None => "Read the screenshot's text locally and copy it; the text is not retained",
+    }));
+    copy_text.update_property(&[Property::Label("Copy text from the screenshot")]);
+    header.pack_end(&copy_text);
 
     let area = gtk::DrawingArea::builder()
         .hexpand(true)
@@ -501,6 +512,66 @@ pub fn open(
         });
     }
     let cancel_text = CaptureCancel::new();
+    {
+        let (hint, commands, source, cancel_text, recognizer) = (
+            hint.clone(),
+            commands.clone(),
+            Arc::clone(&source),
+            cancel_text.clone(),
+            recognizer.clone(),
+        );
+        let busy = Rc::new(Cell::new(false));
+        copy_text.connect_clicked(move |_| {
+            let Some(recognizer) = recognizer.clone() else {
+                return;
+            };
+            if busy.replace(true) {
+                hint.set_text("Still reading text.");
+                return;
+            }
+            hint.set_text("Finding text…");
+            let (sender, receiver) = async_channel::bounded(1);
+            let (image, cancel, thread_busy) =
+                (Arc::clone(&source), cancel_text.clone(), Rc::clone(&busy));
+            let spawned = thread::Builder::new()
+                .name("kestrel-editor-copy-text".to_owned())
+                .spawn(move || {
+                    let text = encode_png(&image)
+                        .map_err(|error| error.to_string())
+                        .and_then(|png| {
+                            kestrel_services::screen_tools::image_text(
+                                recognizer.as_ref(),
+                                &png,
+                                &cancel,
+                            )
+                            .map_err(|error| error.message)
+                        });
+                    let _ = sender.send_blocking(text);
+                });
+            if spawned.is_err() {
+                busy.set(false);
+                hint.set_text("Text could not be read.");
+                return;
+            }
+            let (hint, commands, busy) = (hint.clone(), commands.clone(), thread_busy);
+            glib::spawn_future_local(async move {
+                let result = receiver.recv().await;
+                busy.set(false);
+                let message = match result {
+                    Ok(Ok(Some(text))) => {
+                        let characters = text.chars().count();
+                        // The text goes to the clipboard only; it is not kept.
+                        let _ = commands.try_send(ApplicationCommand::CopyText(text));
+                        format!("Copied {characters} characters.")
+                    }
+                    Ok(Ok(None)) => "No text found in this capture".to_owned(),
+                    Ok(Err(message)) => message,
+                    Err(_) => return,
+                };
+                hint.set_text(&message);
+            });
+        });
+    }
     let find_text: Rc<dyn Fn(Rect)> = {
         let (state, hint, refresh, source, cancel_text) = (
             Rc::clone(&state),
@@ -511,7 +582,7 @@ pub fn open(
         );
         let busy = Rc::new(Cell::new(false));
         Rc::new(move |area: Rect| {
-            let Ok(recognizer) = text.as_ref().map(Arc::clone) else {
+            let Some(recognizer) = recognizer.clone() else {
                 return;
             };
             if busy.replace(true) {

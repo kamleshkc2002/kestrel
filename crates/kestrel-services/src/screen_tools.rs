@@ -167,6 +167,17 @@ impl TextRecognizer for TesseractRecognizer {
     }
 }
 
+/// Text from one stored image, trimmed; `None` means it held no text.
+pub fn image_text(
+    recognizer: &dyn TextRecognizer,
+    png: &[u8],
+    cancel: &CaptureCancel,
+) -> Result<Option<String>, CaptureError> {
+    let text = recognizer.recognize(png, cancel)?;
+    let text = text.trim();
+    Ok((!text.is_empty()).then(|| text.to_owned()))
+}
+
 /// Input source for a screen-tools job.
 pub enum ScreenToolSource {
     Frame {
@@ -598,6 +609,49 @@ mod tests {
 
         fn word_boxes(&self, _: &[u8], _: &CaptureCancel) -> Result<Vec<WordBox>, CaptureError> {
             Ok(Vec::new())
+        }
+    }
+
+    struct ScriptedRecognizer(Result<&'static str, CaptureErrorKind>);
+
+    impl TextRecognizer for ScriptedRecognizer {
+        fn recognize(&self, _: &[u8], _: &CaptureCancel) -> Result<String, CaptureError> {
+            self.0
+                .map(str::to_owned)
+                .map_err(|kind| CaptureError::new(kind, "fake"))
+        }
+
+        fn word_boxes(&self, _: &[u8], _: &CaptureCancel) -> Result<Vec<WordBox>, CaptureError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn stored_images_give_trimmed_text_or_nothing() {
+        let cancel = CaptureCancel::new();
+        let text = image_text(
+            &ScriptedRecognizer(Ok("  saved words\n\u{c}")),
+            b"png",
+            &cancel,
+        )
+        .expect("text read");
+        assert_eq!(text.as_deref(), Some("saved words"));
+
+        for empty in ["", " \n\r\u{c}"] {
+            assert_eq!(
+                image_text(&ScriptedRecognizer(Ok(empty)), b"png", &cancel).expect("text read"),
+                None,
+                "{empty:?}"
+            );
+        }
+
+        for kind in [CaptureErrorKind::Timeout, CaptureErrorKind::Unavailable] {
+            assert_eq!(
+                image_text(&ScriptedRecognizer(Err(kind)), b"png", &cancel)
+                    .unwrap_err()
+                    .kind,
+                kind
+            );
         }
     }
 

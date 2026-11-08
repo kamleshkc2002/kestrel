@@ -53,17 +53,15 @@ impl ApplicationRuntime {
             .clipboard_history
             .image_png(item_id)
             .map_err(|error| format!("The image could not be read: {error}"))?;
-        let text = self
-            .clipboard_ocr
-            .recognize(
-                png.expose(),
-                &kestrel_platform::capture::CaptureCancel::new(),
-            )
-            .map_err(|error| format!("Text recognition failed: {}", error.message))?;
-        let text = text.trim().to_owned();
-        if text.is_empty() {
+        let text = kestrel_services::screen_tools::image_text(
+            self.clipboard_ocr.as_ref(),
+            png.expose(),
+            &kestrel_platform::capture::CaptureCancel::new(),
+        )
+        .map_err(|error| format!("Text recognition failed: {}", error.message))?;
+        let Some(text) = text else {
             return Err("No text was found in the image".to_owned());
-        }
+        };
         let characters = text.chars().count();
         self.clipboard_history
             .execute(ClipboardCommand::CopyUnstoredText(
@@ -78,7 +76,7 @@ impl ApplicationRuntime {
     pub fn editor_text_recognizer(&self) -> Result<Arc<dyn TextRecognizer>, String> {
         match TesseractAdapter::discover().executable() {
             Some(_) => Ok(Arc::clone(&self.clipboard_ocr)),
-            None => Err("Install Tesseract (the tesseract-ocr package) to find text.".to_owned()),
+            None => Err(kestrel_platform::screen_tools::TESSERACT_REMEDIATION.to_owned()),
         }
     }
 
