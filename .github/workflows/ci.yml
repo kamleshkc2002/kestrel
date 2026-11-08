@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libadwaita-1-dev libgtk-4-dev libpulse-dev xvfb dbus \
+            libadwaita-1-dev libgtk-4-dev libpulse-dev xvfb dbus sway \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
             meson ninja-build libwayland-dev wayland-protocols
@@ -58,6 +58,13 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --all-targets
+
+      - name: Measure idle cost
+        # Runs the preset matrix in headless Sway and fails past the checked-in
+        # baseline: wakeups +50% plus 1/s of sampling slack, RSS +25%.
+        run: |
+          bash scripts/idle-measure.sh target/debug/kestrel \
+            --check scripts/idle-baseline.json --out target/idle
 
       - name: Test
         run: cargo test --workspace --all-targets

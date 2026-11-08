@@ -1,0 +1,65 @@
+{
+  "cpu": "12th Gen Intel(R) Core(TM) i9-12900HX",
+  "session": "headless Sway (WLR_BACKENDS=headless, WLR_RENDERER=pixman)",
+  "seconds": 20,
+  "margins": {
+    "wakeups_percent": 50,
+    "rss_percent": 25
+  },
+  "runs": [
+    {
+      "preset": "essentials",
+      "window": "open",
+      "seconds": 20,
+      "cpu_percent": 2.60,
+      "wakeups_per_second": 8.15,
+      "rss_kib": 419444,
+      "threads": 81
+    },
+    {
+      "preset": "essentials",
+      "window": "closed",
+      "seconds": 20,
+      "cpu_percent": 1.45,
+      "wakeups_per_second": 8.45,
+      "rss_kib": 420928,
+      "threads": 81
+    },
+    {
+      "preset": "balanced",
+      "window": "open",
+      "seconds": 20,
+      "cpu_percent": 12.20,
+      "wakeups_per_second": 15.25,
+      "rss_kib": 430600,
+      "threads": 84
+    },
+    {
+      "preset": "balanced",
+      "window": "closed",
+      "seconds": 20,
+      "cpu_percent": 6.45,
+      "wakeups_per_second": 15.85,
+      "rss_kib": 429564,
+      "threads": 85
+    },
+    {
+      "preset": "everything",
+      "window": "open",
+      "seconds": 20,
+      "cpu_percent": 15.65,
+      "wakeups_per_second": 113.65,
+      "rss_kib": 431024,
+      "threads": 85
+    },
+    {
+      "preset": "everything",
+      "window": "closed",
+      "seconds": 20,
+      "cpu_percent": 9.65,
+      "wakeups_per_second": 116.60,
+      "rss_kib": 430980,
+      "threads": 85
+    }
+  ]
+}

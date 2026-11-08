@@ -52,6 +52,9 @@ use kestrel_services::update_install::InstallPhase;
 use window::{FloatingSurface, QuickPanelEntry, ShelfSurface, StatusOverlay, WindowView};
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
+/// Poll interval when nothing is running or due; the tick still returns to
+/// `TICK_INTERVAL` on the first tick that finds work.
+const TICK_IDLE_INTERVAL: Duration = Duration::from_secs(1);
 /// Poll interval for mixer and microphone state, which other mixers and
 /// hardware keys change externally.
 const AUDIO_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -152,6 +155,8 @@ struct TickUpdate {
     keep_awake: Option<kestrel::QuickToggleViewModel>,
     /// A timed keep-awake session just ended; every surface must refresh.
     keep_awake_expired: bool,
+    /// The configured monitoring interval, which paces the next tick.
+    monitor_interval: Duration,
 }
 
 type SharedState = Arc<Mutex<ControllerState>>;
@@ -558,10 +563,13 @@ fn run_tick(
         keyboard_light,
         keep_awake,
         keep_awake_expired,
+        monitor_interval,
     ) = {
         let mut guard = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let monitor_interval =
+            Duration::from_millis(guard.configuration.monitoring.refresh_interval_millis);
         let tick = guard.runtime.sample_monitor(observed_at);
         let controller = &mut *guard;
         let audio = (due.audio && controller.runtime.refresh_audio_mixer()).then(|| {
@@ -686,6 +694,7 @@ fn run_tick(
             keyboard_light,
             keep_awake,
             keep_awake_expired,
+            monitor_interval,
         )
     };
     if keep_awake_expired {
@@ -730,6 +739,7 @@ fn run_tick(
         keyboard_light,
         keep_awake,
         keep_awake_expired,
+        monitor_interval,
     }
 }
 
@@ -1144,6 +1154,8 @@ struct ApplicationController {
     monitoring: Cell<bool>,
     /// Mirrors registration state; disabled features spawn no tick workers.
     monitor_running: Cell<bool>,
+    /// The configured monitoring interval; the tick runs no faster than it.
+    monitor_interval: Cell<Duration>,
     clipboard_running: Cell<bool>,
     microphone_running: Cell<bool>,
     audio_mixer_running: Cell<bool>,
@@ -1315,6 +1327,7 @@ impl ApplicationController {
             self_ref: RefCell::new(Weak::new()),
             monitoring: Cell::new(false),
             monitor_running: Cell::new(monitor_running),
+            monitor_interval: Cell::new(TICK_INTERVAL),
             clipboard_running: Cell::new(clipboard_running),
             microphone_running: Cell::new(microphone_running),
             audio_mixer_running: Cell::new(audio_mixer_running),
@@ -2226,9 +2239,9 @@ impl ApplicationController {
         );
     }
 
-    fn request_tick(&self) {
+    fn request_tick(&self) -> Duration {
         if self.refreshing.get() || self.monitoring.replace(true) {
-            return;
+            return TICK_INTERVAL;
         }
         let now = Instant::now();
         let overlay_modules = self.overlay_modules.get();
@@ -2282,6 +2295,24 @@ impl ApplicationController {
             }
             due
         };
+        let responsive = overlay_feedback
+            || (self.overlay_running.get()
+                && overlay_modules.keyboard_light
+                && self.keyboard_light_running.get())
+            || self.selection_open.get()
+            || self.selection_pending.get().is_some()
+            || self.speed_test_running.get()
+            || self.capture_running.get()
+            || self.camera_running.get()
+            || self.recording_running.get();
+        let next_interval = if responsive {
+            TICK_INTERVAL
+        } else if self.monitor_running.get() {
+            // Sampling sets the pace, but other polls need at least 1 Hz.
+            self.monitor_interval.get().min(TICK_IDLE_INTERVAL)
+        } else {
+            TICK_IDLE_INTERVAL
+        };
         if !self.monitor_running.get()
             && !self.clipboard_running.get()
             && !self.speed_test_running.get()
@@ -2298,7 +2329,7 @@ impl ApplicationController {
             && !recording_apps_due
         {
             self.monitoring.set(false);
-            return;
+            return TICK_IDLE_INTERVAL;
         }
         let state = Arc::clone(&self.state);
         let notifier = Arc::clone(&self.notifier);
@@ -2331,6 +2362,7 @@ impl ApplicationController {
         if worker.is_err() {
             self.monitoring.set(false);
         }
+        next_interval
     }
 
     /// Starts an update check after consent, off the GTK thread and outside
@@ -2937,7 +2969,9 @@ impl ApplicationController {
             keyboard_light,
             keep_awake,
             keep_awake_expired,
+            monitor_interval,
         } = update;
+        self.monitor_interval.set(monitor_interval);
         if let Some((id, notification_id)) = capture_notification {
             self.notification_captures
                 .borrow_mut()
@@ -5292,13 +5326,7 @@ fn main() -> glib::ExitCode {
     dispatch_tick_results(&controller, tick_receiver);
     dispatch_update_results(&controller, update_receiver);
     dispatch_update_install_results(&controller, update_install_receiver);
-    let weak_monitor_controller = Rc::downgrade(&controller);
-    glib::timeout_add_local(TICK_INTERVAL, move || {
-        if let Some(controller) = weak_monitor_controller.upgrade() {
-            controller.request_tick();
-        }
-        glib::ControlFlow::Continue
-    });
+    schedule_tick(Rc::downgrade(&controller), TICK_INTERVAL);
     // The first enabled check starts shortly after launch, never in startup.
     if controller.update_check_enabled() {
         let weak_update_controller = Rc::downgrade(&controller);
@@ -6044,6 +6072,19 @@ fn dispatch_refresh_results(
         }
     });
 }
+
+/// Runs the next tick after `interval`; each tick chooses the following pace,
+/// so an idle app stops waking four times a second.
+fn schedule_tick(controller: Weak<ApplicationController>, interval: Duration) {
+    glib::timeout_add_local_once(interval, move || {
+        let Some(controller) = controller.upgrade() else {
+            return;
+        };
+        let next = controller.request_tick();
+        schedule_tick(Rc::downgrade(&controller), next);
+    });
+}
+
 fn dispatch_tick_results(controller: &Rc<ApplicationController>, receiver: Receiver<TickUpdate>) {
     let controller = Rc::downgrade(controller);
     glib::spawn_future_local(async move {
@@ -6413,7 +6454,11 @@ mod tests {
 
         let (disabled_results, disabled_receiver) = async_channel::unbounded();
         let disabled = controller_for(&ApplicationConfiguration::default(), disabled_results);
-        disabled.request_tick();
+        assert_eq!(
+            disabled.request_tick(),
+            super::TICK_IDLE_INTERVAL,
+            "a tick with nothing to poll runs at the slow pace"
+        );
         assert!(
             !disabled.monitoring.get(),
             "a disabled monitor must not start a sampling worker"
@@ -6430,7 +6475,9 @@ mod tests {
             .expect("feature ID is valid");
         let (enabled_results, enabled_receiver) = async_channel::unbounded();
         let enabled = controller_for(&configuration, enabled_results);
-        enabled.request_tick();
+        // The first tick runs at the startup pace; later ones follow the
+        // interval the previous sample reported.
+        assert_eq!(enabled.request_tick(), super::TICK_INTERVAL);
         assert!(
             enabled.monitoring.get(),
             "an enabled monitor samples on the next tick"
@@ -6438,6 +6485,16 @@ mod tests {
         assert!(
             enabled_receiver.recv_blocking().is_ok(),
             "an enabled monitor publishes its tick result"
+        );
+        // The next tick follows the interval the finished sample reported.
+        enabled.monitoring.set(false);
+        enabled
+            .monitor_interval
+            .set(std::time::Duration::from_millis(500));
+        assert_eq!(
+            enabled.request_tick(),
+            std::time::Duration::from_millis(500),
+            "the configured monitoring interval paces the next tick"
         );
     }
 
