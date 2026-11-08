@@ -69,6 +69,12 @@ const UPDATE_PROGRESS_REFRESH: Duration = Duration::from_millis(250);
 
 type RefreshResult = Result<(ApplicationViewModel, String), String>;
 
+/// Toast text after staging entries.
+fn added_message(added: usize) -> String {
+    let entries = if added == 1 { "entry" } else { "entries" };
+    format!("Added {added} shelf {entries}")
+}
+
 /// Whether the check may contact GitHub after the attempt record's write
 /// result. A scheduled check without a record would let every launch try
 /// again; a user check was asked for, so it continues.
@@ -938,6 +944,16 @@ enum ControllerOperation {
     ImportConfiguration(PathBuf),
     ExportConfiguration(PathBuf),
     Scratchpad(kestrel::ScratchpadCommand),
+    Shelf(ShelfOperation),
+}
+
+enum ShelfOperation {
+    Add(kestrel_services::shelf::ShelfInput),
+    AddClipboard,
+    Remove(u64),
+    Pin(u64, bool),
+    Clear { include_pinned: bool },
+    SetKeep(bool),
 }
 
 /// What a close request does; quitting ends the application, not only the window.
@@ -3040,6 +3056,27 @@ impl ApplicationController {
         }
     }
 
+    fn copy_shelf_item(&self, id: u64) {
+        let item = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .shelf_item(id);
+        let Some(item) = item else {
+            self.show_message("That shelf entry is no longer there");
+            return;
+        };
+        let copied = self
+            .window
+            .borrow()
+            .as_ref()
+            .is_some_and(|view| window::copy_shelf_content(&view.window, &item.content));
+        if !copied {
+            self.show_message("The shelf entry could not be copied; check the clipboard session");
+        }
+    }
+
     /// Runs a confirmed action on a worker without holding the controller
     /// lock, since a termination waits for its grace period.
     fn request_process_action(
@@ -4193,6 +4230,9 @@ impl ControllerState {
                     .map(|_| format!("Saved {}", destination.display())),
             }
             .unwrap_or_else(|error| error),
+            ControllerOperation::Shelf(operation) => {
+                self.run_shelf_operation(operation, config_path)?
+            }
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -4242,6 +4282,51 @@ impl ControllerState {
         }
         Ok((self.view_model(), message))
     }
+    fn run_shelf_operation(
+        &mut self,
+        operation: ShelfOperation,
+        config_path: Option<&Path>,
+    ) -> Result<String, String> {
+        match operation {
+            ShelfOperation::Add(input) => self.runtime.shelf_add(input).map(added_message),
+            ShelfOperation::AddClipboard => self.runtime.shelf_add_clipboard().map(added_message),
+            ShelfOperation::Remove(id) => self
+                .runtime
+                .shelf_remove(id)
+                .map(|()| "Shelf entry removed".to_owned()),
+            ShelfOperation::Pin(id, pinned) => {
+                self.runtime.shelf_set_pinned(id, pinned).map(|()| {
+                    if pinned {
+                        "Shelf entry pinned".to_owned()
+                    } else {
+                        "Shelf entry unpinned".to_owned()
+                    }
+                })
+            }
+            ShelfOperation::Clear { include_pinned } => {
+                self.runtime.shelf_clear(include_pinned).map(|removed| {
+                    let entries = if removed == 1 { "entry" } else { "entries" };
+                    format!("Removed {removed} shelf {entries}")
+                })
+            }
+            ShelfOperation::SetKeep(keep) => {
+                let mut candidate = self.configuration.clone();
+                candidate.shelf.keep_across_restarts = keep;
+                let message = self.commit_configuration(
+                    candidate,
+                    config_path,
+                    if keep {
+                        "Shelf entries are kept across restarts".to_owned()
+                    } else {
+                        "Shelf entries are cleared on quit".to_owned()
+                    },
+                )?;
+                self.runtime.shelf_set_keep(keep)?;
+                Ok(message)
+            }
+        }
+    }
+
     fn commit_close_action(
         &mut self,
         close_action: CloseAction,
@@ -5240,6 +5325,34 @@ fn dispatch_commands(
                     ControllerOperation::ExportConfiguration(path),
                     "kestrel-configuration-export",
                 ),
+                ApplicationCommand::AddToShelf(input) => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Add(input)),
+                    "kestrel-shelf-add",
+                ),
+                ApplicationCommand::AddClipboardToShelf => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::AddClipboard),
+                    "kestrel-shelf-clipboard",
+                ),
+                ApplicationCommand::RemoveShelfItem(id) => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Remove(id)),
+                    "kestrel-shelf-remove",
+                ),
+                ApplicationCommand::PinShelfItem(id, pinned) => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Pin(id, pinned)),
+                    "kestrel-shelf-pin",
+                ),
+                ApplicationCommand::ClearShelf { include_pinned } => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Clear { include_pinned }),
+                    "kestrel-shelf-clear",
+                ),
+                ApplicationCommand::SetShelfKeep(keep) => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::SetKeep(keep)),
+                    "kestrel-shelf-keep",
+                ),
+                ApplicationCommand::CopyShelfItem(id) => {
+                    controller.copy_shelf_item(id);
+                    continue;
+                }
                 ApplicationCommand::Scratchpad(command) => match command {
                     kestrel::ScratchpadCommand::Update { .. } => {
                         controller.update_scratchpad(command)

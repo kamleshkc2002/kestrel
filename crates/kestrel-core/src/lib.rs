@@ -19,6 +19,15 @@ pub use url_cleanup::{
     CleanedUrl, MAX_URL_BYTES, RemovedParam, SiteRule, UrlCleanupConfiguration, UrlCleanupError,
     UrlCleanupErrorKind, UrlRules, UrlSiteConfiguration, clean_url, single_http_link,
 };
+mod shelf;
+pub use shelf::{
+    DEFAULT_SHELF_IMAGE_MEGABYTES, DEFAULT_SHELF_MAX_ITEMS, DEFAULT_SHELF_TEXT_MEGABYTES,
+    MAX_SHELF_AGE_HOURS, MAX_SHELF_IMAGE_MEGABYTES, MAX_SHELF_MAX_ITEMS, MAX_SHELF_TEXT_MEGABYTES,
+    MIN_SHELF_IMAGE_MEGABYTES, MIN_SHELF_MAX_ITEMS, MIN_SHELF_TEXT_MEGABYTES, ShelfAddOutcome,
+    ShelfConfiguration, ShelfContent, ShelfError, ShelfItem, ShelfItemKind, ShelfLimits,
+    detect_shelf_content, format_size, shelf_content_fits, shelf_evict_index, shelf_expire,
+    shelf_find_duplicate, shelf_place,
+};
 
 /// Debug builds run as a separate application: their own bus name, settings,
 /// and data, so development never touches an installed release.
@@ -537,6 +546,8 @@ pub struct ApplicationConfiguration {
     pub logging: LoggingConfiguration,
     #[serde(default)]
     pub overlay: OverlayConfiguration,
+    #[serde(default)]
+    pub shelf: ShelfConfiguration,
 }
 
 impl Default for ApplicationConfiguration {
@@ -563,6 +574,7 @@ impl Default for ApplicationConfiguration {
             recording: RecordingConfiguration::default(),
             logging: LoggingConfiguration::default(),
             overlay: OverlayConfiguration::default(),
+            shelf: ShelfConfiguration::default(),
         }
     }
 }
@@ -625,6 +637,7 @@ impl ApplicationConfiguration {
         self.logging.validate()?;
         self.command_bar.validate()?;
         self.overlay.validate()?;
+        self.shelf.validate()?;
 
         let refresh_interval_millis = self.monitoring.refresh_interval_millis;
         if !(MIN_MONITOR_REFRESH_INTERVAL_MILLIS..=MAX_MONITOR_REFRESH_INTERVAL_MILLIS)
@@ -2326,6 +2339,10 @@ pub enum ConfigurationError {
     InvalidScratchpadMaxNotes { notes: u32 },
     InvalidScratchpadNoteBytes { bytes: u32 },
     InvalidScratchpadAgeDays { days: u32 },
+    InvalidShelfMaxItems { items: u32 },
+    InvalidShelfTextBytes { bytes: u32 },
+    InvalidShelfImageBytes { bytes: u32 },
+    InvalidShelfAgeHours { hours: u32 },
     InvalidLogRetentionDays { days: u32 },
     InvalidLogTotalMegabytes { megabytes: u32 },
     InvalidCommandResults { results: u32 },

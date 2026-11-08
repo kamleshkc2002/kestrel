@@ -37,6 +37,9 @@ pub enum CommandLineAction {
     OpenQuickPanel,
     QuickPaste,
     ScratchpadOpen,
+    ShelfOpen,
+    ShelfClear,
+    ShelfAddClipboard,
     ProcessesOpen,
     RefreshCapabilities,
     Quit,
@@ -63,13 +66,16 @@ pub enum CommandLineAction {
     StopKeepAwake,
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 38] = [
+const FIXED_ACTIONS: [CommandLineAction; 41] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::OpenQuickPanel,
     CommandLineAction::QuickPaste,
     CommandLineAction::ProcessesOpen,
     CommandLineAction::ScratchpadOpen,
+    CommandLineAction::ShelfOpen,
+    CommandLineAction::ShelfClear,
+    CommandLineAction::ShelfAddClipboard,
     CommandLineAction::RefreshCapabilities,
     CommandLineAction::Quit,
     CommandLineAction::NextOutput,
@@ -134,6 +140,9 @@ impl CommandLineAction {
             Self::QuickPaste => "clipboard.quick-paste",
             Self::ProcessesOpen => "processes.open",
             Self::ScratchpadOpen => "scratchpad.open",
+            Self::ShelfOpen => "shelf.open",
+            Self::ShelfClear => "shelf.clear",
+            Self::ShelfAddClipboard => "shelf.add-clipboard",
             Self::RefreshCapabilities => "capabilities.refresh",
             Self::Quit => "app.quit",
             Self::NextOutput => "audio.output-next",
@@ -173,6 +182,9 @@ impl CommandLineAction {
             Self::QuickPaste => "Search clipboard history to copy an entry".to_owned(),
             Self::ProcessesOpen => "Open the process inspector".to_owned(),
             Self::ScratchpadOpen => "Open the scratchpad editor".to_owned(),
+            Self::ShelfOpen => "Open the shelf".to_owned(),
+            Self::ShelfClear => "Remove every unpinned shelf entry".to_owned(),
+            Self::ShelfAddClipboard => "Add the clipboard to the shelf".to_owned(),
             Self::RefreshCapabilities => "Re-run capability probes".to_owned(),
             Self::Quit => "Quit Kestrel".to_owned(),
             Self::NextOutput => "Switch to the next audio output".to_owned(),
@@ -258,6 +270,7 @@ impl CommandLineAction {
                 Some(CLIPBOARD_HISTORY_ID)
             }
             Self::ScratchpadOpen => Some("notes.scratchpad"),
+            Self::ShelfOpen | Self::ShelfClear | Self::ShelfAddClipboard => Some("files.shelf"),
             Self::NextOutput | Self::PreviousOutput | Self::NextOutputPort => Some(AUDIO_MIXER_ID),
             Self::ToggleMicrophoneMute | Self::MuteMicrophone | Self::UnmuteMicrophone => {
                 Some(MICROPHONE_FEATURE_ID)
@@ -283,6 +296,11 @@ impl CommandLineAction {
             Self::OpenQuickPanel => ApplicationCommand::Focus(FocusTarget::QuickPanel),
             Self::ProcessesOpen => ApplicationCommand::Focus(FocusTarget::Processes),
             Self::ScratchpadOpen => ApplicationCommand::Focus(FocusTarget::Scratchpad),
+            Self::ShelfOpen => ApplicationCommand::Focus(FocusTarget::Shelf),
+            Self::ShelfClear => ApplicationCommand::ClearShelf {
+                include_pinned: false,
+            },
+            Self::ShelfAddClipboard => ApplicationCommand::AddClipboardToShelf,
             Self::QuickPaste => ApplicationCommand::Focus(FocusTarget::Clipboard),
             Self::RefreshCapabilities => ApplicationCommand::RefreshCapabilities,
             Self::Quit => ApplicationCommand::Quit,
@@ -613,6 +631,20 @@ mod tests {
         assert_eq!(
             CommandLineAction::parse("keep-awake.stop").map(CommandLineAction::to_command),
             Ok(ApplicationCommand::StopKeepAwake)
+        );
+        assert_eq!(
+            CommandLineAction::parse("shelf.open").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::Focus(FocusTarget::Shelf))
+        );
+        assert_eq!(
+            CommandLineAction::parse("shelf.clear").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::ClearShelf {
+                include_pinned: false
+            })
+        );
+        assert_eq!(
+            CommandLineAction::parse("shelf.add-clipboard").map(CommandLineAction::to_command),
+            Ok(ApplicationCommand::AddClipboardToShelf)
         );
         assert_eq!(
             CommandLineAction::parse("keep-awake.start-25h"),

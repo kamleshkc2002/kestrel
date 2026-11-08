@@ -125,6 +125,14 @@
 - Shift+Return continues a bulleted, numbered, or task list: the new item gets the same bullet, the next number (later numbers shift up), or an unticked `[ ]`. On an empty item it ends the list.
 - Preview renders the note's Markdown, with each `- [ ]` or `- [x]` task as a checkbox; clicking one changes only that task's marker in the note. Export writes the selected note to a file you choose. Notes past the age limit are listed and removed only after you confirm. Note text never enters the configuration file or its export.
 
+## Shelf — `files.shelf`
+
+- **Default:** disabled; Balanced and Everything enable it. Open it with `kestrel --command shelf.open`; `shelf.clear` removes unpinned entries and `shelf.add-clipboard` adds the clipboard's text, link, or files.
+- **What it holds:** files by path reference, text, single-line http(s), mailto, and file links, and images. Dropping several files adds one row per file, and a dropped web link becomes a link entry. Dragging a row out offers it to another application as a copy: a file entry offers the original file (the receiving app decides what to do with it), a link offers both text and a URI list, and an image offers its texture. The drop stays open until the source finishes delivering the data.
+- **Bounds:** `[shelf] max_items` (1–200; default 50), `max_text_megabytes` (1–4 MiB; default 1), `max_image_megabytes` (1–64 MiB; default 16), and `max_age_hours` (0–720; default 0, never). An entry beyond a size bound is refused with the limit, and a full shelf drops its oldest unpinned entry. Pinning keeps an entry through clears, expiry, and the count bound. Adding a file or text already on the shelf moves its row to the top instead of adding it twice.
+- **Kept across restarts:** off by default, so entries last only while the application runs. The switch on the Shelf page stores links, text, and file locations in `$XDG_DATA_HOME/kestrel/shelf.toml` (0600 file, 0700 folder, replaced atomically). Images are never saved. Turning the switch off deletes the file; an unreadable one is kept aside as `shelf.toml.corrupt-<time>` and the shelf starts empty. See [What's stored and sent](privacy.md#whats-stored-and-sent).
+- File entries say Missing when the original path no longer exists; the file is never copied or changed.
+
 ## Camera preview — `camera.preview`
 
 - **Default:** disabled; Balanced and Everything enable it. The camera stays off until you press Start.

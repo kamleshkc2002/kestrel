@@ -19,6 +19,7 @@ mod monitoring;
 mod overlay;
 mod paths;
 mod quick_panel;
+mod shelf;
 mod shortcuts;
 mod snippets;
 mod speed_test;

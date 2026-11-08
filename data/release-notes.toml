@@ -7,3 +7,7 @@
 [[change]]
 feature = "clipboard.history"
 text = "Clean links removes tracking parameters such as utm_source from a link, shows what it removes, and can clean a single copied link automatically when you turn it on."
+
+[[change]]
+feature = "files.shelf"
+text = "The new Shelf holds files, text, and links you drag in until you drag them out to another app; it is cleared on quit unless you choose to keep it."

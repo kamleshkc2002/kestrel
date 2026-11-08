@@ -53,10 +53,17 @@ starts on the Monitoring page where its progress shows, and the others open
 their page scrolled to the feature.
 
 The window lists its pages in a sidebar (Overview, Monitoring, Audio, Clipboard,
-Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and Settings)
-and shows one at a time. Each feature's settings sit on its own page, and the
-Settings page keeps app-wide choices. The sidebar search filters pages and
-settings together. On narrow windows the sidebar and the page take turns.
+Shelf, Capture, Notes, Processes, Command bar, Shortcuts, Feature hub, and
+Settings) and shows one at a time. Each feature's settings sit on its own page,
+and the Settings page keeps app-wide choices. The sidebar search filters pages
+and settings together. On narrow windows the sidebar and the page take turns.
+
+`shelf` holds the shelf's bounds and whether its entries survive a
+restart: `keep_across_restarts` (default `false`), `max_items` (1–200; default
+50), `max_text_megabytes` (1–4; default 1), `max_image_megabytes` (1–64; default
+16), and `max_age_hours` (0–720; default 0, never). The switch on the Shelf page
+writes `keep_across_restarts`; the bounds are edited here. See
+[Shelf](features.md#shelf--filesshelf).
 
 - **First launch:** when no configuration file exists yet, setup offers a preset
   and explains what each feature it turns on uses and keeps; anything you

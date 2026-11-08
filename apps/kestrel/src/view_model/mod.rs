@@ -34,6 +34,7 @@ use kestrel_services::{
     recording::{ExportPhase, RecordingClock, RecordingPhase, RecordingSnapshot},
     scratchpad::ScratchpadSnapshot,
     screen_tools::{QrPayload, ScreenToolResult, ScreenToolsPhase, ScreenToolsSnapshot},
+    shelf::{ShelfEntry, ShelfSnapshot},
     snippets::{SnippetLibrary, SnippetMatch, SnippetPolicy},
     speed_test::{SpeedTestSnapshot, SpeedTestStatus},
     system_monitor::{HistorySummary, SystemSnapshot},
@@ -55,6 +56,7 @@ mod recording;
 mod scratchpad;
 mod screen_tools;
 mod setup;
+mod shelf;
 mod shortcuts;
 mod snippets;
 mod speed_test;
@@ -120,6 +122,8 @@ pub use recording::{
     RecordingTrackOptionViewModel, RecordingTrackViewModel, RecordingViewModel, format_clock,
 };
 pub(crate) use scratchpad::ScratchpadPresentation;
+pub(crate) use shelf::ShelfPresentation;
+pub use shelf::{ShelfItemViewModel, ShelfViewModel};
 
 pub use scratchpad::{ScratchpadExpiredViewModel, ScratchpadTabViewModel, ScratchpadViewModel};
 pub use screen_tools::{
@@ -163,6 +167,7 @@ pub struct ApplicationViewModel {
     pub url_cleanup: UrlCleanupViewModel,
     pub snippets: SnippetsViewModel,
     pub scratchpad: ScratchpadViewModel,
+    pub shelf: ShelfViewModel,
     pub command_bar: CommandBarViewModel,
     pub quick_panel_favorites: Vec<String>,
     pub monitor: MonitorViewModel,
@@ -261,6 +266,7 @@ impl ApplicationViewModel {
                 snapshot: None,
                 limits: configuration.scratchpad,
             }),
+            shelf: ShelfViewModel::default(),
             command_bar: CommandBarViewModel::from_presentation(command_bar),
             quick_panel_favorites: configuration.quick_panel.favorites.clone(),
             monitor: MonitorViewModel::from_configuration(&configuration.monitoring, monitor),
@@ -379,6 +385,17 @@ impl ApplicationViewModel {
         if let Some(status) = disabled_status_for(features, "notes.scratchpad", "Scratchpad is off")
         {
             self.scratchpad.status = status;
+        }
+        self.shelf.turn_on = turn_on_for(
+            features,
+            crate::runtime::SHELF_ID,
+            "Shelf is off",
+            "Keep files, text, and links ready to drag into another app.",
+        );
+        if let Some(status) =
+            disabled_status_for(features, crate::runtime::SHELF_ID, "Shelf is off")
+        {
+            self.shelf.status = status;
         }
         self.overview_tools = OverviewToolsViewModel::from_features(features);
     }

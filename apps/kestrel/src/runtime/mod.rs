@@ -18,15 +18,17 @@ use crate::{
         ListenersViewModel, MicrophonePresentation, MicrophoneViewModel, MonitorPresentation,
         MonitorViewModel, ProcessesViewModel, QuickToggleViewModel, RecordingApplicationViewModel,
         RecordingPresentation, RecordingViewModel, ScratchpadPresentation, ScratchpadViewModel,
-        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShortcutsPresentation,
-        ShortcutsViewModel, SnippetQuery, SnippetsPresentation, SpeedTestPresentation,
-        SpeedTestViewModel, UpdatesViewModel, WhatsNewViewModel,
+        ScreenToolGate, ScreenToolsPresentation, ScreenToolsViewModel, ShelfPresentation,
+        ShelfViewModel, ShortcutsPresentation, ShortcutsViewModel, SnippetQuery,
+        SnippetsPresentation, SpeedTestPresentation, SpeedTestViewModel, UpdatesViewModel,
+        WhatsNewViewModel,
     },
     whats_new::{self, Change},
 };
 use kestrel_core::{
     AlertKind, ApplicationConfiguration, CapabilityEvidence, CapabilityReport, CapabilityStatus,
     CostLevel, FeatureConfigurationSnapshot, FeatureSpec, KeepAwakeDuration, ResourceCost,
+    ShelfItem,
 };
 use kestrel_platform::{
     CapabilityProbe, StaticCapabilityProbe,
@@ -110,6 +112,7 @@ use kestrel_services::{
         ScreenToolSource, ScreenToolsService, ScreenToolsSnapshot, Selection, TesseractRecognizer,
         TextRecognizer,
     },
+    shelf::ShelfService,
     snippets::{
         InsertionReport, RenderContext, SnippetInsertionService, SnippetLibrary, SnippetMatch,
         SnippetPolicy, SnippetServiceError,
@@ -183,6 +186,8 @@ pub const SNIPPETS_ID: &str = "snippets.text";
 pub const COMMAND_BAR_ID: &str = "commands.bar";
 /// Stable feature identifier for the private scratchpad.
 pub const SCRATCHPAD_ID: &str = "notes.scratchpad";
+/// Stable feature identifier for the staging shelf.
+pub const SHELF_ID: &str = "files.shelf";
 /// Stable feature identifier for the status overlay.
 pub const OVERLAY_ID: &str = "overlay.status";
 
@@ -270,6 +275,11 @@ pub struct ApplicationRuntime {
     scratchpad_path: Option<PathBuf>,
     scratchpad_warning: Option<String>,
     scratchpad_policy: kestrel_core::ScratchpadConfiguration,
+    shelf: ShelfService,
+    shelf_path: Option<PathBuf>,
+    /// Entries are written to the private file when this is on.
+    shelf_keep: bool,
+    shelf_policy: kestrel_core::ShelfConfiguration,
     quick_toggles: QuickToggleService,
     /// The length the next keep-awake session uses; memory only.
     keep_awake_choice: KeepAwakeDuration,
@@ -488,6 +498,17 @@ impl ApplicationRuntime {
                 "Private local scratchpad storage is available.",
             )),
         )?;
+        let shelf = FeatureSpec::new(SHELF_ID, "Shelf", CapabilityStatus::Supported)
+            .with_cost(cost(CostLevel::None, CostLevel::Low, CostLevel::None));
+        registry.register_probe(
+            shelf,
+            configuration.feature_enabled(SHELF_ID),
+            StaticCapabilityProbe::new(CapabilityReport::new(
+                SHELF_ID,
+                CapabilityStatus::Supported,
+                "Dragging entries in and out uses the window's own drag and drop.",
+            )),
+        )?;
         let overlay = FeatureSpec::new(
             OVERLAY_ID,
             "Status bar overlay",
@@ -566,6 +587,20 @@ impl ApplicationRuntime {
             .clone()
             .filter(|_| configuration.feature_enabled(SCRATCHPAD_ID))
             .and_then(|path| ScratchpadService::open(path, configuration.scratchpad).ok());
+        let shelf_path = crate::shelf_store::shelf_store_path();
+        let shelf_keep = configuration.shelf.keep_across_restarts;
+        let shelf_limits = configuration.shelf.limits();
+        let (shelf_items, shelf_warning) = match shelf_path.as_deref() {
+            Some(path) if shelf_keep => crate::shelf_store::load(path, &shelf_limits),
+            _ => (Vec::new(), None),
+        };
+        if let Some(warning) = &shelf_warning {
+            log::warn!(target: "files.shelf", "{warning}");
+        }
+        let mut shelf =
+            ShelfService::new(shelf_limits).expect("the validated shelf limits are valid");
+        shelf.restore(shelf_items);
+        shelf.set_warning(shelf_warning);
         let command_launcher = ExternalLauncher::discover().ok();
         let command_ranking_warnings = loaded_ranking.warnings;
         let capture_directory = capture_directory();
@@ -675,6 +710,10 @@ impl ApplicationRuntime {
             scratchpad: scratchpad_service,
             scratchpad_path: scratchpad_path.clone(),
             scratchpad_policy: configuration.scratchpad,
+            shelf,
+            shelf_path,
+            shelf_keep,
+            shelf_policy: configuration.shelf,
             quick_toggles: QuickToggleService::new(quick_toggle_backend),
             keep_awake_choice: KeepAwakeDuration::UntilStopped,
             update_service,
@@ -712,6 +751,9 @@ impl ApplicationRuntime {
             self.registry.refresh_capability(feature_id)?;
         }
         self.registry.start_enabled();
+        if self.shelf_expire() > 0 {
+            let _ = self.shelf_save();
+        }
         self.log_lifecycle(&before);
         // A refresh retries a window list that was unavailable.
         self.window_provider_unavailable = None;
@@ -806,6 +848,9 @@ impl ApplicationRuntime {
         if let Some(scratchpad) = self.scratchpad.as_mut() {
             scratchpad.set_policy(configuration.scratchpad);
         }
+        self.shelf_policy = configuration.shelf;
+        self.shelf.set_limits(configuration.shelf.limits());
+        self.shelf_keep = configuration.shelf.keep_across_restarts;
         let desired = self
             .registry
             .registrations()
@@ -991,6 +1036,7 @@ impl ApplicationRuntime {
             .monitor
             .with_local_addresses(self.local_addresses.as_ref());
         model.scratchpad = self.scratchpad_view_model();
+        model.shelf = self.shelf_view_model();
         model.processes = self.processes_view_model("");
         model.screen_tools = self.screen_tools_view_model();
         model.camera = self.camera_view_model();
@@ -1170,6 +1216,7 @@ mod processes;
 mod quick_toggles;
 mod recording;
 mod scratchpad;
+mod shelf;
 mod shortcuts;
 mod snippets;
 mod system;
