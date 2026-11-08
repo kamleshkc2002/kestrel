@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::widgets::{plain_row, turn_on_row};
+use super::widgets::{plain_row, stacked_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, glib};
@@ -224,9 +224,18 @@ fn add_controls(
     paused: bool,
     commands: &Sender<ApplicationCommand>,
 ) {
-    let row = plain_row().title("Recording").build();
+    // The clock and actions wrap below the title in a narrow window.
+    let controls = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .min_children_per_line(1)
+        .max_children_per_line(4)
+        .homogeneous(false)
+        .build();
     let time = gtk::Label::new(None);
     time.add_css_class("numeric");
+    time.set_halign(Align::Start);
     time.set_valign(Align::Center);
     if let Some(clock) = recording.clock {
         time.set_text(&kestrel::view_model::format_clock(clock.elapsed()));
@@ -241,8 +250,9 @@ fn add_controls(
             });
         }
     }
-    row.add_suffix(&time);
+    controls.append(&time);
     let toggle = button(if paused { "Resume" } else { "Pause" }, false);
+    toggle.set_halign(Align::Start);
     let sender = commands.clone();
     toggle.connect_clicked(move |_| {
         send(
@@ -254,13 +264,15 @@ fn add_controls(
             },
         );
     });
-    row.add_suffix(&toggle);
+    controls.append(&toggle);
     let stop = button("Stop", true);
+    stop.set_halign(Align::Start);
     stop.update_property(&[Property::Label("Stop and save the recording")]);
     let sender = commands.clone();
     stop.connect_clicked(move |_| send(&sender, RecordingRequest::Stop));
-    row.add_suffix(&stop);
+    controls.append(&stop);
     let discard = button("Discard", false);
+    discard.set_halign(Align::Start);
     discard.add_css_class("destructive-action");
     let sender = commands.clone();
     discard.connect_clicked(move |button| {
@@ -273,8 +285,12 @@ fn add_controls(
             RecordingRequest::Cancel,
         );
     });
-    row.add_suffix(&discard);
-    group.add(&row);
+    controls.append(&discard);
+    group.add(&stacked_row(
+        "Recording",
+        "Pause, stop, or discard the running recording.",
+        &controls,
+    ));
 
     for track in &recording.tracks {
         let row = plain_row()

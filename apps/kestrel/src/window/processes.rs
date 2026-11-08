@@ -8,7 +8,7 @@ use kestrel::{
     ProcessesViewModel,
 };
 
-use super::widgets::{SearchGuard, icon_button, plain_row};
+use super::widgets::{SearchGuard, icon_button, plain_row, stacked_row};
 
 /// Widgets kept across updates so the search keeps its text and focus.
 pub(super) struct ProcessesPanel {
@@ -61,23 +61,34 @@ impl ProcessesPanel {
             .set_description(Some(&escape(&listeners.status)));
         clear(&self.listener_rows);
         for row in &listeners.rows {
-            let item = plain_row().title(&row.title).subtitle(&row.owner).build();
-            item.add_suffix(&copy_button("Port", row.port.to_string(), commands));
-            item.add_suffix(&copy_button("Address", row.address.clone(), commands));
+            // Several copy and stop controls wrap below the row's text.
+            let controls = gtk::FlowBox::builder()
+                .selection_mode(gtk::SelectionMode::None)
+                .row_spacing(6)
+                .column_spacing(6)
+                .min_children_per_line(1)
+                .max_children_per_line(5)
+                .homogeneous(false)
+                .build();
+            controls.append(&copy_button("Port", row.port.to_string(), commands));
+            controls.append(&copy_button("Address", row.address.clone(), commands));
             if let Some(pid) = row.pid {
-                item.add_suffix(&copy_button("PID", pid.to_string(), commands));
+                controls.append(&copy_button("PID", pid.to_string(), commands));
             }
             if let Some(url) = row.open_url.as_ref().filter(|_| self.browser) {
                 let open = icon_button("web-browser-symbolic", &format!("Open {url}"), true);
+                open.set_halign(Align::Start);
                 let sender = commands.clone();
                 let url = url.clone();
                 open.connect_clicked(move |_| {
                     let _ = sender.try_send(ApplicationCommand::OpenUri(url.clone()));
                 });
-                item.add_suffix(&open);
+                controls.append(&open);
             }
+            let mut stop_reason = None;
             if listeners.can_stop {
                 let stop = gtk::Button::with_label("Stop owner");
+                stop.set_halign(Align::Start);
                 stop.set_valign(Align::Center);
                 stop.add_css_class("flat");
                 match (row.owner_identity, &row.stop_disabled_reason) {
@@ -94,10 +105,14 @@ impl ProcessesPanel {
                     }
                     (_, reason) => {
                         stop.set_sensitive(false);
-                        item.set_tooltip_text(reason.as_deref());
+                        stop_reason = reason.clone();
                     }
                 }
-                item.add_suffix(&stop);
+                controls.append(&stop);
+            }
+            let item = stacked_row(&row.title, &row.owner, &controls);
+            if let Some(reason) = stop_reason {
+                item.set_tooltip_text(Some(&reason));
             }
             self.listener_rows.append(&item);
         }

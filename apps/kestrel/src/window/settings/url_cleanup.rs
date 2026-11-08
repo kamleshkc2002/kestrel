@@ -85,7 +85,6 @@ fn build_preview_group(
         "Paste or type one link; the result updates as you type.",
         &link,
     );
-    link.set_halign(gtk::Align::Fill);
     group.add(&link_row);
     filter_rows.push((
         link_row.clone().upcast(),
@@ -102,7 +101,6 @@ fn build_preview_group(
         "The link after cleanup. Nothing is copied until you ask.",
         &result,
     );
-    result.set_halign(gtk::Align::Fill);
     group.add(&result_row);
     filter_rows.push((
         result_row.clone().upcast(),

@@ -1,6 +1,6 @@
 //! Screenshot controls and recent captures.
 
-use super::widgets::{choose_path, plain_row, turn_on_row};
+use super::widgets::{choose_path, plain_row, stacked_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -16,9 +16,18 @@ pub(super) fn build_capture_group(
         .description(gtk::glib::markup_escape_text(&capture.status).as_str())
         .build();
     if capture.running {
-        let row = plain_row().title("Capture").build();
+        // One button per mode; wrapping keeps the row inside a narrow window.
+        let modes = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .row_spacing(6)
+            .column_spacing(6)
+            .min_children_per_line(1)
+            .max_children_per_line(4)
+            .homogeneous(false)
+            .build();
         for mode in &capture.modes {
             let button = gtk::Button::with_label(mode.label);
+            button.set_halign(Align::Start);
             button.set_valign(Align::Center);
             button.set_sensitive(!capture.capturing);
             button.update_property(&[Property::Label(&format!("Capture: {}", mode.label))]);
@@ -29,19 +38,24 @@ pub(super) fn build_capture_group(
                     mode,
                 ))));
             });
-            row.add_suffix(&button);
+            modes.append(&button);
         }
         if capture.capturing {
             let cancel = gtk::Button::with_label("Cancel");
+            cancel.set_halign(Align::Start);
             cancel.set_valign(Align::Center);
             cancel.update_property(&[Property::Label("Cancel the screenshot")]);
             let sender = commands.clone();
             cancel.connect_clicked(move |_| {
                 let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::Cancel));
             });
-            row.add_suffix(&cancel);
+            modes.append(&cancel);
         }
-        group.add(&row);
+        group.add(&stacked_row(
+            "Capture",
+            "Choose how to capture the screen.",
+            &modes,
+        ));
     }
     if let Some(turn_on) = &capture.turn_on {
         group.add(&turn_on_row(turn_on, commands));
