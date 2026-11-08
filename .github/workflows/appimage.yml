@@ -47,7 +47,7 @@ jobs:
 
       - name: Restore the GTK stack
         id: gtk-stack
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /usr/local
           key: gtk-stack-${{ env.GTK_STACK_VERSIONS }}-${{ hashFiles('scripts/build-gtk-stack.sh') }}
