@@ -138,7 +138,12 @@ fn ask_for_legacy_minimize(loaded: &mut LoadedConfiguration) {
 
 #[cfg(test)]
 mod tests {
-    use kestrel_core::{AppearancePreference, CURRENT_CONFIGURATION_SCHEMA_VERSION, CloseAction};
+    use kestrel_core::{
+        AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
+        CURRENT_CONFIGURATION_SCHEMA_VERSION, CaptureAfterScreenshot, ClipboardLayout, CloseAction,
+        MonitorReadout, NetworkRateUnit, SnippetExpansionTiming, SnippetProviderPreference,
+        UpdateCheck,
+    };
 
     use crate::config::parse;
 
@@ -272,5 +277,214 @@ autostart = "yes"
             "[features.\"power.battery-alerts\"]\nenabled = true"
         ));
         assert!(parse_battery(""));
+    }
+
+    const RELEASED_V1: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/stability/config-v1.toml"
+    ));
+    const RELEASED_V2: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/stability/config-v2.toml"
+    ));
+    const RELEASED_V3: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/stability/config-v3.toml"
+    ));
+    const RELEASED_V4: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/stability/config-v4.toml"
+    ));
+
+    #[test]
+    fn released_configuration_fixtures_keep_their_settings() {
+        let load = |contents: &str| {
+            let loaded = parse(contents).expect("a released configuration loads");
+            assert!(
+                loaded.warnings.is_empty(),
+                "a released configuration loads without warnings: {:?}",
+                loaded.warnings
+            );
+            assert_eq!(
+                loaded.configuration.schema_version, CURRENT_CONFIGURATION_SCHEMA_VERSION,
+                "an old file is migrated to the current schema"
+            );
+            loaded.configuration
+        };
+
+        let v1 = load(RELEASED_V1);
+        assert!(v1.feature_enabled("audio.mixer"));
+        assert!(v1.feature_enabled("system.monitor"));
+        assert!(!v1.feature_enabled("clipboard.history"));
+        assert!(
+            v1.features.contains_key("clipboard.history"),
+            "a disabled entry survives as a choice"
+        );
+
+        let v2 = load(RELEASED_V2);
+        assert!(v2.feature_enabled("audio.mixer"));
+        assert!(!v2.feature_enabled("clipboard.history"));
+        assert_eq!(v2.ui.appearance, AppearancePreference::Dark);
+        assert!(v2.startup.autostart);
+
+        let v3 = load(RELEASED_V3);
+        assert!(v3.feature_enabled("audio.mixer"));
+        assert!(v3.feature_enabled("system.monitor"));
+        assert!(!v3.feature_enabled("clipboard.history"));
+        assert_eq!(v3.ui.appearance, AppearancePreference::Dark);
+        assert_eq!(
+            v3.ui.close_action,
+            CloseAction::Ask,
+            "a schema 3 minimize asks once, as the migration documents"
+        );
+        assert!(v3.startup.autostart);
+        assert!(!v3.startup.whats_new);
+        assert_eq!(v3.monitoring.refresh_interval_millis, 2_000);
+        assert_eq!(v3.monitoring.history_samples, 300);
+        assert_eq!(
+            v3.monitoring.readouts,
+            [
+                MonitorReadout::Cpu,
+                MonitorReadout::Memory,
+                MonitorReadout::Network,
+                MonitorReadout::Battery,
+            ]
+        );
+        assert_eq!(v3.monitoring.network_rate_unit, NetworkRateUnit::Bits);
+        assert!(v3.monitoring.per_core_cpu);
+        assert_eq!(
+            v3.monitoring.tray_readouts,
+            [MonitorReadout::Cpu, MonitorReadout::Battery]
+        );
+        assert!(!v3.monitoring.alerts.cpu.enabled);
+        assert_eq!(v3.monitoring.alerts.cpu.threshold, 75.5);
+        assert_eq!(v3.monitoring.alerts.cpu.sustain_samples, 10);
+        assert_eq!(v3.monitoring.alerts.cpu.cooldown_seconds, 1_200);
+        assert_eq!(v3.audio.boost_percent, 140);
+        assert_eq!(v3.audio.output_switch, AudioOutputSwitch::AllStreams);
+        assert_eq!(
+            v3.audio.disconnect_policy,
+            AudioDisconnectPolicy::ResetVolume
+        );
+        assert_eq!(v3.audio.disconnect_volume_percent, 80);
+        assert!(v3.audio.include_inactive_streams);
+        assert_eq!(v3.audio.output_priority, ["speakers"]);
+        assert!(v3.audio.follow_output_priority);
+        assert_eq!(v3.audio.input_priority, ["microphone"]);
+        assert!(v3.audio.follow_input_priority);
+        assert_eq!(v3.audio.mixer_favorites, ["firefox"]);
+        assert_eq!(v3.speed_test.download_megabytes, 50);
+        assert_eq!(v3.speed_test.upload_megabytes, 20);
+        assert_eq!(v3.speed_test.timeout_seconds, 60);
+        assert_eq!(v3.capture.max_entries, 40);
+        assert_eq!(v3.capture.max_total_megabytes, 512);
+        assert_eq!(v3.capture.max_age_hours, 72);
+        assert_eq!(v3.capture.after_screenshot, CaptureAfterScreenshot::Edit);
+        assert_eq!(v3.processes.refresh_millis, 3_000);
+        assert_eq!(v3.processes.max_rows, 200);
+        assert_eq!(v3.screen_tools.ocr_language, "deu");
+        assert_eq!(v3.screen_tools.ocr_timeout_seconds, 45);
+        assert_eq!(v3.shortcuts.bindings.len(), 2);
+        assert_eq!(v3.shortcuts.bindings[0].command, "window.show");
+        assert_eq!(v3.shortcuts.bindings[0].trigger, "LOGO+ALT+k");
+        assert_eq!(v3.shortcuts.bindings[1].command, "clipboard.quick-paste");
+        assert_eq!(v3.clipboard.max_items, 200);
+        assert_eq!(v3.clipboard.max_item_bytes, 2_097_152);
+        assert_eq!(v3.clipboard.max_image_bytes, 8_388_608);
+        assert_eq!(v3.clipboard.max_file_entries, 128);
+        assert_eq!(v3.clipboard.max_total_bytes, 33_554_432);
+        assert_eq!(v3.clipboard.max_age_hours, 48);
+        assert_eq!(v3.clipboard.clear_seconds, 30);
+        assert!(v3.clipboard.filter_sensitive);
+        assert!(!v3.clipboard.paste_plain_text);
+        assert_eq!(v3.clipboard.history_layout, ClipboardLayout::Cards);
+        assert_eq!(v3.snippets.max_content_bytes, 131_072);
+        assert_eq!(v3.snippets.clipboard_variable_bytes, 8_192);
+        assert_eq!(v3.snippets.insert_timeout_millis, 5_000);
+        assert_eq!(
+            v3.snippets.preferred_provider,
+            SnippetProviderPreference::Wtype
+        );
+        assert_eq!(
+            v3.snippets.expansion_timing,
+            SnippetExpansionTiming::Delimiter
+        );
+        assert_eq!(
+            v3.quick_panel.favorites,
+            ["window.show", "clipboard.quick-paste"]
+        );
+        assert_eq!(v3.command_bar.max_results, 20);
+        assert!(v3.command_bar.enable_applications);
+        assert!(v3.command_bar.enable_windows);
+        assert!(!v3.command_bar.enable_clipboard);
+        assert!(v3.command_bar.enable_files);
+        assert!(v3.command_bar.enable_scripts);
+        assert!(v3.command_bar.enable_emoji);
+        assert_eq!(v3.command_bar.file_roots, ["/home/user/Documents"]);
+        assert_eq!(v3.command_bar.scripts.len(), 1);
+        assert_eq!(v3.command_bar.scripts[0].name, "Sample");
+        assert_eq!(v3.command_bar.scripts[0].executable, "sample");
+        assert_eq!(v3.command_bar.scripts[0].args, ["--flag"]);
+        assert_eq!(v3.command_bar.scripts[0].timeout_millis, 4_000);
+        assert_eq!(v3.command_bar.scripts[0].output_bytes, 8_192);
+        assert_eq!(v3.scratchpad.max_notes, 30);
+        assert_eq!(v3.scratchpad.max_note_bytes, 524_288);
+        assert_eq!(v3.scratchpad.max_age_days, 30);
+        assert_eq!(v3.recording.framerate, 60);
+        assert!(!v3.recording.cursor);
+        assert!(v3.recording.system_audio);
+        assert_eq!(v3.recording.system_audio_app.as_deref(), Some("firefox"));
+        assert!(v3.recording.microphone);
+        assert!(v3.logging.debug);
+        assert_eq!(v3.logging.retention_days, 14);
+        assert_eq!(v3.logging.max_total_megabytes, 50);
+        assert!(!v3.overlay.microphone);
+        assert!(v3.overlay.recording);
+        assert!(!v3.overlay.alerts);
+        assert!(v3.overlay.volume);
+        assert!(!v3.overlay.microphone_level);
+        assert!(v3.overlay.keyboard_light);
+        assert!(!v3.overlay.accessories);
+        assert!(v3.overlay.keep_awake);
+        assert_eq!(v3.overlay.accessory_warning, 25);
+        assert_eq!(v3.overlay.accessory_critical, 10);
+
+        let v4 = load(RELEASED_V4);
+        assert!(v4.feature_enabled("audio.mixer"));
+        assert!(v4.feature_enabled("files.shelf"));
+        assert!(!v4.feature_enabled("clipboard.history"));
+        assert_eq!(v4.ui.appearance, AppearancePreference::Light);
+        assert_eq!(
+            v4.ui.close_action,
+            CloseAction::Quit,
+            "a schema 4 choice is kept"
+        );
+        assert!(v4.startup.autostart);
+        assert!(!v4.startup.whats_new);
+        assert_eq!(v4.updates.check, UpdateCheck::Enabled);
+        assert_eq!(v4.monitoring.refresh_interval_millis, 2_000);
+        assert_eq!(v4.audio.boost_percent, 140);
+        assert_eq!(v4.capture.after_screenshot, CaptureAfterScreenshot::Edit);
+        assert_eq!(v4.clipboard.history_layout, ClipboardLayout::Cards);
+        assert!(v4.url_cleanup.automatic);
+        assert_eq!(v4.url_cleanup.extra_global, ["ref"]);
+        assert_eq!(v4.url_cleanup.sites.len(), 1);
+        assert_eq!(v4.url_cleanup.sites[0].host, "example.com");
+        assert!(!v4.url_cleanup.sites[0].enabled);
+        assert_eq!(v4.url_cleanup.sites[0].params, ["utm_source"]);
+        assert_eq!(
+            v4.quick_panel.favorites,
+            ["window.show", "clipboard.quick-paste"]
+        );
+        assert_eq!(v4.command_bar.scripts[0].args, ["--flag"]);
+        assert_eq!(v4.recording.system_audio_app.as_deref(), Some("firefox"));
+        assert_eq!(v4.logging.retention_days, 14);
+        assert_eq!(v4.overlay.accessory_warning, 25);
+        assert!(v4.shelf.keep_across_restarts);
+        assert!(v4.shelf.add_screenshots);
+        assert_eq!(v4.shelf.max_items, 100);
+        assert_eq!(v4.shelf.max_text_megabytes, 2);
+        assert_eq!(v4.shelf.max_image_megabytes, 32);
+        assert_eq!(v4.shelf.max_age_hours, 48);
     }
 }

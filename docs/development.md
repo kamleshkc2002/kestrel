@@ -52,6 +52,10 @@ release was made with the project's key.
 
 To propose a change, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
+Changing a feature ID, a `config.toml` key, or a `kestrel --command` ID means a
+configuration migration plus a stability-list update; see the
+[compatibility promise](stability.md).
+
 ### Prerequisites
 
 The workspace is pinned to Rust 1.98.0 by `rust-toolchain.toml`; rustup selects
