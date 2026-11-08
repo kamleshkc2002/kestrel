@@ -369,11 +369,12 @@ visible rather than silently diverging.
 The worker learns about selection changes from the adapter instead of re-reading
 on a fixed cadence. Wayland binds a data-control watcher and blocks on the
 compositor's selection event; X11 selects XFixes owner, window-destroy, and
-client-close events for `CLIPBOARD`. Logind lock and sleep arrive as
-`PropertiesChanged` signals. A slow safety tick (five seconds) still handles
-retention expiry, saved-pin debounce, the privacy backstop, and a deadline the
-automatic selection clear needs; paste staging keeps the faster cadence only
-while a paste waits. A backend that cannot bind a watch keeps the 250 ms read
+client-close events for `CLIPBOARD`. Logind lock arrives as session
+`PropertiesChanged` for `LockedHint` and sleep as the manager's
+`PrepareForSleep` signal, which is the only shape logind emits for sleep. Each
+wait lasts until the nearest deadline: the automatic selection clear, the oldest
+entry's retention expiry, a pin load retry, or the next paste-staging step, with
+a 60-second safety cap for slower maintenance. A backend that cannot bind a watch keeps the 250 ms read
 loop, and the snapshot carries `ClipboardWatchMode::{Events, Polling}` so the
 Clipboard page can say which one is active. The stop request travels through the
 worker's channel, so a blocked wait wakes immediately and the thread joins.

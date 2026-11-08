@@ -5307,12 +5307,16 @@ mod tests {
         store.set_locked(true);
         let key_store: Arc<dyn PinKeyStore> = store.clone();
         let failed = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(FakeState {
+            current: Some(FakeSelection::Text("monitor secret".to_string())),
+            ..FakeState::default()
+        }));
         let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
         service.set_pin_key_store(key_store);
         service
             .start(
                 FakeBackend {
-                    state: Arc::new(Mutex::new(FakeState::default())),
+                    state: Arc::clone(&state),
                     watch: None,
                 },
                 FailingPrivacy {
@@ -5321,9 +5325,19 @@ mod tests {
             )
             .expect("worker starts");
         wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+        wait_until(|| service.latest().items.len() == 1);
 
+        // A logind owner loss takes this same error path.
         failed.store(true, Ordering::Relaxed);
         wait_until(|| service.latest().lifecycle == ClipboardLifecycle::Unavailable);
+        assert!(
+            service.latest().items.is_empty(),
+            "a failed privacy monitor must wipe retained content"
+        );
+        assert!(
+            state.lock().expect("fake state").current.is_none(),
+            "a failed privacy monitor must release the owned selection"
+        );
         store.set_locked(false);
         let reads = store.reads.load(Ordering::Relaxed);
         thread::sleep(PIN_RETRY_INTERVAL * 4);

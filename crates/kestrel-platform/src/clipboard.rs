@@ -15,6 +15,7 @@ use std::{
 };
 
 use arboard::Clipboard;
+use futures_lite::{StreamExt, future};
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 use wl_clipboard_rs::{
     copy::{
@@ -37,10 +38,7 @@ use x11rb::{
 };
 use zbus::{
     MatchRule,
-    blocking::{
-        Connection as BusConnection, MessageIterator, Proxy,
-        connection::Builder as BusConnectionBuilder,
-    },
+    blocking::{Connection as BusConnection, Proxy, connection::Builder as BusConnectionBuilder},
     message::Type as MessageType,
     zvariant::{OwnedObjectPath, OwnedValue},
 };
@@ -1098,46 +1096,86 @@ impl LogindPrivacyWatch {
     }
 
     fn matches(&self, message: &zbus::Message) -> bool {
-        let Ok((interface, changed, invalidated)) =
-            message
-                .body()
-                .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
-        else {
-            return false;
-        };
         let header = message.header();
-        let path = header.path().map(|path| path.as_str());
-        if interface == SESSION_INTERFACE {
-            return path == Some(self.session_path.as_str())
-                && mentions_property(&changed, &invalidated, "LockedHint");
+        let interface = header.interface().map(|interface| interface.as_str());
+        let member = header.member().map(|member| member.as_str());
+        match (interface, member) {
+            // Sleep is a signal only: the manager property refuses changes.
+            (Some(MANAGER_INTERFACE), Some("PrepareForSleep")) => true,
+            (Some("org.freedesktop.DBus.Properties"), Some("PropertiesChanged")) => {
+                let Ok((changed_interface, changed, invalidated)) =
+                    message
+                        .body()
+                        .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+                else {
+                    return false;
+                };
+                let path = header.path().map(|path| path.as_str());
+                changed_interface == SESSION_INTERFACE
+                    && path == Some(self.session_path.as_str())
+                    && mentions_property(&changed, &invalidated, "LockedHint")
+            }
+            _ => false,
         }
-        interface == MANAGER_INTERFACE
-            && mentions_property(&changed, &invalidated, "PreparingForSleep")
     }
+}
+
+enum PrivacyStreamEvent {
+    Logind(Option<Result<zbus::Message, zbus::Error>>),
+    Owner(Option<Result<zbus::Message, zbus::Error>>),
 }
 
 impl PrivacyChangeWatch for LogindPrivacyWatch {
     fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool {
-        let Ok(rule) = privacy_match_rule() else {
+        let Ok(login_rule) = privacy_match_rule() else {
             return false;
         };
-        let Ok(messages) = MessageIterator::for_match_rule(rule, &self.connection, Some(32)) else {
+        let Ok(owner_rule) = logind_owner_match_rule() else {
             return false;
         };
-        // Read the current state once the match rule exists so a change during
-        // startup is not missed between the worker's first poll and this rule.
+        let setup = async_io::block_on(async {
+            let login =
+                zbus::MessageStream::for_match_rule(login_rule, self.connection.inner(), Some(32))
+                    .await?;
+            let owner =
+                zbus::MessageStream::for_match_rule(owner_rule, self.connection.inner(), Some(8))
+                    .await?;
+            Ok::<_, zbus::Error>((login, owner))
+        });
+        let Ok((mut login, mut owner)) = setup else {
+            return false;
+        };
+        // Read the current state once the rules exist so a change during
+        // startup is not missed between the worker's first poll and the rules.
         if !changed() {
             return true;
         }
-        for message in messages {
-            let Ok(message) = message else {
-                return false;
-            };
-            if self.matches(&message) && !changed() {
-                return true;
+        loop {
+            let event = async_io::block_on(future::race(
+                async { PrivacyStreamEvent::Logind(login.next().await) },
+                async { PrivacyStreamEvent::Owner(owner.next().await) },
+            ));
+            match event {
+                PrivacyStreamEvent::Logind(Some(Ok(message))) => {
+                    if self.matches(&message) && !changed() {
+                        return true;
+                    }
+                }
+                PrivacyStreamEvent::Owner(Some(Ok(message))) => {
+                    let Some(lost) = logind_owner_lost(&message) else {
+                        continue;
+                    };
+                    if lost {
+                        return false;
+                    }
+                    // A new owner replaced the old one; read it once more.
+                    if !changed() {
+                        return true;
+                    }
+                }
+                PrivacyStreamEvent::Logind(_) | PrivacyStreamEvent::Owner(_) => return false,
             }
         }
-        false
     }
 
     fn cancel_handle(&self) -> ChangeWatchCancel {
@@ -1150,13 +1188,31 @@ impl PrivacyChangeWatch for LogindPrivacyWatch {
 }
 
 fn privacy_match_rule() -> Result<MatchRule<'static>, zbus::Error> {
+    // One rule for both the sleep signal and the session property changes; the
+    // watch filters the members it needs.
     Ok(MatchRule::builder()
         .msg_type(MessageType::Signal)
         .sender(LOGIN_DESTINATION)?
-        .interface("org.freedesktop.DBus.Properties")?
-        .member("PropertiesChanged")?
         .path_namespace(LOGIN_PATH)?
         .build())
+}
+
+fn logind_owner_match_rule() -> Result<MatchRule<'static>, zbus::Error> {
+    Ok(MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?
+        .add_arg(LOGIN_DESTINATION)?
+        .build())
+}
+
+/// Whether a `NameOwnerChanged` release left logind without an owner.
+fn logind_owner_lost(message: &zbus::Message) -> Option<bool> {
+    let Ok((name, _old, new)) = message.body().deserialize::<(String, String, String)>() else {
+        return None;
+    };
+    (name == LOGIN_DESTINATION).then_some(new.is_empty())
 }
 
 fn mentions_property(

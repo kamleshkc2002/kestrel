@@ -120,12 +120,6 @@ def apply_word(word):
             "PrepareForSleep",
             GLib.Variant("(b)", (preparing_for_sleep,)),
         )
-        emit_property_changed(
-            MANAGER_PATH,
-            MANAGER_IFACE,
-            "PreparingForSleep",
-            GLib.Variant("b", preparing_for_sleep),
-        )
     if locked_changed:
         emit_property_changed(
             SESSION_PATH,
