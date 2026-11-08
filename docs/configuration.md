@@ -8,6 +8,10 @@ application-owned preferences; it excludes clipboard content, runtime
 snapshots, credentials, and resolved executable paths. See
 [What's stored and sent](privacy.md#whats-stored-and-sent).
 
+Feature IDs, `config.toml` keys, and `kestrel --command` IDs are covered by the
+[compatibility promise](stability.md): a rename or removal goes through a
+schema migration and keeps files written by earlier releases readable.
+
 `[ui] close_action` is `ask` (the default), `minimize`, or `quit`. With `ask`,
 the first close asks whether to keep running in the background and saves that
 answer as `minimize` or `quit`. Files written by older builds contain

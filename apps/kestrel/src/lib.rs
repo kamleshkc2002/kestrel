@@ -12,6 +12,8 @@ mod runtime;
 pub mod setup;
 mod shelf_store;
 mod snippets;
+#[cfg(test)]
+mod stability;
 mod status_notifier;
 pub mod text_lines;
 mod tray_icon;

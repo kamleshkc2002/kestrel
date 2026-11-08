@@ -1,0 +1,192 @@
+# A settings file written by a schema 4 build.
+schema_version = 4
+
+[features."audio.mixer"]
+enabled = true
+
+[features."clipboard.history"]
+enabled = false
+
+[features."files.shelf"]
+enabled = true
+
+[ui]
+appearance = "light"
+close_action = "quit"
+
+[startup]
+autostart = true
+whats_new = false
+
+[updates]
+check = "enabled"
+
+[monitoring]
+refresh_interval_millis = 2000
+history_samples = 300
+readouts = [
+    "cpu",
+    "memory",
+    "network",
+    "battery",
+]
+network_rate_unit = "bits"
+per_core_cpu = true
+tray_readouts = [
+    "cpu",
+    "battery",
+]
+
+[monitoring.alerts.cpu]
+enabled = false
+threshold = 75.5
+sustain_samples = 10
+cooldown_seconds = 1200
+
+[monitoring.alerts.temperature]
+enabled = true
+threshold = 95.0
+sustain_samples = 30
+cooldown_seconds = 1800
+
+[monitoring.alerts.memory]
+enabled = true
+threshold = 85.0
+sustain_samples = 5
+cooldown_seconds = 900
+
+[monitoring.alerts.disk]
+enabled = true
+threshold = 92.0
+sustain_samples = 3
+cooldown_seconds = 3600
+
+[monitoring.alerts.battery]
+enabled = false
+threshold = 10.0
+sustain_samples = 1
+cooldown_seconds = 900
+
+[audio]
+boost_percent = 140
+output_switch = "all_streams"
+disconnect_policy = "reset_volume"
+disconnect_volume_percent = 80
+include_inactive_streams = true
+output_priority = ["speakers"]
+follow_output_priority = true
+input_priority = ["microphone"]
+follow_input_priority = true
+mixer_favorites = ["firefox"]
+
+[speed_test]
+download_megabytes = 50
+upload_megabytes = 20
+timeout_seconds = 60
+
+[capture]
+max_entries = 40
+max_total_megabytes = 512
+max_age_hours = 72
+after_screenshot = "edit"
+
+[processes]
+refresh_millis = 3000
+max_rows = 200
+
+[screen_tools]
+ocr_language = "deu"
+ocr_timeout_seconds = 45
+
+[[shortcuts.bindings]]
+command = "window.show"
+trigger = "LOGO+ALT+k"
+
+[[shortcuts.bindings]]
+command = "clipboard.quick-paste"
+trigger = "LOGO+ALT+v"
+
+[clipboard]
+max_items = 200
+max_item_bytes = 2097152
+max_image_bytes = 8388608
+max_file_entries = 128
+max_total_bytes = 33554432
+max_age_hours = 48
+clear_seconds = 30
+filter_sensitive = true
+paste_plain_text = false
+history_layout = "cards"
+
+[url_cleanup]
+automatic = true
+extra_global = ["ref"]
+
+[[url_cleanup.sites]]
+host = "example.com"
+enabled = false
+params = ["utm_source"]
+
+[snippets]
+max_content_bytes = 131072
+clipboard_variable_bytes = 8192
+insert_timeout_millis = 5000
+preferred_provider = "wtype"
+expansion_timing = "delimiter"
+
+[quick_panel]
+favorites = ["window.show", "clipboard.quick-paste"]
+
+[command_bar]
+max_results = 20
+enable_applications = true
+enable_windows = true
+enable_clipboard = false
+enable_files = true
+enable_scripts = true
+enable_emoji = true
+file_roots = ["/home/user/Documents"]
+
+[[command_bar.scripts]]
+name = "Sample"
+executable = "sample"
+args = ["--flag"]
+timeout_millis = 4000
+output_bytes = 8192
+
+[scratchpad]
+max_notes = 30
+max_note_bytes = 524288
+max_age_days = 30
+
+[recording]
+framerate = 60
+cursor = false
+system_audio = true
+system_audio_app = "firefox"
+microphone = true
+
+[logging]
+debug = true
+retention_days = 14
+max_total_megabytes = 50
+
+[overlay]
+microphone = false
+recording = true
+alerts = false
+volume = true
+microphone_level = false
+keyboard_light = true
+accessories = false
+keep_awake = true
+accessory_warning = 25
+accessory_critical = 10
+
+[shelf]
+keep_across_restarts = true
+add_screenshots = true
+max_items = 100
+max_text_megabytes = 2
+max_image_megabytes = 32
+max_age_hours = 48

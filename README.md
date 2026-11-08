@@ -84,7 +84,8 @@ status line and logs.
 ## Documentation
 
 [Features](docs/features.md) · [Privacy](docs/privacy.md) ·
-[Configuration](docs/configuration.md) · [Development](docs/development.md) ·
+[Configuration](docs/configuration.md) · [Stability](docs/stability.md) ·
+[Development](docs/development.md) ·
 [Requirements](docs/REQUIREMENTS.md) · [Architecture](docs/ARCHITECTURE.md)
 
 ## License

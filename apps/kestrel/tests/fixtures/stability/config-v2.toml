@@ -1,0 +1,22 @@
+# A settings file written by the schema 2 build, which no preview shipped.
+schema_version = 2
+
+[features."audio.mixer"]
+enabled = true
+
+[features."clipboard.history"]
+enabled = false
+
+[ui]
+appearance = "dark"
+
+[[ui.panel_sections]]
+section = "quick_controls"
+visible = true
+
+[[ui.panel_sections]]
+section = "feature_hub"
+visible = false
+
+[startup]
+autostart = true
