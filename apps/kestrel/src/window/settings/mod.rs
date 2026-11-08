@@ -111,6 +111,7 @@ pub(super) fn build_settings_group(
             let (overlay, row) = add_overlay_group(view_model, commands, &mut filter_rows);
             extra_groups.push(overlay);
             accessory_row = row;
+            extra_groups.push(add_uninstall_group(window, commands, &mut filter_rows));
         }
     }
 
@@ -596,6 +597,34 @@ fn add_quick_panel_group(
         panel_group.add(&row);
     }
     group.add(&panel_group);
+}
+
+fn add_uninstall_group(
+    window: &adw::ApplicationWindow,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Remove Kestrel")
+        .description("Review the files and folders Kestrel keeps, choose what to delete, and quit.")
+        .build();
+    let row = plain_row()
+        .title("Remove Kestrel's data…")
+        .subtitle("Settings, stored data, logs, autostart entry, and the binary.")
+        .build();
+    let review = gtk::Button::with_label("Review…");
+    review.set_valign(Align::Center);
+    let window = window.clone();
+    let commands = commands.clone();
+    review.connect_clicked(move |_| super::open_uninstall(&window, &commands));
+    row.add_suffix(&review);
+    row.set_activatable_widget(Some(&review));
+    filter_rows.push((
+        row.clone().upcast(),
+        "remove uninstall delete data settings cache logs autostart binary quit".to_owned(),
+    ));
+    group.add(&row);
+    group
 }
 
 fn add_general_rows(

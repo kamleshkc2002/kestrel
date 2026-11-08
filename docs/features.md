@@ -286,3 +286,10 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 - Scripts use compact mode. Success stays quiet, and when the action cannot run the launcher shows a one-line reason: the feature is off, unavailable on this desktop, or on but not running. The window shows the full reason.
 - When the app is not running, the script starts it, which opens the window and runs or explains the action there. The script returns after three seconds and leaves the app running.
 - Only files this script wrote are replaced or removed. Run it again after updating so new actions appear; `command-bar.open` is left out.
+
+## Removing Kestrel
+
+- Settings → Remove Kestrel's data… opens a review of every file and folder Kestrel keeps, with sizes: the configuration, data, state and cache folders, recordings, the autostart entry, the desktop entry and icon, launcher scripts, and the binary.
+- Everything Kestrel owns starts selected. The binary starts unchecked; selecting it deletes the AppImage (and the previous version beside it), or a `~/.local/bin/kestrel` installed by `scripts/install-local.sh`. A package-managed copy is left in place, and the dialog says to remove the `kestrel` package with your package manager.
+- Remove stops running features and releases clipboard ownership, shortcut registration, recordings, and other session resources first, then deletes only the chosen paths. Each result is listed, with the path to remove by hand when one fails, and Kestrel quits when the report closes. Cancel changes nothing, nothing asks for root, and symlinks are unlinked rather than followed.
+- `kestrel --uninstall-preview` prints the same list without deleting anything, so it works when no window can open. It is not a `--command` ID.

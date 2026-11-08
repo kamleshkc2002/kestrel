@@ -3480,6 +3480,64 @@ impl ApplicationController {
         });
     }
 
+    /// Stops services and session resources, deletes the chosen paths on a
+    /// worker, then reports each result before quitting.
+    fn begin_uninstall(
+        self: &Rc<Self>,
+        items: Vec<kestrel_platform::uninstall::UninstallItem>,
+        application: &adw::Application,
+    ) {
+        if items.is_empty() {
+            application.quit();
+            return;
+        }
+        self.stop_update_check();
+        self.stop_update_download();
+        self.stop_update_install();
+        if let Some(stopping) = self.stop_tray() {
+            let _ = stopping.join();
+        }
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.runtime.shutdown();
+        }
+        let (results, receiver) = async_channel::bounded(1);
+        let spawned = thread::Builder::new()
+            .name("kestrel-uninstall".to_owned())
+            .spawn(move || {
+                let outcomes = items
+                    .into_iter()
+                    .map(|item| {
+                        let error = kestrel_platform::uninstall::remove(&item)
+                            .err()
+                            .map(|error| error.to_string());
+                        (item, error)
+                    })
+                    .collect::<Vec<_>>();
+                let _ = results.send_blocking(outcomes);
+            });
+        if spawned.is_err() {
+            log::warn!("kestrel-uninstall could not start");
+            self.show_message("The files could not be removed");
+            return;
+        }
+        let controller = Rc::clone(self);
+        let application = application.clone();
+        glib::spawn_future_local(async move {
+            let Ok(outcomes) = receiver.recv().await else {
+                return;
+            };
+            window::present_uninstall_results(
+                &outcomes,
+                application.active_window().as_ref(),
+                &controller.commands,
+            );
+        });
+    }
+
     /// Runs a confirmed action on a worker without holding the controller
     /// lock, since a termination waits for its grace period.
     fn request_process_action(
@@ -5035,6 +5093,18 @@ fn main() -> glib::ExitCode {
             print!("{}", command_list());
             return glib::ExitCode::SUCCESS;
         }
+        Ok(Invocation::UninstallPreview) => {
+            return match kestrel::uninstall::preview_text() {
+                Ok(text) => {
+                    print!("{text}");
+                    glib::ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("kestrel: {message}");
+                    glib::ExitCode::FAILURE
+                }
+            };
+        }
         Err(error) => {
             eprintln!("kestrel: {error}");
             eprint!("{}", usage());
@@ -5275,6 +5345,7 @@ fn main() -> glib::ExitCode {
                 let _ = command_line_commands.try_send(action.to_command());
             }
             Invocation::Help | Invocation::Version | Invocation::ListCommands => {}
+            Invocation::UninstallPreview => {}
         }
         glib::ExitCode::SUCCESS
     });
@@ -5916,6 +5987,9 @@ fn dispatch_commands(
                         TargetedPanel::Scratchpad,
                     ),
                 },
+                ApplicationCommand::Uninstall(items) => {
+                    controller.begin_uninstall(items, &application);
+                }
                 ApplicationCommand::Quit => application.quit(),
             }
         }

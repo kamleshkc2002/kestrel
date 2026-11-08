@@ -61,15 +61,7 @@ impl std::fmt::Display for SnippetStoreError {
 impl std::error::Error for SnippetStoreError {}
 
 pub fn kestrel_data_directory() -> Option<PathBuf> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/share"))
-        })?;
-    Some(data_home.join(kestrel_core::DATA_DIRECTORY_NAME))
+    Some(kestrel_platform::xdg::data_home()?.join(kestrel_core::DATA_DIRECTORY_NAME))
 }
 
 pub fn snippet_path() -> Option<PathBuf> {

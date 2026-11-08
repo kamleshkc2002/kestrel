@@ -20,6 +20,7 @@ mod shelf;
 mod shelf_float;
 mod snippets;
 mod trim;
+mod uninstall;
 mod whats_new;
 mod widgets;
 
@@ -64,6 +65,7 @@ pub use overlay::StatusOverlay;
 pub(crate) use setup::open_setup;
 pub(crate) use shelf::copy_shelf_content;
 pub use shelf_float::ShelfSurface;
+pub(crate) use uninstall::{open_uninstall, present_uninstall_results};
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;

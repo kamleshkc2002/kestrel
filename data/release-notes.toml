@@ -35,3 +35,7 @@ text = "A pending paste stops without a keystroke when the clipboard changes fir
 [[change]]
 feature = "clipboard.history"
 text = "Clipboard writes that an application marks as temporary or secret are left out of history, and the selection they replace returns as the entry it already was."
+
+[[change]]
+feature = "kestrel"
+text = "Settings → Remove Kestrel's data… lists every file and folder Kestrel keeps, with sizes, and removes only what you choose before quitting; `kestrel --uninstall-preview` prints the same list without deleting anything."

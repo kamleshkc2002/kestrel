@@ -17,7 +17,8 @@ mod stability;
 mod status_notifier;
 pub mod text_lines;
 mod tray_icon;
-mod update_state;
+pub mod uninstall;
+pub mod update_state;
 pub mod view_model;
 pub mod whats_new;
 
@@ -38,6 +39,9 @@ pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
 pub use kestrel_platform::recording::{AudioTrack, RecordingSource};
 pub use kestrel_platform::screen_tools::{ALL_SCREEN_TOOLS, ScreenTool};
+pub use kestrel_platform::uninstall::{
+    BinaryInstallation, Uninstall, UninstallItem, UninstallItemKind, UninstallPreview,
+};
 pub use kestrel_platform::upower::{PeripheralCharge, PeripheralKind};
 pub use kestrel_services::audio::{AudioCommand, AudioCycleDirection};
 pub use kestrel_services::camera::CameraFrameSlot;
@@ -743,6 +747,9 @@ pub enum ApplicationCommand {
         id: CaptureId,
         action: CaptureFollowUpAction,
     },
+    /// Removes the chosen Kestrel-owned paths after stopping services, then
+    /// quits.
+    Uninstall(Vec<UninstallItem>),
     Quit,
 }
 
