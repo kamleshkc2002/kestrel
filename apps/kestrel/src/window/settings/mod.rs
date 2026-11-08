@@ -621,7 +621,7 @@ fn add_uninstall_group(
     row.set_activatable_widget(Some(&review));
     filter_rows.push((
         row.clone().upcast(),
-        "remove uninstall delete data settings cache logs autostart binary quit".to_owned(),
+        "remove kestrel uninstall delete data settings cache logs autostart binary quit".to_owned(),
     ));
     group.add(&row);
     group
