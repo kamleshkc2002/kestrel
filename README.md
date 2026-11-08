@@ -58,6 +58,7 @@ chmod +x "$FILE"
 ```
 
 - **Requires:** a GTK4 desktop session; the app starts without GStreamer. Screen recording is the only feature that uses GStreamer, and the AppImage does not bundle it: install the system's GStreamer 1.x runtime with its PipeWire, Base, and Good plugins (on Debian and Ubuntu: `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0`, `gstreamer1.0-pipewire`, `gstreamer1.0-plugins-base`, and `gstreamer1.0-plugins-good`). Without it, recording says what to install and the rest of the app works. See [Screen recording](docs/features.md#screen-recording--capturerecording).
+- **Arch Linux:** install `kestrel-desktop` from the AUR, or build [packaging/aur](packaging/aur) with `makepkg`. The package builds the tagged release from source and never installs updates by itself, and its GStreamer optional dependencies cover screen recording.
 - If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
 - To build from source, see [docs/development.md](docs/development.md).
 

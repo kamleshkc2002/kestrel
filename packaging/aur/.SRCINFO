@@ -1,0 +1,25 @@
+pkgbase = kestrel-desktop
+	pkgdesc = Monitoring, audio, clipboard, capture, and system tools for any Linux desktop
+	pkgver = 0.6.0.preview.6
+	pkgrel = 1
+	url = https://github.com/kamleshkc2002/kestrel
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	makedepends = rust
+	makedepends = pkgconf
+	makedepends = gstreamer
+	makedepends = gst-plugins-base
+	depends = gtk4
+	depends = libadwaita
+	depends = libpulse
+	optdepends = gstreamer: Screen recording
+	optdepends = gst-plugins-base: Screen recording
+	optdepends = gst-plugins-good: Screen recording and trim
+	optdepends = gst-plugin-pipewire: Record a PipeWire screen, window, or area
+	optdepends = gtk4-layer-shell: Overlay and floating surfaces; rebuild with it installed
+	conflicts = kestrel
+	source = kestrel-0.6.0.preview.6.tar.gz::https://github.com/kamleshkc2002/kestrel/archive/refs/tags/v0.6.0-preview.6.tar.gz
+	sha256sums = 257231cfb2708d0f6ce2584ba3abb7201e250defe3cfd435a550ccded5402550
+
+pkgname = kestrel-desktop

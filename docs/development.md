@@ -48,6 +48,52 @@ minisign -V -p data/release-signing.pub -m Kestrel-<version>-x86_64.AppImage
 The `.sha256` file only detects a damaged download. The signature shows the
 release was made with the project's key.
 
+## AUR package
+
+`packaging/aur` holds the `kestrel-desktop` package: a locked release build of
+the tagged source, installed under `/usr` with the desktop entry, metainfo,
+icon, and the `kestrel-record` helper beside `kestrel`. The AUR name `kestrel`
+is an unrelated file-encryption package, so this one installs as
+`kestrel-desktop` while the binaries keep their names, and it conflicts with
+`kestrel` instead of providing it.
+
+Only GTK4, libadwaita, and libpulse are required: the app starts without
+GStreamer, and the helper that records is the only part that links it. The
+GStreamer packages are optional dependencies, needed for screen recording.
+
+The package does not self-update; a build that does not run from an
+AppImage offers "View release" instead of installing the update.
+
+The package uses the distribution's `rust`; with rustup, cargo reads
+`rust-toolchain.toml` and builds with the pinned 1.98.0. To build the checkout
+without a release tag:
+
+```bash
+cd packaging/aur
+KESTREL_LOCAL_SOURCE="$(git rev-parse --show-toplevel)" makepkg -s --noconfirm
+```
+
+The AUR workflow uses this override on pull requests and tags, so a pull
+request that changes the package does not need a tag to exist.
+
+For a release:
+
+1. Set `pkgver` in `packaging/aur/PKGBUILD` to the tag with the dash before
+   `preview` replaced by a dot (`0.7.0-preview.1` becomes `0.7.0.preview.1`).
+2. Download the tag archive and write its checksum into `sha256sums`:
+   ```bash
+   curl -L "https://github.com/kamleshkc2002/kestrel/archive/refs/tags/v0.7.0-preview.1.tar.gz" | sha256sum
+   ```
+3. Regenerate the metadata and check the package:
+   ```bash
+   cd packaging/aur
+   makepkg --printsrcinfo >.SRCINFO
+   bash -n PKGBUILD
+   namcap PKGBUILD
+   ```
+4. Copy `PKGBUILD` and `.SRCINFO` into the `kestrel-desktop` AUR repository
+   and push with the maintainer's AUR SSH key. Publishing is a maintainer step.
+
 ## Development
 
 To propose a change, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md).

@@ -1,0 +1,67 @@
+# Maintainer: Kamlesh <kamleshkc2002@users.noreply.github.com>
+
+# The AUR name `kestrel` is an unrelated file-encryption package. This one is
+# named `kestrel-desktop`, keeps the `kestrel` binary, and conflicts with the
+# other name; it does not provide it.
+pkgname=kestrel-desktop
+pkgver=0.6.0.preview.6
+pkgrel=1
+pkgdesc='Monitoring, audio, clipboard, capture, and system tools for any Linux desktop'
+arch=('x86_64' 'aarch64')
+url='https://github.com/kamleshkc2002/kestrel'
+license=('MIT')
+conflicts=('kestrel')
+provides=()
+depends=(
+  'gtk4'
+  'libadwaita'
+  'libpulse'
+)
+makedepends=('rust' 'pkgconf' 'gstreamer' 'gst-plugins-base')
+# The app starts without GStreamer; its kestrel-record helper links it, so the
+# recording packages are optional. The build still needs the headers, above.
+optdepends=(
+  'gstreamer: Screen recording'
+  'gst-plugins-base: Screen recording'
+  'gst-plugins-good: Screen recording and trim'
+  'gst-plugin-pipewire: Record a PipeWire screen, window, or area'
+  'gtk4-layer-shell: Overlay and floating surfaces; rebuild with it installed'
+)
+# Arch rejects the dash in a preview version.
+_upstream_tag="v${pkgver/.preview./-preview.}"
+source=("kestrel-$pkgver.tar.gz::https://github.com/kamleshkc2002/kestrel/archive/refs/tags/$_upstream_tag.tar.gz")
+sha256sums=('257231cfb2708d0f6ce2584ba3abb7201e250defe3cfd435a550ccded5402550')
+
+# KESTREL_LOCAL_SOURCE builds a checkout instead of the tag archive. The AUR
+# workflow uses this so a pull request does not need the release tag.
+if [[ -n ${KESTREL_LOCAL_SOURCE:-} ]]; then
+  source=()
+  sha256sums=()
+fi
+
+_app_id='io.github.kamleshkc2002.Kestrel'
+
+build() {
+  local src="${KESTREL_LOCAL_SOURCE:-$srcdir/kestrel-${_upstream_tag#v}}"
+  cd "$src"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --locked -p kestrel -p kestrel-record
+}
+
+package() {
+  local src="${KESTREL_LOCAL_SOURCE:-$srcdir/kestrel-${_upstream_tag#v}}"
+  cd "$src"
+  install -Dm755 "$srcdir/target/release/kestrel" "$pkgdir/usr/bin/kestrel"
+  # The app runs the recorder from beside itself.
+  install -Dm755 "$srcdir/target/release/kestrel-record" "$pkgdir/usr/bin/kestrel-record"
+  install -Dm644 "data/$_app_id.desktop" \
+    "$pkgdir/usr/share/applications/$_app_id.desktop"
+  install -Dm644 "data/icons/$_app_id.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_app_id.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  # Releases before the metadata file shipped have no metainfo.
+  if [[ -f "data/$_app_id.metainfo.xml" ]]; then
+    install -Dm644 "data/$_app_id.metainfo.xml" \
+      "$pkgdir/usr/share/metainfo/$_app_id.metainfo.xml"
+  fi
+}
