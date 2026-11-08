@@ -1282,7 +1282,11 @@ impl ClipboardCapabilityProbe {
 
 impl CapabilityProbe for ClipboardCapabilityProbe {
     fn probe(&self) -> CapabilityReport {
-        capability_report(discover_provider(), LogindPrivacyMonitor::new().map(|_| ()))
+        capability_report(
+            discover_provider(),
+            LogindPrivacyMonitor::new().map(|_| ()),
+            crate::sandbox::flatpak(),
+        )
     }
 }
 
@@ -1365,6 +1369,7 @@ pub fn watch_mode_for(provider: ClipboardProvider) -> ClipboardWatchMode {
 fn capability_report(
     provider: Result<ClipboardProvider, ClipboardError>,
     privacy: Result<(), ClipboardError>,
+    sandboxed: bool,
 ) -> CapabilityReport {
     match (provider, privacy) {
         (Ok(provider), Ok(())) => {
@@ -1403,11 +1408,23 @@ fn capability_report(
             report
         }
         (provider, privacy) => {
+            let provider_failed = provider.is_err();
             let reason = provider
                 .err()
                 .or_else(|| privacy.err())
                 .map(|error| error.message)
                 .unwrap_or_else(|| "clipboard history prerequisites are unavailable".to_string());
+            if sandboxed && provider_failed {
+                return crate::sandbox::unsupported(
+                    FEATURE_ID,
+                    "Privacy-preserving clipboard history is unavailable.",
+                    crate::sandbox::SandboxReason::ClipboardAccess,
+                )
+                .with_evidence(CapabilityEvidence::new(
+                    "source_application_identity",
+                    "unavailable",
+                ));
+            }
             CapabilityReport::new(
                 FEATURE_ID,
                 CapabilityStatus::Unsupported {
@@ -1510,7 +1527,7 @@ mod tests {
 
     #[test]
     fn supported_report_is_redacted_and_names_unavailable_source_identity() {
-        let report = capability_report(Ok(ClipboardProvider::WaylandDataControl), Ok(()));
+        let report = capability_report(Ok(ClipboardProvider::WaylandDataControl), Ok(()), false);
 
         assert_eq!(report.feature_id, FEATURE_ID);
         assert_eq!(report.status, CapabilityStatus::Supported);
@@ -1531,7 +1548,7 @@ mod tests {
 
     #[test]
     fn x11_support_stays_text_only_and_reports_remediation() {
-        let report = capability_report(Ok(ClipboardProvider::X11), Ok(()));
+        let report = capability_report(Ok(ClipboardProvider::X11), Ok(()), false);
 
         assert!(
             report
@@ -1556,11 +1573,49 @@ mod tests {
                 kind: ClipboardErrorKind::PrivacyMonitorFailed,
                 message: "logind unavailable".to_string(),
             }),
+            false,
         );
 
         assert!(matches!(
             report.status,
             CapabilityStatus::Unsupported { .. }
         ));
+    }
+
+    #[test]
+    fn a_sandboxed_probe_names_missing_clipboard_access() {
+        let unavailable = || {
+            Err(ClipboardError {
+                kind: ClipboardErrorKind::Unavailable,
+                message: "neither Wayland data-control nor an X11 display is reachable".to_string(),
+            })
+        };
+        let report = capability_report(unavailable(), Ok(()), true);
+        assert!(matches!(
+            report.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "clipboard-access")
+        );
+
+        // A privacy-monitor fault is not a sandbox restriction.
+        let report = capability_report(
+            Ok(ClipboardProvider::X11),
+            Err(ClipboardError {
+                kind: ClipboardErrorKind::PrivacyMonitorFailed,
+                message: "logind unavailable".to_string(),
+            }),
+            true,
+        );
+        assert!(
+            !report
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "clipboard-access")
+        );
     }
 }

@@ -383,6 +383,9 @@ pub struct RecordingDetection {
     pub microphone: AudioAvailability,
     /// Whether the System track can capture one application, or why not.
     pub application_audio: Result<(), String>,
+    /// A sandbox receives video through the portal's PipeWire fd, so it needs
+    /// no socket of its own.
+    pub sandboxed: bool,
 }
 
 impl RecordingDetection {
@@ -438,6 +441,7 @@ impl RecordingDetection {
                 system_audio,
                 &missing_elements,
             ),
+            sandboxed: crate::sandbox::flatpak(),
         }
     }
 
@@ -581,7 +585,7 @@ impl RecordingDetection {
                 "Screen recording needs more GStreamer plugins.",
             )
             .with_remediation(element_remediation(&missing_video))
-        } else if !self.pipewire_socket {
+        } else if !self.pipewire_socket && !self.sandboxed {
             CapabilityReport::new(
                 FEATURE_ID,
                 CapabilityStatus::Unsupported {
@@ -732,6 +736,7 @@ mod tests {
             system_audio: AudioAvailability::Available,
             microphone: AudioAvailability::Available,
             application_audio: Ok(()),
+            sandboxed: false,
         };
         change(&mut detection);
         detection
@@ -777,6 +782,16 @@ mod tests {
             status(detection(|d| d.pipewire_socket = false)),
             CapabilityStatus::Unsupported { reason } if reason.contains("PipeWire")
         ));
+        assert!(
+            matches!(
+                status(detection(|d| {
+                    d.pipewire_socket = false;
+                    d.sandboxed = true;
+                })),
+                CapabilityStatus::Supported
+            ),
+            "a sandbox records from the portal's PipeWire fd without a socket"
+        );
         assert!(matches!(
             status(detection(|d| d.gstreamer_error = Some("no registry".into()))),
             CapabilityStatus::Unsupported { .. }

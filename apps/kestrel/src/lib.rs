@@ -22,7 +22,7 @@ pub mod update_state;
 pub mod view_model;
 pub mod whats_new;
 
-pub use autostart::{disable, enable};
+pub use autostart::{disable, enable, unavailable_reason as autostart_unavailable_reason};
 pub use command_bar::{load_ranking, ranking_path, save_ranking};
 pub use config::{
     ConfigurationWarning, LoadedConfiguration, configuration_path, export_file, import_file, load,

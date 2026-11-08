@@ -366,6 +366,7 @@ mod tests {
             system_audio: AudioAvailability::Available,
             microphone: AudioAvailability::Available,
             application_audio,
+            sandboxed: false,
         };
         let settings =
             |system_audio: bool, application: Option<&str>| kestrel_core::RecordingConfiguration {

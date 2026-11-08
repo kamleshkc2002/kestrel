@@ -217,6 +217,7 @@ pub struct LinuxQuickToggleBackend {
     config_home: PathBuf,
     cosmic_system_root: PathBuf,
     inhibitor: Arc<Mutex<Option<session::InhibitorLease>>>,
+    sandboxed: bool,
 }
 
 impl fmt::Debug for LinuxQuickToggleBackend {
@@ -281,7 +282,14 @@ impl LinuxQuickToggleBackend {
             config_home: config_home.into(),
             cosmic_system_root: cosmic_system_root.into(),
             inhibitor: Arc::new(Mutex::new(None)),
+            sandboxed: crate::sandbox::flatpak(),
         }
+    }
+
+    /// Sets the sandbox state explicitly, for fixtures outside a sandbox.
+    pub fn with_sandbox(mut self, sandboxed: bool) -> Self {
+        self.sandboxed = sandboxed;
+        self
     }
 
     fn cosmic_paths(&self) -> desktop::CosmicPaths<'_> {
@@ -316,24 +324,67 @@ impl LinuxQuickToggleBackend {
 
 impl QuickToggleBackend for LinuxQuickToggleBackend {
     fn capability(&self, id: QuickToggleId) -> CapabilityReport {
+        let sandboxed = self.sandboxed;
         match id {
             QuickToggleId::KeepAwake => session::keep_awake_capability(),
+            QuickToggleId::Appearance if sandboxed => crate::sandbox::unsupported(
+                APPEARANCE_ID,
+                "The desktop appearance cannot be changed inside the sandbox.",
+                crate::sandbox::SandboxReason::DesktopSettings,
+            ),
             QuickToggleId::Appearance => desktop::appearance_capability(self.cosmic_paths()),
-            QuickToggleId::Brightness => backlight::capability(
-                id,
-                &self.sys_root.join("class/backlight"),
-                backlight::DeviceKind::Display,
-            ),
-            QuickToggleId::KeyboardLight => backlight::capability(
-                id,
-                &self.sys_root.join("class/leds"),
-                backlight::DeviceKind::Keyboard,
-            ),
+            QuickToggleId::Brightness => {
+                let report = backlight::capability(
+                    id,
+                    &self.sys_root.join("class/backlight"),
+                    backlight::DeviceKind::Display,
+                );
+                if sandboxed && !matches!(report.status, CapabilityStatus::Supported) {
+                    crate::sandbox::unsupported(
+                        BRIGHTNESS_ID,
+                        "Display brightness cannot be changed inside the sandbox.",
+                        crate::sandbox::SandboxReason::SystemSettings,
+                    )
+                } else {
+                    report
+                }
+            }
+            QuickToggleId::KeyboardLight => {
+                let report = backlight::capability(
+                    id,
+                    &self.sys_root.join("class/leds"),
+                    backlight::DeviceKind::Keyboard,
+                );
+                if sandboxed && !matches!(report.status, CapabilityStatus::Supported) {
+                    crate::sandbox::unsupported(
+                        KEYBOARD_LIGHT_ID,
+                        "The keyboard light cannot be changed inside the sandbox.",
+                        crate::sandbox::SandboxReason::SystemSettings,
+                    )
+                } else {
+                    report
+                }
+            }
             QuickToggleId::Bluetooth => session::bluetooth_capability(),
             QuickToggleId::Wifi => session::wifi_capability(),
+            QuickToggleId::EmptyTrash if sandboxed => crate::sandbox::unsupported(
+                EMPTY_TRASH_ID,
+                "The host Trash cannot be emptied from inside the sandbox.",
+                crate::sandbox::SandboxReason::HostTrash,
+            ),
             QuickToggleId::EmptyTrash => storage::trash_capability(&self.data_home),
             QuickToggleId::Eject => session::eject_capability(),
+            QuickToggleId::HiddenFiles if sandboxed => crate::sandbox::unsupported(
+                HIDDEN_FILES_ID,
+                "Hidden-file visibility cannot be changed inside the sandbox.",
+                crate::sandbox::SandboxReason::DesktopSettings,
+            ),
             QuickToggleId::HiddenFiles => desktop::hidden_files_capability(),
+            QuickToggleId::DesktopIcons if sandboxed => crate::sandbox::unsupported(
+                DESKTOP_ICONS_ID,
+                "Desktop icons cannot be changed inside the sandbox.",
+                crate::sandbox::SandboxReason::DesktopSettings,
+            ),
             QuickToggleId::DesktopIcons => desktop::desktop_icons_capability(),
             QuickToggleId::ScreenLock => session::screen_lock_capability(),
         }
@@ -454,4 +505,68 @@ pub(crate) fn path_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("unknown")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use kestrel_core::CapabilityStatus;
+    use tempfile::TempDir;
+
+    use super::{LinuxQuickToggleBackend, QuickToggleBackend, QuickToggleId};
+
+    fn sandboxed_backend(root: &std::path::Path) -> LinuxQuickToggleBackend {
+        fs::write(root.join(".flatpak-info"), "[Application]\n").expect("marker");
+        LinuxQuickToggleBackend::new_with_paths(
+            root.join("sys"),
+            root.join("data"),
+            root.join("config"),
+            root.join("cosmic"),
+        )
+        .with_sandbox(crate::sandbox::flatpak_in(root))
+    }
+
+    #[test]
+    fn sandboxed_toggles_name_the_sandbox_instead_of_a_desktop_fault() {
+        let root = TempDir::new().expect("root");
+        let backend = sandboxed_backend(root.path());
+        for (id, category) in [
+            (QuickToggleId::Appearance, "desktop-settings"),
+            (QuickToggleId::Brightness, "system-settings"),
+            (QuickToggleId::KeyboardLight, "system-settings"),
+            (QuickToggleId::EmptyTrash, "host-trash"),
+            (QuickToggleId::HiddenFiles, "desktop-settings"),
+            (QuickToggleId::DesktopIcons, "desktop-settings"),
+        ] {
+            let report = backend.capability(id);
+            assert!(
+                matches!(report.status, CapabilityStatus::Unsupported { .. }),
+                "{id:?}"
+            );
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|item| item.key == "sandbox" && item.value == category),
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unsandboxed_trash_reads_the_given_data_home() {
+        let root = TempDir::new().expect("root");
+        let backend = LinuxQuickToggleBackend::new_with_paths(
+            root.path().join("sys"),
+            root.path().join("data"),
+            root.path().join("config"),
+            root.path().join("cosmic"),
+        )
+        .with_sandbox(false);
+        assert!(matches!(
+            backend.capability(QuickToggleId::EmptyTrash).status,
+            CapabilityStatus::Supported
+        ));
+    }
 }

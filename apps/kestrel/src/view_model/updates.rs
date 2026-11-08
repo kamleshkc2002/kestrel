@@ -218,7 +218,8 @@ fn idle_banner(
     };
     UpdatePhaseViewModel {
         title: format!("Kestrel {} is available", offer.version),
-        subtitle: None,
+        subtitle: (!can_self_update)
+            .then(|| "This build updates through its installation.".to_owned()),
         url,
         percent: None,
         actions,
@@ -476,6 +477,21 @@ mod tests {
             vec![UpdateAction::ViewRelease, UpdateAction::Dismiss]
         );
         assert!(download_only.install_row.is_none());
+        assert!(
+            download_only
+                .banner
+                .as_ref()
+                .and_then(|row| row.subtitle.as_deref())
+                .is_some(),
+            "a build that cannot replace itself says where updates come from"
+        );
+        assert!(
+            self_update
+                .banner
+                .as_ref()
+                .and_then(|row| row.subtitle.as_deref())
+                .is_none()
+        );
     }
 
     #[test]

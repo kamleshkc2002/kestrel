@@ -12,6 +12,28 @@ title: Features
 - Keyboard shortcuts need the desktop's shortcuts portal (KDE Plasma, GNOME 48+, Hyprland) or X11; elsewhere, bind `kestrel --command` in your desktop's shortcut settings.
 - Downloads and installs are never automatic: the AppImage can update itself only after **Get update** and **Install and restart** (see [Update check](#update-check)); otherwise download each preview by hand.
 
+## Flatpak
+
+The Flatpak build runs in a sandbox with a small set of permissions. Those permissions and their reasons are listed in [What's stored and sent](privacy.md#flatpak-permissions). Everything else works, and the features the sandbox restricts say so in the Feature Hub:
+
+| Feature | In the Flatpak | Lifts it |
+|---|---|---|
+| `system.processes` | Unavailable: the sandbox lists only Kestrel's own processes. | Full process access, which is not shipped. |
+| `network.listeners` | Limited: sockets owned outside the sandbox have no visible process. | — |
+| `camera.preview` | Unavailable: camera devices are not exposed. | `--device=all`. |
+| `desktop.appearance`, `files.show-hidden`, `desktop.icons` | Unavailable: desktop settings are private to the sandbox. | dconf access. |
+| `files.empty-trash` | Unavailable: the host Trash is outside the sandbox. | Home access. |
+| `display.brightness`, `keyboard.backlight` | Unavailable: system settings are read-only in the sandbox. | Writable `/sys`. |
+| `clipboard.history` | Unavailable where the compositor filters clipboard protocols: it gives no clipboard access to sandboxed apps. | — |
+| `commands.bar` | Limited while Applications, Files, or Windows sources are on: those are outside the sandbox. | Configured file roots. |
+| `files.shelf` | Limited for file actions: files from other apps arrive through the document portal. | — |
+| `system.monitor` | Limited: the Disk row shows only the mounts the sandbox can see. | — |
+| Autostart | Limited: it needs the desktop's Background portal. | A desktop that exports it. |
+| Update check | The offer shows **View release**; the Flatpak updates through its store. | — |
+| Tray, screen recording, screenshots, quick toggles | Work as described above. | — |
+
+Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kestrel --command <id>`; see [Configuration](configuration.md#flatpak).
+
 ## Monitoring — `system.monitor`
 
 - **Default:** disabled; Essentials enables it.

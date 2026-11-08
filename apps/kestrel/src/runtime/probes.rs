@@ -71,14 +71,47 @@ pub(super) fn ocr_recognizer(
     })
 }
 
+/// Reports the shelf, which reads other apps' files through a portal in a
+/// sandbox.
+pub(super) struct ShelfProbe(pub(super) bool);
+
+impl CapabilityProbe for ShelfProbe {
+    fn probe(&self) -> CapabilityReport {
+        if self.0 {
+            return kestrel_platform::sandbox::limited(
+                SHELF_ID,
+                "Dragged entries work; files from other apps arrive through the document portal.",
+                kestrel_platform::sandbox::SandboxReason::ShelfFiles,
+            );
+        }
+        CapabilityReport::new(
+            SHELF_ID,
+            CapabilityStatus::Supported,
+            "Dragging entries in and out uses the window's own drag and drop.",
+        )
+    }
+}
+
 /// Reports available providers while preserving portable commands.
 pub struct CommandBarProbe {
     configuration: kestrel_core::CommandBarConfiguration,
+    sandboxed: bool,
 }
 
 impl CommandBarProbe {
     pub fn new(configuration: kestrel_core::CommandBarConfiguration) -> Self {
-        Self { configuration }
+        Self::with_sandbox(configuration, kestrel_platform::sandbox::flatpak())
+    }
+
+    /// Sets the sandbox state explicitly, for fixtures outside a sandbox.
+    pub fn with_sandbox(
+        configuration: kestrel_core::CommandBarConfiguration,
+        sandboxed: bool,
+    ) -> Self {
+        Self {
+            configuration,
+            sandboxed,
+        }
     }
 }
 
@@ -152,6 +185,76 @@ impl CapabilityProbe for CommandBarProbe {
                  indexed.",
             );
         }
+        if self.sandboxed
+            && (self.configuration.enable_applications
+                || self.configuration.enable_files
+                || self.configuration.enable_windows)
+        {
+            let reason = kestrel_platform::sandbox::SandboxReason::CommandSources;
+            report.status = CapabilityStatus::Limited {
+                reason: reason.reason().to_owned(),
+            };
+            report = report.with_evidence(CapabilityEvidence::new("sandbox", reason.key()));
+            if let Some(remediation) = reason.remediation() {
+                report = report.with_remediation(remediation);
+            }
+        }
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kestrel_core::CapabilityStatus;
+
+    use super::{CommandBarProbe, ShelfProbe};
+    use kestrel_platform::CapabilityProbe;
+
+    fn probe(applications: bool, files: bool, windows: bool) -> kestrel_core::CapabilityReport {
+        let configuration = kestrel_core::CommandBarConfiguration {
+            enable_applications: applications,
+            enable_files: files,
+            enable_windows: windows,
+            ..kestrel_core::CommandBarConfiguration::default()
+        };
+        CommandBarProbe::with_sandbox(configuration, true).probe()
+    }
+
+    #[test]
+    fn a_sandboxed_command_bar_limits_host_sources_only() {
+        for report in [
+            probe(true, false, false),
+            probe(false, true, false),
+            probe(false, false, true),
+        ] {
+            assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
+            assert!(
+                report
+                    .evidence
+                    .iter()
+                    .any(|item| item.key == "sandbox" && item.value == "command-sources")
+            );
+        }
+
+        let portable = probe(false, false, false);
+        assert!(!matches!(portable.status, CapabilityStatus::Limited { .. }));
+        assert!(!portable.evidence.iter().any(|item| item.key == "sandbox"));
+    }
+
+    #[test]
+    fn a_sandboxed_shelf_limits_files_from_other_apps() {
+        let report = ShelfProbe(true).probe();
+        assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "shelf-files")
+        );
+
+        assert!(matches!(
+            ShelfProbe(false).probe().status,
+            CapabilityStatus::Supported
+        ));
     }
 }
