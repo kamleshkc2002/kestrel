@@ -16,7 +16,13 @@ pub(super) fn build_shelf_page(
 ) -> gtk::Box {
     let container = gtk::Box::new(Orientation::Vertical, 18);
     let header = gtk::Box::new(Orientation::Horizontal, 12);
-    let status = gtk::Label::new(Some(&model.status));
+    // The drop area repeats the prompt, so an empty shelf shows it once.
+    let status_text = if model.running && model.items.is_empty() {
+        ""
+    } else {
+        model.status.as_str()
+    };
+    let status = gtk::Label::new(Some(status_text));
     status.set_xalign(0.0);
     status.set_hexpand(true);
     status.set_wrap(true);
@@ -57,22 +63,29 @@ pub(super) fn build_shelf_page(
 
 /// The empty shelf's drop area; the floating shelf reuses it.
 pub(crate) fn build_drop_area() -> gtk::Box {
-    let area = gtk::Box::new(Orientation::Vertical, 8);
-    area.set_valign(Align::Center);
-    area.set_halign(Align::Center);
-    area.set_height_request(160);
+    let area = gtk::Box::new(Orientation::Vertical, 0);
     area.set_hexpand(true);
+    area.set_height_request(200);
     area.add_css_class("card");
+    let content = gtk::Box::new(Orientation::Vertical, 8);
+    content.set_valign(Align::Center);
+    content.set_halign(Align::Center);
+    content.set_margin_top(24);
+    content.set_margin_bottom(24);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
     let icon = gtk::Image::from_icon_name("folder-download-symbolic");
     icon.set_pixel_size(48);
+    icon.set_margin_top(8);
     icon.add_css_class("dim-label");
-    area.append(&icon);
+    content.append(&icon);
     let label = gtk::Label::new(Some("Drop files, text, or links here"));
     label.add_css_class("title-4");
-    area.append(&label);
+    content.append(&label);
     let hint = gtk::Label::new(Some("They stay until you drag them out again."));
     hint.add_css_class("dim-label");
-    area.append(&hint);
+    content.append(&hint);
+    area.append(&content);
     area
 }
 
@@ -102,7 +115,7 @@ fn build_shelf_row(
     if !item.available {
         row.add_css_class("dim-label");
     }
-    let icon = gtk::Image::from_icon_name(kind_icon(item.kind));
+    let icon = gtk::Image::from_icon_name(kind_icon(item));
     icon.set_pixel_size(20);
     row.add_prefix(&icon);
     row.update_property(&[gtk::accessible::Property::Label(&format!(
@@ -152,8 +165,9 @@ fn build_shelf_row(
     row
 }
 
-fn kind_icon(kind: ShelfItemKind) -> &'static str {
-    match kind {
+fn kind_icon(item: &ShelfItemViewModel) -> &'static str {
+    match item.kind {
+        ShelfItemKind::File if item.directory => "folder-symbolic",
         ShelfItemKind::File => "text-x-generic-symbolic",
         ShelfItemKind::Text => "accessories-text-editor-symbolic",
         ShelfItemKind::Link => "web-browser-symbolic",
@@ -180,15 +194,6 @@ fn build_shelf_settings(
         let _ = sender.try_send(ApplicationCommand::SetShelfKeep(row.is_active()));
     });
     group.add(&keep);
-    if !model.keep {
-        group.add(
-            &plain_row()
-                .title("Cleared on quit.")
-                .subtitle("Entries last only while the application runs.")
-                .sensitive(false)
-                .build(),
-        );
-    }
     group
 }
 
@@ -259,36 +264,33 @@ pub(crate) fn attach_shelf_drop_target(
     widget: &impl IsA<gtk::Widget>,
     commands: &Sender<ApplicationCommand>,
 ) {
-    attach_files_drop(widget, commands);
-    attach_text_drop(widget, commands);
-    attach_texture_drop(widget, commands);
-}
-
-fn attach_files_drop<T: IsA<gtk::Widget>>(widget: &T, commands: &Sender<ApplicationCommand>) {
-    let target = gtk::DropTargetAsync::new(
-        Some(gdk::ContentFormats::for_type(gdk::FileList::static_type())),
-        gdk::DragAction::COPY,
-    );
+    let formats = gdk::ContentFormats::builder()
+        .add_type(gdk::FileList::static_type())
+        .add_type(gdk::Texture::static_type())
+        .add_type(glib::types::Type::STRING)
+        .build();
+    let target = gtk::DropTargetAsync::new(Some(formats), gdk::DragAction::COPY);
     let sender = commands.clone();
     target.connect_drop(move |_, drop, _, _| {
         let drop = drop.clone();
         let sender = sender.clone();
         glib::spawn_future_local(async move {
-            let value = drop
-                .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
-                .await;
-            if let Ok(value) = value {
-                if let Ok(list) = value.get::<gdk::FileList>() {
-                    let paths = list
-                        .files()
-                        .iter()
-                        .filter_map(gio::File::path)
-                        .collect::<Vec<_>>();
-                    if !paths.is_empty() {
-                        let _ = sender
-                            .try_send(ApplicationCommand::AddToShelf(ShelfInput::Files(paths)));
-                    }
-                }
+            let formats = drop.formats();
+            // A browser link offers text/uri-list too, so the URI itself
+            // decides between a file reference and a link.
+            let offered_files = formats.contains_type(gdk::FileList::static_type())
+                || formats.contain_mime_type("text/uri-list");
+            let input = if offered_files {
+                read_file_list(&drop).await
+            } else if formats.contains_type(gdk::Texture::static_type()) {
+                read_texture(&drop).await
+            } else if formats.contains_type(glib::types::Type::STRING) {
+                read_text(&drop).await
+            } else {
+                None
+            };
+            if let Some(input) = input {
+                let _ = sender.try_send(ApplicationCommand::AddToShelf(input));
             }
             drop.finish(gdk::DragAction::COPY);
         });
@@ -297,62 +299,58 @@ fn attach_files_drop<T: IsA<gtk::Widget>>(widget: &T, commands: &Sender<Applicat
     widget.add_controller(target);
 }
 
-fn attach_text_drop<T: IsA<gtk::Widget>>(widget: &T, commands: &Sender<ApplicationCommand>) {
-    let target = gtk::DropTargetAsync::new(
-        Some(gdk::ContentFormats::for_type(glib::types::Type::STRING)),
-        gdk::DragAction::COPY,
-    );
-    let sender = commands.clone();
-    target.connect_drop(move |_, drop, _, _| {
-        let drop = drop.clone();
-        let sender = sender.clone();
-        glib::spawn_future_local(async move {
-            let value = drop
-                .read_value_future(glib::types::Type::STRING, glib::Priority::DEFAULT)
-                .await;
-            if let Ok(value) = value {
-                if let Ok(text) = value.get::<String>() {
-                    if !text.trim().is_empty() {
-                        let _ =
-                            sender.try_send(ApplicationCommand::AddToShelf(ShelfInput::Text(text)));
-                    }
-                }
-            }
-            drop.finish(gdk::DragAction::COPY);
-        });
-        true
-    });
-    widget.add_controller(target);
+/// A dropped URI list: local paths become file entries, web URIs links.
+async fn read_file_list(drop: &gdk::Drop) -> Option<ShelfInput> {
+    let value = drop
+        .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
+        .await
+        .ok()?;
+    let list = value.get::<gdk::FileList>().ok()?;
+    let entries = list
+        .files()
+        .iter()
+        .filter_map(uri_entry)
+        .collect::<Vec<_>>();
+    (!entries.is_empty()).then_some(ShelfInput::Entries(entries))
 }
 
-fn attach_texture_drop<T: IsA<gtk::Widget>>(widget: &T, commands: &Sender<ApplicationCommand>) {
-    let target = gtk::DropTargetAsync::new(
-        Some(gdk::ContentFormats::for_type(gdk::Texture::static_type())),
-        gdk::DragAction::COPY,
-    );
-    let sender = commands.clone();
-    target.connect_drop(move |_, drop, _, _| {
-        let drop = drop.clone();
-        let sender = sender.clone();
-        glib::spawn_future_local(async move {
-            let value = drop
-                .read_value_future(gdk::Texture::static_type(), glib::Priority::DEFAULT)
-                .await;
-            if let Ok(value) = value {
-                if let Ok(texture) = value.get::<gdk::Texture>() {
-                    let png = texture.save_to_png_bytes();
-                    let _ = sender.try_send(ApplicationCommand::AddToShelf(ShelfInput::Image {
-                        png: png.as_ref().to_vec(),
-                        width: texture.width().max(0) as u32,
-                        height: texture.height().max(0) as u32,
-                    }));
-                }
-            }
-            drop.finish(gdk::DragAction::COPY);
-        });
-        true
-    });
-    widget.add_controller(target);
+fn uri_entry(file: &gio::File) -> Option<ShelfContent> {
+    if let Some(path) = file.path() {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        return Some(ShelfContent::File { path, name });
+    }
+    let uri = file.uri().to_string();
+    matches!(
+        kestrel_core::detect_shelf_content(&uri),
+        ShelfContent::Link { .. }
+    )
+    .then_some(ShelfContent::Link { url: uri })
+}
+
+async fn read_texture(drop: &gdk::Drop) -> Option<ShelfInput> {
+    let value = drop
+        .read_value_future(gdk::Texture::static_type(), glib::Priority::DEFAULT)
+        .await
+        .ok()?;
+    let texture = value.get::<gdk::Texture>().ok()?;
+    let png = texture.save_to_png_bytes();
+    Some(ShelfInput::Image {
+        png: png.as_ref().to_vec(),
+        width: texture.width().max(0) as u32,
+        height: texture.height().max(0) as u32,
+    })
+}
+
+async fn read_text(drop: &gdk::Drop) -> Option<ShelfInput> {
+    let value = drop
+        .read_value_future(glib::types::Type::STRING, glib::Priority::DEFAULT)
+        .await
+        .ok()?;
+    let text = value.get::<String>().ok()?;
+    (!text.trim().is_empty()).then_some(ShelfInput::Text(text))
 }
 
 /// Copies one entry through the window's clipboard.

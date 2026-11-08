@@ -733,6 +733,13 @@ mod tests {
                 "{text}"
             );
         }
+        assert!(
+            matches!(
+                detect_shelf_content("file:///tmp/one.txt\nhttps://example.com/page"),
+                ShelfContent::Text(_)
+            ),
+            "a whole URI list is not one link"
+        );
         assert_eq!(
             detect_shelf_content("  https://example.com  "),
             ShelfContent::Link {

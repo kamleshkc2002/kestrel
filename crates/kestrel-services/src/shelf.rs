@@ -17,6 +17,8 @@ pub const FEATURE_ID: &str = "files.shelf";
 pub enum ShelfInput {
     /// One entry per dropped file.
     Files(Vec<PathBuf>),
+    /// A mixed drop already classified: local files and web links.
+    Entries(Vec<ShelfContent>),
     Text(String),
     /// A decoded PNG with the size it was rendered at.
     Image {
@@ -37,6 +39,8 @@ pub struct ShelfEntry {
     pub content: ShelfContent,
     /// A file entry whose path still exists.
     pub available: bool,
+    /// A file entry whose path is a directory.
+    pub directory: bool,
     pub size_bytes: Option<u64>,
 }
 
@@ -98,6 +102,14 @@ impl ShelfService {
     pub fn add(&mut self, input: ShelfInput, now: SystemTime) -> Result<usize, ShelfError> {
         match input {
             ShelfInput::Files(paths) => self.add_files(paths, now),
+            ShelfInput::Entries(entries) => {
+                let mut added = 0;
+                for content in entries {
+                    self.place(content, now)?;
+                    added += 1;
+                }
+                Ok(added)
+            }
             ShelfInput::Text(text) => {
                 let content = kestrel_core::detect_shelf_content(&text);
                 self.place(content, now).map(|_| 1)
@@ -180,12 +192,16 @@ impl ShelfService {
             .items
             .iter()
             .map(|item| {
-                let (available, size_bytes) = match &item.content {
+                let (available, directory, size_bytes) = match &item.content {
                     ShelfContent::File { path, .. } => match fs::metadata(path) {
-                        Ok(metadata) => (true, metadata.is_file().then_some(metadata.len())),
-                        Err(_) => (false, None),
+                        Ok(metadata) => (
+                            true,
+                            metadata.is_dir(),
+                            metadata.is_file().then_some(metadata.len()),
+                        ),
+                        Err(_) => (false, false, None),
                     },
-                    _ => (true, item.content.size_bytes()),
+                    _ => (true, false, item.content.size_bytes()),
                 };
                 ShelfEntry {
                     id: item.id,
@@ -195,6 +211,7 @@ impl ShelfService {
                     name: item.content.display_name(),
                     content: item.content.clone(),
                     available,
+                    directory,
                     size_bytes,
                 }
             })
@@ -297,19 +314,20 @@ mod tests {
         let present = directory.path().join("present.txt");
         fs::write(&present, b"hello").expect("fixture file");
         let missing = directory.path().join("missing.txt");
+        let folder = directory.path().to_path_buf();
         let mut shelf = service();
         shelf
             .add(
-                ShelfInput::Files(vec![present.clone(), missing.clone()]),
+                ShelfInput::Files(vec![present.clone(), missing.clone(), folder.clone()]),
                 at(1),
             )
             .expect("file references always fit");
         let snapshot = shelf.snapshot();
-        assert_eq!(snapshot.entries.len(), 2);
+        assert_eq!(snapshot.entries.len(), 3);
         let present_entry = snapshot
             .entries
             .iter()
-            .find(|entry| entry.available)
+            .find(|entry| entry.available && !entry.directory)
             .expect("the present file is available");
         assert_eq!(present_entry.size_bytes, Some(5));
         let missing_entry = snapshot
@@ -319,6 +337,43 @@ mod tests {
             .expect("the missing file is reported");
         assert_eq!(missing_entry.size_bytes, None);
         assert_eq!(missing_entry.name, "missing.txt");
+        let folder_entry = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.directory)
+            .expect("the directory is reported as one");
+        assert!(folder_entry.available);
+        assert_eq!(folder_entry.size_bytes, None);
+    }
+
+    #[test]
+    fn a_mixed_drop_keeps_local_files_and_web_links_apart() {
+        let mut shelf = service();
+        shelf
+            .add(
+                ShelfInput::Entries(vec![
+                    ShelfContent::File {
+                        path: "/tmp/one".into(),
+                        name: "one".to_owned(),
+                    },
+                    ShelfContent::Link {
+                        url: "https://example.com/page".to_owned(),
+                    },
+                ]),
+                at(1),
+            )
+            .expect("both entries fit");
+        assert_eq!(
+            shelf
+                .items()
+                .iter()
+                .map(|item| item.content.kind())
+                .collect::<Vec<_>>(),
+            vec![
+                kestrel_core::ShelfItemKind::Link,
+                kestrel_core::ShelfItemKind::File
+            ]
+        );
     }
 
     #[test]

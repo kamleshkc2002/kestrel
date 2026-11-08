@@ -22,6 +22,8 @@ pub struct ShelfItemViewModel {
     pub detail: String,
     pub pinned: bool,
     pub available: bool,
+    /// A file entry whose path is a directory.
+    pub directory: bool,
     pub content: kestrel_core::ShelfContent,
 }
 
@@ -79,6 +81,7 @@ impl ShelfViewModel {
                             detail,
                             pinned: entry.pinned,
                             available: entry.available,
+                            directory: entry.directory,
                             content: entry.content,
                         }
                     })
@@ -149,6 +152,7 @@ mod tests {
             name: content.display_name(),
             content,
             available,
+            directory: false,
             size_bytes: size,
         }
     }
