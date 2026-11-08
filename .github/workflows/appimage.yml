@@ -27,6 +27,11 @@ jobs:
       image: ubuntu:22.04
       # Docker's default 64 MB /dev/shm is too small for headless Sway.
       options: --shm-size=1g
+    # Container jobs default to sh; the inspection steps use bash arrays and
+    # process substitution.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Install checkout prerequisites
         # The container image has neither git nor curl; checkout needs git.
