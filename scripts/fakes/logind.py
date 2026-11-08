@@ -94,10 +94,22 @@ def write_count():
         pass
 
 
+def emit_property_changed(path, interface, name, value):
+    connection.emit_signal(
+        None,
+        path,
+        "org.freedesktop.DBus.Properties",
+        "PropertiesChanged",
+        GLib.Variant("(sa{sv}as)", (interface, {name: value}, [])),
+    )
+
+
 def apply_word(word):
     global preparing_for_sleep, locked, deny_inhibit
-    changed = (word == "sleep") != preparing_for_sleep
-    preparing_for_sleep = word == "sleep"
+    asleep = word == "sleep"
+    changed = asleep != preparing_for_sleep
+    locked_changed = (word == "locked") != locked
+    preparing_for_sleep = asleep
     locked = word == "locked"
     deny_inhibit = word == "deny"
     if changed:
@@ -107,6 +119,19 @@ def apply_word(word):
             MANAGER_IFACE,
             "PrepareForSleep",
             GLib.Variant("(b)", (preparing_for_sleep,)),
+        )
+        emit_property_changed(
+            MANAGER_PATH,
+            MANAGER_IFACE,
+            "PreparingForSleep",
+            GLib.Variant("b", preparing_for_sleep),
+        )
+    if locked_changed:
+        emit_property_changed(
+            SESSION_PATH,
+            SESSION_IFACE,
+            "LockedHint",
+            GLib.Variant("b", locked),
         )
     try:
         with open(APPLIED, "w", encoding="utf-8") as applied:

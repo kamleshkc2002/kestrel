@@ -113,12 +113,13 @@ run_lifecycle_test -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
 wayland_runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/kestrel-wayland-runtime.XXXXXX")"
 chmod 700 "$wayland_runtime_dir"
 printf 'xwayland disable\n' >"$artifacts_dir/sway.conf"
+# shellcheck disable=SC2086 # SWAY_FLAGS is a list of options.
 env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
   XDG_RUNTIME_DIR="$wayland_runtime_dir" \
   WLR_BACKENDS=headless \
   WLR_RENDERER=pixman \
   WLR_LIBINPUT_NO_DEVICES=1 \
-  sway -c "$artifacts_dir/sway.conf" >"$artifacts_dir/sway.log" 2>&1 &
+  sway ${SWAY_FLAGS:-} -c "$artifacts_dir/sway.conf" >"$artifacts_dir/sway.log" 2>&1 &
 sway_pid="$!"
 wayland_display="$(wait_for_wayland)"
 run_lifecycle_test -u DISPLAY -u WAYLAND_SOCKET \
