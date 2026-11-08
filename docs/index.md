@@ -5,34 +5,33 @@ title: Kestrel
 
 # Kestrel
 
-![Kestrel's Overview page: the sidebar of pages, one-click tools, and quick toggles such as Keep awake and Desktop dark mode](images/hero.png)
+![The Overview page: the sidebar of pages, one-click tools, and quick toggles such as Keep awake and Desktop dark mode](images/hero.png)
 
-**Kestrel adds the utilities a COSMIC, Sway, or Hyprland desktop leaves out —
-clipboard history that pastes back into the application you came from,
-screenshots with an editor and OCR, a floating shelf, a command bar, audio
-routing, and quiet status readouts — in one window that runs beside your
-compositor rather than replacing it.**
+**The utilities a COSMIC, Sway, or Hyprland desktop leaves out: clipboard
+history that pastes back into the application you came from, screenshots with
+an editor and OCR, a floating shelf, a command bar, audio routing, and quiet
+status readouts. One window, running beside your compositor without replacing
+it.**
 
 ## Why Kestrel on your desktop
 
-**COSMIC.** COSMIC ships a compositor and its own settings, not a
+**COSMIC.** COSMIC ships a compositor and its own settings, without a
 per-application audio mixer, clipboard history that pastes back, or a screenshot
-editor with OCR. Kestrel fills those gaps, follows COSMIC's light and dark mode,
-and draws its floating surfaces alongside COSMIC's own panels.
+editor with OCR. Those gaps are covered here; the window follows COSMIC's light
+and dark mode, and the floating surfaces sit alongside COSMIC's own panels.
 
 **Sway.** A keyboard-first tiling compositor leaves the mixer, clipboard
-manager, and screenshot editor to you. Kestrel opens from `kestrel --command`
-bindings, captures through `grim` and `slurp` on wlroots, and places its command
-bar and status overlay inside your layout as layer-shell surfaces.
+manager, and screenshot editor to you. Bind `kestrel --command <id>` to open any
+tool; captures go through `grim` and `slurp` on wlroots, and the command bar and
+status overlay are layer-shell surfaces inside your layout.
 
-**Hyprland.** The same gaps, with extra integration: Kestrel registers
-shortcuts through the GlobalShortcuts portal where Hyprland exports it, and its
-floating shelf, command bar, and status overlay sit above tiled windows without
-taking a tile.
+**Hyprland.** The same gaps, with extra integration: shortcuts register through
+the GlobalShortcuts portal where Hyprland exports it, and the floating shelf,
+command bar, and status overlay sit above tiled windows without taking a tile.
 
 ## What you get
 
-- **Clipboard history:** opt-in, memory-only history with search; Shift+Return pastes an entry into the previous application. Opt-in encrypted saved pins are coming in 0.9.
+- **Clipboard history:** opt-in, memory-only history with search; Shift+Return pastes an entry into the previous application. Pinned text can be kept across restarts, encrypted with a key in your desktop keyring.
 - **Screenshots and screen tools:** capture a screen, window, or area, then crop, draw, redact, or copy its text with on-computer OCR; also read QR codes and pick colours.
 - **Shelf:** a floating shelf you can pin open, drag files, text, and links into, and drag back out to another application.
 - **Command bar:** a floating search over the app's tools, features, and your scripts, with answers for arithmetic, units, dates, and colours.
@@ -55,7 +54,7 @@ taking a tile.
 
 ## Install
 
-The AppImage is the current channel. Set `VERSION` to the latest preview on
+Set `VERSION` to the latest preview on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
@@ -69,17 +68,17 @@ chmod +x "$FILE"
 ./"$FILE"
 ```
 
-- **Requires:** the system's GStreamer 1.x runtime, which the AppImage does not bundle. On Debian and Ubuntu that is `libgstreamer1.0-0` and `libgstreamer-plugins-base1.0-0`; screen recording also needs the PipeWire, Base, and Good plugins.
+- **Requires:** a GTK4 desktop session. Screen recording is the only feature that uses GStreamer, which the AppImage does not bundle; without it, recording says which packages to install and everything else works.
+- **Arch Linux:** install `kestrel-desktop` from the AUR.
 - If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
-- **Arch Linux:** an AUR package is coming; until it is published, use the AppImage or build from source.
-- **Flathub:** coming soon.
+- **Flatpak:** a restricted build is planned for 0.9.
 - To build from source, see [Development](development.md).
 
 ## Where it runs
 
-- **Tested:** Pop!_OS 24.04 with COSMIC on Wayland, and Ubuntu 24.04 in CI under Xvfb.
-- **Should run:** glibc 2.39+ distributions such as Fedora 40+, Debian 13, and Arch (untested).
-- **Won't start:** Ubuntu 22.04, Debian 12, and older.
+- **Tested:** Pop!_OS 24.04 with COSMIC on Wayland, and the AppImage in CI on Ubuntu 22.04 under Xvfb and headless Sway.
+- **Should run:** glibc 2.35 or newer: Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Fedora 38+, and Arch (untested).
+- **Won't start:** systems with glibc older than 2.35, such as Ubuntu 20.04 and Debian 11.
 
 Which features work on your desktop is in the
 [compatibility table](compatibility.md); known limits are in
@@ -89,7 +88,8 @@ Which features work on your desktop is in the
 
 Local-first. There is no telemetry, account, or crash reporting, and the update
 check is opt-in; nothing is uploaded. Clipboard history stays in memory and is
-wiped when you lock the session, sleep, or quit. Settings and data live in your
+wiped when you lock the session, sleep, or quit; only text pins you choose to
+keep are written to disk, encrypted. Settings and data live in your
 XDG folders, and Settings → Remove Kestrel's data… lists every file and removes
 only what you choose. Full detail is in [Privacy](privacy.md).
 
