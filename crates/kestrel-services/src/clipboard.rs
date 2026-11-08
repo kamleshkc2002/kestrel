@@ -4444,6 +4444,16 @@ mod tests {
         first.shutdown();
 
         let second = PinPersistence::start(path, shared).expect("pin worker starts");
+        // A finished read nobody merged is dropped by a hold.
+        second.request_load();
+        wait_until(|| second.status().state == PinStoreState::Saved);
+        second.hold();
+        thread::sleep(PIN_RETRY_INTERVAL);
+        assert!(
+            second.take_loaded().is_none(),
+            "a hold must drop an unmerged read"
+        );
+
         second.request_load();
         let mut loaded = None;
         wait_until(|| {
