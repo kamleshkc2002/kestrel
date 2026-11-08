@@ -10,6 +10,7 @@ pub mod clipboard;
 pub mod command_bar;
 pub mod global_shortcuts;
 pub mod microphone;
+pub mod paste;
 pub mod processes;
 
 pub mod quick_toggles;

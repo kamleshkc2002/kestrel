@@ -14,7 +14,8 @@ use std::{
 };
 
 use kestrel_core::{
-    CapabilityEvidence, CapabilityReport, CapabilityStatus, SnippetProviderPreference,
+    CapabilityEvidence, CapabilityReport, CapabilityStatus, ClipboardPasteKeys,
+    SnippetProviderPreference,
 };
 
 use crate::CapabilityProbe;
@@ -133,6 +134,18 @@ impl Error for InsertionError {}
 pub trait InsertionBackend: Send + 'static {
     fn provider(&self) -> InsertionProvider;
     fn insert_text(&mut self, text: &str) -> Result<(), InsertionError>;
+
+    /// Sends one paste keystroke; content never reaches the provider.
+    fn press_keys(&mut self, keys: ClipboardPasteKeys) -> Result<(), InsertionError> {
+        let _ = keys;
+        Err(InsertionError::new(
+            InsertionErrorKind::Rejected,
+            format!(
+                "{} cannot send keystrokes without text",
+                self.provider().label()
+            ),
+        ))
+    }
 }
 
 /// `preferred` pins one provider; automatic search uses providers suitable for unattended access.
@@ -189,6 +202,17 @@ pub struct ExecutableInsertionBackend {
     timeout: Duration,
 }
 
+/// Linux input event keycodes for each paste combination.
+///
+/// ydotool 1.x takes `keycode:state` pairs, with 1 for press and 0 for release.
+fn keycodes(keys: ClipboardPasteKeys) -> &'static [&'static str] {
+    match keys {
+        ClipboardPasteKeys::CtrlV => &["29:1", "47:1", "47:0", "29:0"],
+        ClipboardPasteKeys::CtrlShiftV => &["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
+        ClipboardPasteKeys::ShiftInsert => &["42:1", "110:1", "110:0", "42:0"],
+    }
+}
+
 impl ExecutableInsertionBackend {
     pub fn new(path: InsertionPath, timeout_millis: u64) -> Result<Self, InsertionError> {
         if timeout_millis == 0 {
@@ -207,10 +231,13 @@ impl ExecutableInsertionBackend {
     /// Starts the provider, retrying briefly on `ETXTBSY`.
     ///
     /// Package-manager replacement can briefly make the executable busy.
-    fn spawn_provider(&self) -> Result<std::process::Child, InsertionError> {
+    fn spawn_provider(
+        &self,
+        arguments: Vec<OsString>,
+    ) -> Result<std::process::Child, InsertionError> {
         let mut command = Command::new(&self.executable);
         command
-            .args(self.argument_list())
+            .args(arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -237,6 +264,87 @@ impl ExecutableInsertionBackend {
                 OsString::from("--file"),
                 OsString::from("-"),
             ],
+        }
+    }
+
+    /// Provider arguments for one paste keystroke; no stdin is used.
+    fn key_arguments(&self, keys: ClipboardPasteKeys) -> Vec<OsString> {
+        match self.provider {
+            // wtype presses and releases keysyms in the given modifier order.
+            InsertionProvider::Wtype => {
+                let mut arguments = Vec::new();
+                match keys {
+                    ClipboardPasteKeys::CtrlV => {
+                        arguments.extend(["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
+                    }
+                    ClipboardPasteKeys::CtrlShiftV => arguments.extend([
+                        "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl",
+                    ]),
+                    ClipboardPasteKeys::ShiftInsert => {
+                        arguments.extend(["-M", "shift", "-k", "Insert", "-m", "shift"]);
+                    }
+                }
+                arguments.into_iter().map(OsString::from).collect()
+            }
+            InsertionProvider::Ydotool => {
+                // Linux input keycodes are hardware independent.
+                let mut arguments = vec![OsString::from("key")];
+                arguments.extend(
+                    keycodes(keys)
+                        .iter()
+                        .map(|argument| OsString::from(*argument)),
+                );
+                arguments
+            }
+            InsertionProvider::Xdotool => {
+                let combination = match keys {
+                    ClipboardPasteKeys::CtrlV => "ctrl+v",
+                    ClipboardPasteKeys::CtrlShiftV => "ctrl+shift+v",
+                    ClipboardPasteKeys::ShiftInsert => "shift+Insert",
+                };
+                ["key", "--clearmodifiers", combination]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect()
+            }
+        }
+    }
+
+    /// Waits for the provider to exit within the configured bound.
+    fn wait_for(&self, mut child: std::process::Child) -> Result<(), InsertionError> {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(status)) => {
+                    return Err(InsertionError::new(
+                        InsertionErrorKind::Rejected,
+                        format!("{} refused the insertion ({status})", self.provider.label()),
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(InsertionError::new(
+                        InsertionErrorKind::WaitFailed,
+                        format!("{} could not be waited for: {error}", self.provider.label()),
+                    ));
+                }
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(InsertionError::new(
+                    InsertionErrorKind::TimedOut,
+                    format!(
+                        "{} did not finish within {} ms",
+                        self.provider.label(),
+                        self.timeout.as_millis()
+                    ),
+                ));
+            }
+            thread::sleep(POLL_INTERVAL);
         }
     }
 
@@ -277,47 +385,20 @@ impl InsertionBackend for ExecutableInsertionBackend {
                 "an empty snippet cannot be inserted",
             ));
         }
-        let mut child = self.spawn_provider()?;
+        let mut child = self.spawn_provider(self.argument_list())?;
         if let Err(error) = self.send_text(&mut child, text) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
+        self.wait_for(child)
+    }
 
-        let deadline = Instant::now() + self.timeout;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) if status.success() => return Ok(()),
-                Ok(Some(status)) => {
-                    return Err(InsertionError::new(
-                        InsertionErrorKind::Rejected,
-                        format!("{} refused the insertion ({status})", self.provider.label()),
-                    ));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(InsertionError::new(
-                        InsertionErrorKind::WaitFailed,
-                        format!("{} could not be waited for: {error}", self.provider.label()),
-                    ));
-                }
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(InsertionError::new(
-                    InsertionErrorKind::TimedOut,
-                    format!(
-                        "{} did not finish within {} ms",
-                        self.provider.label(),
-                        self.timeout.as_millis()
-                    ),
-                ));
-            }
-            thread::sleep(POLL_INTERVAL);
-        }
+    fn press_keys(&mut self, keys: ClipboardPasteKeys) -> Result<(), InsertionError> {
+        let mut child = self.spawn_provider(self.key_arguments(keys))?;
+        // No stdin: the provider receives only the key combination.
+        drop(child.stdin.take());
+        self.wait_for(child)
     }
 }
 

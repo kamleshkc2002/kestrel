@@ -35,6 +35,7 @@ impl ApplicationRuntime {
                 matches,
                 preview,
                 ocr_unavailable: clipboard_ocr_unavailable(),
+                paste_unavailable: self.clipboard_paste_unavailable(),
             },
         )
     }
@@ -174,7 +175,47 @@ impl ApplicationRuntime {
         let backend =
             ArboardClipboardBackend::new(provider).map_err(ClipboardServiceError::Backend)?;
         let privacy = LogindPrivacyMonitor::new().map_err(ClipboardServiceError::Backend)?;
-        self.clipboard_history.start(backend, privacy)
+        self.clipboard_history.start(backend, privacy)?;
+        self.configure_clipboard_paste();
+        Ok(())
+    }
+
+    /// Installs the keystroke provider a paste sends through, or why there is
+    /// none.
+    pub(super) fn configure_clipboard_paste(&mut self) {
+        let discovery =
+            discover_insertion_provider(self.snippet_provider_preference).and_then(|path| {
+                ExecutableInsertionBackend::new(
+                    path,
+                    self.snippet_policy.insert_timeout.as_millis() as u64,
+                )
+            });
+        let (provider, unavailable) = match discovery {
+            Ok(provider) => (
+                Some(Box::new(provider) as Box<dyn kestrel_platform::snippets::InsertionBackend>),
+                None,
+            ),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "{} Install wtype for Wayland or xdotool for X11.",
+                    error.message
+                )),
+            ),
+        };
+        self.clipboard_paste_unavailable = unavailable.clone();
+        self.clipboard_history
+            .set_paste_provider(provider, unavailable);
+    }
+
+    /// Why pasting an entry cannot send a keystroke, with a remedy.
+    pub fn clipboard_paste_unavailable(&self) -> Option<String> {
+        self.clipboard_paste_unavailable.clone()
+    }
+
+    /// Reports whether Kestrel still holds the focus and which modifiers are held.
+    pub fn observe_clipboard_paste(&self, observation: PasteObservation) {
+        self.clipboard_history.observe_paste(observation);
     }
 
     pub(super) fn clipboard_history_is_running(&self) -> bool {

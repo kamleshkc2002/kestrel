@@ -29,8 +29,8 @@ pub use config::{
 };
 pub use kestrel_core::{
     AlertKind, AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
-    CaptureAfterScreenshot, ClipboardLayout, CloseAction, KeepAwakeDuration, MonitorReadout,
-    NetworkRateUnit, UpdateCheck,
+    CaptureAfterScreenshot, ClipboardLayout, ClipboardPasteKeys, CloseAction, KeepAwakeDuration,
+    MonitorReadout, NetworkRateUnit, UpdateCheck,
 };
 pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
@@ -603,6 +603,14 @@ pub enum ApplicationCommand {
     AudioPreference(AudioPreferenceEdit),
     /// Clipboard history mutation.
     Clipboard(ClipboardCommand),
+    /// Puts an entry on the clipboard, hides the window, and pastes it into
+    /// the previous application.
+    ClipboardPaste {
+        item_id: u64,
+        plain_text: bool,
+    },
+    /// The keystroke a paste sends.
+    SetClipboardPasteKeys(kestrel_core::ClipboardPasteKeys),
     /// Bounded clipboard search.
     ClipboardSearch(String),
     /// Bounded entry preview.

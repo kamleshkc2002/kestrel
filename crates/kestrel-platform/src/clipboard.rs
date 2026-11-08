@@ -39,6 +39,12 @@ pub const FEATURE_ID: &str = "clipboard.history";
 const PRIVACY_METHOD_TIMEOUT: Duration = Duration::from_millis(500);
 pub const PNG_MIME: &str = "image/png";
 pub const URI_LIST_MIME: &str = "text/uri-list";
+/// KDE's password-manager marker; its payload is `secret` or `persistent`.
+pub const KDE_PASSWORD_HINT_MIME: &str = "x-kde-passwordManagerHint";
+/// A KDE marker asking not to replace non-empty selections.
+pub const KDE_ONLY_REPLACE_EMPTY_MIME: &str = "application/x-kde-onlyReplaceEmpty";
+/// The hint payload that marks a write as not fit for history.
+pub const KDE_PASSWORD_HINT_SECRET: &str = "secret";
 const TEXT_MIMES: [&str; 4] = [
     "text/plain;charset=utf-8",
     "text/plain",
@@ -262,6 +268,34 @@ fn is_text_mime(mime: &str) -> bool {
     mime.starts_with("text/plain") || mime == "UTF8_STRING" || mime == "STRING"
 }
 
+/// Highest-priority entry kind among the offered MIME types.
+pub fn kind_from_types(types: &[String]) -> Option<ClipboardEntryKind> {
+    if types.iter().any(|mime| mime == URI_LIST_MIME) {
+        Some(ClipboardEntryKind::Files)
+    } else if types.iter().any(|mime| mime == PNG_MIME) {
+        Some(ClipboardEntryKind::Image)
+    } else if types.iter().any(|mime| is_text_mime(mime)) {
+        Some(ClipboardEntryKind::Text)
+    } else {
+        None
+    }
+}
+
+/// Whether the offered types mark the write as temporary or generated.
+///
+/// `hint` is the password-manager marker's payload when it could be read; an
+/// unreadable hint is treated as secret, so such a write is never recorded.
+pub fn temporary_write(types: &[String], hint: Option<&str>) -> bool {
+    if types.iter().any(|mime| mime == KDE_ONLY_REPLACE_EMPTY_MIME) {
+        return true;
+    }
+    let offers_hint = types.iter().any(|mime| mime == KDE_PASSWORD_HINT_MIME);
+    if !offers_hint {
+        return false;
+    }
+    hint.is_none_or(|value| value.trim().eq_ignore_ascii_case(KDE_PASSWORD_HINT_SECRET))
+}
+
 pub trait ClipboardBackend: Send + 'static {
     fn provider(&self) -> ClipboardProvider;
 
@@ -277,6 +311,30 @@ pub trait ClipboardBackend: Send + 'static {
     ///
     /// `Ok(None)` means type enumeration is unavailable; callers should read text.
     fn offered_kind(&mut self) -> Result<Option<ClipboardEntryKind>, ClipboardError> {
+        Ok(None)
+    }
+
+    /// Whether [`ClipboardBackend::offered_types`] can list this provider's types.
+    fn supports_type_listing(&self) -> bool {
+        false
+    }
+
+    /// Offered MIME types of the live selection.
+    ///
+    /// `Ok(None)` means the backend cannot list them, so temporary writes
+    /// cannot be recognised.
+    fn offered_types(&mut self) -> Result<Option<Vec<String>>, ClipboardError> {
+        Ok(None)
+    }
+
+    /// The password-manager hint payload, when the selection offers one.
+    ///
+    /// Only the hint is read: entry content stays unread.
+    fn password_manager_hint(
+        &mut self,
+        max_bytes: usize,
+    ) -> Result<Option<String>, ClipboardError> {
+        let _ = max_bytes;
         Ok(None)
     }
 
@@ -535,24 +593,46 @@ impl ClipboardBackend for ArboardClipboardBackend {
             return Ok(None);
         }
         match get_mime_types(WaylandClipboardType::Regular, WaylandSeat::Unspecified) {
-            Ok(types) => {
-                let offered = if types.contains(URI_LIST_MIME) {
-                    Some(ClipboardEntryKind::Files)
-                } else if types.contains(PNG_MIME) {
-                    Some(ClipboardEntryKind::Image)
-                } else if types.iter().any(|mime| is_text_mime(mime)) {
-                    Some(ClipboardEntryKind::Text)
-                } else {
-                    None
-                };
-                Ok(offered)
-            }
+            Ok(types) => Ok(kind_from_types(&types.into_iter().collect::<Vec<String>>())),
             Err(WaylandError::ClipboardEmpty) | Err(WaylandError::NoMimeType) => Ok(None),
             Err(error) => Err(ClipboardError::new(
                 ClipboardErrorKind::ContentUnavailable,
                 format!("clipboard type enumeration failed: {error}"),
             )),
         }
+    }
+
+    fn supports_type_listing(&self) -> bool {
+        self.provider == ClipboardProvider::WaylandDataControl
+    }
+
+    fn offered_types(&mut self) -> Result<Option<Vec<String>>, ClipboardError> {
+        if self.provider != ClipboardProvider::WaylandDataControl {
+            return Ok(None);
+        }
+        match get_mime_types(WaylandClipboardType::Regular, WaylandSeat::Unspecified) {
+            Ok(types) => Ok(Some(types.into_iter().collect())),
+            Err(WaylandError::ClipboardEmpty) | Err(WaylandError::NoMimeType) => {
+                Ok(Some(Vec::new()))
+            }
+            Err(error) => Err(ClipboardError::new(
+                ClipboardErrorKind::ContentUnavailable,
+                format!("clipboard type enumeration failed: {error}"),
+            )),
+        }
+    }
+
+    fn password_manager_hint(
+        &mut self,
+        max_bytes: usize,
+    ) -> Result<Option<String>, ClipboardError> {
+        if self.provider != ClipboardProvider::WaylandDataControl {
+            return Ok(None);
+        }
+        let Some(payload) = self.read_mime(KDE_PASSWORD_HINT_MIME, max_bytes.min(256))? else {
+            return Ok(None);
+        };
+        Ok(Some(String::from_utf8_lossy(&payload).into_owned()))
     }
 
     fn read_image_png(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>, ClipboardError> {

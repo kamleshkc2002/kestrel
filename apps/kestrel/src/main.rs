@@ -9,7 +9,7 @@ use std::{
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime},
@@ -759,6 +759,28 @@ fn deliver_alerts(
     guard.runtime.monitor_view_model(&guard.configuration)
 }
 
+/// Focus and held modifiers, observed on the GTK thread while a paste waits.
+fn paste_observation(application: &gtk::Application) -> kestrel_services::paste::PasteObservation {
+    let focus_released = application
+        .windows()
+        .iter()
+        .all(|window| !window.is_active());
+    let held = gtk::gdk::Display::default()
+        .and_then(|display| display.default_seat())
+        .and_then(|seat| seat.keyboard())
+        .map(|keyboard| keyboard.modifier_state());
+    let held_modifiers = gtk::gdk::ModifierType::CONTROL_MASK
+        | gtk::gdk::ModifierType::SHIFT_MASK
+        | gtk::gdk::ModifierType::ALT_MASK
+        | gtk::gdk::ModifierType::SUPER_MASK
+        | gtk::gdk::ModifierType::HYPER_MASK
+        | gtk::gdk::ModifierType::META_MASK;
+    kestrel_services::paste::PasteObservation {
+        focus_released,
+        modifiers_released: held.is_none_or(|state| !state.intersects(held_modifiers)),
+    }
+}
+
 fn clipboard_tick_update(
     state: &SharedState,
 ) -> (
@@ -843,6 +865,8 @@ struct ClipboardFingerprint {
     clears: u64,
     wipes: u64,
     has_error: bool,
+    paste: Option<u8>,
+    skipped_temporary: u64,
 }
 
 impl ClipboardFingerprint {
@@ -857,6 +881,8 @@ impl ClipboardFingerprint {
             clears: snapshot.selection_clears,
             wipes: snapshot.wipe_count,
             has_error: snapshot.last_error.is_some(),
+            paste: snapshot.paste.as_ref().map(|stage| stage.code()),
+            skipped_temporary: snapshot.skipped_temporary_writes,
         }
     }
 }
@@ -936,6 +962,11 @@ enum ControllerOperation {
     SetAudioIncludeInactiveStreams(bool),
     AudioPreference(kestrel::AudioPreferenceEdit),
     Clipboard(kestrel::ClipboardCommand),
+    ClipboardPaste {
+        item_id: u64,
+        plain_text: bool,
+    },
+    SetClipboardPasteKeys(kestrel_core::ClipboardPasteKeys),
     ClipboardSearch(String),
     ClipboardPreview(u64),
     ClipboardCopyImageText(u64),
@@ -1105,6 +1136,10 @@ struct ApplicationController {
     overlay: StatusOverlay,
     refreshing: Cell<bool>,
     targeted: Cell<TargetedPanel>,
+    /// A paste waits for the window to hide and the modifiers to clear.
+    paste_pending: Cell<bool>,
+    /// Set after construction so paste polling can keep the controller alive.
+    self_ref: RefCell<Weak<ApplicationController>>,
     monitoring: Cell<bool>,
     /// Mirrors registration state; disabled features spawn no tick workers.
     monitor_running: Cell<bool>,
@@ -1237,7 +1272,7 @@ impl ApplicationController {
         let keep_awake_timed = runtime.keep_awake_is_timed();
         let overlay_modules = configuration.overlay;
         let state_commands = commands.clone();
-        Rc::new(Self {
+        let controller = Rc::new(Self {
             state: Arc::new(Mutex::new(ControllerState {
                 runtime,
                 commands: state_commands,
@@ -1275,6 +1310,8 @@ impl ApplicationController {
             overlay: StatusOverlay::new(commands.clone()),
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
+            paste_pending: Cell::new(false),
+            self_ref: RefCell::new(Weak::new()),
             monitoring: Cell::new(false),
             monitor_running: Cell::new(monitor_running),
             clipboard_running: Cell::new(clipboard_running),
@@ -1344,7 +1381,9 @@ impl ApplicationController {
             refresh_results,
             tick_results,
             commands,
-        })
+        });
+        *controller.self_ref.borrow_mut() = Rc::downgrade(&controller);
+        controller
     }
 
     fn present(self: &Rc<Self>, application: &adw::Application) {
@@ -1828,6 +1867,90 @@ impl ApplicationController {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Clipboard);
     }
 
+    /// Starts a paste; the window hides once the entry is staged.
+    fn start_clipboard_paste(self: &Rc<Self>, item_id: u64, plain_text: bool) {
+        let unavailable = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .clipboard_paste_unavailable();
+        if let Some(reason) = unavailable {
+            self.show_message(&format!("Paste is unavailable: {reason}"));
+            return;
+        }
+        if self.refreshing.get() {
+            self.show_message("Another operation is still running");
+            return;
+        }
+        self.paste_pending.set(true);
+        self.request_clipboard_operation(
+            ControllerOperation::ClipboardPaste {
+                item_id,
+                plain_text,
+            },
+            "kestrel-clipboard-paste",
+        );
+    }
+
+    /// Hides every Kestrel window, then reports focus and modifier state until
+    /// the paste reaches a terminal stage.
+    fn begin_paste_observation(&self) {
+        let Some(application) = gtk::gio::Application::default()
+            .and_then(|application| application.downcast::<gtk::Application>().ok())
+        else {
+            return;
+        };
+        // The floating surfaces are destroyed; the main window is hidden so the
+        // compositor can return focus to the previous application.
+        if let Some(surface) = self.floating.borrow_mut().take() {
+            surface.window.close();
+        }
+        for window in application.windows() {
+            window.set_visible(false);
+        }
+        let Some(controller) = self.self_ref.borrow().upgrade() else {
+            return;
+        };
+        let state = Arc::clone(&self.state);
+        glib::timeout_add_local(Duration::from_millis(40), move || {
+            let observation = paste_observation(&application);
+            let stage = {
+                let guard = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.runtime.observe_clipboard_paste(observation);
+                guard.runtime.clipboard_snapshot().paste
+            };
+            let Some(stage) = stage else {
+                return glib::ControlFlow::Break;
+            };
+            if !stage.is_terminal() {
+                return glib::ControlFlow::Continue;
+            }
+            controller.finish_paste(&stage);
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// Reports the outcome; a failed or abandoned paste brings the window back.
+    fn finish_paste(self: &Rc<Self>, stage: &kestrel_services::paste::PasteStage) {
+        if !matches!(stage, kestrel_services::paste::PasteStage::Done) {
+            if let Some(application) = gtk::gio::Application::default()
+                .and_then(|application| application.downcast::<adw::Application>().ok())
+            {
+                self.present(&application);
+            }
+            if let Some(message) = stage.message() {
+                self.show_message(&message);
+            }
+        }
+        let view_model = self.current_view_model();
+        if let Some(view) = self.window.borrow().as_ref() {
+            apply_targeted_panel(view, &view_model, TargetedPanel::Clipboard);
+        }
+    }
+
     /// Queues command-bar work; the newest query survives a busy worker.
     fn request_command_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
         if let ControllerOperation::CommandQuery(query) = &operation {
@@ -1876,7 +1999,11 @@ impl ApplicationController {
             view.set_refreshing(false);
         }
         let targeted = self.targeted.replace(TargetedPanel::Full);
+        let paste_staged = self.paste_pending.replace(false) && result.is_ok();
         self.apply_refresh_result(result, targeted);
+        if paste_staged {
+            self.begin_paste_observation();
+        }
         // The close dialog's save may have failed; the choice to quit stands.
         if self.pending_after_close_save.take() == Some(AfterCloseSave::Quit) {
             let _ = self.commands.try_send(ApplicationCommand::Quit);
@@ -3839,6 +3966,31 @@ impl ControllerState {
                         .to_owned(),
                 }
             }
+            ControllerOperation::ClipboardPaste {
+                item_id,
+                plain_text,
+            } => {
+                match self.runtime.execute_clipboard_command(
+                    kestrel_services::clipboard::ClipboardCommand::PasteItem {
+                        item_id,
+                        plain_text,
+                    },
+                ) {
+                    Some(Ok(_)) => String::new(),
+                    Some(Err(error)) => format!("Paste failed: {error}"),
+                    None => "Clipboard history is not running; enable clipboard.history first"
+                        .to_owned(),
+                }
+            }
+            ControllerOperation::SetClipboardPasteKeys(keys) => {
+                let mut candidate = self.configuration.clone();
+                candidate.clipboard.paste_keys = keys;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!("Paste keystroke: {}", keys.label()),
+                )?
+            }
             ControllerOperation::ClipboardSearch(query) => {
                 self.clipboard_query = query.clone();
                 self.clipboard_preview = None;
@@ -4781,6 +4933,7 @@ fn clipboard_command_summary(command: &kestrel::ClipboardCommand) -> &'static st
     match command {
         kestrel::ClipboardCommand::Refresh => "Clipboard refresh",
         kestrel::ClipboardCommand::CopyItem { .. } => "Clipboard copy",
+        kestrel::ClipboardCommand::PasteItem { .. } => "Clipboard paste",
         kestrel::ClipboardCommand::DeleteItems { .. } => "Clipboard delete",
         kestrel::ClipboardCommand::SetPinned { .. } => "Clipboard pin",
         kestrel::ClipboardCommand::ReplaceText { .. } => "Clipboard edit",
@@ -5504,6 +5657,14 @@ fn dispatch_commands(
                 ApplicationCommand::Clipboard(command) => controller.request_clipboard_operation(
                     ControllerOperation::Clipboard(command),
                     "kestrel-clipboard",
+                ),
+                ApplicationCommand::ClipboardPaste {
+                    item_id,
+                    plain_text,
+                } => controller.start_clipboard_paste(item_id, plain_text),
+                ApplicationCommand::SetClipboardPasteKeys(keys) => controller.request_operation(
+                    ControllerOperation::SetClipboardPasteKeys(keys),
+                    "kestrel-clipboard-paste-keys",
                 ),
                 ApplicationCommand::ClipboardSearch(query) => controller
                     .request_clipboard_operation(

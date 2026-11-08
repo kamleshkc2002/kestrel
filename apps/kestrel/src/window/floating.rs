@@ -17,7 +17,8 @@ use crate::layer_shell::{self, SurfacePlacement};
 const COMMAND_BAR_WIDTH: i32 = 640;
 const QUICK_PANEL_WIDTH: i32 = 440;
 const MAX_RESULTS_HEIGHT: i32 = 360;
-const COMMAND_BAR_HINT: &str = "Up and Down select · Return runs · Escape closes";
+const COMMAND_BAR_HINT: &str =
+    "Up and Down select · Return runs · Shift+Return pastes a clipboard entry · Escape closes";
 /// Focus may leave briefly when input devices change; dismissal waits this long.
 const DISMISS_DELAY: std::time::Duration = std::time::Duration::from_millis(250);
 
@@ -107,7 +108,11 @@ impl FloatingSurface {
                 gdk::Key::p if control => move_selection(&results, -1),
                 gdk::Key::Return | gdk::Key::KP_Enter => {
                     let index = results.selected_row().map_or(0, |row| row.index());
-                    run_result(&sender, &ids, index);
+                    if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+                        run_result_paste(&sender, &ids, index);
+                    } else {
+                        run_result(&sender, &ids, index);
+                    }
                 }
                 _ => return glib::Propagation::Proceed,
             }
@@ -347,6 +352,26 @@ fn run_result(commands: &Sender<ApplicationCommand>, ids: &RefCell<Vec<String>>,
         .ok()
         .and_then(|index| ids.borrow().get(index).cloned());
     if let Some(id) = id {
+        let _ = commands.try_send(ApplicationCommand::CommandBar(CommandBarCommand::Run(id)));
+    }
+}
+
+/// Shift+Return pastes a clipboard result and runs anything else as Return does.
+fn run_result_paste(commands: &Sender<ApplicationCommand>, ids: &RefCell<Vec<String>>, index: i32) {
+    let id = usize::try_from(index)
+        .ok()
+        .and_then(|index| ids.borrow().get(index).cloned());
+    if let Some(id) = id {
+        if let Some(item_id) = id
+            .strip_prefix("clipboard:")
+            .and_then(|item_id| item_id.parse::<u64>().ok())
+        {
+            let _ = commands.try_send(ApplicationCommand::ClipboardPaste {
+                item_id,
+                plain_text: false,
+            });
+            return;
+        }
         let _ = commands.try_send(ApplicationCommand::CommandBar(CommandBarCommand::Run(id)));
     }
 }
