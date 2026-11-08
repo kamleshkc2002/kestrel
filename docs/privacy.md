@@ -1,3 +1,8 @@
+---
+layout: default
+title: Privacy
+---
+
 # What's stored and sent
 
 Files go in the standard XDG folders, under a `kestrel` folder;

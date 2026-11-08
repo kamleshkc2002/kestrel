@@ -1,3 +1,8 @@
+---
+layout: default
+title: Stability
+---
+
 # Compatibility promise
 
 From 1.0, the items below stay stable for every 1.x release. Updating within

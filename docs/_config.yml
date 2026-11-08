@@ -1,0 +1,13 @@
+title: Kestrel
+description: Clipboard history, screenshots with OCR, a floating shelf, a command bar, audio routing, and quiet system readouts for COSMIC, Sway, and Hyprland.
+theme: minima
+plugins:
+  - jekyll-relative-links
+  - jekyll-seo-tag
+relative_links:
+  enabled: true
+  collections: false
+header_pages:
+  - features.md
+  - compatibility.md
+  - privacy.md

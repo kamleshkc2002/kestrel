@@ -1,3 +1,8 @@
+---
+layout: default
+title: Development
+---
+
 # Development
 
 ## Workspace
@@ -42,7 +47,7 @@ bash scripts/build-appimage.sh 0.1.0
 Releases from 0.6.0-preview.6 on also carry a minisign signature
 (`Kestrel-<version>-x86_64.AppImage.minisig`), made in the release workflow with
 the `MINISIGN_SECRET_KEY` repository secret. The public key is
-[`data/release-signing.pub`](../data/release-signing.pub); check a download with:
+[`data/release-signing.pub`](https://github.com/kamleshkc2002/kestrel/blob/main/data/release-signing.pub); check a download with:
 
 ```bash
 minisign -V -p data/release-signing.pub -m Kestrel-<version>-x86_64.AppImage
@@ -99,7 +104,7 @@ For a release:
 
 ## Development
 
-To propose a change, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+To propose a change, start with [`CONTRIBUTING.md`](https://github.com/kamleshkc2002/kestrel/blob/main/CONTRIBUTING.md).
 
 Changing a feature ID, a `config.toml` key, or a `kestrel --command` ID means a
 configuration migration plus a stability-list update; see the
@@ -163,9 +168,9 @@ Build scripts for the `-sys` crates re-run whenever `PKG_CONFIG_PATH` changes,
 so keep it the same across builds, rust-analyzer included (`cargo.extraEnv` in
 a local `rust-analyzer.toml`). Then `KESTREL_LAYER_SHELL=off` rebuilds only the
 `kestrel` crate, and the build without gtk4-layer-shell shares the same
-`target/`. Git worktrees can share it too: a `.cargo/config.toml` in the folder
-that holds them, with `[build] target-dir` set to the main checkout's `target/`,
-covers every worktree inside it.
+`target/`. Give each Git worktree its own `target/`: Cargo judges a workspace
+crate fresh by file times, so a target shared between checkouts can reuse
+artifacts built from another checkout's code.
 
 With gtk4-layer-shell installed and Sway available, check that the command bar
 becomes an overlay (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA drivers):
