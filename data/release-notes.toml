@@ -19,3 +19,7 @@ text = "A shelf entry for a package or disk image can be handed to the app your 
 [[change]]
 feature = "files.shelf"
 text = "Shelf file rows can move, rename, and show their file in your file manager, and copied images can be saved as PNG files."
+
+[[change]]
+feature = "capture.text"
+text = "Each recent capture and the screenshot editor offer Copy text, which reads the words on this computer with the screen tools' OCR language and time limit and puts them on the clipboard without keeping them."

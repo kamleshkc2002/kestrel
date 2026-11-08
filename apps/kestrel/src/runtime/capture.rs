@@ -84,6 +84,25 @@ impl ApplicationRuntime {
         self.capture.read_png(id).map_err(|error| error.to_string())
     }
 
+    /// Why the recent captures cannot offer text recognition, when Tesseract
+    /// is missing; the same remedy the screen tools show.
+    pub fn capture_ocr_unavailable(&self) -> Option<String> {
+        TesseractAdapter::discover()
+            .executable()
+            .is_none()
+            .then(|| kestrel_platform::screen_tools::TESSERACT_REMEDIATION.to_owned())
+    }
+
+    /// Text recognized in one stored capture, trimmed; `None` when it holds
+    /// no text. Neither the pixels nor the text are retained.
+    pub fn capture_text(&self, id: CaptureId) -> Result<Option<String>, String> {
+        self.require_capture()?;
+        if let Some(reason) = self.capture_ocr_unavailable() {
+            return Err(reason);
+        }
+        stored_capture_text(&self.capture, self.clipboard_ocr.as_ref(), id)
+    }
+
     /// The stored PNG's path, when the capture service still has it.
     pub fn capture_path(&self, id: CaptureId) -> Option<PathBuf> {
         self.capture.path(id)
@@ -240,15 +259,120 @@ impl ApplicationRuntime {
             modes,
             thumbnails,
             limits: self.capture_limits,
+            ocr_unavailable: self.capture_ocr_unavailable(),
             now: SystemTime::now(),
         }
     }
+}
+
+/// Text from one capture's stored PNG; `None` when it holds no text.
+fn stored_capture_text(
+    capture: &CaptureService,
+    recognizer: &dyn TextRecognizer,
+    id: CaptureId,
+) -> Result<Option<String>, String> {
+    let png = capture.read_png(id).map_err(|error| error.to_string())?;
+    kestrel_services::screen_tools::image_text(
+        recognizer,
+        &png,
+        &kestrel_platform::capture::CaptureCancel::new(),
+    )
+    .map_err(|error| error.message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::FeaturePreset;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    fn tesseract_script(dir: &TempDir, body: &str) -> PathBuf {
+        let path = dir.path().join("tesseract");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    }
+
+    fn capture_with_png(directory: &Path) -> (CaptureService, CaptureId) {
+        use kestrel_services::capture::{
+            CaptureHistory, CapturePolicy, NewCapture,
+            image::{RgbaImage, encode_png},
+        };
+        let policy =
+            CapturePolicy::from_configuration(&kestrel_core::CaptureConfiguration::default());
+        let mut history =
+            CaptureHistory::open(directory.to_path_buf(), policy).expect("history opens");
+        let png = encode_png(&RgbaImage::new(4, 3, vec![255; 48]).expect("valid image"))
+            .expect("png encodes");
+        let entry = history
+            .insert(
+                &png,
+                NewCapture {
+                    mode: CaptureMode::Area,
+                    edited: false,
+                    width: 4,
+                    height: 3,
+                },
+                SystemTime::now(),
+            )
+            .expect("capture stores");
+        drop(history);
+        let mut service = CaptureService::new(policy, directory.to_path_buf());
+        service.start().expect("capture service starts");
+        (service, entry.id)
+    }
+
+    fn recognizer(executable: PathBuf) -> TesseractRecognizer {
+        TesseractRecognizer {
+            adapter: TesseractAdapter::with_executable(executable),
+            language: "eng".to_owned(),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn saved_capture_text_is_read_empty_or_typed() {
+        let dir = TempDir::new().expect("temp dir");
+        let (service, id) = capture_with_png(&dir.path().join("captures"));
+
+        let text = recognizer(tesseract_script(
+            &dir,
+            "cat >/dev/null; printf 'saved words\\n\\f'",
+        ));
+        assert_eq!(
+            stored_capture_text(&service, &text, id).expect("text read"),
+            Some("saved words".to_owned())
+        );
+
+        let empty = recognizer(tesseract_script(&dir, "cat >/dev/null; printf ' \\n\\f'"));
+        assert_eq!(
+            stored_capture_text(&service, &empty, id).expect("empty read"),
+            None
+        );
+
+        let stalled = TesseractRecognizer {
+            timeout: Duration::from_millis(100),
+            ..recognizer(tesseract_script(&dir, "sleep 30"))
+        };
+        assert!(
+            stored_capture_text(&service, &stalled, id)
+                .expect_err("a stalled read fails")
+                .contains("did not finish in time")
+        );
+
+        let missing = TesseractRecognizer {
+            adapter: TesseractAdapter::default(),
+            ..recognizer(PathBuf::new())
+        };
+        assert!(
+            stored_capture_text(&service, &missing, id)
+                .expect_err("a missing tesseract fails")
+                .contains("Tesseract is not installed")
+        );
+    }
+
     #[test]
     fn disabled_screenshots_refuse_every_capture_action() {
         let mut runtime =

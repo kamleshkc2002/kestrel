@@ -10,6 +10,8 @@ pub(crate) struct CapturePresentation {
     pub modes: Vec<CaptureMode>,
     /// Thumbnail files aligned with `snapshot.entries`.
     pub thumbnails: Vec<Option<std::path::PathBuf>>,
+    /// Why writing a capture's text is unavailable, when Tesseract is missing.
+    pub ocr_unavailable: Option<String>,
     pub limits: kestrel_core::CaptureConfiguration,
     pub now: std::time::SystemTime,
 }
@@ -38,6 +40,8 @@ pub struct CaptureViewModel {
     pub entries: Vec<CaptureEntryViewModel>,
     pub usage: String,
     pub storage_error: Option<String>,
+    /// Why copying a capture's text is unavailable, when Tesseract is missing.
+    pub ocr_unavailable: Option<String>,
     pub limits: kestrel_core::CaptureConfiguration,
     pub turn_on: Option<TurnOnViewModel>,
 }
@@ -140,6 +144,7 @@ impl CaptureViewModel {
             entries,
             usage,
             storage_error: snapshot.storage_error,
+            ocr_unavailable: presentation.ocr_unavailable,
             limits,
             turn_on: None,
         }
@@ -206,6 +211,7 @@ mod tests {
             provider: Some(CaptureProvider::Portal),
             modes: vec![CaptureMode::Interactive, CaptureMode::Screen],
             thumbnails: Vec::new(),
+            ocr_unavailable: None,
             limits: kestrel_core::CaptureConfiguration::default(),
             now: std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_120),
         });
