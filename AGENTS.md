@@ -132,7 +132,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - Prefer standard portals/documented D-Bus APIs, then supported native user-session APIs, then bounded executable adapters with resolved paths, timeouts, bounded output, and structured errors.
 - Never infer support solely from desktop/compositor/session names. Report observed backend evidence and remediation.
 - Prefer event signals for D-Bus/PipeWire services and bounded configurable polling for `/proc`, `/sys`, and hardware.
-- AppImage CI runs on Ubuntu 24.04, validates `data/io.github.kamleshkc2002.Kestrel.desktop`, inspects bundled libraries/assets (including gtk4-layer-shell), verifies checksums, checks layer-shell placement under headless Sway, and smoke-starts the artifact under Xvfb.
+- AppImage CI runs in an Ubuntu 22.04 container (glibc 2.35) so the artifact starts on Ubuntu 22.04, Linux Mint 21, and Debian 12; it builds the pinned GTK stack from source, validates `data/io.github.kamleshkc2002.Kestrel.desktop`, inspects bundled libraries/assets (including gtk4-layer-shell) and every ELF's glibc requirement, verifies checksums, checks layer-shell placement under headless Sway, and smoke-starts the artifact under Xvfb.
 
 ## Testing & QA
 

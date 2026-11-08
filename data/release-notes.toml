@@ -47,3 +47,7 @@ text = "Kestrel starts without GStreamer: screen recording and trimming run in a
 [[change]]
 feature = "kestrel"
 text = "The background tick runs once a second instead of four times when no feature or overlay needs polling, so an idle window wakes the processor less often."
+
+[[change]]
+feature = "kestrel"
+text = "The AppImage is now built against glibc 2.35, so it starts on Ubuntu 22.04, Linux Mint 21, and Debian 12 as well as newer distributions."

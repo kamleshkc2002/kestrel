@@ -65,12 +65,28 @@ cat >>"$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh" <<'EOF'
 
 # Use GTK's built-in input-method fallback when the bundled module is absent.
 if [ -n "${GTK_IM_MODULE:-}" ] &&
-  ! find "$APPDIR/usr/lib/gtk-4.0" -type f -name "libim-${GTK_IM_MODULE}.so" -print -quit |
+  ! find "$APPDIR/usr/lib/gtk-4.0" "$APPDIR/usr/local/lib/gtk-4.0" \
+      -type f -name "libim-${GTK_IM_MODULE}.so" -print -quit 2>/dev/null |
     grep -q .; then
   unset GTK_IM_MODULE
 fi
 EOF
-find "$appdir/usr/lib/gtk-4.0" -name 'libmedia-gstreamer.so' -delete 2>/dev/null || true
+# Keep the media backend out of the bundle; the module can arrive under the
+# distro layout or the source stack's prefix.
+find "$appdir/usr/lib/gtk-4.0" "$appdir/usr/local/lib/gtk-4.0" \
+  -name 'libmedia-gstreamer.so' -delete 2>/dev/null || true
+
+# The GTK plugin resolves the source-built stack's module directory relative
+# to the distro libdir, which lands in local/lib. Move the modules into the
+# AppDir's lib directory: linuxdeploy deploys their dependencies from there,
+# and the hook's GTK_PATH then points at the usual place.
+if [ -d "$appdir/local/lib/gtk-4.0" ]; then
+  mkdir -p "$appdir/usr/lib"
+  cp -a "$appdir/local/lib/gtk-4.0/." "$appdir/usr/lib/gtk-4.0/"
+  rm -rf "$appdir/local"
+  sed -i 's|^export GTK_PATH=.*|export GTK_PATH="$APPDIR/usr/lib/gtk-4.0"|' \
+    "$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh"
+fi
 
 env ARCH="$architecture" VERSION="$version" \
   "$linuxdeploy" --appimage-extract-and-run \

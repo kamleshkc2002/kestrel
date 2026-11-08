@@ -27,10 +27,13 @@ Debug builds (`cargo run -p kestrel`) run as **Kestrel (Development)** with the 
 ## AppImage preview
 
 Tagged versions are published as x86_64 AppImage previews on GitHub Releases.
-Ubuntu 24.04 builds bundle GTK4/libadwaita; the matching `.sha256` file verifies
-downloads. The AppImage does not bundle GStreamer: screen recording uses the
-host's GStreamer 1.x runtime, while everything else starts without it and
-recording reports what to install.
+The build runs in an Ubuntu 22.04 container, so the artifact needs glibc 2.35 or
+newer and starts on Ubuntu 22.04, Linux Mint 21, Debian 12, and newer systems.
+The container builds GTK 4.14, libadwaita 1.5, glib, wayland, and
+gtk4-layer-shell from source with `scripts/build-gtk-stack.sh` and bundles
+them; the matching `.sha256` file verifies downloads. The AppImage does not
+bundle GStreamer: screen recording uses the host's GStreamer 1.x runtime, while
+everything else starts without it and recording reports what to install.
 
 ```bash
 bash scripts/build-appimage.sh 0.1.0
