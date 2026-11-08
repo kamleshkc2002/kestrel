@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/kestrel",
+    "apps/kestrel-record",
     "crates/kestrel-core",
     "crates/kestrel-platform",
     "crates/kestrel-services",

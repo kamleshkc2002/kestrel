@@ -63,7 +63,7 @@ use kestrel_platform::{
         QuickToggleErrorKind, QuickToggleId,
     },
     recording::{
-        AudioTrack, FEATURE_ID as RECORDING_ID, GstTakeEditor, PortalRecordingBackend,
+        AudioTrack, FEATURE_ID as RECORDING_ID, HelperTakeEditor, PortalRecordingBackend,
         RecordingDetection, TakeEditor,
     },
     screen_tools::{
@@ -644,10 +644,10 @@ impl ApplicationRuntime {
             recording_detection,
             recording_settings: configuration.recording.clone(),
             recording_applications: Vec::new(),
-            recording_editor: Arc::new(GstTakeEditor),
+            recording_editor: Arc::new(HelperTakeEditor::new()),
             recording: RecordingService::new(
                 Arc::new(PortalRecordingBackend::new()),
-                Arc::new(GstTakeEditor),
+                Arc::new(HelperTakeEditor::new()),
                 crate::config::recordings_path()
                     .unwrap_or_else(|| std::env::temp_dir().join("Kestrel recordings")),
             ),

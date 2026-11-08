@@ -9,8 +9,11 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
-use super::pipeline::{classify, element, frame_from_sample, init};
-use super::{RecordingError, RecordingErrorKind, VideoFrame, element_remediation};
+use kestrel_platform::recording::{
+    RecordingError, RecordingErrorKind, VideoFrame, element_remediation,
+};
+
+use crate::pipeline::{classify, element, frame_from_sample, init};
 
 /// Elements reading and re-encoding a take.
 pub const EXPORT_ELEMENTS: [&str; 11] = [
@@ -333,7 +336,7 @@ fn run_export(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recording::pipeline::tests::{ready, record_test_take};
+    use crate::pipeline::tests::{ready, record_test_take};
     use std::sync::Mutex;
     use tempfile::TempDir;
 

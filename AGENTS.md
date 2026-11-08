@@ -12,12 +12,16 @@ Kestrel is a local-first, capability-aware Linux desktop utility host written in
 
 ## Architecture & Data Flow
 
-The workspace has four production packages with one-way dependency flow:
+The workspace has four production packages with one-way dependency flow, plus
+`apps/kestrel-record`, the GStreamer recording helper that the app starts on
+demand:
 
 ```text
 apps/kestrel -> kestrel-services -> kestrel-platform -> kestrel-core
        |               |                   |                |
    GTK shell      policy/state       Linux adapters    domain contracts
+
+apps/kestrel-record -> kestrel-platform
 ```
 
 The app and services also depend directly on lower layers where needed. Preserve these responsibilities:
@@ -43,11 +47,12 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 ## Key Directories
 
 - `apps/kestrel/src/`: executable shell and app composition. New end-to-end features usually touch one feature module each under `runtime/`, `view_model/`, and `window/` (plus a `window/settings/` group on the feature's sidebar page when it has settings).
+- `apps/kestrel-record/src/`: the GStreamer helper, its pipelines, and its request loop.
 - `crates/kestrel-core/src/`: cross-layer vocabulary, capability reports, feature specs, configuration models, and non-I/O validation.
 - `crates/kestrel-platform/src/`: concrete Linux probes/adapters, one module per feature.
 - `crates/kestrel-services/src/`: feature policy, state, commands, snapshots, and lifecycle, one module per feature.
 - `crates/kestrel-services/tests/`: production-backend integration tests; currently clipboard lifecycle only.
-- `scripts/`: packaging automation (the AppImage builder), the clipboard clean-session QA runner, and the layer-shell smoke check.
+- `scripts/`: packaging automation (the AppImage builder), the clipboard clean-session QA runner, the layer-shell smoke check, and the no-GStreamer startup smoke check.
 - `data/`: desktop metadata and icons used by packaging, and `release-notes.toml`, the upcoming release's notes that Overview offers after an update. A user-visible change adds a one-sentence entry tagged with its feature ID (or `kestrel` for app-wide changes); the file is cleared after each release, so it only ever holds one release.
 - `docs/`: user documentation (`features.md`, `privacy.md`, `configuration.md`, `development.md`), plus the product requirements and architecture contracts. `README.md` stays a short landing page; feature detail goes in `docs/features.md`.
 

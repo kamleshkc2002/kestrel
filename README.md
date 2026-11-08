@@ -57,7 +57,7 @@ chmod +x "$FILE"
 ./"$FILE"
 ```
 
-- **Requires:** the system's GStreamer 1.x runtime, which the AppImage does not bundle; without it the app does not start. On Debian and Ubuntu that is `libgstreamer1.0-0` and `libgstreamer-plugins-base1.0-0`. Screen recording also needs the PipeWire, Base, and Good plugins; see [Screen recording](docs/features.md#screen-recording--capturerecording).
+- **Requires:** a GTK4 desktop session; the app starts without GStreamer. Screen recording is the only feature that uses GStreamer, and the AppImage does not bundle it: install the system's GStreamer 1.x runtime with its PipeWire, Base, and Good plugins (on Debian and Ubuntu: `libgstreamer1.0-0`, `libgstreamer-plugins-base1.0-0`, `gstreamer1.0-pipewire`, `gstreamer1.0-plugins-base`, and `gstreamer1.0-plugins-good`). Without it, recording says what to install and the rest of the app works. See [Screen recording](docs/features.md#screen-recording--capturerecording).
 - If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
 - To build from source, see [docs/development.md](docs/development.md).
 

@@ -1,8 +1,10 @@
 //! Screen recording: `org.freedesktop.portal.ScreenCast` sessions recorded
 //! through GStreamer (`pipewiresrc` → VP8, optional Opus tracks → WebM).
+//!
+//! GStreamer runs in the separate `kestrel-record` helper, so the main binary
+//! starts without it; [`helper`] owns that protocol.
 
-mod export;
-mod pipeline;
+pub mod helper;
 mod portal;
 
 use std::env;
@@ -10,8 +12,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub use export::{EXPORT_ELEMENTS, export_missing, export_range, frame_at, media_duration};
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
+use serde::{Deserialize, Serialize};
 use zbus::blocking::connection::Builder;
 
 /// Reads and trims completed takes.
@@ -30,17 +32,33 @@ pub trait TakeEditor: Send + Sync {
     ) -> Result<(), RecordingError>;
 }
 
-/// Takes read and re-encoded through GStreamer.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct GstTakeEditor;
+/// Takes read and re-encoded through the recorder helper.
+#[derive(Debug, Clone)]
+pub struct HelperTakeEditor {
+    helper: helper::RecordingHelper,
+}
 
-impl TakeEditor for GstTakeEditor {
+impl HelperTakeEditor {
+    pub fn new() -> Self {
+        Self {
+            helper: helper::RecordingHelper::discover(),
+        }
+    }
+}
+
+impl Default for HelperTakeEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TakeEditor for HelperTakeEditor {
     fn duration(&self, take: &Path) -> Result<Duration, RecordingError> {
-        media_duration(take)
+        self.helper.duration(take)
     }
 
     fn frame_at(&self, take: &Path, position: Duration) -> Result<VideoFrame, RecordingError> {
-        frame_at(take, position)
+        self.helper.frame_at(take, position)
     }
 
     fn export(
@@ -52,10 +70,10 @@ impl TakeEditor for GstTakeEditor {
         cancel: &std::sync::atomic::AtomicBool,
         progress: &dyn Fn(f64),
     ) -> Result<(), RecordingError> {
-        export_range(take, start, end, output, cancel, progress)
+        self.helper
+            .export(take, start, end, output, cancel, progress)
     }
 }
-pub use pipeline::gstreamer_missing;
 pub use portal::{PortalScreenCast, ScreenCastSession};
 
 use crate::audio::{AudioBackend, MicrophoneBackend, PulseAudioBackend};
@@ -88,7 +106,7 @@ pub const AUDIO_ELEMENTS: [&str; 4] = ["pulsesrc", "audioconvert", "audioresampl
 pub const APPLICATION_AUDIO_ELEMENTS: [&str; 3] = ["pipewiresrc", "audiomixer", "audiotestsrc"];
 
 /// What a recording captures; Area crops a monitor to a region chosen after consent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RecordingSource {
     Screen,
     Window,
@@ -106,7 +124,7 @@ impl RecordingSource {
 }
 
 /// An optional audio track, recorded separately from the other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum AudioTrack {
     /// What the default output plays (its PulseAudio monitor).
     System,
@@ -125,7 +143,7 @@ impl AudioTrack {
     }
 
     /// PulseAudio device the track reads.
-    pub(crate) const fn device(self) -> &'static str {
+    pub const fn device(self) -> &'static str {
         match self {
             Self::System => "@DEFAULT_MONITOR@",
             Self::Microphone => "@DEFAULT_SOURCE@",
@@ -134,7 +152,7 @@ impl AudioTrack {
 }
 
 /// What the System audio track captures.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SystemAudioSource {
     /// Everything the default output plays.
     #[default]
@@ -143,7 +161,8 @@ pub enum SystemAudioSource {
     Application { identity: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RecordingErrorKind {
     /// The user dismissed the desktop's sharing dialog.
     Cancelled,
@@ -159,7 +178,7 @@ pub enum RecordingErrorKind {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingError {
     pub kind: RecordingErrorKind,
     /// Kestrel-authored and free of paths.
@@ -202,7 +221,7 @@ impl fmt::Display for RecordingError {
 impl std::error::Error for RecordingError {}
 
 /// A region of the source frame, in its pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CropRegion {
     pub x: u32,
     pub y: u32,
@@ -219,7 +238,7 @@ pub struct VideoFrame {
 }
 
 /// How to record an opened source.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordingPlan {
     /// Written while recording; renamed by the caller once finished.
     pub output: PathBuf,
@@ -236,7 +255,7 @@ pub struct RecordingPlan {
 }
 
 /// Something that happened while recording.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecordingEvent {
     /// One audio track stopped; the rest of the recording continues.
     TrackFailed {
@@ -285,15 +304,18 @@ pub trait ActiveRecording: Send {
     fn abort(self: Box<Self>);
 }
 
-/// The ScreenCast portal recorded through GStreamer.
+/// The ScreenCast portal recorded through the helper.
 pub struct PortalRecordingBackend {
     portal: PortalScreenCast,
+    helper: helper::RecordingHelper,
 }
 
 impl PortalRecordingBackend {
     pub fn new() -> Self {
+        let helper = helper::RecordingHelper::discover();
         Self {
-            portal: PortalScreenCast::new(),
+            portal: PortalScreenCast::new(helper.clone()),
+            helper,
         }
     }
 }
@@ -311,7 +333,10 @@ impl RecordingBackend for PortalRecordingBackend {
         cursor: bool,
         cancel: &CaptureCancel,
     ) -> Result<Box<dyn CaptureSession>, RecordingError> {
-        if let Some(missing) = gstreamer_missing(source, &[], &SystemAudioSource::Output) {
+        if let Some(missing) =
+            self.helper
+                .gstreamer_missing(source, &[], &SystemAudioSource::Output)
+        {
             return Err(missing);
         }
         Ok(Box::new(self.portal.open(source, cursor, cancel)?))
@@ -347,8 +372,11 @@ pub struct RecordingDetection {
     pub source_types: u32,
     pub cursor_modes: u32,
     pub pipewire_socket: bool,
-    /// Why GStreamer could not start, when it could not.
+    /// Why the recorder helper or its GStreamer could not run, when either
+    /// could not.
     pub gstreamer_error: Option<String>,
+    /// The helper executable alone is missing from this installation.
+    pub helper_missing: bool,
     /// Needed elements this GStreamer lacks.
     pub missing_elements: Vec<&'static str>,
     pub system_audio: AudioAvailability,
@@ -359,6 +387,12 @@ pub struct RecordingDetection {
 
 impl RecordingDetection {
     pub fn detect() -> Self {
+        Self::detect_with(&helper::RecordingHelper::discover())
+    }
+
+    /// Detection against `helper`; injecting it also covers a build whose
+    /// helper is not beside the binary.
+    pub fn detect_with(helper: &helper::RecordingHelper) -> Self {
         let bus = Builder::session()
             .and_then(|builder| builder.method_timeout(PROBE_TIMEOUT).build())
             .ok();
@@ -371,10 +405,7 @@ impl RecordingDetection {
                 )
             })
         };
-        let (gstreamer_error, missing_elements) = match pipeline::missing_elements() {
-            Ok(missing) => (None, missing),
-            Err(error) => (Some(error), Vec::new()),
-        };
+        let (helper_missing, gstreamer_error, missing_elements) = gstreamer_state(helper);
         let mut pulse = PulseAudioBackend::new();
         let (server_name, system_audio) = match pulse.discover() {
             Ok(discovery) => (
@@ -398,6 +429,7 @@ impl RecordingDetection {
             cursor_modes: property("AvailableCursorModes").unwrap_or(0),
             pipewire_socket: pipewire_socket().is_some_and(|socket| socket.exists()),
             gstreamer_error,
+            helper_missing,
             missing_elements: missing_elements.clone(),
             system_audio,
             microphone,
@@ -487,7 +519,9 @@ impl RecordingDetection {
             CapabilityEvidence::new("pipewire_socket", presence(self.pipewire_socket)),
             CapabilityEvidence::new(
                 "gstreamer",
-                if self.gstreamer_error.is_some() {
+                if self.helper_missing {
+                    "recorder helper missing".to_owned()
+                } else if self.gstreamer_error.is_some() {
                     "failed to start".to_owned()
                 } else if self.missing_elements.is_empty() {
                     "complete".to_owned()
@@ -504,7 +538,30 @@ impl RecordingDetection {
             ),
         ];
         let missing_video = self.missing_video();
-        let report = if self.portal_version.is_none() {
+        let report = if let Some(error) = &self.gstreamer_error {
+            let (summary, remediation) = if self.helper_missing {
+                (
+                    "Screen recording needs its recorder helper.",
+                    "Reinstall Kestrel so its recorder helper is installed; screen recording \
+                     also needs GStreamer 1.x with its Base and Good plugins \
+                     (gstreamer1.0-plugins-base and gstreamer1.0-plugins-good).",
+                )
+            } else {
+                (
+                    "Screen recording needs GStreamer.",
+                    "Install GStreamer 1.x with its Base and Good plugins \
+                     (gstreamer1.0-plugins-base and gstreamer1.0-plugins-good).",
+                )
+            };
+            CapabilityReport::new(
+                FEATURE_ID,
+                CapabilityStatus::Unsupported {
+                    reason: error.clone(),
+                },
+                summary,
+            )
+            .with_remediation(remediation)
+        } else if self.portal_version.is_none() {
             CapabilityReport::new(
                 FEATURE_ID,
                 CapabilityStatus::Unsupported {
@@ -515,15 +572,6 @@ impl RecordingDetection {
             .with_remediation(
                 "Install the desktop's xdg-desktop-portal backend with ScreenCast support.",
             )
-        } else if let Some(error) = &self.gstreamer_error {
-            CapabilityReport::new(
-                FEATURE_ID,
-                CapabilityStatus::Unsupported {
-                    reason: format!("GStreamer could not start: {error}"),
-                },
-                "Screen recording needs GStreamer.",
-            )
-            .with_remediation("Install GStreamer 1.x with its Base and Good plugins.")
         } else if !missing_video.is_empty() {
             CapabilityReport::new(
                 FEATURE_ID,
@@ -627,8 +675,19 @@ fn application_audio_availability(
     Ok(())
 }
 
+/// What the recorder helper reports about GStreamer, for detection.
+fn gstreamer_state(helper: &helper::RecordingHelper) -> (bool, Option<String>, Vec<&'static str>) {
+    match helper.probe() {
+        Ok(missing) => (false, None, missing),
+        Err(problem) => {
+            let missing_helper = problem == helper::RecorderProblem::Missing;
+            (missing_helper, Some(problem.message()), Vec::new())
+        }
+    }
+}
+
 /// Names the plugin set each missing element ships in.
-fn element_remediation(missing: &[&str]) -> String {
+pub fn element_remediation(missing: &[&str]) -> String {
     let mut packages: Vec<&str> = missing
         .iter()
         .map(|element| match *element {
@@ -668,6 +727,7 @@ mod tests {
             cursor_modes: 7,
             pipewire_socket: true,
             gstreamer_error: None,
+            helper_missing: false,
             missing_elements: Vec::new(),
             system_audio: AudioAvailability::Available,
             microphone: AudioAvailability::Available,
@@ -722,6 +782,61 @@ mod tests {
             CapabilityStatus::Unsupported { .. }
         ));
         assert_eq!(status(detection(|_| {})), CapabilityStatus::Supported);
+    }
+
+    #[test]
+    fn a_missing_recorder_helper_is_unavailable_with_packages() {
+        let helper = helper::RecordingHelper::at("/nonexistent/kestrel-record");
+        let (helper_missing, gstreamer_error, missing_elements) = gstreamer_state(&helper);
+        assert!(helper_missing, "the injected path has no helper");
+        assert!(gstreamer_error.is_some());
+        for portal_version in [Some(5), None] {
+            let report = detection(|d| {
+                d.portal_version = portal_version;
+                d.helper_missing = helper_missing;
+                d.gstreamer_error = gstreamer_error.clone();
+                d.missing_elements = missing_elements.clone();
+            })
+            .capability();
+            let CapabilityStatus::Unsupported { reason } = &report.status else {
+                panic!("the helper is unavailable: {:?}", report.status);
+            };
+            assert!(
+                reason.contains("recorder helper"),
+                "the helper reason comes first ({portal_version:?}): {reason}"
+            );
+            assert!(!reason.contains("ScreenCast portal"), "{reason}");
+            let remediation = report.remediation.expect("remediation");
+            assert!(remediation.contains("recorder helper"), "{remediation}");
+            assert!(
+                remediation.contains("gstreamer1.0-plugins-base"),
+                "{remediation}"
+            );
+            assert!(
+                remediation.contains("gstreamer1.0-plugins-good"),
+                "{remediation}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_helper_that_cannot_start_is_unavailable_without_a_portal() {
+        let report = detection(|d| {
+            d.portal_version = None;
+            d.gstreamer_error =
+                Some("The recorder helper could not start; GStreamer may be missing.".to_owned());
+        })
+        .capability();
+        let CapabilityStatus::Unsupported { reason } = &report.status else {
+            panic!("the helper could not start: {:?}", report.status);
+        };
+        assert!(reason.contains("GStreamer"), "{reason}");
+        assert!(!reason.contains("ScreenCast portal"), "{reason}");
+        let remediation = report.remediation.expect("remediation");
+        assert!(
+            remediation.contains("gstreamer1.0-plugins-base"),
+            "{remediation}"
+        );
     }
 
     #[test]

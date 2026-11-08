@@ -12,10 +12,11 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
-use super::{
+use kestrel_platform::audio::application_streams;
+use kestrel_platform::recording::{
     APPLICATION_AUDIO_ELEMENTS, AREA_ELEMENT, AUDIO_ELEMENTS, ActiveRecording, AudioTrack,
-    RecordingError, RecordingErrorKind, RecordingEvent, RecordingPlan, RecordingSource,
-    SystemAudioSource, VIDEO_ELEMENTS, VideoFrame,
+    RecordingError, RecordingErrorKind, RecordingEvent, RecordingPlan, SystemAudioSource,
+    VIDEO_ELEMENTS, VideoFrame,
 };
 
 /// How long finishing may take to flush encoders and write the index.
@@ -33,7 +34,7 @@ const KEYFRAME_SECONDS: u32 = 2;
 static INIT: LazyLock<Result<(), String>> =
     LazyLock::new(|| gst::init().map_err(|error| error.to_string()));
 
-pub(super) fn init() -> Result<(), String> {
+pub(crate) fn init() -> Result<(), String> {
     INIT.clone()
 }
 
@@ -55,43 +56,6 @@ pub(crate) fn missing_elements() -> Result<Vec<&'static str>, String> {
     Ok(missing)
 }
 
-/// Why `source` with `audio` cannot be recorded here, checked before asking
-/// the desktop to share anything.
-pub fn gstreamer_missing(
-    source: RecordingSource,
-    audio: &[AudioTrack],
-    system_audio: &SystemAudioSource,
-) -> Option<RecordingError> {
-    let missing = match missing_elements() {
-        Ok(missing) => missing,
-        Err(error) => {
-            return Some(RecordingError::new(
-                RecordingErrorKind::Unavailable,
-                format!("GStreamer could not start: {error}"),
-            ));
-        }
-    };
-    let application = matches!(system_audio, SystemAudioSource::Application { .. })
-        && audio.contains(&AudioTrack::System);
-    let needed = VIDEO_ELEMENTS
-        .iter()
-        .chain((source == RecordingSource::Area).then_some(&AREA_ELEMENT))
-        .chain(AUDIO_ELEMENTS.iter().filter(|_| !audio.is_empty()))
-        .chain(APPLICATION_AUDIO_ELEMENTS.iter().filter(|_| application));
-    let mut absent: Vec<&str> = Vec::new();
-    for element in needed.copied().filter(|element| missing.contains(element)) {
-        if !absent.contains(&element) {
-            absent.push(element);
-        }
-    }
-    (!absent.is_empty()).then(|| {
-        RecordingError::new(
-            RecordingErrorKind::Unavailable,
-            format!("GStreamer lacks {}.", absent.join(", ")),
-        )
-    })
-}
-
 /// Where video frames come from.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum VideoInput {
@@ -101,7 +65,7 @@ pub(crate) enum VideoInput {
     Test,
 }
 
-pub(super) fn element(factory: &str) -> Result<gst::Element, RecordingError> {
+pub(crate) fn element(factory: &str) -> Result<gst::Element, RecordingError> {
     gst::ElementFactory::make(factory).build().map_err(|_| {
         RecordingError::new(
             RecordingErrorKind::Unavailable,
@@ -165,7 +129,7 @@ fn bus_error(bus: &gst::Bus, timeout: Duration) -> Option<(Option<gst::Object>, 
     Some((message.src().cloned(), classify(&error.error())))
 }
 
-pub(super) fn classify(error: &gst::glib::Error) -> RecordingError {
+pub(crate) fn classify(error: &gst::glib::Error) -> RecordingError {
     if let Some(resource) = error.kind::<gst::ResourceError>() {
         match resource {
             gst::ResourceError::NoSpaceLeft
@@ -249,7 +213,7 @@ pub(crate) fn grab_still(
     result
 }
 
-pub(super) fn frame_from_sample(sample: &gst::Sample) -> Result<VideoFrame, RecordingError> {
+pub(crate) fn frame_from_sample(sample: &gst::Sample) -> Result<VideoFrame, RecordingError> {
     let malformed =
         || RecordingError::new(RecordingErrorKind::Failed, "The picture was malformed.");
     let structure = sample
@@ -304,7 +268,7 @@ struct PulseStreams;
 
 impl ApplicationStreams for PulseStreams {
     fn streams(&mut self, identity: &str) -> Result<Vec<u32>, ()> {
-        crate::audio::application_streams(identity).map_err(|_| ())
+        application_streams(identity).map_err(|_| ())
     }
 }
 
@@ -1126,13 +1090,13 @@ impl Drop for GstRecording {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::Path;
     use tempfile::TempDir;
 
     /// Skips when the local GStreamer lacks test or encoding elements.
-    pub(in crate::recording) fn ready(extra: &[&str]) -> bool {
+    pub(crate) fn ready(extra: &[&str]) -> bool {
         if init().is_err() {
             eprintln!("skipping: GStreamer did not start");
             return false;
@@ -1252,7 +1216,7 @@ pub(super) mod tests {
     }
 
     /// Records `length` of test video with a System tone track.
-    pub(in crate::recording) fn record_test_take(
+    pub(crate) fn record_test_take(
         directory: &TempDir,
         length: std::time::Duration,
     ) -> std::path::PathBuf {

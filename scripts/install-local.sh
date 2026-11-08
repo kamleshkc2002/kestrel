@@ -19,6 +19,7 @@ repository="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 prefix="${KESTREL_PREFIX:-$HOME/.local}"
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 binary="$prefix/bin/kestrel"
+helper="$prefix/bin/kestrel-record"
 desktop_file="$prefix/share/applications/$app_id.desktop"
 case "$config_home" in
   /*) autostart_file="$config_home/autostart/$app_id.desktop" ;;
@@ -47,7 +48,7 @@ case "${1:-}" in
     if running; then
       "$binary" --command app.quit || true
     fi
-    rm -f "$binary" "$desktop_file" "$icon_file"
+    rm -f "$binary" "$helper" "$desktop_file" "$icon_file"
     if [ -n "$autostart_file" ]; then
       rm -f "$autostart_file"
     fi
@@ -67,10 +68,11 @@ if [ -f "$layer_shell_lib/pkgconfig/gtk4-layer-shell-0.pc" ]; then
   export PKG_CONFIG_PATH="$layer_shell_lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
   export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-rpath,$layer_shell_lib"
 fi
-cargo build --release --locked -p kestrel --manifest-path "$repository/Cargo.toml"
+cargo build --release --locked -p kestrel -p kestrel-record --manifest-path "$repository/Cargo.toml"
 
 # Replacing the file lets a running copy keep its binary.
 install -Dm755 "$repository/target/release/kestrel" "$binary"
+install -Dm755 "$repository/target/release/kestrel-record" "$helper"
 install -Dm644 "$repository/data/icons/$app_id.svg" "$icon_file"
 mkdir -p "$(dirname -- "$desktop_file")"
 # An absolute Exec works when ~/.local/bin is absent from the launcher's PATH.

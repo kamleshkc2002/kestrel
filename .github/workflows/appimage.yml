@@ -65,11 +65,20 @@ jobs:
           grep -q 'libgtk4-layer-shell.so.0' <(ldd squashfs-root/usr/bin/kestrel)
           test -n "$(find squashfs-root/usr/lib -name 'libgtk4-layer-shell.so.0*' -print -quit)"
           test -x squashfs-root/usr/bin/kestrel
+          test -x squashfs-root/usr/bin/kestrel-record
           test -f squashfs-root/io.github.kamleshkc2002.Kestrel.desktop
           test -f squashfs-root/io.github.kamleshkc2002.Kestrel.svg
           grep -q 'libadwaita' <(ldd squashfs-root/usr/bin/kestrel)
-          # GStreamer comes from the host.
-          ! find squashfs-root/usr/lib -name 'libgst*' -print -quit | grep -q .
+          # GStreamer comes from the host; only the helper links it.
+          if ldd squashfs-root/usr/bin/kestrel | grep -qi 'libgst'; then
+            echo 'kestrel still links GStreamer' >&2
+            exit 1
+          fi
+          patchelf --print-needed squashfs-root/usr/bin/kestrel-record | grep -q '^libgstreamer'
+          if find squashfs-root/usr/lib -name 'libgst*' -print -quit | grep -q .; then
+            echo 'the AppImage bundled GStreamer' >&2
+            exit 1
+          fi
           (
             cd dist
             sha256sum --check "$(basename "$appimage").sha256"
@@ -89,6 +98,11 @@ jobs:
           set -e
           test "$status" -eq 0 -o "$status" -eq 124
           ! grep -q 'No IM module matching' appimage-smoke.log
+
+      - name: Smoke-test startup without GStreamer
+        # Hide the host GStreamer runtime; the window must still open, and
+        # recording must report what to install.
+        run: bash scripts/no-gstreamer-smoke.sh squashfs-root
 
       - name: Sign AppImage
         # Releases must carry a signature; builds without the secret (forks) skip it.

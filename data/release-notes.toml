@@ -39,3 +39,7 @@ text = "Clipboard writes that an application marks as temporary or secret are le
 [[change]]
 feature = "kestrel"
 text = "Settings → Remove Kestrel's data… lists every file and folder Kestrel keeps, with sizes, and removes only what you choose before quitting; `kestrel --uninstall-preview` prints the same list without deleting anything."
+
+[[change]]
+feature = "kestrel"
+text = "Kestrel starts without GStreamer: screen recording and trimming run in a separate helper, and recording says which packages to install when GStreamer is missing."
