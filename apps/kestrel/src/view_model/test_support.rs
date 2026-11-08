@@ -123,6 +123,10 @@ pub(crate) fn clipboard_snapshot() -> ClipboardSnapshot {
         lifecycle: kestrel_services::clipboard::ClipboardLifecycle::Running,
         provider: Some(kestrel_platform::clipboard::ClipboardProvider::WaylandDataControl),
         kind_support: ClipboardKindSupport::ALL,
+        temporary_writes: kestrel_services::clipboard::TemporaryWriteState::Detected,
+        skipped_temporary_writes: 0,
+        paste: None,
+        paste_unavailable: None,
         items: vec![
             ClipboardItemMetadata {
                 id: 7,

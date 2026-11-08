@@ -23,3 +23,15 @@ text = "Shelf file rows can move, rename, and show their file in your file manag
 [[change]]
 feature = "capture.text"
 text = "Each recent capture and the screenshot editor offer Copy text, which reads the words on this computer with the screen tools' OCR language and time limit and puts them on the clipboard without keeping them."
+
+[[change]]
+feature = "clipboard.history"
+text = "Shift+Return or the Paste action puts a history entry on the clipboard, hides the window, and pastes it into the application you were using; the keystroke is Ctrl+V by default and can be set to Ctrl+Shift+V or Shift+Insert."
+
+[[change]]
+feature = "clipboard.history"
+text = "A pending paste stops without a keystroke when the clipboard changes first, so a newer copy is never replaced."
+
+[[change]]
+feature = "clipboard.history"
+text = "Clipboard writes that an application marks as temporary or secret are left out of history, and the selection they replace returns as the entry it already was."

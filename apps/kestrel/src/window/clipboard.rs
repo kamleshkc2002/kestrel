@@ -62,6 +62,13 @@ fn copy_entry(commands: &Sender<ApplicationCommand>, item_id: u64, plain_text: b
     }));
 }
 
+fn paste_entry(commands: &Sender<ApplicationCommand>, item_id: u64, plain_text: bool) {
+    let _ = commands.try_send(ApplicationCommand::ClipboardPaste {
+        item_id,
+        plain_text,
+    });
+}
+
 pub(super) fn build_clipboard_panel(
     clipboard: &kestrel::ClipboardViewModel,
     commands: &Sender<ApplicationCommand>,
@@ -310,6 +317,7 @@ fn connect_navigation(
     let sender = commands.clone();
     keys.connect_key_pressed(move |_, key, _, state| {
         let control = state.contains(gdk::ModifierType::CONTROL_MASK);
+        let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let step = match key {
             gdk::Key::n | gdk::Key::N if control => 1,
             gdk::Key::p | gdk::Key::P if control => -1,
@@ -318,7 +326,11 @@ fn connect_navigation(
                     .get()
                     .or_else(|| first_entry(&navigation_view.borrow()));
                 if let Some(item_id) = target {
-                    copy_entry(&sender, item_id, false);
+                    if shift {
+                        paste_entry(&sender, item_id, false);
+                    } else {
+                        copy_entry(&sender, item_id, false);
+                    }
                 }
                 return glib::Propagation::Stop;
             }
@@ -531,8 +543,13 @@ fn build_list(
             item.kind, item.preview
         ))]);
         row.add_suffix(&tick_button(panel, item));
-        // Icon buttons keep the six actions inside a narrow row.
-        row.add_suffix(&entry_controls(item, commands, true));
+        // Icon buttons keep the entry actions inside a narrow row.
+        row.add_suffix(&entry_controls(
+            item,
+            commands,
+            true,
+            clipboard.paste_unavailable.as_deref(),
+        ));
         list.append(&row);
         ids.push(Some(item.id));
         if let Some(preview) = clipboard
@@ -628,7 +645,12 @@ fn build_cards(
             "The clipboard backend does not report which application copied this entry.",
         ));
         inner.append(&source);
-        inner.append(&entry_controls(item, commands, true));
+        inner.append(&entry_controls(
+            item,
+            commands,
+            true,
+            clipboard.paste_unavailable.as_deref(),
+        ));
         card.append(&inner);
         card.update_property(&[Property::Label(&format!(
             "{} entry: {}",
@@ -695,11 +717,13 @@ fn tick_button(panel: &ClipboardPanel, item: &ClipboardItemViewModel) -> gtk::Ch
     select
 }
 
-/// Pin, copy, plain copy, preview, and delete; cards use compact icon buttons.
+/// Pin, copy, paste, plain copy, preview, and delete; cards use compact icon
+/// buttons.
 fn entry_controls(
     item: &ClipboardItemViewModel,
     commands: &Sender<ApplicationCommand>,
     compact: bool,
+    paste_unavailable: Option<&str>,
 ) -> gtk::Box {
     let controls = gtk::Box::new(Orientation::Horizontal, if compact { 2 } else { 6 });
     controls.set_valign(Align::Center);
@@ -741,6 +765,19 @@ fn entry_controls(
     let sender = commands.clone();
     copy.connect_clicked(move |_| copy_entry(&sender, id, false));
     controls.append(&copy);
+
+    let paste = button(
+        "Paste",
+        "document-send-symbolic",
+        format!("Paste entry {id} into the previous application"),
+    );
+    paste.set_sensitive(paste_unavailable.is_none());
+    if let Some(reason) = paste_unavailable {
+        paste.set_tooltip_text(Some(reason));
+    }
+    let sender = commands.clone();
+    paste.connect_clicked(move |_| paste_entry(&sender, id, false));
+    controls.append(&paste);
 
     if !item.is_image {
         let plain = button(

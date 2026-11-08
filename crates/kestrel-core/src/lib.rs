@@ -1821,6 +1821,53 @@ pub struct ClipboardConfiguration {
     pub paste_plain_text: bool,
     #[serde(default)]
     pub history_layout: ClipboardLayout,
+    /// The keystroke sent to paste an entry into the previous application.
+    #[serde(default)]
+    pub paste_keys: ClipboardPasteKeys,
+}
+
+/// The keystroke a history entry's paste operation sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardPasteKeys {
+    #[default]
+    CtrlV,
+    CtrlShiftV,
+    ShiftInsert,
+}
+
+impl ClipboardPasteKeys {
+    pub const ALL: [ClipboardPasteKeys; 3] = [
+        ClipboardPasteKeys::CtrlV,
+        ClipboardPasteKeys::CtrlShiftV,
+        ClipboardPasteKeys::ShiftInsert,
+    ];
+
+    /// The configured spelling of this combination.
+    pub const fn configuration_name(self) -> &'static str {
+        match self {
+            Self::CtrlV => "ctrl_v",
+            Self::CtrlShiftV => "ctrl_shift_v",
+            Self::ShiftInsert => "shift_insert",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::CtrlV => "Ctrl+V",
+            Self::CtrlShiftV => "Ctrl+Shift+V",
+            Self::ShiftInsert => "Shift+Insert",
+        }
+    }
+
+    /// Why the combination is a sensible choice.
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::CtrlV => "Most applications paste with Ctrl+V.",
+            Self::CtrlShiftV => "Terminals and some editors paste with Ctrl+Shift+V.",
+            Self::ShiftInsert => "Terminals and legacy applications paste with Shift+Insert.",
+        }
+    }
 }
 
 /// How the clipboard history panel lays out entries.
@@ -1886,6 +1933,7 @@ impl Default for ClipboardConfiguration {
             filter_sensitive: false,
             paste_plain_text: true,
             history_layout: ClipboardLayout::List,
+            paste_keys: ClipboardPasteKeys::CtrlV,
         }
     }
 }

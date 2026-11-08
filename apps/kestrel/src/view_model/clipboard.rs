@@ -12,6 +12,8 @@ pub(crate) struct ClipboardPresentation<'a> {
     pub preview: Option<&'a ClipboardPreview>,
     /// Why text cannot be read from images, when it cannot.
     pub ocr_unavailable: Option<String>,
+    /// Why pasting cannot send a keystroke, with a remedy.
+    pub paste_unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +30,8 @@ pub struct ClipboardViewModel {
     pub newest_id: Option<u64>,
     pub layout: kestrel_core::ClipboardLayout,
     pub ocr_unavailable: Option<String>,
+    /// Why pasting cannot send a keystroke, with a remedy.
+    pub paste_unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +114,8 @@ pub struct ClipboardPolicyViewModel {
     pub clear_seconds: u64,
     pub filter_sensitive: bool,
     pub paste_plain_text: bool,
+    /// The keystroke a paste sends.
+    pub paste_keys: kestrel_core::ClipboardPasteKeys,
     pub bounds: ClipboardBoundsViewModel,
 }
 
@@ -147,6 +153,7 @@ impl ClipboardViewModel {
             clear_seconds: configuration.clear_seconds,
             filter_sensitive: configuration.filter_sensitive,
             paste_plain_text: configuration.paste_plain_text,
+            paste_keys: configuration.paste_keys,
             bounds,
         };
         let Some(snapshot) = presentation
@@ -172,6 +179,7 @@ impl ClipboardViewModel {
                 newest_id: None,
                 layout: configuration.history_layout,
                 ocr_unavailable: presentation.ocr_unavailable,
+                paste_unavailable: presentation.paste_unavailable,
             };
         };
 
@@ -203,7 +211,11 @@ impl ClipboardViewModel {
 
         Self {
             running: true,
-            status: clipboard_status(snapshot, presentation.matches.len()),
+            status: clipboard_status(
+                snapshot,
+                presentation.matches.len(),
+                presentation.paste_unavailable.as_deref(),
+            ),
             search_query: presentation.search_query.to_owned(),
             items,
             total_items: snapshot.items.len(),
@@ -213,11 +225,16 @@ impl ClipboardViewModel {
             newest_id: snapshot.items.iter().map(|item| item.id).max(),
             layout: configuration.history_layout,
             ocr_unavailable: presentation.ocr_unavailable,
+            paste_unavailable: presentation.paste_unavailable,
         }
     }
 }
 
-fn clipboard_status(snapshot: &ClipboardSnapshot, shown: usize) -> String {
+fn clipboard_status(
+    snapshot: &ClipboardSnapshot,
+    shown: usize,
+    paste_unavailable: Option<&str>,
+) -> String {
     let mut status = format!(
         "{} of {} retained entries shown · {} retained · captured kinds: {}",
         shown,
@@ -245,6 +262,28 @@ fn clipboard_status(snapshot: &ClipboardSnapshot, shown: usize) -> String {
             " · {} over the size bound",
             snapshot.rejected_oversize_items
         ));
+    }
+    match snapshot.temporary_writes {
+        kestrel_services::clipboard::TemporaryWriteState::Undetectable => {
+            status.push_str(" · temporary clipboard writes cannot be detected on this backend")
+        }
+        kestrel_services::clipboard::TemporaryWriteState::Detected
+            if snapshot.skipped_temporary_writes > 0 =>
+        {
+            status.push_str(&format!(
+                " · {} temporary writes skipped",
+                snapshot.skipped_temporary_writes
+            ));
+        }
+        kestrel_services::clipboard::TemporaryWriteState::Detected => {}
+    }
+    if let Some(paste) = &snapshot.paste {
+        if let Some(message) = paste.message() {
+            status.push_str(&format!(" · {message}"));
+        }
+    }
+    if let Some(reason) = paste_unavailable {
+        status.push_str(&format!(" · paste unavailable: {reason}"));
     }
     if let Some(error) = &snapshot.last_error {
         status.push_str(&format!(" · last error: {error}"));
@@ -396,6 +435,7 @@ mod tests {
                 matches: &matches,
                 preview: None,
                 ocr_unavailable: None,
+                paste_unavailable: None,
             },
         );
 
@@ -433,6 +473,7 @@ mod tests {
                 matches: &[],
                 preview: None,
                 ocr_unavailable: None,
+                paste_unavailable: None,
             },
         );
 
@@ -468,6 +509,7 @@ mod tests {
                 matches: &[],
                 preview: Some(&preview),
                 ocr_unavailable: None,
+                paste_unavailable: None,
             },
         );
 

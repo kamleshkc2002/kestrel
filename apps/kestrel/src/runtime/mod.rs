@@ -101,6 +101,7 @@ use kestrel_services::{
     microphone::{
         MicrophoneCommand, MicrophoneCommandResult, MicrophoneService, MicrophoneSnapshot,
     },
+    paste::PasteObservation,
     processes::{
         ActionOutcome, ConfirmAction, ListenerService, ProcessInventoryService, ProcessPolicy,
         ProcessSnapshot, confirmation_scope, kill, restart, terminate,
@@ -221,6 +222,8 @@ pub struct ApplicationRuntime {
     /// Activations are sent as application commands.
     command_sender: Option<async_channel::Sender<ApplicationCommand>>,
     clipboard_history: ClipboardHistoryService,
+    /// Why a paste cannot send a keystroke, from provider discovery.
+    clipboard_paste_unavailable: Option<String>,
     snippet_library: SnippetLibrary,
     snippet_service: SnippetInsertionService<ExecutableInsertionBackend>,
     snippet_policy: SnippetPolicy,
@@ -661,6 +664,7 @@ impl ApplicationRuntime {
                 &configuration.url_cleanup,
             ))
             .expect("the validated clipboard policy is valid"),
+            clipboard_paste_unavailable: None,
             snippet_library: loaded_snippets.library,
             snippet_service,
             snippet_policy,
@@ -833,6 +837,9 @@ impl ApplicationRuntime {
         self.snippet_expansion_timing = configuration.snippets.expansion_timing;
         self.snippet_provider_preference = configuration.snippets.preferred_provider;
         self.snippet_service = Self::build_snippet_service(configuration);
+        if self.clipboard_history_is_running() {
+            self.configure_clipboard_paste();
+        }
         self.command_scripts = configuration.command_bar.scripts.clone();
         self.command_providers = Self::providers_from_configuration(configuration);
         self.command_file_roots = configuration
@@ -978,6 +985,7 @@ impl ApplicationRuntime {
                 matches: clipboard.matches,
                 preview: clipboard.preview,
                 ocr_unavailable: clipboard_ocr_unavailable(),
+                paste_unavailable: self.clipboard_paste_unavailable(),
             },
             SnippetsPresentation {
                 library: &self.snippet_library,

@@ -11,6 +11,8 @@ use super::{LoadedConfiguration, fields::Section};
 const IGNORED_MESSAGE: &str = "The value is invalid and was ignored";
 const HISTORY_LAYOUT_MESSAGE: &str =
     "History layout must be \"list\" or \"cards\"; the list was retained.";
+const PASTE_KEYS_MESSAGE: &str = "Paste keystroke must be \"ctrl_v\", \"ctrl_shift_v\", or \
+                                  \"shift_insert\"; Ctrl+V was retained.";
 const BOUND_PREFIX: &str = "The value must be";
 
 pub(super) fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -73,6 +75,7 @@ pub(super) fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&t
         HISTORY_LAYOUT_MESSAGE,
         &mut limits.history_layout,
     );
+    section.read("paste_keys", PASTE_KEYS_MESSAGE, &mut limits.paste_keys);
 
     // Total-byte bounds cap per-item limits when inconsistent.
     let total = limits.max_total_bytes;
@@ -127,6 +130,47 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|warning| warning.feature_id == "clipboard.history_layout")
+        );
+    }
+
+    #[test]
+    fn clipboard_paste_keys_parse_through_the_documented_table() {
+        for (value, expected) in [
+            ("ctrl_v", kestrel_core::ClipboardPasteKeys::CtrlV),
+            ("ctrl_shift_v", kestrel_core::ClipboardPasteKeys::CtrlShiftV),
+            (
+                "shift_insert",
+                kestrel_core::ClipboardPasteKeys::ShiftInsert,
+            ),
+        ] {
+            let loaded = parse(&format!(
+                "schema_version = 3\n[clipboard]\npaste_keys = \"{value}\"\n"
+            ))
+            .expect("document itself is valid TOML");
+            assert_eq!(
+                loaded.configuration.clipboard.paste_keys, expected,
+                "{value}"
+            );
+            assert!(loaded.warnings.is_empty(), "{value}");
+        }
+
+        let loaded =
+            parse("schema_version = 3\n[clipboard]\npaste_keys = \"ctrl_c\"\nmax_items = 9\n")
+                .expect("document itself is valid TOML");
+        assert_eq!(
+            loaded.configuration.clipboard.paste_keys,
+            kestrel_core::ClipboardPasteKeys::CtrlV,
+            "an unknown combination keeps the default"
+        );
+        assert_eq!(
+            loaded.configuration.clipboard.max_items, 9,
+            "other keys still apply"
+        );
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.feature_id == "clipboard.paste_keys")
         );
     }
 

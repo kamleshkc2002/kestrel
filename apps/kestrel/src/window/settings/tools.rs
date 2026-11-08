@@ -232,6 +232,34 @@ pub(super) fn add_clipboard_limits_group(
     });
     clipboard_group.add(&layout);
 
+    let combinations = kestrel::ClipboardPasteKeys::ALL;
+    let paste_keys = adw::ComboRow::builder()
+        .title("Paste keystroke")
+        .subtitle(
+            "The keystroke sent after the window hides, so the previous application pastes; \
+             the entry itself is never sent.",
+        )
+        .model(&gtk::StringList::new(
+            &combinations
+                .iter()
+                .map(|keys| keys.label())
+                .collect::<Vec<_>>(),
+        ))
+        .selected(
+            combinations
+                .iter()
+                .position(|keys| *keys == clipboard.policy.paste_keys)
+                .unwrap_or(0) as u32,
+        )
+        .build();
+    let sender = commands.clone();
+    paste_keys.connect_selected_notify(move |row| {
+        if let Some(keys) = combinations.get(row.selected() as usize) {
+            let _ = sender.try_send(ApplicationCommand::SetClipboardPasteKeys(*keys));
+        }
+    });
+    clipboard_group.add(&paste_keys);
+
     for row in [
         items.upcast_ref::<gtk::Widget>().clone(),
         item_bytes.upcast_ref::<gtk::Widget>().clone(),
