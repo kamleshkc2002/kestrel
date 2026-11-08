@@ -32,6 +32,25 @@ pub struct ClipboardViewModel {
     pub ocr_unavailable: Option<String>,
     /// Why pasting cannot send a keystroke, with a remedy.
     pub paste_unavailable: Option<String>,
+    /// State and bounds of the encrypted pin store.
+    pub pin_store: ClipboardPinStoreViewModel,
+}
+
+/// The saved-pin store's presentation, metadata only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardPinStoreViewModel {
+    pub keep_pinned: bool,
+    pub state: kestrel_services::clipboard::PinStoreState,
+    pub saved_count: usize,
+    pub saved_bytes: usize,
+    pub status: String,
+    pub remedy: Option<String>,
+    /// The store is unreadable and offers Reset or Keep.
+    pub needs_reset: bool,
+    pub pinned_max_age_days: u32,
+    pub max_pinned_age_days: u32,
+    /// There is something to delete from the store.
+    pub can_delete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +63,8 @@ pub struct ClipboardItemViewModel {
     pub highlights: Vec<(usize, usize)>,
     pub pinned: bool,
     pub is_image: bool,
+    /// How this entry relates to the saved-pin store.
+    pub pin_save: kestrel_services::clipboard::PinSaveState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +137,10 @@ pub struct ClipboardPolicyViewModel {
     pub paste_plain_text: bool,
     /// The keystroke a paste sends.
     pub paste_keys: kestrel_core::ClipboardPasteKeys,
+    /// The second opt-in for keeping pinned text across restarts.
+    pub keep_pinned: bool,
+    /// How long a saved pin is kept.
+    pub pinned_max_age_days: u32,
     pub bounds: ClipboardBoundsViewModel,
 }
 
@@ -128,6 +153,7 @@ pub struct ClipboardBoundsViewModel {
     pub max_items: u32,
     pub max_age_hours: u32,
     pub max_clear_seconds: u64,
+    pub max_pinned_age_days: u32,
 }
 
 impl ClipboardViewModel {
@@ -143,6 +169,7 @@ impl ClipboardViewModel {
             max_items: kestrel_core::MAX_CLIPBOARD_MAX_ITEMS,
             max_age_hours: kestrel_core::MAX_CLIPBOARD_AGE_HOURS,
             max_clear_seconds: kestrel_core::MAX_CLIPBOARD_CLEAR_SECONDS,
+            max_pinned_age_days: kestrel_core::MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS,
         };
         let policy = ClipboardPolicyViewModel {
             max_items: configuration.max_items,
@@ -154,8 +181,18 @@ impl ClipboardViewModel {
             filter_sensitive: configuration.filter_sensitive,
             paste_plain_text: configuration.paste_plain_text,
             paste_keys: configuration.paste_keys,
+            keep_pinned: configuration.keep_pinned,
+            pinned_max_age_days: configuration.pinned_max_age_days,
             bounds,
         };
+        let pin_store = clipboard_pin_store(
+            configuration,
+            presentation.running,
+            presentation
+                .snapshot
+                .as_ref()
+                .map(|snapshot| &snapshot.pin_store),
+        );
         let Some(snapshot) = presentation
             .snapshot
             .as_ref()
@@ -180,6 +217,7 @@ impl ClipboardViewModel {
                 layout: configuration.history_layout,
                 ocr_unavailable: presentation.ocr_unavailable,
                 paste_unavailable: presentation.paste_unavailable,
+                pin_store,
             };
         };
 
@@ -205,6 +243,10 @@ impl ClipboardViewModel {
                     pinned: metadata.as_ref().is_some_and(|item| item.pinned),
                     is_image: matched.kind
                         == kestrel_platform::clipboard::ClipboardEntryKind::Image,
+                    pin_save: metadata
+                        .as_ref()
+                        .map(|item| item.pin_save)
+                        .unwrap_or(kestrel_services::clipboard::PinSaveState::NotPinned),
                 }
             })
             .collect::<Vec<_>>();
@@ -226,7 +268,126 @@ impl ClipboardViewModel {
             layout: configuration.history_layout,
             ocr_unavailable: presentation.ocr_unavailable,
             paste_unavailable: presentation.paste_unavailable,
+            pin_store,
         }
+    }
+}
+
+/// One pin or several, with the noun that agrees.
+fn saved_pin_count(count: usize) -> String {
+    if count == 1 {
+        "1 saved pin".to_owned()
+    } else {
+        format!("{count} saved pins")
+    }
+}
+
+/// Builds the saved-pins status with counts and a remedy, never content.
+fn clipboard_pin_store(
+    configuration: &kestrel_core::ClipboardConfiguration,
+    running: bool,
+    status: Option<&kestrel_services::clipboard::PinStoreStatus>,
+) -> ClipboardPinStoreViewModel {
+    use kestrel_services::clipboard::{PIN_STORE_REMEDY, PinStoreState};
+
+    let state = status
+        .map(|status| status.state)
+        .unwrap_or(PinStoreState::Disabled);
+    let saved_count = status.map_or(0, |status| status.saved_count);
+    let saved_bytes = status.map_or(0, |status| status.saved_bytes);
+    let keep_pinned = configuration.keep_pinned;
+    let (message, remedy, needs_reset) = if !keep_pinned {
+        (
+            "Pinned entries stay in memory only. Turn this on to keep text pins across \
+             restarts."
+                .to_owned(),
+            None,
+            false,
+        )
+    } else if !running {
+        (
+            "Saved pins load when clipboard history starts.".to_owned(),
+            None,
+            false,
+        )
+    } else {
+        match state {
+            PinStoreState::Disabled => (
+                "Pinned entries stay in memory only.".to_owned(),
+                None,
+                false,
+            ),
+            PinStoreState::Idle => (
+                format!(
+                    "{} · {} · kept for up to {} days",
+                    saved_pin_count(saved_count),
+                    format_bytes(saved_bytes as f64),
+                    configuration.pinned_max_age_days
+                ),
+                None,
+                false,
+            ),
+            PinStoreState::Saving | PinStoreState::Saved => (
+                format!(
+                    "{} · {} · kept for up to {} days",
+                    saved_pin_count(saved_count),
+                    format_bytes(saved_bytes as f64),
+                    configuration.pinned_max_age_days
+                ),
+                None,
+                false,
+            ),
+            PinStoreState::Unavailable | PinStoreState::Locked => (
+                format!(
+                    "{} · pinning is not being saved right now",
+                    saved_pin_count(saved_count)
+                ),
+                Some(PIN_STORE_REMEDY.to_owned()),
+                false,
+            ),
+            PinStoreState::Unreadable => (
+                "Saved pins could not be read.".to_owned(),
+                Some(
+                    "Reset deletes the unreadable file and its key; Keep leaves it to try again \
+                     later."
+                        .to_owned(),
+                ),
+                true,
+            ),
+            PinStoreState::ReadFailed => (
+                "Saved pins could not be read.".to_owned(),
+                Some("Check that the data folder and the saved-pins file are readable.".to_owned()),
+                false,
+            ),
+            PinStoreState::Held => (
+                format!(
+                    "{} · Saved pins reload after you unlock",
+                    saved_pin_count(saved_count)
+                ),
+                None,
+                false,
+            ),
+            PinStoreState::Failed => (
+                "Saved pins could not be saved.".to_owned(),
+                Some(
+                    "Check that the data folder is writable and that a keyring is available."
+                        .to_owned(),
+                ),
+                false,
+            ),
+        }
+    };
+    ClipboardPinStoreViewModel {
+        keep_pinned,
+        state,
+        saved_count,
+        saved_bytes,
+        status: message,
+        remedy,
+        needs_reset,
+        pinned_max_age_days: configuration.pinned_max_age_days,
+        max_pinned_age_days: kestrel_core::MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS,
+        can_delete: keep_pinned && running && (saved_count > 0 || needs_reset),
     }
 }
 
@@ -299,6 +460,9 @@ fn clipboard_item_detail(metadata: &kestrel_services::clipboard::ClipboardItemMe
     ];
     if metadata.pinned {
         parts.push("pinned".to_owned());
+    }
+    if metadata.pin_save != kestrel_services::clipboard::PinSaveState::NotPinned {
+        parts.push(metadata.pin_save.label().to_owned());
     }
     if let Some((width, height)) = metadata.image_dimensions {
         parts.push(format!("{width}×{height}"));

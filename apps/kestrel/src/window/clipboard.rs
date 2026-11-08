@@ -76,10 +76,14 @@ pub(super) fn build_clipboard_panel(
     let container = gtk::Box::new(Orientation::Vertical, 12);
     let group = adw::PreferencesGroup::builder()
         .title("Clipboard")
-        .description(
+        .description(if clipboard.pin_store.keep_pinned {
+            "Pinned text entries are kept across restarts in an encrypted store; images, file \
+             pins, and everything else stay in memory. The window only renders entries you ask \
+             to see."
+        } else {
             "Memory-only retention. Content is never written to disk, and the window only \
-             renders entries you ask to see.",
-        )
+             renders entries you ask to see."
+        })
         .build();
 
     let search = gtk::SearchEntry::builder()

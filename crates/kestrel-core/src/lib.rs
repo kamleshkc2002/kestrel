@@ -135,6 +135,11 @@ pub const MAX_CLIPBOARD_TOTAL_BYTES: u32 = 128 * 1024 * 1024;
 pub const DEFAULT_CLIPBOARD_AGE_HOURS: u32 = 24;
 pub const MAX_CLIPBOARD_AGE_HOURS: u32 = 24 * 30;
 pub const MAX_CLIPBOARD_CLEAR_SECONDS: u64 = 86_400;
+/// Default age after which a saved pin is removed from the encrypted store.
+pub const DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS: u32 = 90;
+/// `0` would be unlimited retention, which validation rejects.
+pub const MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS: u32 = 1;
+pub const MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS: u32 = 365;
 
 pub const MIN_SNIPPET_CONTENT_BYTES: u32 = 1;
 pub const DEFAULT_SNIPPET_CONTENT_BYTES: u32 = 64 * 1024;
@@ -1824,6 +1829,12 @@ pub struct ClipboardConfiguration {
     /// The keystroke sent to paste an entry into the previous application.
     #[serde(default)]
     pub paste_keys: ClipboardPasteKeys,
+    /// Keeps pinned text entries in an encrypted store across restarts.
+    #[serde(default)]
+    pub keep_pinned: bool,
+    /// How long a saved pin is kept, in days.
+    #[serde(default = "default_clipboard_pinned_max_age_days")]
+    pub pinned_max_age_days: u32,
 }
 
 /// The keystroke a history entry's paste operation sends.
@@ -1916,6 +1927,10 @@ fn default_clipboard_age_hours() -> u32 {
     DEFAULT_CLIPBOARD_AGE_HOURS
 }
 
+fn default_clipboard_pinned_max_age_days() -> u32 {
+    DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS
+}
+
 fn default_true() -> bool {
     true
 }
@@ -1934,6 +1949,8 @@ impl Default for ClipboardConfiguration {
             paste_plain_text: true,
             history_layout: ClipboardLayout::List,
             paste_keys: ClipboardPasteKeys::CtrlV,
+            keep_pinned: false,
+            pinned_max_age_days: DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS,
         }
     }
 }
@@ -1980,6 +1997,13 @@ impl ClipboardConfiguration {
         if self.clear_seconds > MAX_CLIPBOARD_CLEAR_SECONDS {
             return Err(ConfigurationError::InvalidClipboardClearSeconds {
                 seconds: self.clear_seconds,
+            });
+        }
+        if !(MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS..=MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS)
+            .contains(&self.pinned_max_age_days)
+        {
+            return Err(ConfigurationError::InvalidClipboardPinnedMaxAgeDays {
+                days: self.pinned_max_age_days,
             });
         }
         Ok(())
@@ -2381,6 +2405,7 @@ pub enum ConfigurationError {
     InvalidClipboardTotalBytes { bytes: u32 },
     InvalidClipboardAgeHours { hours: u32 },
     InvalidClipboardClearSeconds { seconds: u64 },
+    InvalidClipboardPinnedMaxAgeDays { days: u32 },
     InvalidSnippetContentBytes { bytes: u32 },
     InvalidSnippetClipboardBytes { bytes: u32 },
     InvalidSnippetInsertTimeout { millis: u64 },
@@ -2522,17 +2547,19 @@ mod tests {
         CURRENT_CONFIGURATION_SCHEMA_VERSION, ClipboardConfiguration, ConfigurationError,
         DEFAULT_AUDIO_BOOST_PERCENT, DEFAULT_AUDIO_DISCONNECT_VOLUME_PERCENT,
         DEFAULT_CLIPBOARD_AGE_HOURS, DEFAULT_CLIPBOARD_FILE_ENTRIES, DEFAULT_CLIPBOARD_IMAGE_BYTES,
-        DEFAULT_CLIPBOARD_ITEM_BYTES, DEFAULT_CLIPBOARD_MAX_ITEMS, DEFAULT_CLIPBOARD_TOTAL_BYTES,
+        DEFAULT_CLIPBOARD_ITEM_BYTES, DEFAULT_CLIPBOARD_MAX_ITEMS,
+        DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS, DEFAULT_CLIPBOARD_TOTAL_BYTES,
         MAX_ALERT_COOLDOWN_SECONDS, MAX_ALERT_SUSTAIN_SAMPLES, MAX_ALERT_THRESHOLD_PERCENT,
         MAX_AUDIO_BOOST_PERCENT, MAX_CLIPBOARD_AGE_HOURS, MAX_CLIPBOARD_CLEAR_SECONDS,
         MAX_CLIPBOARD_FILE_ENTRIES, MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_MAX_ITEMS,
-        MAX_MONITOR_HISTORY_SAMPLES, MAX_MONITOR_REFRESH_INTERVAL_MILLIS,
-        MAX_SNIPPET_CONTENT_BYTES, MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SNIPPET_NAME_CHARS,
-        MAX_SNIPPET_VARIABLES, MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
-        MIN_CLIPBOARD_ITEM_BYTES, MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES,
-        MonitorReadout, Snippet, SnippetConfiguration, SnippetError, SnippetExpansionTiming,
-        SnippetProviderPreference, SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT,
-        variable_tokens,
+        MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS, MAX_MONITOR_HISTORY_SAMPLES,
+        MAX_MONITOR_REFRESH_INTERVAL_MILLIS, MAX_SNIPPET_CONTENT_BYTES,
+        MAX_SNIPPET_INSERT_TIMEOUT_MILLIS, MAX_SNIPPET_NAME_CHARS, MAX_SNIPPET_VARIABLES,
+        MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
+        MIN_CLIPBOARD_ITEM_BYTES, MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS,
+        MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES, MonitorReadout, Snippet,
+        SnippetConfiguration, SnippetError, SnippetExpansionTiming, SnippetProviderPreference,
+        SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, variable_tokens,
     };
 
     #[test]
@@ -2853,6 +2880,19 @@ mod tests {
                 seconds: MAX_CLIPBOARD_CLEAR_SECONDS + 1
             })
         );
+
+        for days in [
+            MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS - 1,
+            MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS + 1,
+        ] {
+            let mut configuration = ApplicationConfiguration::default();
+            configuration.clipboard.pinned_max_age_days = days;
+            assert_eq!(
+                configuration.validate(),
+                Err(ConfigurationError::InvalidClipboardPinnedMaxAgeDays { days }),
+                "unlimited or overlong saved-pin retention is rejected"
+            );
+        }
     }
 
     #[test]
@@ -2874,6 +2914,14 @@ mod tests {
             "sensitive filtering is opt-in because it has documented false positives"
         );
         assert!(clipboard.paste_plain_text);
+        assert!(
+            !clipboard.keep_pinned,
+            "saving pins needs a second explicit opt-in"
+        );
+        assert_eq!(
+            clipboard.pinned_max_age_days,
+            DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS
+        );
         assert_eq!(clipboard.validate(), Ok(()));
     }
 

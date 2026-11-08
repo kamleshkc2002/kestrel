@@ -877,6 +877,10 @@ struct ClipboardFingerprint {
     has_error: bool,
     paste: Option<u8>,
     skipped_temporary: u64,
+    pin_store: kestrel_services::clipboard::PinStoreState,
+    saved_pins: usize,
+    saved_bytes: usize,
+    pin_saves: u64,
 }
 
 impl ClipboardFingerprint {
@@ -893,6 +897,14 @@ impl ClipboardFingerprint {
             has_error: snapshot.last_error.is_some(),
             paste: snapshot.paste.as_ref().map(|stage| stage.code()),
             skipped_temporary: snapshot.skipped_temporary_writes,
+            pin_store: snapshot.pin_store.state,
+            saved_pins: snapshot.pin_store.saved_count,
+            saved_bytes: snapshot.pin_store.saved_bytes,
+            pin_saves: snapshot.items.iter().fold(0u64, |fingerprint, item| {
+                fingerprint
+                    .wrapping_mul(31)
+                    .wrapping_add(item.pin_save as u8 as u64)
+            }),
         }
     }
 }
@@ -983,6 +995,12 @@ enum ControllerOperation {
     ClipboardCopyImageText(u64),
     SetClipboardLayout(kestrel::ClipboardLayout),
     SetClipboardLimit(kestrel::ClipboardLimit),
+    SetClipboardKeepPinned {
+        keep_pinned: bool,
+        delete_saved: bool,
+    },
+    WipeSavedPins,
+    ResetSavedPins,
     SetCaptureLimit(kestrel::CaptureLimit),
     SetCaptureAfterScreenshot(kestrel::CaptureAfterScreenshot),
     SetProcessLimit(kestrel::ProcessLimit),
@@ -4207,8 +4225,65 @@ impl ControllerState {
                             format!("The live selection is cleared after {seconds} seconds")
                         }
                     }
+                    kestrel::ClipboardLimit::PinnedMaxAgeDays(days) => {
+                        candidate.clipboard.pinned_max_age_days = days;
+                        format!("Saved pins are kept for up to {days} days")
+                    }
                 };
                 self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::SetClipboardKeepPinned {
+                keep_pinned,
+                delete_saved,
+            } => {
+                let mut message = if keep_pinned {
+                    "Pinned entries are kept across restarts".to_owned()
+                } else {
+                    "Pinned entries stay in memory only".to_owned()
+                };
+                if !keep_pinned && delete_saved {
+                    let report = self.runtime.wipe_saved_pins(true)?;
+                    let pins = saved_pin_count(report.saved_count);
+                    message = format!(
+                        "Pinned entries stay in memory only; {pins}, about {}, were deleted",
+                        kestrel_core::format_bytes(report.saved_bytes as f64)
+                    );
+                    if let Some(error) = report.key_error {
+                        message.push_str(&format!(
+                            ". The saved file was removed, but the keyring key could not be \
+                             deleted: {error}"
+                        ));
+                    }
+                }
+                let mut candidate = self.configuration.clone();
+                candidate.clipboard.keep_pinned = keep_pinned;
+                self.commit_configuration(candidate, config_path, message)?
+            }
+            ControllerOperation::WipeSavedPins => {
+                let report = self.runtime.wipe_saved_pins(false)?;
+                let pins = saved_pin_count(report.saved_count);
+                let mut message = format!(
+                    "Deleted {pins}, about {}",
+                    kestrel_core::format_bytes(report.saved_bytes as f64)
+                );
+                if let Some(error) = report.key_error {
+                    message.push_str(&format!(
+                        ". The saved file was removed, but the keyring key could not be deleted: \
+                         {error}"
+                    ));
+                }
+                message
+            }
+            ControllerOperation::ResetSavedPins => {
+                let report = self.runtime.wipe_saved_pins(true)?;
+                if let Some(error) = report.key_error {
+                    format!(
+                        "The saved file was removed, but the keyring key could not be deleted: \
+                         {error}"
+                    )
+                } else {
+                    "Saved pins were reset; pinning starts fresh".to_owned()
+                }
             }
             ControllerOperation::SetCaptureLimit(limit) => {
                 let mut candidate = self.configuration.clone();
@@ -5048,6 +5123,14 @@ fn apply_targeted_panel(
     }
 }
 
+fn saved_pin_count(count: usize) -> String {
+    if count == 1 {
+        "1 saved pin".to_owned()
+    } else {
+        format!("{count} saved pins")
+    }
+}
+
 fn clipboard_command_summary(command: &kestrel::ClipboardCommand) -> &'static str {
     match command {
         kestrel::ClipboardCommand::Refresh => "Clipboard refresh",
@@ -5838,6 +5921,24 @@ fn dispatch_commands(
                 ApplicationCommand::SetClipboardLimit(limit) => controller.request_operation(
                     ControllerOperation::SetClipboardLimit(limit),
                     "kestrel-clipboard-limit",
+                ),
+                ApplicationCommand::SetClipboardKeepPinned {
+                    keep_pinned,
+                    delete_saved,
+                } => controller.request_operation(
+                    ControllerOperation::SetClipboardKeepPinned {
+                        keep_pinned,
+                        delete_saved,
+                    },
+                    "kestrel-clipboard-saved-pins",
+                ),
+                ApplicationCommand::WipeSavedPins => controller.request_operation(
+                    ControllerOperation::WipeSavedPins,
+                    "kestrel-clipboard-saved-pins",
+                ),
+                ApplicationCommand::ResetSavedPins => controller.request_operation(
+                    ControllerOperation::ResetSavedPins,
+                    "kestrel-clipboard-saved-pins",
                 ),
                 ApplicationCommand::SetCaptureLimit(limit) => controller.request_operation(
                     ControllerOperation::SetCaptureLimit(limit),

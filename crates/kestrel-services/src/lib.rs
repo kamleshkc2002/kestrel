@@ -7,6 +7,7 @@ pub mod audio;
 pub mod camera;
 pub mod capture;
 pub mod clipboard;
+mod clipboard_pins;
 pub mod command_bar;
 pub mod global_shortcuts;
 pub mod microphone;

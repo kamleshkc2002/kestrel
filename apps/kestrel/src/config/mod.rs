@@ -26,7 +26,7 @@ mod speed_test;
 mod updates;
 mod url_cleanup;
 
-pub(crate) use paths::state_directory;
+pub(crate) use paths::{clipboard_pins_path, state_directory};
 pub use paths::{configuration_path, recordings_path};
 
 /// Loaded configuration and isolated diagnostics.

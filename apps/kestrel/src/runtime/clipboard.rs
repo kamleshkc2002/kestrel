@@ -1,6 +1,7 @@
 //! Clipboard history runtime features.
 
 use super::*;
+use kestrel_platform::secret_service::{PinKeyStore, SecretServiceKeyStore};
 
 /// What a manual clean of the clipboard's single link did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +15,51 @@ pub enum CleanLinkOutcome {
 }
 
 impl ApplicationRuntime {
+    /// The runtime policy, with the store path only while saving is enabled.
+    pub(super) fn clipboard_policy(configuration: &ApplicationConfiguration) -> ClipboardPolicy {
+        let mut policy = ClipboardPolicy::from_configuration(
+            &configuration.clipboard,
+            &configuration.url_cleanup,
+        );
+        policy.pin_file = configuration
+            .clipboard
+            .keep_pinned
+            .then(crate::config::clipboard_pins_path)
+            .flatten();
+        policy
+    }
+
+    /// Connects the Secret Service the first time saved pins are wanted.
+    pub(super) fn ensure_clipboard_pin_key_store(&mut self, wanted: bool) {
+        if !wanted || self.clipboard_pin_store_ready {
+            return;
+        }
+        match SecretServiceKeyStore::connect() {
+            Ok(store) => {
+                let store: Arc<dyn PinKeyStore> = Arc::new(store);
+                self.clipboard_history.set_pin_key_store(store);
+                self.clipboard_pin_store_ready = true;
+            }
+            Err(error) => {
+                log::debug!(
+                    target: CLIPBOARD_HISTORY_ID,
+                    "clipboard pin key store is unavailable: {error}"
+                );
+            }
+        }
+    }
+
+    /// Deletes the encrypted store; `reset` also removes its keyring item.
+    pub fn wipe_saved_pins(
+        &mut self,
+        reset: bool,
+    ) -> Result<kestrel_services::clipboard::PinWipeReport, String> {
+        self.ensure_clipboard_pin_key_store(true);
+        self.clipboard_history
+            .wipe_saved_pins(reset)
+            .map_err(|error| format!("Saved pins could not be deleted: {error}"))
+    }
+
     pub fn clipboard_is_running(&self) -> bool {
         self.clipboard_history_is_running()
     }
@@ -169,6 +215,8 @@ impl ApplicationRuntime {
     }
 
     pub(super) fn start_clipboard_history(&mut self) -> Result<(), ClipboardServiceError> {
+        let keep_pinned = self.clipboard_history.policy().keep_pinned;
+        self.ensure_clipboard_pin_key_store(keep_pinned);
         let provider = discover_provider().map_err(ClipboardServiceError::Backend)?;
         let backend =
             ArboardClipboardBackend::new(provider).map_err(ClipboardServiceError::Backend)?;

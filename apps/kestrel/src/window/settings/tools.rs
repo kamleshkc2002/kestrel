@@ -1,6 +1,6 @@
 //! Clipboard, snippet, scratchpad, and command-bar settings.
 
-use crate::window::widgets::{on_spin_row_settled, plain_row};
+use crate::window::widgets::{on_spin_row_settled, plain_row, stacked_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -16,8 +16,9 @@ pub(super) fn add_clipboard_limits_group(
     let clipboard_group = adw::PreferencesGroup::builder()
         .title("Clipboard settings")
         .description(
-            "Memory-only retention bounds. Lock, sleep, service stop, wipe, and shutdown always \
-             drop retained entries regardless of these values.",
+            "Retention bounds and paste behaviour. Lock, sleep, service stop, wipe, and \
+             shutdown always drop in-memory entries; pinned text is saved on disk only while \
+             keeping pinned entries across restarts is on.",
         )
         .build();
 
@@ -49,6 +50,9 @@ pub(super) fn add_clipboard_limits_group(
                 }
                 kestrel::ClipboardLimit::ClearSeconds(_) => {
                     kestrel::ClipboardLimit::ClearSeconds(value as u64)
+                }
+                kestrel::ClipboardLimit::PinnedMaxAgeDays(_) => {
+                    kestrel::ClipboardLimit::PinnedMaxAgeDays(value as u32)
                 }
             };
             let _ = sender.try_send(ApplicationCommand::SetClipboardLimit(command));
@@ -139,6 +143,108 @@ pub(super) fn add_clipboard_limits_group(
         "Clipboard automatic selection clear interval",
     );
     clipboard_group.add(&clear);
+
+    let pin_age = adw::SpinRow::with_range(1.0, f64::from(bounds.max_pinned_age_days), 1.0);
+    pin_age.set_title("Saved-pin age");
+    pin_age.set_subtitle(
+        "Days a pinned text entry is kept on disk when keeping pins across restarts is on.",
+    );
+    pin_age.set_value(f64::from(clipboard.policy.pinned_max_age_days));
+    pin_age.set_numeric(true);
+    push_limit(
+        &pin_age,
+        kestrel::ClipboardLimit::PinnedMaxAgeDays(clipboard.policy.pinned_max_age_days),
+        "Clipboard saved-pin age in days",
+    );
+    clipboard_group.add(&pin_age);
+
+    let keep = plain_row()
+        .title("Keep pinned entries across restarts")
+        .subtitle(
+            "Pinned text entries are encrypted with a key in your desktop keyring and written \
+             to the data folder. Images and file pins stay in memory only.",
+        )
+        .subtitle_lines(0)
+        .build();
+    let keep_switch = gtk::Switch::builder()
+        .active(clipboard.pin_store.keep_pinned)
+        .valign(Align::Center)
+        .build();
+    keep_switch.update_property(&[
+        Property::Label("Keep pinned clipboard entries across restarts"),
+        Property::Description(
+            "Save pinned text entries in an encrypted file whose key is in the desktop keyring",
+        ),
+    ]);
+    let sender = commands.clone();
+    let pin_store = clipboard.pin_store.clone();
+    keep_switch.connect_state_set(move |switch, pinned| {
+        if pinned {
+            let _ = sender.try_send(ApplicationCommand::SetClipboardKeepPinned {
+                keep_pinned: true,
+                delete_saved: false,
+            });
+            return gtk::glib::Propagation::Proceed;
+        }
+        ask_delete_saved_pins(switch, &sender, &pin_store);
+        gtk::glib::Propagation::Stop
+    });
+    keep.add_suffix(&keep_switch);
+    keep.set_activatable_widget(Some(&keep_switch));
+    clipboard_group.add(&keep);
+
+    let saved = plain_row()
+        .title("Saved pins")
+        .subtitle(&clipboard.pin_store.status)
+        .subtitle_lines(0)
+        .sensitive(false)
+        .build();
+    saved.update_property(&[Property::Label("Saved pinned clipboard entries")]);
+    clipboard_group.add(&saved);
+
+    if let Some(remedy) = &clipboard.pin_store.remedy {
+        let remedy_row = plain_row()
+            .title("Saved pins need attention")
+            .subtitle(remedy)
+            .subtitle_lines(0)
+            .sensitive(false)
+            .build();
+        remedy_row.update_property(&[Property::Label("Saved pins need attention")]);
+        clipboard_group.add(&remedy_row);
+    }
+
+    let pin_actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    pin_actions.set_valign(Align::Center);
+    let delete_pins = gtk::Button::with_label("Delete saved pins…");
+    delete_pins.set_valign(Align::Center);
+    delete_pins.set_sensitive(clipboard.pin_store.can_delete);
+    delete_pins.set_tooltip_text(Some(
+        "Remove the encrypted saved pins file and its key from the desktop keyring",
+    ));
+    delete_pins.update_property(&[Property::Label("Delete saved pins")]);
+    let sender = commands.clone();
+    let pin_store = clipboard.pin_store.clone();
+    delete_pins.connect_clicked(move |button| {
+        confirm_delete_saved_pins(button, &sender, &pin_store);
+    });
+    pin_actions.append(&delete_pins);
+    if clipboard.pin_store.needs_reset {
+        let reset = gtk::Button::with_label("Reset saved pins…");
+        reset.set_valign(Align::Center);
+        reset.add_css_class("destructive-action");
+        reset.update_property(&[Property::Label("Reset saved pins")]);
+        let sender = commands.clone();
+        reset.connect_clicked(move |button| {
+            ask_reset_saved_pins(button, &sender);
+        });
+        pin_actions.append(&reset);
+    }
+    let pin_actions_row = stacked_row(
+        "Saved-pin store",
+        "Deleting the saved pins never removes pinned entries from this session.",
+        &pin_actions,
+    );
+    clipboard_group.add(&pin_actions_row);
 
     let filter = plain_row()
         .title("Filter sensitive patterns")
@@ -275,11 +381,129 @@ pub(super) fn add_clipboard_limits_group(
             "clipboard history retention bounds sensitive plain text".to_owned(),
         ));
     }
+    for row in [
+        pin_age.clone().upcast::<gtk::Widget>(),
+        keep.clone().upcast::<gtk::Widget>(),
+        saved.clone().upcast::<gtk::Widget>(),
+        pin_actions_row.clone().upcast::<gtk::Widget>(),
+    ] {
+        filter_rows.push((
+            row,
+            "keep pinned saved pins encrypted keyring across restarts saved-pin age store \
+             delete reset"
+                .to_owned(),
+        ));
+    }
     filter_rows.push((
         layout.upcast(),
         "clipboard history layout list cards".to_owned(),
     ));
     group.add(&clipboard_group);
+}
+
+/// Turning the second opt-in off asks about the store; deleting is the default.
+fn saved_pin_count(count: usize) -> String {
+    if count == 1 {
+        "1 saved pin".to_owned()
+    } else {
+        format!("{count} saved pins")
+    }
+}
+
+fn ask_delete_saved_pins(
+    switch: &gtk::Switch,
+    commands: &Sender<ApplicationCommand>,
+    pin_store: &kestrel::ClipboardPinStoreViewModel,
+) {
+    let Some(window) = switch.root().and_downcast::<gtk::Window>() else {
+        let _ = commands.try_send(ApplicationCommand::SetClipboardKeepPinned {
+            keep_pinned: false,
+            delete_saved: false,
+        });
+        return;
+    };
+    let dialog = adw::MessageDialog::builder()
+        .heading("Keep pinned entries across restarts?")
+        .body(format!(
+            "Turning this off keeps pinned entries in memory only. {} on disk can be deleted now, \
+             or kept for when you turn this back on.",
+            saved_pin_count(pin_store.saved_count)
+        ))
+        .build();
+    dialog.set_transient_for(Some(&window));
+    dialog.add_responses(&[("keep", "Keep saved pins"), ("delete", "Delete saved pins")]);
+    dialog.set_close_response("keep");
+    dialog.set_default_response(Some("delete"));
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        let _ = commands.try_send(ApplicationCommand::SetClipboardKeepPinned {
+            keep_pinned: false,
+            delete_saved: response == "delete",
+        });
+        dialog.close();
+    });
+    dialog.present();
+}
+
+/// Confirms the count and byte estimate before removing the store and its key.
+fn confirm_delete_saved_pins(
+    button: &gtk::Button,
+    commands: &Sender<ApplicationCommand>,
+    pin_store: &kestrel::ClipboardPinStoreViewModel,
+) {
+    let Some(window) = button.root().and_downcast::<gtk::Window>() else {
+        return;
+    };
+    let estimate = kestrel_core::format_bytes(pin_store.saved_bytes as f64);
+    let dialog = adw::MessageDialog::builder()
+        .heading("Delete saved pins?")
+        .body(format!(
+            "{}, about {estimate}, will be removed from the encrypted file and the desktop \
+             keyring. Pinned entries stay in this session, and this cannot be undone.",
+            saved_pin_count(pin_store.saved_count)
+        ))
+        .build();
+    dialog.set_transient_for(Some(&window));
+    dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete saved pins")]);
+    dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "delete" {
+            let _ = commands.try_send(ApplicationCommand::WipeSavedPins);
+        }
+        dialog.close();
+    });
+    dialog.present();
+}
+
+/// Offers Reset or Keep after an unreadable or re-keyed store.
+fn ask_reset_saved_pins(button: &gtk::Button, commands: &Sender<ApplicationCommand>) {
+    let Some(window) = button.root().and_downcast::<gtk::Window>() else {
+        return;
+    };
+    let dialog = adw::MessageDialog::builder()
+        .heading("Saved pins could not be read")
+        .body(
+            "Reset deletes the unreadable file and its keyring item, so pinning starts fresh. \
+             Keep leaves the file in place to try again later.",
+        )
+        .build();
+    dialog.set_transient_for(Some(&window));
+    dialog.add_responses(&[("keep", "Keep"), ("reset", "Reset saved pins")]);
+    dialog.set_close_response("keep");
+    dialog.set_default_response(Some("keep"));
+    dialog.set_response_appearance("reset", adw::ResponseAppearance::Destructive);
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "reset" {
+            let _ = commands.try_send(ApplicationCommand::ResetSavedPins);
+        }
+        dialog.close();
+    });
+    dialog.present();
 }
 
 pub(super) fn add_snippet_limits_group(

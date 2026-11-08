@@ -37,6 +37,7 @@ The autostart entry is the one file outside these folders: it lives in
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
 | Clipboard image export | The file you choose in Save as | The retained image, as a PNG, written through a hidden temporary beside it and renamed once complete | Your umask | The clipboard image limit (`clipboard.max_image_bytes`, 64 MiB at most) | You |
+| Saved clipboard pins | `clipboard-pins.bin` in the data folder | Pinned **text** entries, encrypted with XChaCha20-Poly1305; the 256-bit key is a Secret Service item in your default collection with `application` and `purpose=clipboard-store` attributes, and the file is a magic and version header, a fresh nonce per write, and the ciphertext of a versioned list. No plaintext and no key file | 0600 file, 0700 folder, replaced atomically | At most the global clipboard count, per-entry, and total-byte bounds, and `clipboard.pinned_max_age_days` (1–365, default 90); unlimited retention is rejected | Delete saved pins, turning the switch off and choosing delete, or a history wipe |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
 | Settings export | The file you choose in Settings → Export | Your settings as TOML, the same contents as `config.toml`, including any command-bar file roots and scripts | Your umask | None | You |
 
@@ -66,6 +67,54 @@ Files you saved elsewhere through Save as or Export are yours: they are not list
 - **Empty Trash** permanently deletes the files and metadata under `$XDG_DATA_HOME/Trash`; there is no undo. Remote Trash folders are not included.
 
 These are your desktop's settings, so the value persists after quitting, or after you turn the feature off.
+
+## Saved clipboard entries: threat model and decision
+
+**Status: implemented, opt-in.** Memory-only history stays the default. A second switch,
+"Keep pinned entries across restarts" (`[clipboard] keep_pinned`), is separate from enabling
+history; only pinned entries are saved without it. Turning it off asks whether to delete the
+saved pins, and deleting is the default.
+
+**Data classes for 1.0: text only.** Image and file-list pins stay in memory as before and say
+"Not saved: only text pins are kept". Saving images and files is deferred as part of the
+decision.
+
+**Encryption.** Each write uses XChaCha20-Poly1305 from the RustCrypto implementation with a
+fresh random 24-byte nonce drawn from the operating system. The 256-bit key is created on first
+save and kept as an item in the desktop Secret Service (`org.freedesktop.secrets` over the
+session bus), in the default collection, with attributes
+`application=io.github.kamleshkc2002.Kestrel` and `purpose=clipboard-store`. There is no key
+file and no plaintext fallback. Plaintext buffers are zeroized after use. If the Secret Service
+is absent or locked, saving is unavailable with the remedy "Unlock or install a keyring
+(Secret Service) to keep pinned entries"; history keeps working in memory.
+
+**Storage and bounds.** The file is `$XDG_DATA_HOME/kestrel/clipboard-pins.bin`
+(`kestrel-devel` for debug builds), written through the app's private atomic writer (0600 file,
+0700 folder). Saved pins obey the global history count, per-entry byte, and total-byte limits,
+plus `clipboard.pinned_max_age_days` (1–365, default 90), enforced before writing. Unlimited
+retention is rejected by validation.
+
+**Recovery.** A truncated or corrupt file, a wrong key or key loss, and an unknown format
+version mean the pins are not loaded, history keeps running in memory, and the Clipboard page
+shows "Saved pins could not be read" with **Reset** (delete the file and the key) and **Keep**
+(leave the file to try later). Partial content is never exposed.
+
+**Wipe.** **Delete saved pins** shows the pinned count and a byte estimate, asks for
+confirmation, deletes the file and the Secret Service item (crypto-shredding), verifies the file
+is absent, and reports. A history wipe removes the saved copy of every removed pin through the
+same path. Turning `keep_pinned` off asks about deleting the saved pins.
+
+**Session events.** Lock and sleep wipe in-memory buffers, pins included; service stop wipes
+memory too. Saved pins stay closed while the session is locked or asleep and reload only after
+the matching unlock or resume, so a session that starts locked decrypts nothing until it is
+unlocked. Deleting the key while held still works.
+
+**Documented limits.** Zeroization covers memory, not swap or core dumps, so encrypt swap if
+that matters to you. A backup of the data folder contains only ciphertext; the key is not in the
+backup unless your keyring is. `unlink` on SSD and copy-on-write filesystems cannot guarantee
+that blocks are erased, which is why deleting the key is part of the wipe.
+Diagnostics and logs record counts and states only, never clipboard content, paths, or key
+material.
 
 ## Kept in memory only
 

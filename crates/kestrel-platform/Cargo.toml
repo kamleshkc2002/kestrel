@@ -24,6 +24,9 @@ cosmic-protocols = { version = "0.2", default-features = false, features = ["cli
 wl-clipboard-rs = "0.9.3"
 x11rb = "0.14"
 zbus = { version = "5.19.0", default-features = false, features = ["blocking-api", "async-io"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+getrandom = "0.4"
+zeroize = "1.8"
 linuxvideo = "0.3"
 zune-jpeg = "0.5"
 zune-core = "0.5"

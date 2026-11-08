@@ -79,8 +79,8 @@ pub use capture::{CaptureEntryViewModel, CaptureModeViewModel, CaptureViewModel}
 pub(crate) use clipboard::ClipboardPresentation;
 use clipboard::format_age;
 pub use clipboard::{
-    ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPolicyViewModel,
-    ClipboardPreviewViewModel, ClipboardQuery, ClipboardViewModel,
+    ClipboardBoundsViewModel, ClipboardItemViewModel, ClipboardPinStoreViewModel,
+    ClipboardPolicyViewModel, ClipboardPreviewViewModel, ClipboardQuery, ClipboardViewModel,
 };
 pub(crate) use command_bar::CommandBarPresentation;
 pub use command_bar::{

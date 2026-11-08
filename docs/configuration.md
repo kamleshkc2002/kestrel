@@ -25,6 +25,13 @@ update check is due once a day from the last attempt and contacts
 `api.github.com` for the release list. Settings → Updates shows the state, has
 Check now, and can turn the check off.
 
+`[clipboard] keep_pinned` is `false` by default. Setting it to `true` saves pinned **text**
+entries across restarts in `$XDG_DATA_HOME/kestrel/clipboard-pins.bin`, encrypted with a key
+held in the desktop Secret Service; images and file pins are never saved. `pinned_max_age_days`
+is 1–365 (default 90) and unlimited retention is rejected. Without a usable keyring the pins
+stay in memory and the Clipboard page shows the remedy. The switch, the saved count and bytes,
+Delete saved pins, and Reset appear on the Clipboard page.
+
 `[url_cleanup] automatic` is `false` by default and turns on automatic
 cleaning of a single copied link. `extra_global` adds parameter names that
 apply to every site, and each `[[url_cleanup.sites]]` entry has `host`,

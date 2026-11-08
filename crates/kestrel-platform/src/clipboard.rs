@@ -728,6 +728,8 @@ impl ClipboardBackend for ArboardClipboardBackend {
 pub enum SessionPrivacyEvent {
     Locked,
     PreparingForSleep,
+    Unlocked,
+    Resumed,
 }
 
 pub trait PrivacyEventSource: Send + 'static {
@@ -749,12 +751,14 @@ impl LogindPrivacyMonitor {
             .build()
             .map_err(privacy_error)?;
         let session_path = current_session_path(&connection).map_err(privacy_error)?;
-        let (was_locked, was_preparing_for_sleep) = read_privacy_state(&connection, &session_path)?;
+        // The first poll re-reads the state, so a session already locked or
+        // asleep at startup reports its hold instead of being missed.
+        let _ = read_privacy_state(&connection, &session_path)?;
         Ok(Self {
             connection,
             session_path,
-            was_locked,
-            was_preparing_for_sleep,
+            was_locked: false,
+            was_preparing_for_sleep: false,
         })
     }
 }
@@ -767,8 +771,14 @@ impl PrivacyEventSource for LogindPrivacyMonitor {
         if locked && !self.was_locked {
             events.push(SessionPrivacyEvent::Locked);
         }
+        if !locked && self.was_locked {
+            events.push(SessionPrivacyEvent::Unlocked);
+        }
         if preparing_for_sleep && !self.was_preparing_for_sleep {
             events.push(SessionPrivacyEvent::PreparingForSleep);
+        }
+        if !preparing_for_sleep && self.was_preparing_for_sleep {
+            events.push(SessionPrivacyEvent::Resumed);
         }
         self.was_locked = locked;
         self.was_preparing_for_sleep = preparing_for_sleep;

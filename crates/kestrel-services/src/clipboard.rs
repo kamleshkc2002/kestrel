@@ -7,6 +7,7 @@ use std::{
     collections::VecDeque,
     error::Error,
     fmt,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
@@ -18,12 +19,20 @@ use std::{
 use kestrel_core::{ClipboardPasteKeys, UrlRules, clean_url, single_http_link};
 use kestrel_platform::clipboard::{
     ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardKindSupport, ClipboardProvider,
-    OwnedSelection, PrivacyEventSource, kind_from_types, png_dimensions, temporary_write,
+    OwnedSelection, PrivacyEventSource, SessionPrivacyEvent, kind_from_types, png_dimensions,
+    temporary_write,
 };
+use kestrel_platform::pin_store::{self, PinStoreError, SavedPin};
+use kestrel_platform::secret_service::{PinKeyError, PinKeyStore};
 use kestrel_platform::snippets::InsertionBackend;
 use zeroize::Zeroizing;
 
+use crate::clipboard_pins::PinPersistence;
 use crate::paste::{PasteObservation, PasteOperation, PasteSettings, PasteStage};
+
+pub use crate::clipboard_pins::{
+    PIN_STORE_REMEDY, PinSaveState, PinStoreState, PinStoreStatus, PinWipeReport,
+};
 
 pub const DEFAULT_MAX_ITEM_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
@@ -57,6 +66,12 @@ pub struct ClipboardPolicy {
     pub clean_links: bool,
     /// The same local rules the manual preview uses.
     pub url_rules: UrlRules,
+    /// Keeps pinned text entries in an encrypted store across restarts.
+    pub keep_pinned: bool,
+    /// How long a pinned entry is kept in memory and in the store.
+    pub pinned_max_age: Duration,
+    /// The encrypted store's file; present while saving pins is enabled.
+    pub pin_file: Option<PathBuf>,
 }
 
 impl Default for ClipboardPolicy {
@@ -76,6 +91,9 @@ impl Default for ClipboardPolicy {
             paste_keys: ClipboardPasteKeys::CtrlV,
             clean_links: false,
             url_rules: UrlRules::default(),
+            keep_pinned: false,
+            pinned_max_age: Duration::from_secs(90 * 24 * 60 * 60),
+            pin_file: None,
         }
     }
 }
@@ -114,6 +132,17 @@ impl ClipboardPolicy {
                 "the automatic selection clear interval must be non-zero".to_string(),
             ));
         }
+        if self.pinned_max_age.is_zero() {
+            return Err(ClipboardServiceError::InvalidPolicy(
+                "the saved-pin age must be non-zero; unlimited retention is not supported"
+                    .to_string(),
+            ));
+        }
+        if self.keep_pinned && self.pin_file.is_none() {
+            return Err(ClipboardServiceError::InvalidPolicy(
+                "keeping pinned entries across restarts needs a store path".to_string(),
+            ));
+        }
         Ok(self)
     }
 }
@@ -140,6 +169,11 @@ impl ClipboardPolicy {
             paste_keys: configuration.paste_keys,
             clean_links: url_cleanup.automatic,
             url_rules: UrlRules::from_configuration(url_cleanup),
+            keep_pinned: configuration.keep_pinned,
+            pinned_max_age: Duration::from_secs(
+                u64::from(configuration.pinned_max_age_days) * 24 * 60 * 60,
+            ),
+            pin_file: None,
         }
     }
 }
@@ -440,6 +474,8 @@ pub struct ClipboardItemMetadata {
     pub pinned: bool,
     pub image_dimensions: Option<(u32, u32)>,
     pub file_count: Option<usize>,
+    /// How this entry relates to the encrypted pin store.
+    pub pin_save: PinSaveState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +502,8 @@ pub struct ClipboardSnapshot {
     pub temporary_writes: TemporaryWriteState,
     /// Count of writes skipped because they were marked temporary.
     pub skipped_temporary_writes: u64,
+    /// State and size of the encrypted pin store; metadata only.
+    pub pin_store: PinStoreStatus,
 }
 
 /// What the backend can say about a write's offered types.
@@ -496,6 +534,7 @@ impl ClipboardSnapshot {
             paste_unavailable: None,
             temporary_writes: TemporaryWriteState::Undetectable,
             skipped_temporary_writes: 0,
+            pin_store: PinStoreStatus::new(PinStoreState::Disabled),
         }
     }
 }
@@ -605,6 +644,10 @@ pub enum ClipboardServiceError {
     PasteInProgress,
     /// No usable insertion provider, with the discovery reason.
     PasteUnavailable(String),
+    /// The encrypted pin store failed.
+    PinStore(PinStoreError),
+    /// The Secret Service key store failed.
+    PinKey(PinKeyError),
     WorkerStopped,
     WorkerTimedOut,
 }
@@ -622,10 +665,10 @@ enum WorkerCommand {
         ClipboardCommand,
         Sender<Result<ClipboardSnapshot, ClipboardServiceError>>,
     ),
-    SetPolicy(
-        ClipboardPolicy,
-        Sender<Result<ClipboardSnapshot, ClipboardServiceError>>,
-    ),
+    SetPolicy {
+        policy: ClipboardPolicy,
+        response: Sender<Result<ClipboardSnapshot, ClipboardServiceError>>,
+    },
     Query(
         ClipboardQuery,
         Sender<Result<ClipboardQueryResult, ClipboardServiceError>>,
@@ -664,11 +707,79 @@ pub enum ClipboardQueryResult {
     ImagePng(Unlogged<Vec<u8>>),
 }
 
+/// The pin-store thread and the status used while it is absent.
+#[derive(Clone)]
+struct PinSession {
+    persistence: Arc<Mutex<Option<PinPersistence>>>,
+    fallback: Arc<Mutex<PinStoreStatus>>,
+}
+
+impl PinSession {
+    fn disabled() -> Self {
+        Self {
+            persistence: Arc::new(Mutex::new(None)),
+            fallback: Arc::new(Mutex::new(PinStoreStatus::new(PinStoreState::Disabled))),
+        }
+    }
+
+    fn status(&self) -> PinStoreStatus {
+        match self
+            .persistence
+            .lock()
+            .expect("pin persistence mutex is not poisoned")
+            .as_ref()
+        {
+            Some(persistence) => persistence.status(),
+            None => self
+                .fallback
+                .lock()
+                .expect("pin fallback mutex is not poisoned")
+                .clone(),
+        }
+    }
+
+    fn current(&self) -> Option<PinPersistence> {
+        self.persistence
+            .lock()
+            .expect("pin persistence mutex is not poisoned")
+            .clone()
+    }
+
+    fn replace(&self, persistence: Option<PinPersistence>, status: PinStoreStatus) {
+        *self
+            .persistence
+            .lock()
+            .expect("pin persistence mutex is not poisoned") = persistence;
+        *self
+            .fallback
+            .lock()
+            .expect("pin fallback mutex is not poisoned") = status;
+    }
+
+    fn request_load(&self) {
+        if let Some(persistence) = self.current() {
+            persistence.request_load();
+        }
+    }
+
+    fn take_loaded(&self) -> Option<Vec<SavedPin>> {
+        self.current()
+            .and_then(|persistence| persistence.take_loaded())
+    }
+
+    fn take_resave(&self) -> bool {
+        self.current()
+            .is_some_and(|persistence| persistence.take_resave())
+    }
+}
+
 pub struct ClipboardHistoryService {
     policy: Mutex<ClipboardPolicy>,
     sender: Option<Sender<WorkerCommand>>,
     worker: Option<JoinHandle<()>>,
     snapshot: Arc<Mutex<ClipboardSnapshot>>,
+    pin_key_store: Option<Arc<dyn PinKeyStore>>,
+    pins: PinSession,
 }
 
 impl ClipboardHistoryService {
@@ -678,7 +789,14 @@ impl ClipboardHistoryService {
             sender: None,
             worker: None,
             snapshot: Arc::new(Mutex::new(ClipboardSnapshot::stopped())),
+            pin_key_store: None,
+            pins: PinSession::disabled(),
         })
+    }
+
+    /// Installs the key store used when saving pins is enabled.
+    pub fn set_pin_key_store(&mut self, key_store: Arc<dyn PinKeyStore>) {
+        self.pin_key_store = Some(key_store);
     }
 
     pub fn start<B, P>(&mut self, backend: B, privacy: P) -> Result<(), ClipboardServiceError>
@@ -689,16 +807,21 @@ impl ClipboardHistoryService {
         if self.worker.is_some() {
             return Err(ClipboardServiceError::AlreadyRunning);
         }
-        let (sender, receiver) = mpsc::channel();
-        let snapshot = Arc::clone(&self.snapshot);
         let policy = self
             .policy
             .lock()
             .expect("clipboard policy mutex is not poisoned")
             .clone();
+        self.rebuild_pin_session(&policy);
+        let (sender, receiver) = mpsc::channel();
+        let snapshot = Arc::clone(&self.snapshot);
+        let pins = self.pins.clone();
+        let worker_policy = policy.clone();
         let worker = thread::Builder::new()
             .name("kestrel-clipboard-history".to_string())
-            .spawn(move || run_worker(policy, backend, privacy, receiver, snapshot))
+            .spawn(move || {
+                run_worker(worker_policy, backend, privacy, receiver, snapshot, pins);
+            })
             .map_err(|error| {
                 ClipboardServiceError::InvalidPolicy(format!(
                     "failed to start clipboard worker: {error}"
@@ -709,10 +832,59 @@ impl ClipboardHistoryService {
         Ok(())
     }
 
+    /// Creates the pin thread when saving is enabled and its key store exists.
+    fn rebuild_pin_session(&self, policy: &ClipboardPolicy) {
+        if !policy.keep_pinned {
+            let previous = self.pins.current();
+            self.pins
+                .replace(None, PinStoreStatus::new(PinStoreState::Disabled));
+            if let Some(previous) = previous {
+                previous.shutdown();
+            }
+            return;
+        }
+        let (Some(path), Some(key_store)) = (policy.pin_file.clone(), self.pin_key_store.clone())
+        else {
+            let previous = self.pins.current();
+            self.pins
+                .replace(None, PinStoreStatus::new(PinStoreState::Unavailable));
+            if let Some(previous) = previous {
+                previous.shutdown();
+            }
+            return;
+        };
+        match PinPersistence::start(path, key_store) {
+            Ok(persistence) => {
+                let previous = self.pins.current();
+                self.pins
+                    .replace(Some(persistence), PinStoreStatus::new(PinStoreState::Idle));
+                if let Some(previous) = previous {
+                    previous.shutdown();
+                }
+            }
+            Err(_) => {
+                let previous = self.pins.current();
+                self.pins
+                    .replace(None, PinStoreStatus::new(PinStoreState::Failed));
+                if let Some(previous) = previous {
+                    previous.shutdown();
+                }
+            }
+        }
+    }
+
     pub fn latest(&self) -> ClipboardSnapshot {
         self.snapshot
             .lock()
             .expect("clipboard snapshot mutex is not poisoned")
+            .clone()
+    }
+
+    /// The policy the worker currently applies.
+    pub fn policy(&self) -> ClipboardPolicy {
+        self.policy
+            .lock()
+            .expect("clipboard policy mutex is not poisoned")
             .clone()
     }
 
@@ -797,6 +969,16 @@ impl ClipboardHistoryService {
         policy: ClipboardPolicy,
     ) -> Result<ClipboardSnapshot, ClipboardServiceError> {
         let policy = policy.validate()?;
+        let previous = self
+            .policy
+            .lock()
+            .expect("clipboard policy mutex is not poisoned")
+            .clone();
+        let pin_policy_changed =
+            previous.keep_pinned != policy.keep_pinned || previous.pin_file != policy.pin_file;
+        if pin_policy_changed {
+            self.rebuild_pin_session(&policy);
+        }
         *self
             .policy
             .lock()
@@ -807,7 +989,10 @@ impl ClipboardHistoryService {
             .ok_or(ClipboardServiceError::NotRunning)?;
         let (response_sender, response_receiver) = mpsc::channel();
         sender
-            .send(WorkerCommand::SetPolicy(policy, response_sender))
+            .send(WorkerCommand::SetPolicy {
+                policy,
+                response: response_sender,
+            })
             .map_err(|_| ClipboardServiceError::WorkerStopped)?;
         response_receiver
             .recv_timeout(Duration::from_secs(2))
@@ -815,6 +1000,37 @@ impl ClipboardHistoryService {
                 RecvTimeoutError::Timeout => ClipboardServiceError::WorkerTimedOut,
                 RecvTimeoutError::Disconnected => ClipboardServiceError::WorkerStopped,
             })?
+    }
+
+    /// Deletes the store's file and, with `reset`, its keyring item.
+    pub fn wipe_saved_pins(&self, reset: bool) -> Result<PinWipeReport, ClipboardServiceError> {
+        if let Some(persistence) = self.pins.current() {
+            let report = persistence
+                .wipe()
+                .map_err(ClipboardServiceError::PinStore)?;
+            if reset {
+                persistence.request_resave();
+            }
+            return Ok(report);
+        }
+        let policy = self
+            .policy
+            .lock()
+            .expect("clipboard policy mutex is not poisoned")
+            .clone();
+        if let Some(path) = policy.pin_file.as_ref() {
+            pin_store::delete_pins(path).map_err(ClipboardServiceError::PinStore)?;
+        }
+        let key_error = self
+            .pin_key_store
+            .as_ref()
+            .and_then(|key_store| key_store.delete().err());
+        Ok(PinWipeReport {
+            saved_count: 0,
+            saved_bytes: 0,
+            key_removed: key_error.is_none(),
+            key_error,
+        })
     }
 
     fn query(&self, query: ClipboardQuery) -> Result<ClipboardQueryResult, ClipboardServiceError> {
@@ -843,6 +1059,11 @@ impl ClipboardHistoryService {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        if let Some(persistence) = self.pins.current() {
+            persistence.shutdown();
+        }
+        self.pins
+            .replace(None, PinStoreStatus::new(PinStoreState::Disabled));
     }
 }
 
@@ -856,6 +1077,8 @@ struct StoredItem {
     id: u64,
     captured_at: Instant,
     pinned: bool,
+    /// When the entry was pinned; `None` while unpinned.
+    pinned_at: Option<Instant>,
     content: ClipboardEntryContent,
 }
 
@@ -970,6 +1193,8 @@ struct HistoryStore {
     wipe_count: u64,
     skipped_temporary_writes: u64,
     last_filtered_pattern: Option<&'static str>,
+    /// Bumped whenever the set of pinned entries changes.
+    pin_revision: u64,
 }
 
 impl HistoryStore {
@@ -984,6 +1209,7 @@ impl HistoryStore {
             wipe_count: 0,
             skipped_temporary_writes: 0,
             last_filtered_pattern: None,
+            pin_revision: 0,
         }
     }
 
@@ -1013,6 +1239,7 @@ impl HistoryStore {
             id,
             captured_at: now,
             pinned: false,
+            pinned_at: None,
             content,
         });
         self.next_id = self.next_id.saturating_add(1);
@@ -1072,22 +1299,45 @@ impl HistoryStore {
         ReturnOutcome::Promoted
     }
 
-    /// Evicts oldest unpinned entries while enforcing both bounds.
-    fn enforce_bounds(&mut self) {
+    /// Evicts oldest unpinned entries while enforcing both bounds; returns
+    /// whether a pinned entry had to go.
+    fn enforce_bounds(&mut self) -> bool {
+        let mut removed_pinned = false;
         while self.items.len() > self.policy.max_items
             || self.total_bytes() > self.policy.max_total_bytes
         {
             let index = self.items.iter().position(|item| !item.pinned).unwrap_or(0);
-            self.items.remove(index);
+            let removed = self.items.remove(index);
+            if removed.is_some_and(|item| item.pinned) {
+                removed_pinned = true;
+            }
         }
+        if removed_pinned {
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
+        removed_pinned
     }
 
-    /// Age pruning skips pinned entries.
-    fn prune(&mut self, now: Instant) {
+    /// Age pruning drops old unpinned entries and pins past the saved-pin
+    /// age; returns whether a pinned entry expired.
+    fn prune(&mut self, now: Instant) -> bool {
         let max_age = self.policy.max_age;
+        let pinned_max_age = self.policy.pinned_max_age;
+        let mut removed_pinned = false;
         self.items.retain(|item| {
-            item.pinned || now.saturating_duration_since(item.captured_at) <= max_age
+            let keep = match item.pinned_at {
+                Some(pinned_at) => now.saturating_duration_since(pinned_at) <= pinned_max_age,
+                None => now.saturating_duration_since(item.captured_at) <= max_age,
+            };
+            if !keep && item.pinned {
+                removed_pinned = true;
+            }
+            keep
         });
+        if removed_pinned {
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
+        removed_pinned
     }
 
     fn total_bytes(&self) -> usize {
@@ -1095,6 +1345,82 @@ impl HistoryStore {
             .iter()
             .map(|item| item.content.size_bytes())
             .sum()
+    }
+
+    /// The pins to write, in history order, after every global and pin bound.
+    fn saved_pins(&self, now: Instant) -> Vec<SavedPin> {
+        let now_unix = unix_seconds();
+        let mut total = 0usize;
+        let mut saved = Vec::new();
+        for item in &self.items {
+            if !item.pinned || !self.pin_within_bounds(item, now) {
+                continue;
+            }
+            let ClipboardEntryContent::Text(text) = &item.content else {
+                continue;
+            };
+            if saved.len() >= self.policy.max_items {
+                break;
+            }
+            if total.saturating_add(text.len()) > self.policy.max_total_bytes {
+                continue;
+            }
+            total += text.len();
+            let pinned_at = item.pinned_at.unwrap_or(item.captured_at);
+            let age = now.saturating_duration_since(pinned_at).as_secs();
+            saved.push(SavedPin::new(text.as_str(), now_unix.saturating_sub(age)));
+        }
+        saved
+    }
+
+    /// Whether one entry may be written to the store.
+    fn pin_within_bounds(&self, item: &StoredItem, now: Instant) -> bool {
+        let ClipboardEntryContent::Text(text) = &item.content else {
+            return false;
+        };
+        if text.len() > self.policy.max_item_bytes {
+            return false;
+        }
+        let pinned_at = item.pinned_at.unwrap_or(item.captured_at);
+        now.saturating_duration_since(pinned_at) <= self.policy.pinned_max_age
+    }
+
+    /// How one entry should be labelled against the store's current state.
+    fn pin_save_state(
+        &self,
+        item: &StoredItem,
+        store: &PinStoreStatus,
+        now: Instant,
+    ) -> PinSaveState {
+        if !item.pinned {
+            return PinSaveState::NotPinned;
+        }
+        if !self.policy.keep_pinned {
+            return PinSaveState::PersistenceOff;
+        }
+        if !matches!(item.content, ClipboardEntryContent::Text(_)) {
+            return PinSaveState::OnlyText;
+        }
+        if !self.pin_within_bounds(item, now) {
+            let ClipboardEntryContent::Text(text) = &item.content else {
+                return PinSaveState::OnlyText;
+            };
+            if text.len() > self.policy.max_item_bytes {
+                return PinSaveState::OverLimit;
+            }
+            return PinSaveState::Expired;
+        }
+        match store.state {
+            PinStoreState::Saved | PinStoreState::Saving => PinSaveState::Saved,
+            PinStoreState::Idle => PinSaveState::Pending,
+            PinStoreState::Unavailable => PinSaveState::StoreUnavailable,
+            PinStoreState::Locked => PinSaveState::StoreLocked,
+            PinStoreState::Unreadable => PinSaveState::StoreUnreadable,
+            PinStoreState::ReadFailed => PinSaveState::StoreReadFailed,
+            PinStoreState::Held => PinSaveState::StoreHeld,
+            PinStoreState::Failed => PinSaveState::StoreFailed,
+            PinStoreState::Disabled => PinSaveState::PersistenceOff,
+        }
     }
 
     fn content(&self, item_id: u64) -> Option<&ClipboardEntryContent> {
@@ -1106,7 +1432,12 @@ impl HistoryStore {
 
     fn delete(&mut self, item_ids: &[u64]) -> usize {
         let before = self.items.len();
+        let before_pins = self.items.iter().filter(|item| item.pinned).count();
         self.items.retain(|item| !item_ids.contains(&item.id));
+        let after_pins = self.items.iter().filter(|item| item.pinned).count();
+        if before_pins != after_pins {
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
         before - self.items.len()
     }
 
@@ -1137,16 +1468,28 @@ impl HistoryStore {
             }
         }
         self.items = kept;
+        if removed.iter().any(|item| item.pinned) {
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
         removed
     }
 
-    fn set_pinned(&mut self, item_id: u64, pinned: bool) -> Result<(), ClipboardServiceError> {
+    fn set_pinned(
+        &mut self,
+        item_id: u64,
+        pinned: bool,
+        now: Instant,
+    ) -> Result<(), ClipboardServiceError> {
         let item = self
             .items
             .iter_mut()
             .find(|item| item.id == item_id)
             .ok_or(ClipboardServiceError::UnknownItem { item_id })?;
-        item.pinned = pinned;
+        if item.pinned != pinned {
+            item.pinned = pinned;
+            item.pinned_at = pinned.then_some(now);
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
         self.enforce_bounds();
         Ok(())
     }
@@ -1176,6 +1519,9 @@ impl HistoryStore {
         }
         item.content = ClipboardEntryContent::Text(text);
         item.captured_at = now;
+        if item.pinned {
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -1279,6 +1625,7 @@ impl HistoryStore {
     }
 
     fn wipe(&mut self) {
+        let had_pins = self.items.iter().any(|item| item.pinned);
         for mut item in self.items.drain(..) {
             match &mut item.content {
                 ClipboardEntryContent::Text(text) => text.clear(),
@@ -1287,6 +1634,9 @@ impl HistoryStore {
             }
         }
         self.wipe_count = self.wipe_count.saturating_add(1);
+        if had_pins {
+            self.pin_revision = self.pin_revision.saturating_add(1);
+        }
     }
 
     fn snapshot(
@@ -1306,6 +1656,7 @@ impl HistoryStore {
                 pinned: item.pinned,
                 image_dimensions: item.content.image_dimensions(),
                 file_count: item.content.file_count(),
+                pin_save: self.pin_save_state(item, &context.pin_store, now),
             })
             .collect::<Vec<_>>();
         ClipboardSnapshot {
@@ -1325,6 +1676,7 @@ impl HistoryStore {
             paste_unavailable: context.paste_unavailable,
             temporary_writes: context.temporary_writes,
             skipped_temporary_writes: self.skipped_temporary_writes,
+            pin_store: context.pin_store,
         }
     }
 }
@@ -1337,6 +1689,7 @@ struct SnapshotContext {
     paste: Option<PasteStage>,
     paste_unavailable: Option<String>,
     temporary_writes: TemporaryWriteState,
+    pin_store: PinStoreStatus,
 }
 
 enum CaptureOutcome {
@@ -1353,6 +1706,13 @@ enum ReturnOutcome {
     Oversize,
     Empty,
     Missing,
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 /// Case-insensitive containment; ASCII needles match without allocating.
@@ -1423,6 +1783,20 @@ struct WorkerState<B, P> {
     paste: Option<PasteOperation>,
     /// Content held before a temporary write, while it may return.
     returned: Option<ReturnWindow>,
+    /// The encrypted store shared with the service.
+    pins: PinSession,
+    /// Whether the store's current contents have been merged.
+    pins_loaded: bool,
+    /// Whether the store needs to catch up with memory.
+    pins_dirty: bool,
+    /// The last pin revision written or merged.
+    last_pin_revision: u64,
+    /// The session is locked; saved pins stay closed until it unlocks.
+    session_locked: bool,
+    /// The session is preparing for sleep; saved pins stay closed until resume.
+    asleep: bool,
+    /// Saved pins are waiting for the first privacy poll or a release edge.
+    pins_held: bool,
 }
 
 /// A selection that may come back after a temporary write replaced it.
@@ -1440,11 +1814,13 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
     privacy: P,
     receiver: Receiver<WorkerCommand>,
     snapshot: Arc<Mutex<ClipboardSnapshot>>,
+    pins: PinSession,
 ) {
     let provider = backend.provider();
     let support = backend.kind_support();
     let type_listing = backend.supports_type_listing();
     let history = HistoryStore::new(policy.clone());
+    let last_pin_revision = history.pin_revision;
     let mut state = WorkerState {
         policy,
         backend,
@@ -1463,16 +1839,39 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
         paste_observation: PasteObservation::default(),
         paste: None,
         returned: None,
+        pins,
+        pins_loaded: false,
+        pins_dirty: false,
+        last_pin_revision,
+        session_locked: false,
+        asleep: false,
+        pins_held: true,
     };
     state.publish(&snapshot, ClipboardLifecycle::Running);
 
     loop {
         let poll_interval = state.policy.poll_interval;
         match receiver.recv_timeout(poll_interval) {
-            Ok(WorkerCommand::SetPolicy(policy, response)) => {
+            Ok(WorkerCommand::SetPolicy { policy, response }) => {
+                let previous = state.policy.clone();
+                let pin_target_changed = previous.keep_pinned != policy.keep_pinned
+                    || previous.pin_file != policy.pin_file;
                 state.history.policy = policy.clone();
                 state.policy = policy;
+                if pin_target_changed {
+                    state.pins_loaded = false;
+                    state.pins_dirty = state.policy.keep_pinned && !state.session_held();
+                    if state.session_held() {
+                        state.pins_held = true;
+                    } else {
+                        state.pins.request_load();
+                    }
+                } else if previous.pinned_max_age != state.policy.pinned_max_age {
+                    state.pins_dirty = !state.session_held();
+                }
                 state.history.enforce_bounds();
+                state.history.prune(Instant::now());
+                state.sync_pin_revision();
                 let result = Ok(state.snapshot(ClipboardLifecycle::Running, Instant::now()));
                 if let Ok(value) = &result {
                     publish(&snapshot, value.clone());
@@ -1525,25 +1924,160 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
 impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
     fn poll_privacy(&mut self, snapshot: &Arc<Mutex<ClipboardSnapshot>>) -> bool {
         match self.privacy.poll_events() {
-            Ok(events) if !events.is_empty() => {
-                self.wipe_owned();
+            Ok(events) => {
+                for event in events {
+                    match event {
+                        SessionPrivacyEvent::Locked => {
+                            self.session_locked = true;
+                            self.wipe_owned();
+                        }
+                        SessionPrivacyEvent::PreparingForSleep => {
+                            self.asleep = true;
+                            self.wipe_owned();
+                        }
+                        SessionPrivacyEvent::Unlocked => self.session_locked = false,
+                        SessionPrivacyEvent::Resumed => self.asleep = false,
+                    }
+                }
+                self.sync_pin_hold();
                 false
             }
-            Ok(_) => false,
             Err(error) => {
                 self.last_error = Some(error.message);
                 self.wipe_owned();
+                self.sync_pin_hold();
                 self.publish(snapshot, ClipboardLifecycle::Unavailable);
                 true
             }
         }
     }
 
+    fn session_held(&self) -> bool {
+        self.session_locked || self.asleep
+    }
+
+    /// Keeps saved pins closed during a hold and reopens them once it clears.
+    fn sync_pin_hold(&mut self) {
+        if self.session_held() {
+            self.pins_held = true;
+            self.pins_loaded = false;
+            self.pins_dirty = false;
+            self.last_pin_revision = self.history.pin_revision;
+            if let Some(persistence) = self.pins.current() {
+                persistence.discard_pending();
+            }
+        } else if self.pins_held {
+            self.pins_held = false;
+            self.reload_saved_pins();
+        }
+    }
+
+    fn reload_saved_pins(&mut self) {
+        if !self.policy.keep_pinned {
+            return;
+        }
+        self.pins_loaded = false;
+        self.pins.request_load();
+    }
+
+    /// Merges loaded pins, then writes memory back when it changed.
+    fn poll_pins(&mut self, now: Instant) {
+        let loaded = self.pins.take_loaded();
+        if self.session_held() || self.pins_held {
+            return;
+        }
+        if let Some(loaded) = loaded {
+            self.pins_loaded = true;
+            if self.merge_saved_pins(loaded, now) {
+                self.pins_dirty = true;
+            }
+        }
+        if self.pins.take_resave() {
+            self.pins_dirty = true;
+        }
+    }
+
+    fn merge_saved_pins(&mut self, pins: Vec<SavedPin>, now: Instant) -> bool {
+        let now_unix = unix_seconds();
+        let mut dropped = false;
+        for pin in pins {
+            let age = now_unix.saturating_sub(pin.pinned_at_unix());
+            let pinned_at = now.checked_sub(Duration::from_secs(age)).unwrap_or(now);
+            let text = pin.into_text();
+            if text.is_empty()
+                || text.len() > self.policy.max_item_bytes
+                || now.saturating_duration_since(pinned_at) > self.policy.pinned_max_age
+            {
+                dropped = true;
+                continue;
+            }
+            let mut found = false;
+            for item in self.history.items.iter_mut() {
+                if let ClipboardEntryContent::Text(existing) = &item.content {
+                    if existing.as_str() == text.as_str() {
+                        item.pinned = true;
+                        item.pinned_at = Some(pinned_at);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found {
+                continue;
+            }
+            let id = self.history.next_id;
+            self.history.next_id = self.history.next_id.saturating_add(1);
+            self.history.items.push_back(StoredItem {
+                id,
+                captured_at: pinned_at,
+                pinned: true,
+                pinned_at: Some(pinned_at),
+                content: ClipboardEntryContent::Text(text),
+            });
+        }
+        if self.history.enforce_bounds() || self.history.prune(now) {
+            dropped = true;
+        }
+        self.last_pin_revision = self.history.pin_revision;
+        dropped
+    }
+
+    fn sync_pin_revision(&mut self) {
+        if self.history.pin_revision != self.last_pin_revision {
+            self.last_pin_revision = self.history.pin_revision;
+            self.pins_dirty = true;
+        }
+    }
+
+    fn save_pins(&mut self, now: Instant) {
+        if !self.policy.keep_pinned {
+            self.pins_dirty = false;
+            return;
+        }
+        if self.session_held() || self.pins_held {
+            return;
+        }
+        if !self.pins_dirty || !self.pins_loaded {
+            return;
+        }
+        if !self.pins.status().state.writable() {
+            return;
+        }
+        let Some(persistence) = self.pins.current() else {
+            return;
+        };
+        persistence.save(self.history.saved_pins(now));
+        self.pins_dirty = false;
+    }
+
     fn tick(&mut self) {
         let now = Instant::now();
+        self.poll_pins(now);
         self.tick_paste(now);
         self.history.prune(now);
         self.auto_clear_selection(now);
+        self.sync_pin_revision();
+        self.save_pins(now);
 
         // One type listing serves both the temporary check and the kind.
         let listed = match self.backend.offered_types() {
@@ -2066,7 +2600,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 self.history.enforce_bounds();
             }
             ClipboardCommand::SetPinned { item_id, pinned } => {
-                self.history.set_pinned(item_id, pinned)?;
+                self.history.set_pinned(item_id, pinned, now)?;
             }
             ClipboardCommand::ReplaceText { item_id, text } => {
                 self.history
@@ -2077,7 +2611,14 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                     self.history.selection_clears = self.history.selection_clears.saturating_add(1);
                 }
             }
-            ClipboardCommand::Wipe => self.wipe_owned(),
+            ClipboardCommand::Wipe => {
+                self.wipe_owned();
+                // Removing every retained entry removes its saved copy too.
+                if let Some(persistence) = self.pins.current() {
+                    let _ = persistence.wipe();
+                }
+                self.pins_dirty = false;
+            }
             ClipboardCommand::ClearEntries {
                 through_id,
                 keep_pinned,
@@ -2094,6 +2635,10 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                         self.clear_owned().map_err(ClipboardServiceError::Backend)?;
                     }
                     self.history.wipe_count = self.history.wipe_count.saturating_add(1);
+                    if let Some(persistence) = self.pins.current() {
+                        let _ = persistence.wipe();
+                    }
+                    self.pins_dirty = false;
                 }
                 // Removed contents are zeroized as they drop.
                 drop(removed);
@@ -2113,6 +2658,8 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
         self.history.prune(now);
         self.history.enforce_bounds();
+        self.sync_pin_revision();
+        self.save_pins(now);
         Ok(self.snapshot(ClipboardLifecycle::Running, now))
     }
 
@@ -2130,9 +2677,23 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 } else {
                     TemporaryWriteState::Undetectable
                 },
+                pin_store: self.pin_status(),
             },
             now,
         )
+    }
+
+    /// The store view; a privacy hold wins over the store's own state.
+    fn pin_status(&self) -> PinStoreStatus {
+        let status = self.pins.status();
+        if self.policy.keep_pinned && self.session_held() {
+            PinStoreStatus {
+                state: PinStoreState::Held,
+                ..status
+            }
+        } else {
+            status
+        }
     }
 
     fn publish(&self, snapshot: &Arc<Mutex<ClipboardSnapshot>>, lifecycle: ClipboardLifecycle) {
@@ -2149,7 +2710,12 @@ fn publish(snapshot: &Arc<Mutex<ClipboardSnapshot>>, value: ClipboardSnapshot) {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex},
+        fs,
+        path::PathBuf,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -2159,11 +2725,17 @@ mod tests {
         ClipboardKindSupport, ClipboardProvider, OwnedSelection, PrivacyEventSource,
         SessionPrivacyEvent,
     };
+    use kestrel_platform::pin_store::{self, SavedPin};
+    use kestrel_platform::secret_service::{
+        PIN_KEY_BYTES, PinKey, PinKeyError, PinKeyStore, SecretServiceKeyStore,
+    };
 
     use super::{
         ClipboardCommand, ClipboardHistoryService, ClipboardLifecycle, ClipboardPolicy,
-        HistoryStore, MAX_MATCH_PREVIEW_CHARS, UrlRules, WorkerState, match_sensitive, plain_text,
+        HistoryStore, MAX_MATCH_PREVIEW_CHARS, PinSaveState, PinStoreState, UrlRules, WorkerState,
+        match_sensitive, plain_text,
     };
+    use crate::clipboard_pins::PinPersistence;
 
     const PNG_2X2: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6,
@@ -2352,6 +2924,9 @@ mod tests {
             paste_keys: kestrel_core::ClipboardPasteKeys::CtrlV,
             clean_links: false,
             url_rules: UrlRules::default(),
+            keep_pinned: false,
+            pinned_max_age: Duration::from_secs(90 * 24 * 60 * 60),
+            pin_file: None,
         }
     }
 
@@ -2369,6 +2944,7 @@ mod tests {
                 paste: None,
                 paste_unavailable: None,
                 temporary_writes: super::TemporaryWriteState::Undetectable,
+                pin_store: super::PinStoreStatus::new(super::PinStoreState::Disabled),
             },
             now,
         )
@@ -2454,7 +3030,7 @@ mod tests {
         let now = Instant::now();
         let mut store = new_store();
         store.capture(text("keep"), now);
-        store.set_pinned(1, true).expect("pin succeeds");
+        store.set_pinned(1, true, now).expect("pin succeeds");
         store.capture(text("second"), now);
         store.capture(text("third"), now);
 
@@ -2467,7 +3043,7 @@ mod tests {
 
         let mut store = new_store();
         store.capture(text("keep"), now);
-        store.set_pinned(1, true).expect("pin succeeds");
+        store.set_pinned(1, true, now).expect("pin succeeds");
         for value in ["a", "b", "c", "d"] {
             store.capture(text(value), now);
         }
@@ -2956,6 +3532,13 @@ mod tests {
             paste_observation: super::PasteObservation::default(),
             paste: None,
             returned: None,
+            pins: super::PinSession::disabled(),
+            pins_loaded: false,
+            pins_dirty: false,
+            last_pin_revision: 0,
+            session_locked: false,
+            asleep: false,
+            pins_held: true,
         };
 
         let stale = text("https://example.com/?utm_source=x");
@@ -3190,6 +3773,8 @@ mod tests {
             paste_plain_text: false,
             history_layout: kestrel_core::ClipboardLayout::Cards,
             paste_keys: kestrel_core::ClipboardPasteKeys::ShiftInsert,
+            keep_pinned: false,
+            pinned_max_age_days: kestrel_core::DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS,
         };
 
         let url_cleanup = kestrel_core::UrlCleanupConfiguration {
@@ -3290,7 +3875,7 @@ mod tests {
         assert_eq!(ids(&store), [2, 3, 1], "the reused entry is newest");
         assert_eq!(store.search("", 10)[0].id, 1, "search lists it first");
 
-        store.set_pinned(2, true).expect("entry exists");
+        store.set_pinned(2, true, now).expect("entry exists");
         store.promote(2, now);
         assert_eq!(ids(&store), [2, 3, 1], "a pinned entry keeps its place");
     }
@@ -3302,7 +3887,7 @@ mod tests {
         for value in ["one", "two", "three"] {
             store.capture(text(value), now);
         }
-        store.set_pinned(1, true).expect("entry exists");
+        store.set_pinned(1, true, now).expect("entry exists");
         let removed = store.clear_through(2, true);
         assert_eq!(removed.len(), 1);
         assert_eq!(ids(&store), [1, 3], "pinned and newer entries remain");
@@ -3721,6 +4306,541 @@ mod tests {
                 })
                 .expect_err("only one paste runs at a time"),
             super::ClipboardServiceError::PasteInProgress
+        );
+        service.stop();
+    }
+
+    #[derive(Default)]
+    struct FakeKeyStore {
+        key: Mutex<Option<PinKey>>,
+        locked: Mutex<bool>,
+        unavailable: Mutex<bool>,
+        deletes: AtomicUsize,
+    }
+
+    impl FakeKeyStore {
+        fn with_key(byte: u8) -> Self {
+            Self {
+                key: Mutex::new(Some(
+                    PinKey::from_bytes(&[byte; PIN_KEY_BYTES]).expect("exact length"),
+                )),
+                ..Self::default()
+            }
+        }
+
+        fn set_locked(&self, locked: bool) {
+            *self.locked.lock().expect("fake key store") = locked;
+        }
+
+        fn set_unavailable(&self, unavailable: bool) {
+            *self.unavailable.lock().expect("fake key store") = unavailable;
+        }
+    }
+
+    impl PinKeyStore for FakeKeyStore {
+        fn get(&self) -> Result<Option<PinKey>, PinKeyError> {
+            if *self.unavailable.lock().expect("fake key store") {
+                return Err(PinKeyError::Unavailable);
+            }
+            if *self.locked.lock().expect("fake key store") {
+                return Err(PinKeyError::Locked);
+            }
+            Ok(self.key.lock().expect("fake key store").clone())
+        }
+
+        fn create(&self) -> Result<PinKey, PinKeyError> {
+            if *self.unavailable.lock().expect("fake key store") {
+                return Err(PinKeyError::Unavailable);
+            }
+            if *self.locked.lock().expect("fake key store") {
+                return Err(PinKeyError::Locked);
+            }
+            let key = PinKey::generate().map_err(|_| PinKeyError::Failed)?;
+            *self.key.lock().expect("fake key store") = Some(key.clone());
+            Ok(key)
+        }
+
+        fn delete(&self) -> Result<bool, PinKeyError> {
+            if *self.unavailable.lock().expect("fake key store") {
+                return Err(PinKeyError::Unavailable);
+            }
+            if *self.locked.lock().expect("fake key store") {
+                return Err(PinKeyError::Locked);
+            }
+            self.deletes.fetch_add(1, Ordering::Relaxed);
+            Ok(self.key.lock().expect("fake key store").take().is_some())
+        }
+    }
+
+    fn pin_policy(path: PathBuf) -> ClipboardPolicy {
+        ClipboardPolicy {
+            keep_pinned: true,
+            pinned_max_age: Duration::from_secs(90 * 24 * 60 * 60),
+            pin_file: Some(path),
+            max_item_bytes: 64,
+            max_total_bytes: 256,
+            ..policy()
+        }
+    }
+
+    type PinHarness = (
+        ClipboardHistoryService,
+        Arc<Mutex<FakeState>>,
+        Arc<Mutex<Vec<SessionPrivacyEvent>>>,
+    );
+
+    fn start_pin_service(policy: ClipboardPolicy, key_store: Arc<dyn PinKeyStore>) -> PinHarness {
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut service = ClipboardHistoryService::new(policy).expect("valid policy");
+        service.set_pin_key_store(key_store);
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::clone(&state),
+                },
+                FakePrivacy {
+                    events: Arc::clone(&events),
+                },
+            )
+            .expect("worker starts");
+        (service, state, events)
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(3) {
+            if condition() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("condition was not met before the timeout");
+    }
+
+    #[test]
+    fn saved_pins_round_trip_through_the_key_store() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::default());
+        let shared: Arc<dyn PinKeyStore> = store.clone();
+
+        let first = PinPersistence::start(path.clone(), shared.clone()).expect("pin worker starts");
+        wait_until(|| first.status().state == PinStoreState::Idle);
+        first.save(vec![
+            SavedPin::new("first saved", 1_700_000_000),
+            SavedPin::new("second saved", 1_700_000_100),
+        ]);
+        wait_until(|| first.status().state == PinStoreState::Saved && path.exists());
+        assert_eq!(first.status().saved_count, 2);
+        assert!(first.status().saved_bytes > 0, "bytes are reported");
+        first.shutdown();
+
+        let second = PinPersistence::start(path, shared).expect("pin worker starts");
+        second.request_load();
+        let mut loaded = None;
+        wait_until(|| {
+            if let Some(pins) = second.take_loaded() {
+                loaded = Some(pins);
+                true
+            } else {
+                false
+            }
+        });
+        let loaded = loaded.expect("a load completed");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].text(), "first saved");
+        assert_eq!(loaded[1].text(), "second saved");
+        assert_eq!(second.status().saved_count, 2);
+        second.shutdown();
+    }
+
+    #[test]
+    fn a_wrong_key_or_truncated_file_is_unreadable_and_exposes_no_content() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[1; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(&path, &writer, &[SavedPin::new("never shown", 10)])
+            .expect("encrypted write");
+
+        let store = Arc::new(FakeKeyStore::with_key(2));
+        let shared: Arc<dyn PinKeyStore> = store;
+        let persistence = PinPersistence::start(path.clone(), shared).expect("pin worker starts");
+        persistence.request_load();
+        wait_until(|| persistence.status().state == PinStoreState::Unreadable);
+        assert!(persistence.take_loaded().is_none());
+        let status = format!("{:?}", persistence.status());
+        assert!(!status.contains("never shown"), "{status}");
+        persistence.shutdown();
+
+        fs::write(&path, b"KSTRLPIN\x01short").expect("truncated file");
+        let store = Arc::new(FakeKeyStore::with_key(1));
+        let shared: Arc<dyn PinKeyStore> = store;
+        let persistence = PinPersistence::start(path, shared).expect("pin worker starts");
+        persistence.request_load();
+        wait_until(|| persistence.status().state == PinStoreState::Unreadable);
+        assert!(persistence.take_loaded().is_none());
+        persistence.shutdown();
+    }
+
+    #[test]
+    fn a_keyless_or_truncated_store_keeps_history_memory_only() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[1; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(&path, &writer, &[SavedPin::new("hidden value", 10)])
+            .expect("encrypted write");
+
+        let store = Arc::new(FakeKeyStore::with_key(2));
+        let shared: Arc<dyn PinKeyStore> = store;
+        let (mut service, _, _) = start_pin_service(pin_policy(path), shared);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Unreadable);
+        assert!(service.latest().items.is_empty());
+        assert!(!format!("{:?}", service.latest()).contains("hidden value"));
+        service.stop();
+    }
+
+    #[test]
+    fn saved_pins_obey_count_byte_and_age_bounds_before_writing() {
+        let now = Instant::now();
+        let mut pin_policy = pin_policy(PathBuf::from("/unused"));
+        pin_policy.max_items = 3;
+        pin_policy.max_item_bytes = 8;
+        pin_policy.max_total_bytes = 100;
+        pin_policy.pinned_max_age = Duration::from_millis(100);
+        let mut store = HistoryStore::new(pin_policy);
+
+        for (id, value) in [(1, "aaaa"), (2, "bbbb"), (3, "cccc")] {
+            store.capture(text(value), now);
+            store.set_pinned(id, true, now).expect("pin succeeds");
+        }
+        store.policy.max_total_bytes = 10;
+        let saved = store.saved_pins(now);
+        assert_eq!(saved.len(), 2, "the total byte bound drops the newest pin");
+        assert!(
+            saved.iter().map(|pin| pin.text().len()).sum::<usize>() <= 10,
+            "saved pins stay inside the total byte bound"
+        );
+
+        assert!(
+            store
+                .saved_pins(now + Duration::from_millis(101))
+                .is_empty(),
+            "pins past the saved-pin age are not written"
+        );
+
+        store.policy.max_total_bytes = 100;
+        store.policy.max_items = 1;
+        assert_eq!(store.saved_pins(now).len(), 1, "the count bound applies");
+
+        store.policy.max_items = 3;
+        store.policy.max_item_bytes = 3;
+        assert!(
+            store.saved_pins(now).is_empty(),
+            "an entry over the per-entry bound is not written"
+        );
+    }
+
+    #[test]
+    fn image_and_file_pins_are_not_saved() {
+        let now = Instant::now();
+        let mut store = HistoryStore::new(pin_policy(PathBuf::from("/unused")));
+        store.capture(
+            super::ClipboardEntryContent::ImagePng {
+                bytes: zeroize::Zeroizing::new(PNG_2X2.to_vec()),
+                dimensions: Some((2, 2)),
+            },
+            now,
+        );
+        store.set_pinned(1, true, now).expect("pin succeeds");
+        store.capture(
+            super::ClipboardEntryContent::Files(zeroize::Zeroizing::new(vec![
+                "/tmp/example".to_owned(),
+            ])),
+            now,
+        );
+        store.set_pinned(2, true, now).expect("pin succeeds");
+
+        assert!(store.saved_pins(now).is_empty());
+        let snapshot = snapshot_of(&store, now);
+        assert_eq!(snapshot.items.len(), 2);
+        for item in &snapshot.items {
+            assert_eq!(
+                item.pin_save,
+                PinSaveState::OnlyText,
+                "images and file lists are kept in memory only"
+            );
+        }
+    }
+
+    #[test]
+    fn wipe_removes_the_file_and_calls_the_key_delete() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::with_key(4));
+        let shared: Arc<dyn PinKeyStore> = store.clone();
+        let (mut service, state, _) = start_pin_service(pin_policy(path.clone()), shared);
+
+        state.lock().expect("fake state").current =
+            Some(FakeSelection::Text("durable text".to_string()));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        service
+            .execute(ClipboardCommand::SetPinned {
+                item_id,
+                pinned: true,
+            })
+            .expect("pin succeeds");
+        wait_until(|| path.exists() && service.latest().pin_store.state == PinStoreState::Saved);
+        let saved = service.latest();
+        assert_eq!(saved.pin_store.saved_count, 1);
+        assert_eq!(saved.pin_store.saved_bytes, "durable text".len());
+        assert_eq!(saved.items[0].pin_save, PinSaveState::Saved);
+
+        let report = service.wipe_saved_pins(false).expect("wipe succeeds");
+        assert_eq!(report.saved_count, 1);
+        assert!(report.key_removed);
+        assert_eq!(report.key_error, None);
+        assert!(!path.exists(), "the store file is gone");
+        assert_eq!(store.deletes.load(Ordering::Relaxed), 1);
+        service.stop();
+    }
+
+    #[test]
+    fn an_unavailable_key_store_writes_no_file() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::default());
+        store.set_unavailable(true);
+        let shared: Arc<dyn PinKeyStore> = store;
+        let (mut service, state, _) = start_pin_service(pin_policy(path.clone()), shared);
+
+        state.lock().expect("fake state").current =
+            Some(FakeSelection::Text("kept in memory".to_string()));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        service
+            .execute(ClipboardCommand::SetPinned {
+                item_id,
+                pinned: true,
+            })
+            .expect("pin succeeds");
+
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Unavailable);
+        thread::sleep(Duration::from_millis(60));
+        assert!(!path.exists(), "no key means no ciphertext file");
+        assert_eq!(
+            service.latest().items[0].pin_save,
+            PinSaveState::StoreUnavailable
+        );
+        let report = service
+            .wipe_saved_pins(false)
+            .expect("wipe removes the file");
+        assert!(!report.key_removed);
+        assert_eq!(report.key_error, Some(PinKeyError::Unavailable));
+        assert!(!path.exists());
+        service.stop();
+    }
+
+    #[test]
+    fn real_keyring_save_and_reload_with_a_new_instance() {
+        if std::env::var("KESTREL_SECRET_SERVICE_TEST").as_deref() != Ok("1") {
+            return;
+        }
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(SecretServiceKeyStore::connect().expect("secret service connects"));
+        let _ = store.delete();
+        let shared: Arc<dyn PinKeyStore> = store;
+        let first = PinPersistence::start(path.clone(), shared).expect("pin worker starts");
+        wait_until(|| first.status().state == PinStoreState::Idle);
+        first.save(vec![SavedPin::new(
+            "secret note 42 for pinning",
+            super::unix_seconds(),
+        )]);
+        wait_until(|| first.status().state == PinStoreState::Saved && path.exists());
+        first.shutdown();
+
+        let second_store: Arc<dyn PinKeyStore> =
+            Arc::new(SecretServiceKeyStore::connect().expect("secret service reconnects"));
+        let second = PinPersistence::start(path, second_store).expect("pin worker starts");
+        second.request_load();
+        let mut loaded = None;
+        wait_until(|| {
+            if let Some(pins) = second.take_loaded() {
+                loaded = Some(pins);
+                true
+            } else {
+                false
+            }
+        });
+        let loaded = loaded.expect("a load completed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text(), "secret note 42 for pinning");
+
+        let report = second.wipe().expect("wipe succeeds");
+        assert!(report.key_removed, "the keyring item is deleted");
+        assert_eq!(report.key_error, None);
+        assert!(
+            SecretServiceKeyStore::connect()
+                .expect("secret service reconnects")
+                .get()
+                .expect("get after wipe")
+                .is_none(),
+            "SearchItems returns no item after the wipe"
+        );
+        second.shutdown();
+    }
+
+    #[test]
+    fn lock_wipes_memory_and_resume_reloads_saved_pins() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::with_key(5));
+        let shared: Arc<dyn PinKeyStore> = store.clone();
+        let (mut service, state, events) = start_pin_service(pin_policy(path.clone()), shared);
+
+        state.lock().expect("fake state").current =
+            Some(FakeSelection::Text("survivor".to_string()));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        service
+            .execute(ClipboardCommand::SetPinned {
+                item_id,
+                pinned: true,
+            })
+            .expect("pin succeeds");
+        wait_until(|| path.exists() && service.latest().pin_store.state == PinStoreState::Saved);
+
+        store.set_locked(true);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Locked);
+        wait_for_items(&service, 0);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                service.latest().items.is_empty(),
+                "a locked session must keep saved pins out of memory"
+            );
+        }
+
+        store.set_locked(false);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().items.len() == 1);
+        let snapshot = service.latest();
+        assert!(snapshot.items[0].pinned, "the saved pin returns pinned");
+        let preview = service
+            .preview(snapshot.items[0].id, 64)
+            .expect("preview succeeds");
+        assert_eq!(preview.text, "survivor");
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Saved);
+        service.stop();
+    }
+
+    #[test]
+    fn sleep_holds_saved_pins_until_resume() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::with_key(6));
+        let shared: Arc<dyn PinKeyStore> = store.clone();
+        let (mut service, state, events) = start_pin_service(pin_policy(path.clone()), shared);
+
+        state.lock().expect("fake state").current =
+            Some(FakeSelection::Text("survivor".to_string()));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        service
+            .execute(ClipboardCommand::SetPinned {
+                item_id,
+                pinned: true,
+            })
+            .expect("pin succeeds");
+        wait_until(|| path.exists() && service.latest().pin_store.state == PinStoreState::Saved);
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::PreparingForSleep);
+        wait_for_items(&service, 0);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                service.latest().items.is_empty(),
+                "a sleeping session must keep saved pins out of memory"
+            );
+        }
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Resumed);
+        wait_until(|| service.latest().items.len() == 1);
+        assert_eq!(
+            service
+                .preview(service.latest().items[0].id, 64)
+                .expect("preview succeeds")
+                .text,
+            "survivor"
+        );
+        service.stop();
+    }
+
+    #[test]
+    fn a_session_locked_at_start_loads_nothing_until_unlocked() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[7; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(
+            &path,
+            &writer,
+            &[SavedPin::new("startup secret", super::unix_seconds())],
+        )
+        .expect("encrypted write");
+
+        let store = Arc::new(FakeKeyStore::with_key(7));
+        let key_store: Arc<dyn PinKeyStore> = store;
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let events = Arc::new(Mutex::new(vec![SessionPrivacyEvent::Locked]));
+        let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
+        service.set_pin_key_store(key_store);
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::clone(&state),
+                },
+                FakePrivacy {
+                    events: Arc::clone(&events),
+                },
+            )
+            .expect("worker starts");
+
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                service.latest().items.is_empty(),
+                "a session locked at start must not decrypt saved pins"
+            );
+        }
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().items.len() == 1);
+        assert_eq!(
+            service
+                .preview(service.latest().items[0].id, 64)
+                .expect("preview succeeds")
+                .text,
+            "startup secret"
         );
         service.stop();
     }
