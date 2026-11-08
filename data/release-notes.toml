@@ -3,3 +3,7 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "clipboard.history"
+text = "Clean links removes tracking parameters such as utm_source from a link, shows what it removes, and can clean a single copied link automatically when you turn it on."

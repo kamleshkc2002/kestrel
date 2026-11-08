@@ -52,8 +52,8 @@ pub use kestrel_services::quick_toggles::QuickToggleCommand;
 pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{
-    ApplicationRuntime, ApplicationWindowDecision, FeaturePreset, HostCapabilities, OVERLAY_ID,
-    run_process_action,
+    ApplicationRuntime, ApplicationWindowDecision, CleanLinkOutcome, FeaturePreset,
+    HostCapabilities, OVERLAY_ID, run_process_action,
 };
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
@@ -641,6 +641,18 @@ pub enum ApplicationCommand {
     SetScreenToolsSetting(ScreenToolsSetting),
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
+    /// Cleans a single copied link as soon as it is copied.
+    SetUrlCleanupAutomatic(bool),
+    /// Replaces the extra parameter names that apply to every site.
+    SetUrlCleanupExtraGlobal(Vec<String>),
+    /// Upserts one site rule, keeping its parameters when it is switched off.
+    SetUrlCleanupSite {
+        host: String,
+        enabled: bool,
+        params: Vec<String>,
+    },
+    /// Runs a manual clean of the single link on the clipboard.
+    CleanClipboardLink,
     /// Snippet-library action.
     Snippet(SnippetCommand),
     /// Runs the snippet search whose results the window shows.

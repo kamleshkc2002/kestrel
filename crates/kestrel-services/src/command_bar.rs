@@ -1442,6 +1442,14 @@ fn kestrel_commands() -> Vec<CommandItem> {
         )
         .with_keywords(["clipboard", "selection"]),
         CommandItem::new(
+            "kestrel:clean-link",
+            CommandSource::Kestrel,
+            "Clean link on clipboard",
+            "Remove tracking parameters from a single copied http or https link",
+            CommandAction::Kestrel("clean_link".to_string()),
+        )
+        .with_keywords(["url", "link", "tracking", "utm", "clean", "clipboard"]),
+        CommandItem::new(
             "kestrel:reset-command-ranking",
             CommandSource::Kestrel,
             "Reset command ranking",
@@ -2206,6 +2214,25 @@ mod tests {
         assert_eq!(
             results[0].item.action,
             CommandAction::Kestrel("wipe_clipboard".to_string())
+        );
+
+        let results = index.search(SearchInput {
+            query: "clean link",
+            max_results: 5,
+            providers: EnabledProviders::default(),
+            applications: &[],
+            files: &[],
+            windows: &[],
+            clipboard: &[],
+            features: &[],
+            now: None,
+            ranking: &ranking,
+            configured_scripts: &[],
+        });
+        assert_eq!(results[0].item.id, "kestrel:clean-link");
+        assert_eq!(
+            results[0].item.action,
+            CommandAction::Kestrel("clean_link".to_string())
         );
     }
 }

@@ -59,6 +59,7 @@ mod shortcuts;
 mod snippets;
 mod speed_test;
 mod updates;
+mod url_cleanup;
 mod whats_new;
 
 #[cfg(test)]
@@ -141,6 +142,7 @@ pub use updates::{
     UpdateAction, UpdateInstallViewModel, UpdateOfferViewModel, UpdatePhaseViewModel,
     UpdatesViewModel,
 };
+pub use url_cleanup::UrlCleanupViewModel;
 pub use whats_new::{WhatsNewSection, WhatsNewViewModel};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +160,7 @@ pub struct ApplicationViewModel {
     pub recording: RecordingViewModel,
     pub listeners: ListenersViewModel,
     pub clipboard: ClipboardViewModel,
+    pub url_cleanup: UrlCleanupViewModel,
     pub snippets: SnippetsViewModel,
     pub scratchpad: ScratchpadViewModel,
     pub command_bar: CommandBarViewModel,
@@ -250,6 +253,7 @@ impl ApplicationViewModel {
             recording: RecordingViewModel::default(),
             listeners: ListenersViewModel::default(),
             clipboard: ClipboardViewModel::from_presentation(&configuration.clipboard, clipboard),
+            url_cleanup: UrlCleanupViewModel::new(&configuration.url_cleanup),
             snippets: SnippetsViewModel::from_presentation(snippets),
             scratchpad: ScratchpadViewModel::from_presentation(ScratchpadPresentation {
                 warning: None,

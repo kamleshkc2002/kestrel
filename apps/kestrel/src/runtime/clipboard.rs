@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// What a manual clean of the clipboard's single link did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanLinkOutcome {
+    /// Tracking parameters were removed and the cleaned link replaced it.
+    Removed(usize),
+    /// The link had nothing to remove.
+    Nothing,
+    /// The clipboard holds no single http(s) link, or it changed during the read.
+    NotSingleLink,
+}
+
 impl ApplicationRuntime {
     pub fn clipboard_is_running(&self) -> bool {
         self.clipboard_history_is_running()
@@ -102,6 +113,40 @@ impl ApplicationRuntime {
     ) -> Option<Result<ClipboardSnapshot, ClipboardServiceError>> {
         self.clipboard_history_is_running()
             .then(|| self.clipboard_history.execute(command))
+    }
+
+    /// Cleans the single link on the clipboard and replaces it.
+    ///
+    /// Anything else, including a link that changed during the read, is left
+    /// exactly as it is.
+    pub fn clean_clipboard_link(
+        &mut self,
+        rules: &kestrel_core::UrlRules,
+    ) -> Result<CleanLinkOutcome, String> {
+        let backend = self
+            .session_clipboard
+            .as_mut()
+            .ok_or_else(|| "no clipboard connection is available for this session".to_owned())?;
+        let Some(text) = backend.read_text().map_err(|error| error.to_string())? else {
+            return Ok(CleanLinkOutcome::NotSingleLink);
+        };
+        let Some(link) = kestrel_core::single_http_link(&text) else {
+            return Ok(CleanLinkOutcome::NotSingleLink);
+        };
+        let Ok(cleaned) = kestrel_core::clean_url(link, rules) else {
+            return Ok(CleanLinkOutcome::NotSingleLink);
+        };
+        if cleaned.removed.is_empty() {
+            return Ok(CleanLinkOutcome::Nothing);
+        }
+        match backend.read_text() {
+            Ok(Some(current)) if current == text => {}
+            _ => return Ok(CleanLinkOutcome::NotSingleLink),
+        }
+        backend
+            .write_text(&cleaned.cleaned)
+            .map_err(|error| error.to_string())?;
+        Ok(CleanLinkOutcome::Removed(cleaned.removed.len()))
     }
 
     pub(super) fn start_clipboard_history(&mut self) -> Result<(), ClipboardServiceError> {

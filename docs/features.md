@@ -78,6 +78,14 @@
 - Previews lay JSON out one value per line. Image previews offer Copy text, which reads the image with the local `tesseract` executable; the text goes to the clipboard only and is neither retained nor logged. Without Tesseract the preview says what to install.
 - Cards name the source app only when the clipboard backend reports a reliable owner; none does today, so cards say "Source app unknown".
 
+### Clean links
+
+- The Clipboard page has a link field and a live result. Paste or type one http or https link to see each tracking parameter that will be removed (`key=value`) and the cleaned link; the rest of the link keeps its exact bytes, including percent-encoding, case, and the fragment.
+- Copy cleaned link puts the result on the clipboard. A link that is not http or https, or is malformed, shows a typed error and leaves the original text untouched.
+- **Configuration:** `[url_cleanup] automatic` (default false), `extra_global`, and `[[url_cleanup.sites]]` entries with `host`, `enabled`, and `params`, also editable on the Clipboard page. Parameter names are comma separated and may end in `*` for a prefix match. A site rule matches its host and subdomains. Turning a site off keeps its parameter names.
+- Automatic cleanup is off by default. When it is on and clipboard history is running, a copied link is replaced with its cleaned form and only the cleaned link is retained. It acts only when the clipboard holds exactly one link: a single line with no other text. Multi-line lists, files, images, and a link that changes during the read are left alone.
+- The command bar action "Clean link on clipboard" cleans the current clipboard text by the same single-link rule and reports how many parameters it removed. Built-in rules cover common tracking parameters and common sites; the rules live in `config.toml` and nothing leaves this computer.
+
 ## Screenshots — `capture.screenshot`
 
 - **Default:** disabled; Balanced and Everything enable it. Nothing is captured until you press a capture button or run `kestrel --command capture.screenshot` / `capture.screen`.

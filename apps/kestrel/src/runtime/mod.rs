@@ -623,6 +623,7 @@ impl ApplicationRuntime {
             command_sender: None,
             clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::from_configuration(
                 &configuration.clipboard,
+                &configuration.url_cleanup,
             ))
             .expect("the validated clipboard policy is valid"),
             snippet_library: loaded_snippets.library,
@@ -783,6 +784,7 @@ impl ApplicationRuntime {
                 .clipboard_history
                 .set_policy(ClipboardPolicy::from_configuration(
                     &configuration.clipboard,
+                    &configuration.url_cleanup,
                 ));
         }
         self.snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
@@ -1177,6 +1179,7 @@ mod updates;
 mod window_decision;
 
 use capture::capture_directory;
+pub use clipboard::CleanLinkOutcome;
 pub use probes::CommandBarProbe;
 use probes::{
     ScreenToolProbe, SharedCaptureProbe, SharedRecordingProbe, clipboard_ocr_unavailable,

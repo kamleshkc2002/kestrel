@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use kestrel_core::{UrlRules, clean_url, single_http_link};
 use kestrel_platform::clipboard::{
     ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardKindSupport, ClipboardProvider,
     OwnedSelection, PrivacyEventSource, png_dimensions,
@@ -33,7 +34,7 @@ pub const MAX_HISTORY_ITEMS: usize = 1000;
 pub const MAX_PREVIEW_BYTES: usize = 4096;
 pub const MAX_MATCH_PREVIEW_CHARS: usize = 160;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardPolicy {
     pub max_item_bytes: usize,
     pub max_image_bytes: usize,
@@ -47,6 +48,10 @@ pub struct ClipboardPolicy {
     pub selection_clear_after: Option<Duration>,
     pub filter_sensitive: bool,
     pub paste_plain_text: bool,
+    /// Replaces a single copied link with its cleaned form.
+    pub clean_links: bool,
+    /// The same local rules the manual preview uses.
+    pub url_rules: UrlRules,
 }
 
 impl Default for ClipboardPolicy {
@@ -63,6 +68,8 @@ impl Default for ClipboardPolicy {
             selection_clear_after: None,
             filter_sensitive: false,
             paste_plain_text: true,
+            clean_links: false,
+            url_rules: UrlRules::default(),
         }
     }
 }
@@ -106,7 +113,10 @@ impl ClipboardPolicy {
 }
 
 impl ClipboardPolicy {
-    pub fn from_configuration(configuration: &kestrel_core::ClipboardConfiguration) -> Self {
+    pub fn from_configuration(
+        configuration: &kestrel_core::ClipboardConfiguration,
+        url_cleanup: &kestrel_core::UrlCleanupConfiguration,
+    ) -> Self {
         let defaults = Self::default();
         Self {
             max_item_bytes: configuration.max_item_bytes as usize,
@@ -121,6 +131,8 @@ impl ClipboardPolicy {
                 .then(|| Duration::from_secs(configuration.clear_seconds)),
             filter_sensitive: configuration.filter_sensitive,
             paste_plain_text: configuration.paste_plain_text,
+            clean_links: url_cleanup.automatic,
+            url_rules: UrlRules::from_configuration(url_cleanup),
         }
     }
 }
@@ -634,10 +646,11 @@ impl ClipboardHistoryService {
         }
         let (sender, receiver) = mpsc::channel();
         let snapshot = Arc::clone(&self.snapshot);
-        let policy = *self
+        let policy = self
             .policy
             .lock()
-            .expect("clipboard policy mutex is not poisoned");
+            .expect("clipboard policy mutex is not poisoned")
+            .clone();
         let worker = thread::Builder::new()
             .name("kestrel-clipboard-history".to_string())
             .spawn(move || run_worker(policy, backend, privacy, receiver, snapshot))
@@ -721,7 +734,7 @@ impl ClipboardHistoryService {
         *self
             .policy
             .lock()
-            .expect("clipboard policy mutex is not poisoned") = policy;
+            .expect("clipboard policy mutex is not poisoned") = policy.clone();
         let sender = self
             .sender
             .as_ref()
@@ -1293,11 +1306,12 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
 ) {
     let provider = backend.provider();
     let support = backend.kind_support();
+    let history = HistoryStore::new(policy.clone());
     let mut state = WorkerState {
         policy,
         backend,
         privacy,
-        history: HistoryStore::new(policy),
+        history,
         provider,
         support,
         observed: None,
@@ -1312,8 +1326,8 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
         let poll_interval = state.policy.poll_interval;
         match receiver.recv_timeout(poll_interval) {
             Ok(WorkerCommand::SetPolicy(policy, response)) => {
+                state.history.policy = policy.clone();
                 state.policy = policy;
-                state.history.policy = policy;
                 state.history.enforce_bounds();
                 let result = Ok(state.snapshot(ClipboardLifecycle::Running, Instant::now()));
                 if let Ok(value) = &result {
@@ -1421,6 +1435,9 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         {
             return;
         }
+        if self.policy.clean_links && self.clean_copied_link(&content, now) {
+            return;
+        }
         let observed = ObservedSelection::from_content(&content);
         match self.history.capture(content, now) {
             CaptureOutcome::Stored(id) => {
@@ -1466,6 +1483,65 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 None
             }
         }
+    }
+
+    /// Cleans one newly copied link, replaces the selection, and stores only
+    /// the cleaned text. Returns whether the selection was handled.
+    fn clean_copied_link(&mut self, content: &ClipboardEntryContent, now: Instant) -> bool {
+        let ClipboardEntryContent::Text(text) = content else {
+            return false;
+        };
+        let Some(link) = single_http_link(text.as_str()) else {
+            return false;
+        };
+        let Ok(cleaned) = clean_url(link, &self.policy.url_rules) else {
+            return false;
+        };
+        if cleaned.removed.is_empty() {
+            return false;
+        }
+        let cleaned_content = ClipboardEntryContent::Text(Zeroizing::new(cleaned.cleaned.clone()));
+        if self.history.sensitive_pattern(&cleaned_content).is_some()
+            || !self.history.within_bounds(&cleaned_content)
+        {
+            return false;
+        }
+        // A newer copy during the read leaves the newer selection alone.
+        match self.backend.read_text() {
+            Ok(Some(current)) if current == text.as_str() => {}
+            Ok(_) => return true,
+            Err(error) => {
+                self.last_error = Some(error.message);
+                return true;
+            }
+        }
+        match self.history.capture(cleaned_content, now) {
+            CaptureOutcome::Stored(_) | CaptureOutcome::Duplicate => {}
+            CaptureOutcome::Filtered(_) | CaptureOutcome::Oversize | CaptureOutcome::Empty => {
+                return false;
+            }
+        }
+        let removed = cleaned.removed.len();
+        let cleaned_text = cleaned.cleaned;
+        match self.backend.write_text(&cleaned_text) {
+            Ok(()) => {
+                self.observed = Some(ObservedSelection::Text(Zeroizing::new(
+                    cleaned_text.clone(),
+                )));
+                self.owned = Some(OwnedSelection::Text(cleaned_text));
+                self.owned_since = Some(now);
+                self.last_error = None;
+                log::debug!(
+                    target: "clipboard.history",
+                    "cleaned {removed} tracking parameters from a copied link"
+                );
+            }
+            Err(error) => {
+                self.observed = Some(ObservedSelection::from_content(content));
+                self.last_error = Some(error.message);
+            }
+        }
+        true
     }
 
     fn read_image_content(&mut self) -> Option<ClipboardEntryContent> {
@@ -1748,7 +1824,7 @@ mod tests {
 
     use super::{
         ClipboardCommand, ClipboardHistoryService, ClipboardLifecycle, ClipboardPolicy,
-        HistoryStore, MAX_MATCH_PREVIEW_CHARS, match_sensitive, plain_text,
+        HistoryStore, MAX_MATCH_PREVIEW_CHARS, UrlRules, WorkerState, match_sensitive, plain_text,
     };
 
     const PNG_2X2: &[u8] = &[
@@ -1908,6 +1984,8 @@ mod tests {
             selection_clear_after: None,
             filter_sensitive: false,
             paste_plain_text: false,
+            clean_links: false,
+            url_rules: UrlRules::default(),
         }
     }
 
@@ -2430,6 +2508,103 @@ mod tests {
     }
 
     #[test]
+    fn automatic_cleanup_replaces_one_link_and_stores_only_the_cleaned_text() {
+        let mut policy = policy();
+        policy.max_item_bytes = 4096;
+        policy.max_total_bytes = 8192;
+        policy.clean_links = true;
+        let dirty = "https://www.youtube.com/watch?v=abc&si=share&feature=shared";
+        let (mut service, state, _) =
+            start_fake(policy, Some(FakeSelection::Text(dirty.to_string())));
+        wait_for_items(&service, 1);
+
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text(
+                "https://www.youtube.com/watch?v=abc".to_string()
+            )),
+            "the copied link is replaced with the cleaned form"
+        );
+        let matches = service.search("", 10).expect("search succeeds");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].preview, "https://www.youtube.com/watch?v=abc",
+            "history stores the cleaned version only"
+        );
+        service.stop();
+    }
+
+    #[test]
+    fn automatic_cleanup_leaves_lists_and_links_without_tracking_parameters_alone() {
+        let mut policy = policy();
+        policy.max_item_bytes = 4096;
+        policy.max_total_bytes = 8192;
+        policy.clean_links = true;
+        let list = "https://a.example/?utm_source=x\nhttps://b.example/?utm_source=y";
+        let (mut service, state, _) =
+            start_fake(policy, Some(FakeSelection::Text(list.to_string())));
+        wait_for_items(&service, 1);
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text(list.to_string())),
+            "a list is captured unchanged"
+        );
+
+        let clean = "https://example.com/?keep=1";
+        state.lock().expect("fake state").current = Some(FakeSelection::Text(clean.to_string()));
+        wait_for_items(&service, 2);
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text(clean.to_string())),
+            "a link without tracking parameters is untouched"
+        );
+        service.stop();
+    }
+
+    #[test]
+    fn a_newer_copy_during_cleanup_is_left_untouched() {
+        let mut cleaning_policy = policy();
+        cleaning_policy.max_item_bytes = 4096;
+        cleaning_policy.max_total_bytes = 8192;
+        let state = Arc::new(Mutex::new(FakeState {
+            current: Some(FakeSelection::Text("newer".to_string())),
+            ..FakeState::default()
+        }));
+        let mut worker = WorkerState {
+            policy: cleaning_policy,
+            backend: FakeBackend {
+                state: Arc::clone(&state),
+            },
+            privacy: FakePrivacy {
+                events: Arc::new(Mutex::new(Vec::new())),
+            },
+            history: HistoryStore::new(policy()),
+            provider: ClipboardProvider::WaylandDataControl,
+            support: ClipboardKindSupport::ALL,
+            observed: None,
+            owned: None,
+            owned_since: None,
+            last_rich_probe: None,
+            last_error: None,
+        };
+
+        let stale = text("https://example.com/?utm_source=x");
+        assert!(
+            worker.clean_copied_link(&stale, Instant::now()),
+            "the stale read is still handled"
+        );
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text("newer".to_string())),
+            "the newer selection is not replaced"
+        );
+        assert!(
+            worker.history.items.is_empty(),
+            "nothing is stored from the stale read"
+        );
+    }
+
+    #[test]
     fn manual_selection_clear_keeps_entries_and_wipe_removes_them() {
         let (mut service, state, _) =
             start_fake(policy(), Some(FakeSelection::Text("keep me".to_string())));
@@ -2646,19 +2821,27 @@ mod tests {
             history_layout: kestrel_core::ClipboardLayout::Cards,
         };
 
-        let policy = ClipboardPolicy::from_configuration(&configuration);
+        let url_cleanup = kestrel_core::UrlCleanupConfiguration {
+            automatic: true,
+            ..kestrel_core::UrlCleanupConfiguration::default()
+        };
+        let policy = ClipboardPolicy::from_configuration(&configuration, &url_cleanup);
         assert_eq!(policy.max_items, 7);
         assert_eq!(policy.max_age, Duration::from_secs(7200));
         assert_eq!(policy.selection_clear_after, Some(Duration::from_secs(30)));
         assert!(policy.filter_sensitive);
         assert!(!policy.paste_plain_text);
+        assert!(policy.clean_links, "the preference reaches the service");
+        assert!(policy.url_rules.global.iter().any(|param| param == "utm_*"));
         assert!(policy.validate().is_ok());
 
-        let zero_clear =
-            ClipboardPolicy::from_configuration(&kestrel_core::ClipboardConfiguration {
+        let zero_clear = ClipboardPolicy::from_configuration(
+            &kestrel_core::ClipboardConfiguration {
                 clear_seconds: 0,
                 ..kestrel_core::ClipboardConfiguration::default()
-            });
+            },
+            &kestrel_core::UrlCleanupConfiguration::default(),
+        );
         assert_eq!(
             zero_clear.selection_clear_after, None,
             "a zero interval disables the automatic clear"

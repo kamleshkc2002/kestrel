@@ -450,6 +450,7 @@ impl ControllerState {
             "reset_ranking" => ApplicationCommand::ResetCommandRanking,
             "microphone_toggle" => ApplicationCommand::Microphone(MicrophoneCommand::ToggleMute),
             "speed_test" => ApplicationCommand::StartSpeedTest,
+            "clean_link" => ApplicationCommand::CleanClipboardLink,
             "update.get" => ApplicationCommand::DownloadUpdate,
             "update.cancel" => ApplicationCommand::CancelUpdateDownload,
             "update.install" => ApplicationCommand::InstallUpdateAndRestart,
@@ -913,6 +914,14 @@ enum ControllerOperation {
     RefreshProcesses,
     SetClipboardFilterSensitive(bool),
     SetClipboardPastePlainText(bool),
+    SetUrlCleanupAutomatic(bool),
+    SetUrlCleanupExtraGlobal(Vec<String>),
+    SetUrlCleanupSite {
+        host: String,
+        enabled: bool,
+        params: Vec<String>,
+    },
+    CleanClipboardLink,
     Snippet(SnippetCommand),
     SnippetSearch(String),
     SnippetEdit(String),
@@ -3883,6 +3892,77 @@ impl ControllerState {
                     ),
                 )?
             }
+            ControllerOperation::SetUrlCleanupAutomatic(automatic) => {
+                let mut candidate = self.configuration.clone();
+                candidate.url_cleanup.automatic = automatic;
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "Automatic link cleanup {}",
+                        if automatic { "enabled" } else { "disabled" }
+                    ),
+                )?
+            }
+            ControllerOperation::SetUrlCleanupExtraGlobal(params) => {
+                let mut candidate = self.configuration.clone();
+                candidate.url_cleanup.extra_global = cleanup_params(params);
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    "Link cleanup parameters updated".to_owned(),
+                )?
+            }
+            ControllerOperation::SetUrlCleanupSite {
+                host,
+                enabled,
+                params,
+            } => {
+                let mut candidate = self.configuration.clone();
+                let params = cleanup_params(params);
+                match candidate
+                    .url_cleanup
+                    .sites
+                    .iter_mut()
+                    .find(|site| site.host.eq_ignore_ascii_case(&host))
+                {
+                    Some(site) => {
+                        site.enabled = enabled;
+                        site.params = params;
+                    }
+                    None => candidate
+                        .url_cleanup
+                        .sites
+                        .push(kestrel_core::UrlSiteConfiguration {
+                            host: host.clone(),
+                            enabled,
+                            params,
+                        }),
+                }
+                self.commit_configuration(
+                    candidate,
+                    config_path,
+                    format!(
+                        "Link cleanup for {host} {}",
+                        if enabled { "enabled" } else { "disabled" }
+                    ),
+                )?
+            }
+            ControllerOperation::CleanClipboardLink => {
+                let rules =
+                    kestrel_core::UrlRules::from_configuration(&self.configuration.url_cleanup);
+                match self.runtime.clean_clipboard_link(&rules) {
+                    Ok(kestrel::CleanLinkOutcome::Removed(count)) => match count {
+                        1 => "Removed 1 tracking parameter".to_owned(),
+                        count => format!("Removed {count} tracking parameters"),
+                    },
+                    Ok(kestrel::CleanLinkOutcome::Nothing) => "Nothing to remove".to_owned(),
+                    Ok(kestrel::CleanLinkOutcome::NotSingleLink) => {
+                        "The clipboard does not hold a single link".to_owned()
+                    }
+                    Err(error) => format!("The clipboard could not be read: {error}"),
+                }
+            }
             ControllerOperation::Snippet(command) => match command {
                 SnippetCommand::Insert(name) => match self.runtime.insert_snippet(&name) {
                     Ok(report) => {
@@ -4261,6 +4341,17 @@ fn audio_command_summary(command: &kestrel::AudioCommand) -> &'static str {
 fn optional_field(value: String) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Trims parameter names and drops blank entries before they reach the config.
+fn cleanup_params(params: Vec<String>) -> Vec<String> {
+    params
+        .into_iter()
+        .filter_map(|param| {
+            let param = param.trim();
+            (!param.is_empty()).then(|| param.to_owned())
+        })
+        .collect()
 }
 
 fn apply_targeted_panel(
@@ -5061,6 +5152,32 @@ fn dispatch_commands(
                         ControllerOperation::SetClipboardPastePlainText(plain),
                         "kestrel-clipboard-paste",
                     ),
+                ApplicationCommand::SetUrlCleanupAutomatic(automatic) => controller
+                    .request_clipboard_operation(
+                        ControllerOperation::SetUrlCleanupAutomatic(automatic),
+                        "kestrel-url-cleanup",
+                    ),
+                ApplicationCommand::SetUrlCleanupExtraGlobal(params) => controller
+                    .request_clipboard_operation(
+                        ControllerOperation::SetUrlCleanupExtraGlobal(params),
+                        "kestrel-url-cleanup",
+                    ),
+                ApplicationCommand::SetUrlCleanupSite {
+                    host,
+                    enabled,
+                    params,
+                } => controller.request_clipboard_operation(
+                    ControllerOperation::SetUrlCleanupSite {
+                        host,
+                        enabled,
+                        params,
+                    },
+                    "kestrel-url-cleanup",
+                ),
+                ApplicationCommand::CleanClipboardLink => controller.request_operation(
+                    ControllerOperation::CleanClipboardLink,
+                    "kestrel-clean-link",
+                ),
                 ApplicationCommand::Snippet(command) => controller.request_snippet_operation(
                     ControllerOperation::Snippet(command),
                     "kestrel-snippet",
