@@ -56,7 +56,8 @@ pub fn load(path: &Path, limits: &ShelfLimits) -> (Vec<ShelfItem>, Option<String
             return (
                 Vec::new(),
                 Some(
-                    "Shelf data could not be read and was preserved; the shelf starts empty."
+                    "The saved shelf could not be read. It was kept as shelf.toml.corrupt-<time> \
+                     in the data folder, and the shelf starts empty."
                         .to_owned(),
                 ),
             );
@@ -72,7 +73,9 @@ pub fn load(path: &Path, limits: &ShelfLimits) -> (Vec<ShelfItem>, Option<String
             return (
                 Vec::new(),
                 Some(
-                    "Shelf data was corrupt and was preserved; the shelf starts empty.".to_owned(),
+                    "The saved shelf is damaged. It was kept as shelf.toml.corrupt-<time> in the \
+                     data folder, and the shelf starts empty."
+                        .to_owned(),
                 ),
             );
         }
@@ -259,12 +262,7 @@ mod tests {
         fs::write(&path, b"this is not toml [").expect("fixture file");
         let (loaded, warning) = load(&path, &ShelfLimits::default());
         assert!(loaded.is_empty());
-        assert!(
-            warning
-                .as_deref()
-                .is_some_and(|warning| warning.contains("preserved")),
-            "the warning says the file was preserved"
-        );
+        assert!(warning.is_some(), "a damaged file produces a warning");
         assert!(!path.exists(), "the corrupt file is moved aside");
         let preserved = fs::read_dir(directory.path())
             .expect("directory lists")

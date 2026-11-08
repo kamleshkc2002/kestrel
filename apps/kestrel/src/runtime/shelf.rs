@@ -65,7 +65,7 @@ impl ApplicationRuntime {
         let text = backend
             .read_text()
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "The clipboard holds nothing that can be staged.".to_owned())?;
+            .ok_or_else(|| "The clipboard holds no text, link, or files to add.".to_owned())?;
         self.shelf_add(ShelfInput::Text(text))
     }
 

@@ -594,6 +594,9 @@ impl ApplicationRuntime {
             Some(path) if shelf_keep => crate::shelf_store::load(path, &shelf_limits),
             _ => (Vec::new(), None),
         };
+        if let Some(warning) = &shelf_warning {
+            log::warn!(target: "files.shelf", "{warning}");
+        }
         let mut shelf =
             ShelfService::new(shelf_limits).expect("the validated shelf limits are valid");
         shelf.restore(shelf_items);
