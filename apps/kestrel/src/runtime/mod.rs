@@ -224,6 +224,8 @@ pub struct ApplicationRuntime {
     clipboard_history: ClipboardHistoryService,
     /// Why a paste cannot send a keystroke, from provider discovery.
     clipboard_paste_unavailable: Option<String>,
+    /// Whether the Secret Service key store was connected for saved pins.
+    clipboard_pin_store_ready: bool,
     snippet_library: SnippetLibrary,
     snippet_service: SnippetInsertionService<ExecutableInsertionBackend>,
     snippet_policy: SnippetPolicy,
@@ -659,12 +661,10 @@ impl ApplicationRuntime {
             shortcut_skipped,
             shortcut_attempted: false,
             command_sender: None,
-            clipboard_history: ClipboardHistoryService::new(ClipboardPolicy::from_configuration(
-                &configuration.clipboard,
-                &configuration.url_cleanup,
-            ))
-            .expect("the validated clipboard policy is valid"),
+            clipboard_history: ClipboardHistoryService::new(Self::clipboard_policy(configuration))
+                .expect("the validated clipboard policy is valid"),
             clipboard_paste_unavailable: None,
+            clipboard_pin_store_ready: false,
             snippet_library: loaded_snippets.library,
             snippet_service,
             snippet_policy,
@@ -841,12 +841,10 @@ impl ApplicationRuntime {
             let _ = self.microphone.refresh();
         }
         if self.clipboard_history_is_running() {
+            self.ensure_clipboard_pin_key_store(configuration.clipboard.keep_pinned);
             let _ = self
                 .clipboard_history
-                .set_policy(ClipboardPolicy::from_configuration(
-                    &configuration.clipboard,
-                    &configuration.url_cleanup,
-                ));
+                .set_policy(Self::clipboard_policy(configuration));
         }
         self.snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
         self.snippet_expansion_timing = configuration.snippets.expansion_timing;

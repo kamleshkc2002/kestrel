@@ -136,6 +136,7 @@ pub(crate) fn clipboard_snapshot() -> ClipboardSnapshot {
                 pinned: true,
                 image_dimensions: None,
                 file_count: None,
+                pin_save: kestrel_services::clipboard::PinSaveState::Saved,
             },
             ClipboardItemMetadata {
                 id: 8,
@@ -145,6 +146,7 @@ pub(crate) fn clipboard_snapshot() -> ClipboardSnapshot {
                 pinned: false,
                 image_dimensions: None,
                 file_count: Some(2),
+                pin_save: kestrel_services::clipboard::PinSaveState::NotPinned,
             },
         ],
         total_bytes: 36,
@@ -155,6 +157,9 @@ pub(crate) fn clipboard_snapshot() -> ClipboardSnapshot {
         wipe_count: 0,
         last_filtered_pattern: Some("password_assignment"),
         last_error: None,
+        pin_store: kestrel_services::clipboard::PinStoreStatus::new(
+            kestrel_services::clipboard::PinStoreState::Saved,
+        ),
     }
 }
 

@@ -6,6 +6,10 @@
 
 [[change]]
 feature = "clipboard.history"
+text = "Keep pinned entries across restarts can save pinned text in an encrypted file whose key stays in your desktop keyring, with Delete saved pins, Reset, and a saved-pin age limit."
+
+[[change]]
+feature = "clipboard.history"
 text = "Clean links removes tracking parameters such as utm_source from a link, shows what it removes, and can clean a single copied link automatically when you turn it on."
 
 [[change]]

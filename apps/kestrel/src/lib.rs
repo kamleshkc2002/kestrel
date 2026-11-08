@@ -70,10 +70,10 @@ pub use status_notifier::{
 pub use view_model::{
     ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
     CameraViewModel, CaptureEntryViewModel, CaptureViewModel, ClipboardItemViewModel,
-    ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel, CommandProvider,
-    ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel, FeatureViewModel,
-    KeepAwakeStamp, ListenersViewModel, MicrophoneViewModel, MonitorViewModel, OutputKind,
-    OverviewTool, OverviewToolsViewModel, ProcessRowViewModel, ProcessesViewModel,
+    ClipboardPinStoreViewModel, ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel,
+    CommandProvider, ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel,
+    FeatureViewModel, KeepAwakeStamp, ListenersViewModel, MicrophoneViewModel, MonitorViewModel,
+    OutputKind, OverviewTool, OverviewToolsViewModel, ProcessRowViewModel, ProcessesViewModel,
     QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls, RecordingExportViewModel,
     RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
     SetupPresetViewModel, SetupSensitiveViewModel, SetupViewModel, ShortcutsViewModel,
@@ -258,6 +258,8 @@ pub enum ClipboardLimit {
     FileEntries(u32),
     MaxAgeHours(u32),
     ClearSeconds(u64),
+    /// How long a saved pin is kept, in days.
+    PinnedMaxAgeDays(u32),
 }
 
 /// Direction for ordered readouts, device rankings, and pinned applications.
@@ -623,6 +625,15 @@ pub enum ApplicationCommand {
     ClipboardCopyImageText(u64),
     SetClipboardLayout(ClipboardLayout),
     SetClipboardLimit(ClipboardLimit),
+    /// Turns the second opt-in on; turning it off asks about the store.
+    SetClipboardKeepPinned {
+        keep_pinned: bool,
+        delete_saved: bool,
+    },
+    /// Deletes the encrypted store's file and its keyring item.
+    WipeSavedPins,
+    /// Discards an unreadable store and starts a fresh one.
+    ResetSavedPins,
     SetCaptureLimit(CaptureLimit),
     SetCaptureAfterScreenshot(CaptureAfterScreenshot),
     SetProcessLimit(ProcessLimit),

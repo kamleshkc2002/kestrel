@@ -2,8 +2,8 @@
 
 use kestrel_core::{
     MAX_CLIPBOARD_AGE_HOURS, MAX_CLIPBOARD_CLEAR_SECONDS, MAX_CLIPBOARD_FILE_ENTRIES,
-    MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_TOTAL_BYTES,
-    MIN_CLIPBOARD_ITEM_BYTES,
+    MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_MAX_ITEMS, MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS,
+    MAX_CLIPBOARD_TOTAL_BYTES, MIN_CLIPBOARD_ITEM_BYTES, MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS,
 };
 
 use super::{LoadedConfiguration, fields::Section};
@@ -60,6 +60,13 @@ pub(super) fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&t
         ("The automatic clear interval must be", " seconds"),
         &mut limits.clear_seconds,
     );
+    section.in_range(
+        "pinned_max_age_days",
+        MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS..=MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS,
+        ("The saved-pin age must be", " days"),
+        &mut limits.pinned_max_age_days,
+    );
+    section.read_detailed("keep_pinned", IGNORED_MESSAGE, &mut limits.keep_pinned);
     section.read_detailed(
         "filter_sensitive",
         IGNORED_MESSAGE,
@@ -187,6 +194,8 @@ max_file_entries = 12
 max_total_bytes = 8388608
 max_age_hours = 6
 clear_seconds = 45
+pinned_max_age_days = 30
+keep_pinned = true
 filter_sensitive = true
 paste_plain_text = false
 "#,
@@ -201,6 +210,8 @@ paste_plain_text = false
         assert_eq!(clipboard.max_total_bytes, 8_388_608);
         assert_eq!(clipboard.max_age_hours, 6);
         assert_eq!(clipboard.clear_seconds, 45);
+        assert_eq!(clipboard.pinned_max_age_days, 30);
+        assert!(clipboard.keep_pinned);
         assert!(clipboard.filter_sensitive);
         assert!(!clipboard.paste_plain_text);
         assert!(loaded.warnings.is_empty());
@@ -219,6 +230,8 @@ max_image_bytes = "big"
 max_file_entries = 0
 max_age_hours = 0
 clear_seconds = 999999
+pinned_max_age_days = 0
+keep_pinned = "yes"
 filter_sensitive = "yes"
 paste_plain_text = 3
 "#,
@@ -236,6 +249,8 @@ paste_plain_text = 3
             "clipboard.max_file_entries",
             "clipboard.max_age_hours",
             "clipboard.clear_seconds",
+            "clipboard.pinned_max_age_days",
+            "clipboard.keep_pinned",
             "clipboard.filter_sensitive",
             "clipboard.paste_plain_text",
         ] {
@@ -278,15 +293,43 @@ max_item_bytes = 1048576
     }
 
     #[test]
+    fn saved_pin_age_rejects_unlimited_and_overlong_values() {
+        for value in ["0", "366"] {
+            let loaded = parse(&format!(
+                "schema_version = 3\n[clipboard]\npinned_max_age_days = {value}\nkeep_pinned = true\n"
+            ))
+            .expect("document itself is valid TOML");
+            assert_eq!(
+                loaded.configuration.clipboard.pinned_max_age_days,
+                kestrel_core::DEFAULT_CLIPBOARD_PINNED_MAX_AGE_DAYS,
+                "{value} keeps the default"
+            );
+            assert!(loaded.configuration.clipboard.keep_pinned);
+            assert!(
+                loaded
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.feature_id == "clipboard.pinned_max_age_days"),
+                "{value} reports an isolated warning"
+            );
+            assert_eq!(loaded.configuration.validate(), Ok(()));
+        }
+    }
+
+    #[test]
     fn clipboard_policy_survives_export_round_trip() {
         let mut configuration = ApplicationConfiguration::default();
         configuration.clipboard.max_items = 12;
         configuration.clipboard.clear_seconds = 90;
         configuration.clipboard.filter_sensitive = true;
+        configuration.clipboard.keep_pinned = true;
+        configuration.clipboard.pinned_max_age_days = 30;
 
         let exported = export_string(&configuration).expect("configuration exports");
         assert!(exported.contains("[clipboard]"));
         assert!(exported.contains("max_items = 12"));
+        assert!(exported.contains("keep_pinned = true"));
+        assert!(exported.contains("pinned_max_age_days = 30"));
 
         let reloaded = parse(&exported).expect("exported configuration parses");
         assert_eq!(reloaded.configuration.clipboard, configuration.clipboard);
