@@ -1005,7 +1005,7 @@ impl ClipboardHistoryService {
     pub fn wipe_saved_pins(&self, reset: bool) -> Result<PinWipeReport, ClipboardServiceError> {
         if let Some(persistence) = self.pins.current() {
             let report = persistence
-                .wipe(reset)
+                .wipe()
                 .map_err(ClipboardServiceError::PinStore)?;
             if reset {
                 persistence.request_resave();
@@ -1017,20 +1017,19 @@ impl ClipboardHistoryService {
             .lock()
             .expect("clipboard policy mutex is not poisoned")
             .clone();
-        let mut report = PinWipeReport {
-            saved_count: 0,
-            saved_bytes: 0,
-            key_removed: false,
-        };
         if let Some(path) = policy.pin_file.as_ref() {
             pin_store::delete_pins(path).map_err(ClipboardServiceError::PinStore)?;
         }
-        if reset {
-            if let Some(key_store) = self.pin_key_store.as_ref() {
-                report.key_removed = key_store.delete().is_ok();
-            }
-        }
-        Ok(report)
+        let key_error = self
+            .pin_key_store
+            .as_ref()
+            .and_then(|key_store| key_store.delete().err());
+        Ok(PinWipeReport {
+            saved_count: 0,
+            saved_bytes: 0,
+            key_removed: key_error.is_none(),
+            key_error,
+        })
     }
 
     fn query(&self, query: ClipboardQuery) -> Result<ClipboardQueryResult, ClipboardServiceError> {
@@ -2567,7 +2566,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 self.wipe_owned();
                 // Removing every retained entry removes its saved copy too.
                 if let Some(persistence) = self.pins.current() {
-                    let _ = persistence.wipe(false);
+                    let _ = persistence.wipe();
                 }
                 self.pins_dirty = false;
             }
@@ -2588,7 +2587,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                     }
                     self.history.wipe_count = self.history.wipe_count.saturating_add(1);
                     if let Some(persistence) = self.pins.current() {
-                        let _ = persistence.wipe(false);
+                        let _ = persistence.wipe();
                     }
                     self.pins_dirty = false;
                 }
@@ -4526,9 +4525,10 @@ mod tests {
             .expect("pin succeeds");
         wait_until(|| path.exists() && service.latest().pin_store.state == PinStoreState::Saved);
 
-        let report = service.wipe_saved_pins(true).expect("wipe succeeds");
+        let report = service.wipe_saved_pins(false).expect("wipe succeeds");
         assert_eq!(report.saved_count, 1);
         assert!(report.key_removed);
+        assert_eq!(report.key_error, None);
         assert!(!path.exists(), "the store file is gone");
         assert_eq!(store.deletes.load(Ordering::Relaxed), 1);
         service.stop();
@@ -4561,6 +4561,12 @@ mod tests {
             service.latest().items[0].pin_save,
             PinSaveState::StoreUnavailable
         );
+        let report = service
+            .wipe_saved_pins(false)
+            .expect("wipe removes the file");
+        assert!(!report.key_removed);
+        assert_eq!(report.key_error, Some(PinKeyError::Unavailable));
+        assert!(!path.exists());
         service.stop();
     }
 
@@ -4598,6 +4604,18 @@ mod tests {
         let loaded = loaded.expect("a load completed");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].text(), "secret note 42 for pinning");
+
+        let report = second.wipe().expect("wipe succeeds");
+        assert!(report.key_removed, "the keyring item is deleted");
+        assert_eq!(report.key_error, None);
+        assert!(
+            SecretServiceKeyStore::connect()
+                .expect("secret service reconnects")
+                .get()
+                .expect("get after wipe")
+                .is_none(),
+            "SearchItems returns no item after the wipe"
+        );
         second.shutdown();
     }
 

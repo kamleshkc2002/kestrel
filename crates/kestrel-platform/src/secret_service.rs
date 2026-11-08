@@ -23,10 +23,12 @@ const SERVICE_INTERFACE: &str = "org.freedesktop.Secret.Service";
 const COLLECTION_INTERFACE: &str = "org.freedesktop.Secret.Collection";
 const ITEM_INTERFACE: &str = "org.freedesktop.Secret.Item";
 const SESSION_INTERFACE: &str = "org.freedesktop.Secret.Session";
+const PROMPT_INTERFACE: &str = "org.freedesktop.Secret.Prompt";
 const SESSION_ALGORITHM: &str = "plain";
 const DEFAULT_ALIAS: &str = "default";
 const ITEM_LABEL: &str = "Kestrel clipboard pin key";
 const CONTENT_TYPE: &str = "application/octet-stream";
+const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Why a key operation could not be completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +175,48 @@ impl SecretServiceKeyStore {
         }
         Ok(path)
     }
+
+    /// Completes a prompt the service returned, waiting for its signal.
+    fn confirm_prompt(&self, prompt: &OwnedObjectPath) -> Result<(), PinKeyError> {
+        if prompt.as_str() == "/" {
+            return Ok(());
+        }
+        // The signal iterator blocks; wait from a bounded side thread so a
+        // prompt nobody answers cannot strand the caller.
+        let connection = self.connection.clone();
+        let prompt = prompt.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("kestrel-secret-prompt".to_owned())
+            .spawn(move || {
+                let result = (|| {
+                    let proxy = zbus::blocking::Proxy::new(
+                        &connection,
+                        SERVICE,
+                        prompt.as_str(),
+                        PROMPT_INTERFACE,
+                    )
+                    .map_err(classify)?;
+                    let mut completed = proxy.receive_signal("Completed").map_err(classify)?;
+                    proxy.call::<_, _, ()>("Prompt", &("",)).map_err(classify)?;
+                    let message = completed.next().ok_or(PinKeyError::Failed)?;
+                    let (dismissed, _result): (bool, OwnedValue) = message
+                        .body()
+                        .deserialize()
+                        .map_err(|_| PinKeyError::Failed)?;
+                    if dismissed {
+                        return Err(PinKeyError::Locked);
+                    }
+                    Ok(())
+                })();
+                let _ = sender.send(result);
+            })
+            .map_err(|_| PinKeyError::Failed)?;
+        match receiver.recv_timeout(PROMPT_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => Err(PinKeyError::Failed),
+        }
+    }
 }
 
 impl PinKeyStore for SecretServiceKeyStore {
@@ -240,9 +284,7 @@ impl PinKeyStore for SecretServiceKeyStore {
             let (item, prompt): (OwnedObjectPath, OwnedObjectPath) = collection
                 .call("CreateItem", &(properties, secret, true))
                 .map_err(classify)?;
-            if prompt.as_str() != "/" {
-                return Err(PinKeyError::Locked);
-            }
+            self.confirm_prompt(&prompt)?;
             if item.as_str() == "/" {
                 return Err(PinKeyError::Failed);
             }
@@ -269,9 +311,7 @@ impl PinKeyStore for SecretServiceKeyStore {
             )
             .map_err(classify)?;
             let prompt: OwnedObjectPath = item.call("Delete", &()).map_err(classify)?;
-            if prompt.as_str() != "/" {
-                return Err(PinKeyError::Locked);
-            }
+            self.confirm_prompt(&prompt)?;
             deleted = true;
         }
         Ok(deleted)

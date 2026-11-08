@@ -273,6 +273,15 @@ impl ClipboardViewModel {
     }
 }
 
+/// One pin or several, with the noun that agrees.
+fn saved_pin_count(count: usize) -> String {
+    if count == 1 {
+        "1 saved pin".to_owned()
+    } else {
+        format!("{count} saved pins")
+    }
+}
+
 /// Builds the saved-pins status with counts and a remedy, never content.
 fn clipboard_pin_store(
     configuration: &kestrel_core::ClipboardConfiguration,
@@ -310,7 +319,8 @@ fn clipboard_pin_store(
             ),
             PinStoreState::Idle => (
                 format!(
-                    "{saved_count} saved pins · {} · kept for up to {} days",
+                    "{} · {} · kept for up to {} days",
+                    saved_pin_count(saved_count),
                     format_bytes(saved_bytes as f64),
                     configuration.pinned_max_age_days
                 ),
@@ -319,7 +329,8 @@ fn clipboard_pin_store(
             ),
             PinStoreState::Saving | PinStoreState::Saved => (
                 format!(
-                    "{saved_count} saved pins · {} · kept for up to {} days",
+                    "{} · {} · kept for up to {} days",
+                    saved_pin_count(saved_count),
                     format_bytes(saved_bytes as f64),
                     configuration.pinned_max_age_days
                 ),
@@ -327,7 +338,10 @@ fn clipboard_pin_store(
                 false,
             ),
             PinStoreState::Unavailable | PinStoreState::Locked => (
-                format!("{saved_count} saved pins · pinning is not being saved right now"),
+                format!(
+                    "{} · pinning is not being saved right now",
+                    saved_pin_count(saved_count)
+                ),
                 Some(PIN_STORE_REMEDY.to_owned()),
                 false,
             ),

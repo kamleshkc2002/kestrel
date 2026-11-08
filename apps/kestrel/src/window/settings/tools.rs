@@ -16,8 +16,9 @@ pub(super) fn add_clipboard_limits_group(
     let clipboard_group = adw::PreferencesGroup::builder()
         .title("Clipboard settings")
         .description(
-            "Memory-only retention bounds. Lock, sleep, service stop, wipe, and shutdown always \
-             drop retained entries regardless of these values.",
+            "Retention bounds and paste behaviour. Lock, sleep, service stop, wipe, and \
+             shutdown always drop in-memory entries; pinned text is saved on disk only while \
+             keeping pinned entries across restarts is on.",
         )
         .build();
 
@@ -372,16 +373,25 @@ pub(super) fn add_clipboard_limits_group(
         files.upcast_ref::<gtk::Widget>().clone(),
         age.upcast_ref::<gtk::Widget>().clone(),
         clear.upcast_ref::<gtk::Widget>().clone(),
-        pin_age.upcast_ref::<gtk::Widget>().clone(),
-        keep.clone().upcast(),
-        saved.clone().upcast(),
-        pin_actions_row.clone().upcast(),
         filter.clone().upcast(),
         paste.clone().upcast(),
     ] {
         filter_rows.push((
             row,
             "clipboard history retention bounds sensitive plain text".to_owned(),
+        ));
+    }
+    for row in [
+        pin_age.clone().upcast::<gtk::Widget>(),
+        keep.clone().upcast::<gtk::Widget>(),
+        saved.clone().upcast::<gtk::Widget>(),
+        pin_actions_row.clone().upcast::<gtk::Widget>(),
+    ] {
+        filter_rows.push((
+            row,
+            "keep pinned saved pins encrypted keyring across restarts saved-pin age store \
+             delete reset"
+                .to_owned(),
         ));
     }
     filter_rows.push((
@@ -392,6 +402,14 @@ pub(super) fn add_clipboard_limits_group(
 }
 
 /// Turning the second opt-in off asks about the store; deleting is the default.
+fn saved_pin_count(count: usize) -> String {
+    if count == 1 {
+        "1 saved pin".to_owned()
+    } else {
+        format!("{count} saved pins")
+    }
+}
+
 fn ask_delete_saved_pins(
     switch: &gtk::Switch,
     commands: &Sender<ApplicationCommand>,
@@ -407,9 +425,9 @@ fn ask_delete_saved_pins(
     let dialog = adw::MessageDialog::builder()
         .heading("Keep pinned entries across restarts?")
         .body(format!(
-            "Turning this off keeps pinned entries in memory only. {} saved pins on disk can be \
-             deleted now, or kept for when you turn this back on.",
-            pin_store.saved_count
+            "Turning this off keeps pinned entries in memory only. {} on disk can be deleted now, \
+             or kept for when you turn this back on.",
+            saved_pin_count(pin_store.saved_count)
         ))
         .build();
     dialog.set_transient_for(Some(&window));
@@ -441,9 +459,9 @@ fn confirm_delete_saved_pins(
     let dialog = adw::MessageDialog::builder()
         .heading("Delete saved pins?")
         .body(format!(
-            "{} saved pins, about {estimate}, will be removed from the encrypted file and the \
-             desktop keyring. Pinned entries stay in this session, and this cannot be undone.",
-            pin_store.saved_count
+            "{}, about {estimate}, will be removed from the encrypted file and the desktop \
+             keyring. Pinned entries stay in this session, and this cannot be undone.",
+            saved_pin_count(pin_store.saved_count)
         ))
         .build();
     dialog.set_transient_for(Some(&window));

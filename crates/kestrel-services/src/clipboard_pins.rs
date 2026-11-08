@@ -98,6 +98,8 @@ pub struct PinWipeReport {
     pub saved_bytes: usize,
     /// Whether the keyring item is gone as well.
     pub key_removed: bool,
+    /// Why the keyring item could not be deleted, when it could not.
+    pub key_error: Option<PinKeyError>,
 }
 
 /// How one pinned entry relates to the store.
@@ -142,7 +144,6 @@ enum PinCommand {
     Save(Vec<SavedPin>),
     Load,
     Wipe {
-        reset: bool,
         response: Sender<Result<PinWipeReport, PinStoreError>>,
     },
     Stop,
@@ -242,12 +243,12 @@ impl PinPersistence {
         )
     }
 
-    /// Deletes the file and, when requested, the keyring item.
-    pub fn wipe(&self, reset: bool) -> Result<PinWipeReport, PinStoreError> {
+    /// Deletes the file and the keyring item.
+    pub fn wipe(&self) -> Result<PinWipeReport, PinStoreError> {
         let (response, receiver) = mpsc::channel();
         self.inner
             .sender
-            .send(PinCommand::Wipe { reset, response })
+            .send(PinCommand::Wipe { response })
             .map_err(|_| PinStoreError::Io)?;
         match receiver.recv_timeout(WIPE_TIMEOUT) {
             Ok(result) => result,
@@ -339,11 +340,11 @@ fn run_pin_worker(
                 needs_load = true;
                 retry_at = Instant::now();
             }
-            Ok(PinCommand::Wipe { reset, response }) => {
+            Ok(PinCommand::Wipe { response }) => {
                 pending = None;
                 deadline = None;
                 needs_load = false;
-                let report = wipe(&path, key_store.as_ref(), reset, &status);
+                let report = wipe(&path, key_store.as_ref(), &status);
                 let _ = response.send(report);
             }
             Ok(PinCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
@@ -428,7 +429,6 @@ fn write(
 fn wipe(
     path: &std::path::Path,
     key_store: &dyn PinKeyStore,
-    reset: bool,
     status: &Arc<Mutex<PinStoreStatus>>,
 ) -> Result<PinWipeReport, PinStoreError> {
     let previous = status
@@ -439,19 +439,14 @@ fn wipe(
     if pin_store::pins_file_present(path) {
         return Err(PinStoreError::Io);
     }
-    let key_removed = if reset {
-        match key_store.delete() {
-            Ok(_removed) => true,
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
+    let key_result = key_store.delete();
+    let key_error = key_result.err();
     set_status(status, PinStoreStatus::new(PinStoreState::Idle));
     Ok(PinWipeReport {
         saved_count: previous.saved_count,
         saved_bytes: previous.saved_bytes,
-        key_removed,
+        key_removed: key_error.is_none(),
+        key_error,
     })
 }
 

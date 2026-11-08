@@ -4231,13 +4231,16 @@ impl ControllerState {
                 };
                 if !keep_pinned && delete_saved {
                     let report = self.runtime.wipe_saved_pins(true)?;
+                    let pins = saved_pin_count(report.saved_count);
                     message = format!(
-                        "Pinned entries stay in memory only; {} saved pins, about {}, were deleted",
-                        report.saved_count,
+                        "Pinned entries stay in memory only; {pins}, about {}, were deleted",
                         kestrel_core::format_bytes(report.saved_bytes as f64)
                     );
-                    if !report.key_removed {
-                        message.push_str("; the keyring item could not be removed");
+                    if let Some(error) = report.key_error {
+                        message.push_str(&format!(
+                            ". The saved file was removed, but the keyring key could not be \
+                             deleted: {error}"
+                        ));
                     }
                 }
                 let mut candidate = self.configuration.clone();
@@ -4246,22 +4249,28 @@ impl ControllerState {
             }
             ControllerOperation::WipeSavedPins => {
                 let report = self.runtime.wipe_saved_pins(false)?;
+                let pins = saved_pin_count(report.saved_count);
                 let mut message = format!(
-                    "Deleted {} saved pins, about {}",
-                    report.saved_count,
+                    "Deleted {pins}, about {}",
                     kestrel_core::format_bytes(report.saved_bytes as f64)
                 );
-                if !report.key_removed {
-                    message.push_str("; the keyring item was not removed");
+                if let Some(error) = report.key_error {
+                    message.push_str(&format!(
+                        ". The saved file was removed, but the keyring key could not be deleted: \
+                         {error}"
+                    ));
                 }
                 message
             }
             ControllerOperation::ResetSavedPins => {
                 let report = self.runtime.wipe_saved_pins(true)?;
-                if report.key_removed {
-                    "Saved pins were reset; pinning starts fresh".to_owned()
+                if let Some(error) = report.key_error {
+                    format!(
+                        "The saved file was removed, but the keyring key could not be deleted: \
+                         {error}"
+                    )
                 } else {
-                    "Saved pins were reset, but the keyring item could not be removed".to_owned()
+                    "Saved pins were reset; pinning starts fresh".to_owned()
                 }
             }
             ControllerOperation::SetCaptureLimit(limit) => {
@@ -5099,6 +5108,14 @@ fn apply_targeted_panel(
         }
         TargetedPanel::Scratchpad => view.set_scratchpad(&view_model.scratchpad),
         TargetedPanel::Updates => view.set_updates(&view_model.updates),
+    }
+}
+
+fn saved_pin_count(count: usize) -> String {
+    if count == 1 {
+        "1 saved pin".to_owned()
+    } else {
+        format!("{count} saved pins")
     }
 }
 
