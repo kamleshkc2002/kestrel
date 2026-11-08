@@ -147,21 +147,20 @@ impl PinSaveState {
 enum PinCommand {
     Save(Vec<SavedPin>),
     Load,
-    DiscardPending,
+    Hold,
     Wipe {
         response: Sender<Result<PinWipeReport, PinStoreError>>,
     },
     Stop,
 }
 
-enum PinEvent {
-    Loaded(Vec<SavedPin>),
-}
+/// The latest finished read, waiting to be merged; a hold empties it.
+type LoadedSlot = Arc<Mutex<Option<Vec<SavedPin>>>>;
 
 struct PinPersistenceInner {
     sender: Sender<PinCommand>,
     status: Arc<Mutex<PinStoreStatus>>,
-    events: Mutex<Receiver<PinEvent>>,
+    loaded: LoadedSlot,
     worker: Mutex<Option<JoinHandle<()>>>,
     resave: Mutex<bool>,
 }
@@ -173,22 +172,23 @@ pub struct PinPersistence {
 }
 
 impl PinPersistence {
-    /// Starts the thread; it loads the store immediately.
+    /// Starts the thread; it reads nothing until `request_load`.
     pub fn start(path: PathBuf, key_store: Arc<dyn PinKeyStore>) -> Result<Self, std::io::Error> {
         let (sender, receiver) = mpsc::channel();
-        let (event_sender, event_receiver) = mpsc::channel();
+        let loaded: LoadedSlot = Arc::new(Mutex::new(None));
+        let thread_loaded = Arc::clone(&loaded);
         let status = Arc::new(Mutex::new(PinStoreStatus::new(PinStoreState::Idle)));
         let thread_status = Arc::clone(&status);
         let worker = thread::Builder::new()
             .name("kestrel-clipboard-pins".to_owned())
             .spawn(move || {
-                run_pin_worker(path, key_store, receiver, event_sender, thread_status);
+                run_pin_worker(path, key_store, receiver, thread_loaded, thread_status);
             })?;
         Ok(Self {
             inner: Arc::new(PinPersistenceInner {
                 sender,
                 status,
-                events: Mutex::new(event_receiver),
+                loaded,
                 worker: Mutex::new(Some(worker)),
                 resave: Mutex::new(false),
             }),
@@ -213,24 +213,21 @@ impl PinPersistence {
         let _ = self.inner.sender.send(PinCommand::Load);
     }
 
-    /// Drops a queued save without reading or writing the store.
-    pub fn discard_pending(&self) {
-        let _ = self.inner.sender.send(PinCommand::DiscardPending);
+    /// Drops a queued save, any outstanding load or keyring retry, and any
+    /// unmerged read; nothing is read or written until the next `request_load`.
+    pub fn hold(&self) {
+        let _ = self.inner.sender.send(PinCommand::Hold);
+        set_loaded(&self.inner.loaded, None);
     }
 
-    /// Loaded pins waiting to be merged, oldest first; `Some` marks a finished
+    /// The latest finished read waiting to be merged; `Some` marks a finished
     /// read, including one that found nothing.
     pub fn take_loaded(&self) -> Option<Vec<SavedPin>> {
-        let events = self
-            .inner
-            .events
+        self.inner
+            .loaded
             .lock()
-            .expect("pin store event mutex is not poisoned");
-        let mut loaded = None;
-        while let Ok(PinEvent::Loaded(pins)) = events.try_recv() {
-            loaded = Some(pins);
-        }
-        loaded
+            .expect("pin store load mutex is not poisoned")
+            .take()
     }
 
     /// Marks the store for re-saving after an explicit reset.
@@ -291,7 +288,7 @@ fn run_pin_worker(
     path: PathBuf,
     key_store: Arc<dyn PinKeyStore>,
     receiver: Receiver<PinCommand>,
-    events: Sender<PinEvent>,
+    loaded: LoadedSlot,
     status: Arc<Mutex<PinStoreStatus>>,
 ) {
     let mut pending: Option<Vec<SavedPin>> = None;
@@ -309,12 +306,12 @@ fn run_pin_worker(
                         &status,
                         PinStoreStatus::saved(PinStoreState::Saved, pins.len(), bytes),
                     );
-                    let _ = events.send(PinEvent::Loaded(pins));
+                    set_loaded(&loaded, Some(pins));
                     needs_load = false;
                 }
                 LoadOutcome::Empty => {
                     set_status(&status, PinStoreStatus::new(PinStoreState::Idle));
-                    let _ = events.send(PinEvent::Loaded(Vec::new()));
+                    set_loaded(&loaded, Some(Vec::new()));
                     needs_load = false;
                 }
                 LoadOutcome::Unavailable(state) => {
@@ -342,9 +339,12 @@ fn run_pin_worker(
                 pending = Some(pins);
                 deadline = Some(Instant::now() + PIN_SAVE_DEBOUNCE);
             }
-            Ok(PinCommand::DiscardPending) => {
+            Ok(PinCommand::Hold) => {
+                // A read that finished while the hold was queued is dropped here.
                 pending = None;
                 deadline = None;
+                needs_load = false;
+                set_loaded(&loaded, None);
             }
             Ok(PinCommand::Load) => {
                 // A reload follows a lock or a fresh start; queued content must
@@ -358,6 +358,8 @@ fn run_pin_worker(
                 pending = None;
                 deadline = None;
                 needs_load = false;
+                // An unmerged read must not bring back the pins being deleted.
+                set_loaded(&loaded, None);
                 let report = wipe(&path, key_store.as_ref(), &status);
                 let _ = response.send(report);
             }
@@ -478,6 +480,10 @@ fn read_key_state(error: PinKeyError) -> PinStoreState {
         PinKeyError::Locked => PinStoreState::Locked,
         PinKeyError::Failed => PinStoreState::ReadFailed,
     }
+}
+
+fn set_loaded(slot: &LoadedSlot, value: Option<Vec<SavedPin>>) {
+    *slot.lock().expect("pin store load mutex is not poisoned") = value;
 }
 
 fn set_status(status: &Arc<Mutex<PinStoreStatus>>, value: PinStoreStatus) {

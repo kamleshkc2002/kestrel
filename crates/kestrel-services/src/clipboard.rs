@@ -1945,7 +1945,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             Err(error) => {
                 self.last_error = Some(error.message);
                 self.wipe_owned();
-                self.sync_pin_hold();
+                self.hold_pins();
                 self.publish(snapshot, ClipboardLifecycle::Unavailable);
                 true
             }
@@ -1959,16 +1959,21 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
     /// Keeps saved pins closed during a hold and reopens them once it clears.
     fn sync_pin_hold(&mut self) {
         if self.session_held() {
-            self.pins_held = true;
-            self.pins_loaded = false;
-            self.pins_dirty = false;
-            self.last_pin_revision = self.history.pin_revision;
-            if let Some(persistence) = self.pins.current() {
-                persistence.discard_pending();
-            }
+            self.hold_pins();
         } else if self.pins_held {
             self.pins_held = false;
             self.reload_saved_pins();
+        }
+    }
+
+    /// Closes saved pins: no queued save, no load, no keyring retry.
+    fn hold_pins(&mut self) {
+        self.pins_held = true;
+        self.pins_loaded = false;
+        self.pins_dirty = false;
+        self.last_pin_revision = self.history.pin_revision;
+        if let Some(persistence) = self.pins.current() {
+            persistence.hold();
         }
     }
 
@@ -2714,7 +2719,7 @@ mod tests {
         path::PathBuf,
         sync::{
             Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread,
         time::{Duration, Instant},
@@ -2735,7 +2740,7 @@ mod tests {
         HistoryStore, MAX_MATCH_PREVIEW_CHARS, PinSaveState, PinStoreState, UrlRules, WorkerState,
         match_sensitive, plain_text,
     };
-    use crate::clipboard_pins::PinPersistence;
+    use crate::clipboard_pins::{PIN_RETRY_INTERVAL, PinPersistence};
 
     const PNG_2X2: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6,
@@ -4316,6 +4321,7 @@ mod tests {
         locked: Mutex<bool>,
         unavailable: Mutex<bool>,
         deletes: AtomicUsize,
+        reads: AtomicUsize,
     }
 
     impl FakeKeyStore {
@@ -4339,6 +4345,7 @@ mod tests {
 
     impl PinKeyStore for FakeKeyStore {
         fn get(&self) -> Result<Option<PinKey>, PinKeyError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             if *self.unavailable.lock().expect("fake key store") {
                 return Err(PinKeyError::Unavailable);
             }
@@ -4437,6 +4444,16 @@ mod tests {
         first.shutdown();
 
         let second = PinPersistence::start(path, shared).expect("pin worker starts");
+        // A finished read nobody merged is dropped by a hold.
+        second.request_load();
+        wait_until(|| second.status().state == PinStoreState::Saved);
+        second.hold();
+        thread::sleep(PIN_RETRY_INTERVAL);
+        assert!(
+            second.take_loaded().is_none(),
+            "a hold must drop an unmerged read"
+        );
+
         second.request_load();
         let mut loaded = None;
         wait_until(|| {
@@ -4452,6 +4469,14 @@ mod tests {
         assert_eq!(loaded[0].text(), "first saved");
         assert_eq!(loaded[1].text(), "second saved");
         assert_eq!(second.status().saved_count, 2);
+
+        // Commands run in order, so this read finishes before the wipe starts.
+        second.request_load();
+        second.wipe().expect("wipe succeeds");
+        assert!(
+            second.take_loaded().is_none(),
+            "a wipe must drop an unmerged read of the deleted pins"
+        );
         second.shutdown();
     }
 
@@ -4740,6 +4765,40 @@ mod tests {
             .expect("preview succeeds");
         assert_eq!(preview.text, "survivor");
         wait_until(|| service.latest().pin_store.state == PinStoreState::Saved);
+
+        // A reload stuck on a locked keyring stops retrying once the session
+        // locks again, so a keyring that opens meanwhile decrypts nothing.
+        store.set_locked(true);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Locked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Locked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        store.set_locked(false);
+        let reads = store.reads.load(Ordering::Relaxed);
+        thread::sleep(PIN_RETRY_INTERVAL * 4);
+        assert_eq!(
+            store.reads.load(Ordering::Relaxed),
+            reads,
+            "a held session must not retry the keyring"
+        );
+        assert!(service.latest().items.is_empty());
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().items.len() == 1);
         service.stop();
     }
 
@@ -4841,6 +4900,65 @@ mod tests {
                 .expect("preview succeeds")
                 .text,
             "startup secret"
+        );
+        service.stop();
+    }
+
+    struct FailingPrivacy {
+        failed: Arc<AtomicBool>,
+    }
+
+    impl PrivacyEventSource for FailingPrivacy {
+        fn poll_events(&mut self) -> Result<Vec<SessionPrivacyEvent>, ClipboardError> {
+            if self.failed.load(Ordering::Relaxed) {
+                return Err(ClipboardError {
+                    kind: ClipboardErrorKind::PrivacyMonitorFailed,
+                    message: "logind unavailable".to_string(),
+                });
+            }
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn privacy_monitor_failure_stops_keyring_retries() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[8; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(
+            &path,
+            &writer,
+            &[SavedPin::new("monitor secret", super::unix_seconds())],
+        )
+        .expect("encrypted write");
+
+        let store = Arc::new(FakeKeyStore::with_key(8));
+        store.set_locked(true);
+        let key_store: Arc<dyn PinKeyStore> = store.clone();
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
+        service.set_pin_key_store(key_store);
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::new(Mutex::new(FakeState::default())),
+                },
+                FailingPrivacy {
+                    failed: Arc::clone(&failed),
+                },
+            )
+            .expect("worker starts");
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+
+        failed.store(true, Ordering::Relaxed);
+        wait_until(|| service.latest().lifecycle == ClipboardLifecycle::Unavailable);
+        store.set_locked(false);
+        let reads = store.reads.load(Ordering::Relaxed);
+        thread::sleep(PIN_RETRY_INTERVAL * 4);
+        assert_eq!(
+            store.reads.load(Ordering::Relaxed),
+            reads,
+            "a failed privacy monitor must stop keyring retries"
         );
         service.stop();
     }
