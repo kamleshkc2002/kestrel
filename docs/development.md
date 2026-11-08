@@ -103,6 +103,17 @@ cargo build --workspace --all-targets
 cargo test --workspace --all-targets
 ```
 
+Incremental compilation is off for the `dev` and `test` profiles to keep
+`target/` small; set `CARGO_INCREMENTAL=1` to turn it on for one command.
+
+Build scripts for the `-sys` crates re-run whenever `PKG_CONFIG_PATH` changes,
+so keep it the same across builds, rust-analyzer included (`cargo.extraEnv` in
+a local `rust-analyzer.toml`). Then `KESTREL_LAYER_SHELL=off` rebuilds only the
+`kestrel` crate, and the build without gtk4-layer-shell shares the same
+`target/`. Git worktrees can share it too: a `.cargo/config.toml` in the folder
+that holds them, with `[build] target-dir` set to the main checkout's `target/`,
+covers every worktree inside it.
+
 With gtk4-layer-shell installed and Sway available, check that the command bar
 becomes an overlay (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA drivers):
 
