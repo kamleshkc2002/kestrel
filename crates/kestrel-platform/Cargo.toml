@@ -22,8 +22,9 @@ wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 cosmic-protocols = { version = "0.2", default-features = false, features = ["client"] }
 wl-clipboard-rs = "0.9.3"
-x11rb = "0.14"
+x11rb = { version = "0.14", features = ["xfixes"] }
 zbus = { version = "5.19.0", default-features = false, features = ["blocking-api", "async-io"] }
+async-io = "2"
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 getrandom = "0.4"
 zeroize = "1.8"

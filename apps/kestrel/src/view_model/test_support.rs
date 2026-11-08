@@ -123,6 +123,7 @@ pub(crate) fn clipboard_snapshot() -> ClipboardSnapshot {
         lifecycle: kestrel_services::clipboard::ClipboardLifecycle::Running,
         provider: Some(kestrel_platform::clipboard::ClipboardProvider::WaylandDataControl),
         kind_support: ClipboardKindSupport::ALL,
+        watch_mode: kestrel_platform::clipboard::ClipboardWatchMode::Events,
         temporary_writes: kestrel_services::clipboard::TemporaryWriteState::Detected,
         skipped_temporary_writes: 0,
         paste: None,

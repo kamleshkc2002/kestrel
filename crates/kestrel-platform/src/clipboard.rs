@@ -3,10 +3,13 @@
 //! payloads in their encoded form.
 
 use std::{
+    collections::HashMap,
     env,
     error::Error,
     fmt,
     io::Read,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -21,11 +24,25 @@ use wl_clipboard_rs::{
         ClipboardType as WaylandClipboardType, Error as WaylandError, Seat as WaylandSeat,
         get_contents, get_mime_types,
     },
+    watch::{ClipboardType as WaylandWatchClipboardType, Watcher as WaylandWatcher},
 };
-use x11rb::{protocol::xproto::ConnectionExt, rust_connection::RustConnection};
+use x11rb::{
+    connection::Connection as X11Connection,
+    protocol::{
+        Event as X11Event,
+        xfixes::{ConnectionExt as X11FixesExt, SelectionEventMask},
+        xproto::{Atom, ConnectionExt},
+    },
+    rust_connection::RustConnection,
+};
 use zbus::{
-    blocking::{Connection as BusConnection, Proxy, connection::Builder as BusConnectionBuilder},
-    zvariant::OwnedObjectPath,
+    MatchRule,
+    blocking::{
+        Connection as BusConnection, MessageIterator, Proxy,
+        connection::Builder as BusConnectionBuilder,
+    },
+    message::Type as MessageType,
+    zvariant::{OwnedObjectPath, OwnedValue},
 };
 
 use crate::{
@@ -68,6 +85,69 @@ impl ClipboardProvider {
             Self::X11 => "X11 CLIPBOARD selection",
         }
     }
+}
+
+/// How the worker learns that the selection changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardWatchMode {
+    /// The backend reports each selection change, so content is read on demand.
+    Events,
+    /// The worker re-reads the selection on a fixed interval.
+    Polling,
+}
+
+impl ClipboardWatchMode {
+    pub const fn evidence_value(self) -> &'static str {
+        match self {
+            Self::Events => "events",
+            Self::Polling => "polling",
+        }
+    }
+}
+
+/// A cloneable handle that interrupts a blocked change watch from another thread.
+#[derive(Clone)]
+pub struct ChangeWatchCancel(Arc<dyn Fn() + Send + Sync>);
+
+impl ChangeWatchCancel {
+    pub fn new(cancel: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(cancel))
+    }
+
+    pub fn cancel(&self) {
+        (self.0)();
+    }
+}
+
+impl fmt::Debug for ChangeWatchCancel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ChangeWatchCancel")
+    }
+}
+
+/// A blocking source of clipboard selection changes.
+pub trait ClipboardChangeWatch: Send + 'static {
+    /// Blocks until the selection changes.
+    ///
+    /// Returns `false` once the watch is cancelled or the backend can no longer
+    /// report changes.
+    fn next_change(&mut self) -> Result<bool, ClipboardError>;
+
+    /// Interrupts a blocked [`ClipboardChangeWatch::next_change`].
+    fn cancel_handle(&self) -> ChangeWatchCancel;
+}
+
+/// A blocking source of session lock and sleep changes.
+pub trait PrivacyChangeWatch: Send + 'static {
+    /// Runs until cancelled or the bus closes, calling `changed` after each
+    /// session state change.
+    ///
+    /// Returns `true` when `changed` asked to stop and `false` when the signal
+    /// stream ended or could not be registered.
+    fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool;
+
+    /// Interrupts a blocked [`PrivacyChangeWatch::run`].
+    fn cancel_handle(&self) -> ChangeWatchCancel;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,6 +378,15 @@ pub fn temporary_write(types: &[String], hint: Option<&str>) -> bool {
 
 pub trait ClipboardBackend: Send + 'static {
     fn provider(&self) -> ClipboardProvider;
+
+    /// Takes the change watch when this backend can report selection changes.
+    ///
+    /// `None` keeps the worker polling.
+    fn take_change_watch(
+        &mut self,
+    ) -> Result<Option<Box<dyn ClipboardChangeWatch>>, ClipboardError> {
+        Ok(None)
+    }
 
     /// Entry kinds this provider can capture, own, and restore.
     fn kind_support(&self) -> ClipboardKindSupport {
@@ -556,6 +645,15 @@ impl ClipboardBackend for ArboardClipboardBackend {
         self.provider
     }
 
+    fn take_change_watch(
+        &mut self,
+    ) -> Result<Option<Box<dyn ClipboardChangeWatch>>, ClipboardError> {
+        match self.provider {
+            ClipboardProvider::WaylandDataControl => Ok(Some(Box::new(WaylandChangeWatch::new()?))),
+            ClipboardProvider::X11 => Ok(Some(Box::new(X11ChangeWatch::new()?))),
+        }
+    }
+
     fn kind_support(&self) -> ClipboardKindSupport {
         kind_support_for(self.provider)
     }
@@ -732,8 +830,193 @@ pub enum SessionPrivacyEvent {
     Resumed,
 }
 
+fn watch_error(message: impl Into<String>) -> ClipboardError {
+    ClipboardError::new(ClipboardErrorKind::ReadFailed, message)
+}
+
+fn x11_watch_error(error: impl fmt::Display) -> ClipboardError {
+    watch_error(format!("clipboard change watch is unavailable: {error}"))
+}
+
+fn wayland_watch_error(error: impl fmt::Display) -> ClipboardError {
+    watch_error(format!("clipboard change watch failed: {error}"))
+}
+
+/// A bounded Wayland data-control watcher that reports selection changes.
+struct WaylandChangeWatch {
+    watcher: WaylandWatcher,
+    cancel: wl_clipboard_rs::watch::CancelHandle,
+}
+
+impl WaylandChangeWatch {
+    fn new() -> Result<Self, ClipboardError> {
+        let watcher =
+            WaylandWatcher::new(WaylandWatchClipboardType::Regular, WaylandSeat::Unspecified)
+                .map_err(x11_watch_error)?;
+        let cancel = watcher.cancel_handle();
+        Ok(Self { watcher, cancel })
+    }
+}
+
+impl ClipboardChangeWatch for WaylandChangeWatch {
+    fn next_change(&mut self) -> Result<bool, ClipboardError> {
+        match self.watcher.next_event() {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(error) => Err(wayland_watch_error(error)),
+        }
+    }
+
+    fn cancel_handle(&self) -> ChangeWatchCancel {
+        let cancel = self.cancel.clone();
+        ChangeWatchCancel::new(move || cancel.cancel())
+    }
+}
+
+/// An XFixes selection watcher for the X11 compatibility path.
+struct X11ChangeWatch {
+    connection: RustConnection,
+    clipboard: Atom,
+    /// The first call reports the current selection, matching the Wayland
+    /// watcher's initial event.
+    initial: bool,
+    cancel: Arc<OwnedFd>,
+}
+
+impl X11ChangeWatch {
+    fn new() -> Result<Self, ClipboardError> {
+        let (connection, screen) = RustConnection::connect(None).map_err(x11_watch_error)?;
+        let root = connection.setup().roots[screen].root;
+        connection
+            .xfixes_query_version(5, 0)
+            .map_err(x11_watch_error)?
+            .reply()
+            .map_err(x11_watch_error)?;
+        let clipboard = connection
+            .intern_atom(false, b"CLIPBOARD")
+            .map_err(x11_watch_error)?
+            .reply()
+            .map_err(x11_watch_error)?
+            .atom;
+        let mask = SelectionEventMask::SET_SELECTION_OWNER
+            | SelectionEventMask::SELECTION_WINDOW_DESTROY
+            | SelectionEventMask::SELECTION_CLIENT_CLOSE;
+        connection
+            .xfixes_select_selection_input(root, clipboard, mask)
+            .map_err(x11_watch_error)?
+            .check()
+            .map_err(x11_watch_error)?;
+        connection.flush().map_err(x11_watch_error)?;
+        Ok(Self {
+            connection,
+            clipboard,
+            initial: true,
+            cancel: event_fd()?,
+        })
+    }
+
+    fn is_selection_change(&self, event: &X11Event) -> bool {
+        matches!(
+            event,
+            X11Event::XfixesSelectionNotify(notify) if notify.selection == self.clipboard
+        )
+    }
+}
+
+impl ClipboardChangeWatch for X11ChangeWatch {
+    fn next_change(&mut self) -> Result<bool, ClipboardError> {
+        if self.initial {
+            self.initial = false;
+            return Ok(true);
+        }
+        loop {
+            while let Some(event) = self.connection.poll_for_event().map_err(x11_watch_error)? {
+                if self.is_selection_change(&event) {
+                    return Ok(true);
+                }
+            }
+            let mut descriptors = [
+                libc::pollfd {
+                    fd: self.connection.stream().as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.cancel.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: `descriptors` points at two initialised `pollfd` values.
+            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(x11_watch_error(error));
+            }
+            if descriptors[1].revents != 0 {
+                drain_event_fd(self.cancel.as_raw_fd());
+                return Ok(false);
+            }
+            if descriptors[0].revents & libc::POLLIN == 0 {
+                return Err(x11_watch_error("the X11 display connection closed"));
+            }
+        }
+    }
+
+    fn cancel_handle(&self) -> ChangeWatchCancel {
+        let cancel = Arc::clone(&self.cancel);
+        ChangeWatchCancel::new(move || signal_event_fd(cancel.as_raw_fd()))
+    }
+}
+
+fn event_fd() -> Result<Arc<OwnedFd>, ClipboardError> {
+    // SAFETY: `eventfd` has no preconditions; the returned descriptor is owned here.
+    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if fd < 0 {
+        return Err(watch_error(format!(
+            "the clipboard watch wake descriptor could not be created: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: `fd` is a freshly created descriptor that nothing else owns.
+    Ok(Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+fn signal_event_fd(fd: RawFd) {
+    let value: u64 = 1;
+    // SAFETY: `fd` is an eventfd and `value` is an eight-byte integer.
+    unsafe {
+        libc::write(
+            fd,
+            std::ptr::addr_of!(value).cast(),
+            std::mem::size_of::<u64>(),
+        );
+    }
+}
+
+fn drain_event_fd(fd: RawFd) {
+    let mut value: u64 = 0;
+    // SAFETY: `fd` is an eventfd and `value` is an eight-byte integer.
+    unsafe {
+        libc::read(
+            fd,
+            std::ptr::addr_of_mut!(value).cast(),
+            std::mem::size_of::<u64>(),
+        );
+    }
+}
+
 pub trait PrivacyEventSource: Send + 'static {
     fn poll_events(&mut self) -> Result<Vec<SessionPrivacyEvent>, ClipboardError>;
+
+    /// Takes a blocking trigger for session state changes when the bus reports
+    /// them. Polling remains the fallback.
+    fn take_watch(&mut self) -> Result<Option<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
+        Ok(None)
+    }
 }
 
 pub struct LogindPrivacyMonitor {
@@ -784,6 +1067,104 @@ impl PrivacyEventSource for LogindPrivacyMonitor {
         self.was_preparing_for_sleep = preparing_for_sleep;
         Ok(events)
     }
+
+    fn take_watch(&mut self) -> Result<Option<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
+        Ok(Some(Box::new(LogindPrivacyWatch::new(
+            self.session_path.clone(),
+        )?)))
+    }
+}
+
+/// Reports logind property changes from a dedicated connection.
+struct LogindPrivacyWatch {
+    connection: BusConnection,
+    shutdown: zbus::Connection,
+    session_path: OwnedObjectPath,
+}
+
+impl LogindPrivacyWatch {
+    fn new(session_path: OwnedObjectPath) -> Result<Self, ClipboardError> {
+        let connection = BusConnectionBuilder::system()
+            .map_err(privacy_error)?
+            .method_timeout(PRIVACY_METHOD_TIMEOUT)
+            .build()
+            .map_err(privacy_error)?;
+        let shutdown = connection.inner().clone();
+        Ok(Self {
+            connection,
+            shutdown,
+            session_path,
+        })
+    }
+
+    fn matches(&self, message: &zbus::Message) -> bool {
+        let Ok((interface, changed, invalidated)) =
+            message
+                .body()
+                .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+        else {
+            return false;
+        };
+        let header = message.header();
+        let path = header.path().map(|path| path.as_str());
+        if interface == SESSION_INTERFACE {
+            return path == Some(self.session_path.as_str())
+                && mentions_property(&changed, &invalidated, "LockedHint");
+        }
+        interface == MANAGER_INTERFACE
+            && mentions_property(&changed, &invalidated, "PreparingForSleep")
+    }
+}
+
+impl PrivacyChangeWatch for LogindPrivacyWatch {
+    fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool {
+        let Ok(rule) = privacy_match_rule() else {
+            return false;
+        };
+        let Ok(messages) = MessageIterator::for_match_rule(rule, &self.connection, Some(32)) else {
+            return false;
+        };
+        // Read the current state once the match rule exists so a change during
+        // startup is not missed between the worker's first poll and this rule.
+        if !changed() {
+            return true;
+        }
+        for message in messages {
+            let Ok(message) = message else {
+                return false;
+            };
+            if self.matches(&message) && !changed() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn cancel_handle(&self) -> ChangeWatchCancel {
+        let shutdown = self.shutdown.clone();
+        ChangeWatchCancel::new(move || {
+            let connection = shutdown.clone();
+            let _ = async_io::block_on(connection.close());
+        })
+    }
+}
+
+fn privacy_match_rule() -> Result<MatchRule<'static>, zbus::Error> {
+    Ok(MatchRule::builder()
+        .msg_type(MessageType::Signal)
+        .sender(LOGIN_DESTINATION)?
+        .interface("org.freedesktop.DBus.Properties")?
+        .member("PropertiesChanged")?
+        .path_namespace(LOGIN_PATH)?
+        .build())
+}
+
+fn mentions_property(
+    changed: &HashMap<String, OwnedValue>,
+    invalidated: &[String],
+    name: &str,
+) -> bool {
+    changed.contains_key(name) || invalidated.iter().any(|invalidated| invalidated == name)
 }
 
 fn read_privacy_state(
@@ -891,6 +1272,19 @@ pub fn kind_support_for(provider: ClipboardProvider) -> ClipboardKindSupport {
     }
 }
 
+/// Whether a change watch can be bound for `provider`, without keeping it open.
+pub fn watch_mode_for(provider: ClipboardProvider) -> ClipboardWatchMode {
+    let available = match provider {
+        ClipboardProvider::WaylandDataControl => WaylandChangeWatch::new().is_ok(),
+        ClipboardProvider::X11 => X11ChangeWatch::new().is_ok(),
+    };
+    if available {
+        ClipboardWatchMode::Events
+    } else {
+        ClipboardWatchMode::Polling
+    }
+}
+
 fn capability_report(
     provider: Result<ClipboardProvider, ClipboardError>,
     privacy: Result<(), ClipboardError>,
@@ -898,6 +1292,7 @@ fn capability_report(
     match (provider, privacy) {
         (Ok(provider), Ok(())) => {
             let support = kind_support_for(provider);
+            let watch = watch_mode_for(provider);
             let mut report = CapabilityReport::new(
                 FEATURE_ID,
                 CapabilityStatus::Supported,
@@ -914,6 +1309,10 @@ fn capability_report(
                 "unavailable",
             ))
             .with_evidence(CapabilityEvidence::new("lock_sleep_clear", "available"))
+            .with_evidence(CapabilityEvidence::new(
+                "watch_mode",
+                watch.evidence_value(),
+            ))
             .with_evidence(CapabilityEvidence::new(
                 "entry_kinds",
                 support.evidence_value(),

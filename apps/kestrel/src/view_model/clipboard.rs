@@ -406,6 +406,12 @@ fn clipboard_status(
     if snapshot.pinned_items > 0 {
         status.push_str(&format!(" · {} pinned", snapshot.pinned_items));
     }
+    status.push_str(match snapshot.watch_mode {
+        kestrel_platform::clipboard::ClipboardWatchMode::Events => " · Watching for changes",
+        kestrel_platform::clipboard::ClipboardWatchMode::Polling => {
+            " · Checking every 250 ms: this compositor does not report clipboard changes"
+        }
+    });
     if snapshot.filtered_sensitive_items > 0 {
         status.push_str(&format!(
             " · {} filtered as sensitive",
