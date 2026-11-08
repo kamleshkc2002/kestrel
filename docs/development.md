@@ -1,3 +1,8 @@
+---
+layout: default
+title: Development
+---
+
 # Development
 
 ## Workspace
@@ -42,7 +47,7 @@ bash scripts/build-appimage.sh 0.1.0
 Releases from 0.6.0-preview.6 on also carry a minisign signature
 (`Kestrel-<version>-x86_64.AppImage.minisig`), made in the release workflow with
 the `MINISIGN_SECRET_KEY` repository secret. The public key is
-[`data/release-signing.pub`](../data/release-signing.pub); check a download with:
+[`data/release-signing.pub`](https://github.com/kamleshkc2002/kestrel/blob/main/data/release-signing.pub); check a download with:
 
 ```bash
 minisign -V -p data/release-signing.pub -m Kestrel-<version>-x86_64.AppImage
@@ -99,7 +104,7 @@ For a release:
 
 ## Development
 
-To propose a change, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+To propose a change, start with [`CONTRIBUTING.md`](https://github.com/kamleshkc2002/kestrel/blob/main/CONTRIBUTING.md).
 
 Changing a feature ID, a `config.toml` key, or a `kestrel --command` ID means a
 configuration migration plus a stability-list update; see the

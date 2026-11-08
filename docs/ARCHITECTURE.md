@@ -1,3 +1,8 @@
+---
+layout: default
+title: Architecture
+---
+
 # Kestrel Initial Architecture
 
 Status: **Initial design — implementation guide**

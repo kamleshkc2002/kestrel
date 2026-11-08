@@ -1,3 +1,8 @@
+---
+layout: default
+title: Compatibility
+---
+
 # Compatibility
 
 Capability probes in the running app decide whether a feature works in a session. This table records the evidence behind that decision: what the project has tested, what people have reported, and where a probe reports a feature unsupported. A cell that says Untested can still work on your desktop.

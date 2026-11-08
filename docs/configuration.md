@@ -1,3 +1,8 @@
+---
+layout: default
+title: Configuration
+---
+
 # Configuration
 
 Preferences are stored in `$XDG_CONFIG_HOME/kestrel/config.toml` (or
