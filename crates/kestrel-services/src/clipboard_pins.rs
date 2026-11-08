@@ -54,6 +54,8 @@ pub enum PinStoreState {
     Unreadable,
     /// The store could not be read because its file was inaccessible.
     ReadFailed,
+    /// The session is locked or asleep; saved pins stay closed until it ends.
+    Held,
     /// The file could not be written.
     Failed,
 }
@@ -117,6 +119,7 @@ pub enum PinSaveState {
     StoreLocked,
     StoreUnreadable,
     StoreReadFailed,
+    StoreHeld,
     StoreFailed,
 }
 
@@ -135,6 +138,7 @@ impl PinSaveState {
             Self::StoreLocked => "Not saved: the keyring is locked",
             Self::StoreUnreadable => "Not saved: saved pins could not be read",
             Self::StoreReadFailed => "Not saved: the saved-pins file could not be read",
+            Self::StoreHeld => "Not saved: saved pins reload after you unlock",
             Self::StoreFailed => "Not saved: the store could not be written",
         }
     }
@@ -143,6 +147,7 @@ impl PinSaveState {
 enum PinCommand {
     Save(Vec<SavedPin>),
     Load,
+    DiscardPending,
     Wipe {
         response: Sender<Result<PinWipeReport, PinStoreError>>,
     },
@@ -206,6 +211,11 @@ impl PinPersistence {
     /// Asks for a fresh read; used at start, after a privacy wipe, and on retry.
     pub fn request_load(&self) {
         let _ = self.inner.sender.send(PinCommand::Load);
+    }
+
+    /// Drops a queued save without reading or writing the store.
+    pub fn discard_pending(&self) {
+        let _ = self.inner.sender.send(PinCommand::DiscardPending);
     }
 
     /// Loaded pins waiting to be merged, oldest first; `Some` marks a finished
@@ -286,7 +296,7 @@ fn run_pin_worker(
 ) {
     let mut pending: Option<Vec<SavedPin>> = None;
     let mut deadline: Option<Instant> = None;
-    let mut needs_load = true;
+    let mut needs_load = false;
     let mut retry_at = Instant::now();
 
     loop {
@@ -331,6 +341,10 @@ fn run_pin_worker(
                 );
                 pending = Some(pins);
                 deadline = Some(Instant::now() + PIN_SAVE_DEBOUNCE);
+            }
+            Ok(PinCommand::DiscardPending) => {
+                pending = None;
+                deadline = None;
             }
             Ok(PinCommand::Load) => {
                 // A reload follows a lock or a fresh start; queued content must

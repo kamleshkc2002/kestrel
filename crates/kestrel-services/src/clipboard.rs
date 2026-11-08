@@ -19,7 +19,8 @@ use std::{
 use kestrel_core::{ClipboardPasteKeys, UrlRules, clean_url, single_http_link};
 use kestrel_platform::clipboard::{
     ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardKindSupport, ClipboardProvider,
-    OwnedSelection, PrivacyEventSource, kind_from_types, png_dimensions, temporary_write,
+    OwnedSelection, PrivacyEventSource, SessionPrivacyEvent, kind_from_types, png_dimensions,
+    temporary_write,
 };
 use kestrel_platform::pin_store::{self, PinStoreError, SavedPin};
 use kestrel_platform::secret_service::{PinKeyError, PinKeyStore};
@@ -1416,6 +1417,7 @@ impl HistoryStore {
             PinStoreState::Locked => PinSaveState::StoreLocked,
             PinStoreState::Unreadable => PinSaveState::StoreUnreadable,
             PinStoreState::ReadFailed => PinSaveState::StoreReadFailed,
+            PinStoreState::Held => PinSaveState::StoreHeld,
             PinStoreState::Failed => PinSaveState::StoreFailed,
             PinStoreState::Disabled => PinSaveState::PersistenceOff,
         }
@@ -1789,6 +1791,12 @@ struct WorkerState<B, P> {
     pins_dirty: bool,
     /// The last pin revision written or merged.
     last_pin_revision: u64,
+    /// The session is locked; saved pins stay closed until it unlocks.
+    session_locked: bool,
+    /// The session is preparing for sleep; saved pins stay closed until resume.
+    asleep: bool,
+    /// Saved pins are waiting for the first privacy poll or a release edge.
+    pins_held: bool,
 }
 
 /// A selection that may come back after a temporary write replaced it.
@@ -1835,6 +1843,9 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
         pins_loaded: false,
         pins_dirty: false,
         last_pin_revision,
+        session_locked: false,
+        asleep: false,
+        pins_held: true,
     };
     state.publish(&snapshot, ClipboardLifecycle::Running);
 
@@ -1849,10 +1860,14 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
                 state.policy = policy;
                 if pin_target_changed {
                     state.pins_loaded = false;
-                    state.pins_dirty = state.policy.keep_pinned;
-                    state.pins.request_load();
+                    state.pins_dirty = state.policy.keep_pinned && !state.session_held();
+                    if state.session_held() {
+                        state.pins_held = true;
+                    } else {
+                        state.pins.request_load();
+                    }
                 } else if previous.pinned_max_age != state.policy.pinned_max_age {
-                    state.pins_dirty = true;
+                    state.pins_dirty = !state.session_held();
                 }
                 state.history.enforce_bounds();
                 state.history.prune(Instant::now());
@@ -1909,24 +1924,52 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
 impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
     fn poll_privacy(&mut self, snapshot: &Arc<Mutex<ClipboardSnapshot>>) -> bool {
         match self.privacy.poll_events() {
-            Ok(events) if !events.is_empty() => {
-                self.wipe_after_privacy();
+            Ok(events) => {
+                for event in events {
+                    match event {
+                        SessionPrivacyEvent::Locked => {
+                            self.session_locked = true;
+                            self.wipe_owned();
+                        }
+                        SessionPrivacyEvent::PreparingForSleep => {
+                            self.asleep = true;
+                            self.wipe_owned();
+                        }
+                        SessionPrivacyEvent::Unlocked => self.session_locked = false,
+                        SessionPrivacyEvent::Resumed => self.asleep = false,
+                    }
+                }
+                self.sync_pin_hold();
                 false
             }
-            Ok(_) => false,
             Err(error) => {
                 self.last_error = Some(error.message);
-                self.wipe_after_privacy();
+                self.wipe_owned();
+                self.sync_pin_hold();
                 self.publish(snapshot, ClipboardLifecycle::Unavailable);
                 true
             }
         }
     }
 
-    /// Drops memory after a lock or sleep; saved pins are re-read later.
-    fn wipe_after_privacy(&mut self) {
-        self.wipe_owned();
-        self.reload_saved_pins();
+    fn session_held(&self) -> bool {
+        self.session_locked || self.asleep
+    }
+
+    /// Keeps saved pins closed during a hold and reopens them once it clears.
+    fn sync_pin_hold(&mut self) {
+        if self.session_held() {
+            self.pins_held = true;
+            self.pins_loaded = false;
+            self.pins_dirty = false;
+            self.last_pin_revision = self.history.pin_revision;
+            if let Some(persistence) = self.pins.current() {
+                persistence.discard_pending();
+            }
+        } else if self.pins_held {
+            self.pins_held = false;
+            self.reload_saved_pins();
+        }
     }
 
     fn reload_saved_pins(&mut self) {
@@ -1934,13 +1977,16 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             return;
         }
         self.pins_loaded = false;
-        self.pins_dirty = false;
         self.pins.request_load();
     }
 
     /// Merges loaded pins, then writes memory back when it changed.
     fn poll_pins(&mut self, now: Instant) {
-        if let Some(loaded) = self.pins.take_loaded() {
+        let loaded = self.pins.take_loaded();
+        if self.session_held() || self.pins_held {
+            return;
+        }
+        if let Some(loaded) = loaded {
             self.pins_loaded = true;
             if self.merge_saved_pins(loaded, now) {
                 self.pins_dirty = true;
@@ -2006,6 +2052,9 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
     fn save_pins(&mut self, now: Instant) {
         if !self.policy.keep_pinned {
             self.pins_dirty = false;
+            return;
+        }
+        if self.session_held() || self.pins_held {
             return;
         }
         if !self.pins_dirty || !self.pins_loaded {
@@ -2628,10 +2677,23 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 } else {
                     TemporaryWriteState::Undetectable
                 },
-                pin_store: self.pins.status(),
+                pin_store: self.pin_status(),
             },
             now,
         )
+    }
+
+    /// The store view; a privacy hold wins over the store's own state.
+    fn pin_status(&self) -> PinStoreStatus {
+        let status = self.pins.status();
+        if self.policy.keep_pinned && self.session_held() {
+            PinStoreStatus {
+                state: PinStoreState::Held,
+                ..status
+            }
+        } else {
+            status
+        }
     }
 
     fn publish(&self, snapshot: &Arc<Mutex<ClipboardSnapshot>>, lifecycle: ClipboardLifecycle) {
@@ -3474,6 +3536,9 @@ mod tests {
             pins_loaded: false,
             pins_dirty: false,
             last_pin_revision: 0,
+            session_locked: false,
+            asleep: false,
+            pins_held: true,
         };
 
         let stale = text("https://example.com/?utm_source=x");
@@ -4372,6 +4437,7 @@ mod tests {
         first.shutdown();
 
         let second = PinPersistence::start(path, shared).expect("pin worker starts");
+        second.request_load();
         let mut loaded = None;
         wait_until(|| {
             if let Some(pins) = second.take_loaded() {
@@ -4400,6 +4466,7 @@ mod tests {
         let store = Arc::new(FakeKeyStore::with_key(2));
         let shared: Arc<dyn PinKeyStore> = store;
         let persistence = PinPersistence::start(path.clone(), shared).expect("pin worker starts");
+        persistence.request_load();
         wait_until(|| persistence.status().state == PinStoreState::Unreadable);
         assert!(persistence.take_loaded().is_none());
         let status = format!("{:?}", persistence.status());
@@ -4410,6 +4477,7 @@ mod tests {
         let store = Arc::new(FakeKeyStore::with_key(1));
         let shared: Arc<dyn PinKeyStore> = store;
         let persistence = PinPersistence::start(path, shared).expect("pin worker starts");
+        persistence.request_load();
         wait_until(|| persistence.status().state == PinStoreState::Unreadable);
         assert!(persistence.take_loaded().is_none());
         persistence.shutdown();
@@ -4596,6 +4664,7 @@ mod tests {
         let second_store: Arc<dyn PinKeyStore> =
             Arc::new(SecretServiceKeyStore::connect().expect("secret service reconnects"));
         let second = PinPersistence::start(path, second_store).expect("pin worker starts");
+        second.request_load();
         let mut loaded = None;
         wait_until(|| {
             if let Some(pins) = second.take_loaded() {
@@ -4649,9 +4718,20 @@ mod tests {
             .expect("fake events")
             .push(SessionPrivacyEvent::Locked);
         wait_for_items(&service, 0);
-        wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                service.latest().items.is_empty(),
+                "a locked session must keep saved pins out of memory"
+            );
+        }
 
         store.set_locked(false);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
         wait_until(|| service.latest().items.len() == 1);
         let snapshot = service.latest();
         assert!(snapshot.items[0].pinned, "the saved pin returns pinned");
@@ -4660,6 +4740,108 @@ mod tests {
             .expect("preview succeeds");
         assert_eq!(preview.text, "survivor");
         wait_until(|| service.latest().pin_store.state == PinStoreState::Saved);
+        service.stop();
+    }
+
+    #[test]
+    fn sleep_holds_saved_pins_until_resume() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::with_key(6));
+        let shared: Arc<dyn PinKeyStore> = store.clone();
+        let (mut service, state, events) = start_pin_service(pin_policy(path.clone()), shared);
+
+        state.lock().expect("fake state").current =
+            Some(FakeSelection::Text("survivor".to_string()));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        service
+            .execute(ClipboardCommand::SetPinned {
+                item_id,
+                pinned: true,
+            })
+            .expect("pin succeeds");
+        wait_until(|| path.exists() && service.latest().pin_store.state == PinStoreState::Saved);
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::PreparingForSleep);
+        wait_for_items(&service, 0);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                service.latest().items.is_empty(),
+                "a sleeping session must keep saved pins out of memory"
+            );
+        }
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Resumed);
+        wait_until(|| service.latest().items.len() == 1);
+        assert_eq!(
+            service
+                .preview(service.latest().items[0].id, 64)
+                .expect("preview succeeds")
+                .text,
+            "survivor"
+        );
+        service.stop();
+    }
+
+    #[test]
+    fn a_session_locked_at_start_loads_nothing_until_unlocked() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[7; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(
+            &path,
+            &writer,
+            &[SavedPin::new("startup secret", super::unix_seconds())],
+        )
+        .expect("encrypted write");
+
+        let store = Arc::new(FakeKeyStore::with_key(7));
+        let key_store: Arc<dyn PinKeyStore> = store;
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let events = Arc::new(Mutex::new(vec![SessionPrivacyEvent::Locked]));
+        let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
+        service.set_pin_key_store(key_store);
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::clone(&state),
+                },
+                FakePrivacy {
+                    events: Arc::clone(&events),
+                },
+            )
+            .expect("worker starts");
+
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        for _ in 0..3 {
+            thread::sleep(Duration::from_millis(20));
+            assert!(
+                service.latest().items.is_empty(),
+                "a session locked at start must not decrypt saved pins"
+            );
+        }
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().items.len() == 1);
+        assert_eq!(
+            service
+                .preview(service.latest().items[0].id, 64)
+                .expect("preview succeeds")
+                .text,
+            "startup secret"
+        );
         service.stop();
     }
 }

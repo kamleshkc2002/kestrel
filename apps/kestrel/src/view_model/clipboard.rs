@@ -359,6 +359,14 @@ fn clipboard_pin_store(
                 Some("Check that the data folder and the saved-pins file are readable.".to_owned()),
                 false,
             ),
+            PinStoreState::Held => (
+                format!(
+                    "{} · Saved pins reload after you unlock",
+                    saved_pin_count(saved_count)
+                ),
+                None,
+                false,
+            ),
             PinStoreState::Failed => (
                 "Saved pins could not be saved.".to_owned(),
                 Some(

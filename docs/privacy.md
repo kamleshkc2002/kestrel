@@ -104,9 +104,10 @@ confirmation, deletes the file and the Secret Service item (crypto-shredding), v
 is absent, and reports. A history wipe removes the saved copy of every removed pin through the
 same path. Turning `keep_pinned` off asks about deleting the saved pins.
 
-**Session events.** Lock, sleep, and service stop wipe in-memory buffers, pins included, as
-before. Saved pins reload from the store when history runs again; if the keyring is still locked
-they reload once it is unlocked.
+**Session events.** Lock and sleep wipe in-memory buffers, pins included; service stop wipes
+memory too. Saved pins stay closed while the session is locked or asleep and reload only after
+the matching unlock or resume, so a session that starts locked decrypts nothing until it is
+unlocked. Deleting the key while held still works.
 
 **Documented limits.** Zeroization covers memory, not swap or core dumps, so encrypt swap if
 that matters to you. A backup of the data folder contains only ciphertext; the key is not in the
