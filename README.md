@@ -33,9 +33,9 @@ design with little real use so far, so reports are welcome.
 
 **Where it runs**
 
-- **Tested:** Pop!_OS 24.04 with COSMIC on Wayland, and Ubuntu 24.04 in CI under Xvfb.
-- **Should run:** glibc 2.39+ distributions such as Fedora 40+, Debian 13, and Arch (untested).
-- **Won't start:** Ubuntu 22.04, Debian 12, and older.
+- **Tested:** Pop!_OS 24.04 with COSMIC on Wayland, and the AppImage in CI on Ubuntu 22.04 under Xvfb and headless Sway.
+- **Should run:** glibc 2.35 or newer: Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Fedora 38+, and Arch (untested).
+- **Won't start:** systems with glibc older than 2.35, such as Ubuntu 20.04 and Debian 11.
 
 Which features work on each desktop is in the
 [compatibility table](docs/compatibility.md). Known limits are listed in
