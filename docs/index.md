@@ -51,7 +51,7 @@ taking a tile.
 
 ![The command bar searching the app's tools](images/command-bar.png)
 
-![The status overlay showing an active module](images/overlay.png)
+![The status overlay showing the Keep awake countdown](images/overlay.png)
 
 ## Install
 
