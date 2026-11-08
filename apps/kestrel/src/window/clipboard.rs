@@ -133,6 +133,7 @@ pub(super) fn build_clipboard_panel(
         .homogeneous(false)
         .build();
     let clear = gtk::Button::with_label("Clear selection");
+    clear.set_halign(Align::Start);
     clear.set_valign(Align::Center);
     clear.set_tooltip_text(Some("Clear the live clipboard; retained entries stay"));
     let sender = commands.clone();
@@ -142,10 +143,12 @@ pub(super) fn build_clipboard_panel(
         ));
     });
     let clear_unpinned = gtk::Button::with_label("Clear unpinned…");
+    clear_unpinned.set_halign(Align::Start);
     clear_unpinned.set_valign(Align::Center);
     clear_unpinned.set_tooltip_text(Some("Remove every entry that is not pinned"));
     connect_clear(&clear_unpinned, &counts, commands, true);
     let wipe = gtk::Button::with_label("Wipe history…");
+    wipe.set_halign(Align::Start);
     wipe.set_valign(Align::Center);
     wipe.add_css_class("destructive-action");
     wipe.set_tooltip_text(Some("Remove every retained entry, pinned ones included"));

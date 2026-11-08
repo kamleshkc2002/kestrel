@@ -112,11 +112,24 @@ pub(super) fn build_scratchpad_panel(
     let preview_toggle = gtk::ToggleButton::with_label("Preview");
     let close_button = gtk::Button::with_label("Close note");
     let export_button = gtk::Button::with_label("Export");
-    let actions = gtk::Box::new(Orientation::Horizontal, 6);
+    // The title keeps the full row; the buttons wrap below it.
+    let actions = gtk::Box::new(Orientation::Vertical, 6);
     actions.append(&title);
-    actions.append(&preview_toggle);
-    actions.append(&export_button);
-    actions.append(&close_button);
+    let buttons = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .homogeneous(false)
+        .build();
+    preview_toggle.set_halign(Align::Start);
+    export_button.set_halign(Align::Start);
+    close_button.set_halign(Align::Start);
+    buttons.append(&preview_toggle);
+    buttons.append(&export_button);
+    buttons.append(&close_button);
+    actions.append(&buttons);
 
     let expired = plain_row().title("Expired notes").build();
     let expired_button = gtk::Button::with_label("Remove");

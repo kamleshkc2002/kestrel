@@ -716,6 +716,7 @@ fn add_general_rows(
         ("Everything", kestrel::FeaturePreset::Everything),
     ] {
         let button = gtk::Button::with_label(label);
+        button.set_halign(Align::Start);
         button.set_tooltip_text(Some(&format!("Apply the {label} feature preset")));
         let sender = commands.clone();
         button.connect_clicked(move |_| {
@@ -724,6 +725,7 @@ fn add_general_rows(
         presets.append(&button);
     }
     let undo = gtk::Button::with_label("Undo");
+    undo.set_halign(Align::Start);
     undo.set_sensitive(view_model.can_undo);
     let sender = commands.clone();
     undo.connect_clicked(move |_| {

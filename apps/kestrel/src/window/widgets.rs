@@ -272,7 +272,9 @@ pub(super) fn stacked_row(
     description.add_css_class("caption");
     content.append(&heading);
     content.append(&description);
-    controls.set_halign(Align::Start);
+    // Fill, so a wrapping control is measured for the width it is given and
+    // its extra lines grow the row.
+    controls.set_halign(Align::Fill);
     controls.set_margin_top(6);
     content.append(controls);
     row.set_child(Some(&content));
