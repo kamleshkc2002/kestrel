@@ -2,16 +2,26 @@
 //!
 //! Identity comes from `symlink_metadata`, so a symbolic link is moved as a
 //! link and never followed. Every name is created without replacing an
-//! existing entry; a failed copy leaves the original in place.
+//! existing entry; a failed copy leaves the original in place. Copies and
+//! exports are written through a staging file this operation created itself,
+//! so a name already in the folder, a symbolic link included, is never
+//! opened, truncated, or removed.
 
 use std::{
     ffi::CString,
     fmt,
     fs::{self, OpenOptions},
     io::{self, Write},
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+    os::{
+        fd::AsRawFd,
+        unix::{
+            ffi::OsStrExt,
+            fs::{MetadataExt, OpenOptionsExt},
+        },
+    },
     path::{Path, PathBuf},
     sync::LazyLock,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use gio::prelude::{AppInfoExt, FileExt};
@@ -209,8 +219,9 @@ pub fn validate_new_name(name: &str) -> Result<(), NameProblem> {
 pub trait FileSystemOps {
     /// Renames without replacing an existing destination.
     fn rename_no_replace(&self, from: &Path, to: &Path) -> io::Result<()>;
-    fn copy_file(&self, from: &Path, to: &Path) -> io::Result<()>;
-    fn sync_file(&self, path: &Path) -> io::Result<()>;
+    /// Copies the regular file `from` to the new name `to`, refusing an
+    /// existing name and leaving nothing behind on failure.
+    fn copy_no_replace(&self, from: &Path, to: &Path, expected_size: u64) -> io::Result<()>;
     fn remove_file(&self, path: &Path) -> io::Result<()>;
 }
 
@@ -226,16 +237,195 @@ impl FileSystemOps for SystemFileSystem {
         }
     }
 
-    fn copy_file(&self, from: &Path, to: &Path) -> io::Result<()> {
-        fs::copy(from, to).map(|_| ())
-    }
-
-    fn sync_file(&self, path: &Path) -> io::Result<()> {
-        fs::File::open(path)?.sync_all()
+    fn copy_no_replace(&self, from: &Path, to: &Path, expected_size: u64) -> io::Result<()> {
+        let mut source = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(from)?;
+        let metadata = source.metadata()?;
+        if !metadata.is_file() || metadata.len() != expected_size {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        let folder = to
+            .parent()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut staging = Staging::create(folder)?;
+        if io::copy(&mut source, &mut staging.file)? != expected_size {
+            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        }
+        staging.file.set_permissions(metadata.permissions())?;
+        staging.file.sync_all()?;
+        staging.publish(to, Publish::NoReplace)
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         fs::remove_file(path)
+    }
+}
+
+/// How a staged file takes its final name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Publish {
+    NoReplace,
+    /// The caller already confirmed replacing the destination.
+    Replace,
+}
+
+/// A new file only this operation can name: an unnamed `O_TMPFILE` inode
+/// where the file system offers one, else an exclusively created file with a
+/// unique name. An unpublished named file is removed on drop, and only while
+/// its name still refers to the file this operation created.
+struct Staging {
+    file: fs::File,
+    named: Option<PathBuf>,
+    published: bool,
+}
+
+const STAGING_ATTEMPTS: u32 = 16;
+
+impl Staging {
+    fn create(folder: &Path) -> io::Result<Self> {
+        match OpenOptions::new()
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_TMPFILE | libc::O_CLOEXEC)
+            .open(folder)
+        {
+            Ok(file) => Ok(Self {
+                file,
+                named: None,
+                published: false,
+            }),
+            Err(error) if unnamed_unsupported(&error) => Self::create_named(folder),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn create_named(folder: &Path) -> io::Result<Self> {
+        for attempt in 0..STAGING_ATTEMPTS {
+            let candidate = folder.join(staging_name(attempt));
+            // O_CREAT | O_EXCL: an existing entry, a dangling link included, is refused.
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        file,
+                        named: Some(candidate),
+                        published: false,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::from(io::ErrorKind::AlreadyExists))
+    }
+
+    /// Whether `path` still names the file this operation created.
+    fn owns(&self, path: &Path) -> bool {
+        match (self.file.metadata(), fs::symlink_metadata(path)) {
+            (Ok(mine), Ok(there)) => mine.dev() == there.dev() && mine.ino() == there.ino(),
+            _ => false,
+        }
+    }
+
+    fn publish(mut self, to: &Path, mode: Publish) -> io::Result<()> {
+        if self.named.is_none() {
+            if mode == Publish::NoReplace {
+                link_unnamed(&self.file, to)?;
+                self.published = true;
+                return Ok(());
+            }
+            self.named = Some(self.link_to_unique_name(to)?);
+        }
+        let Some(named) = self.named.clone() else {
+            return Err(io::Error::from(io::ErrorKind::NotFound));
+        };
+        if !self.owns(&named) {
+            return Err(io::Error::other("the staging file was replaced"));
+        }
+        match mode {
+            Publish::NoReplace => SystemFileSystem.rename_no_replace(&named, to)?,
+            Publish::Replace => fs::rename(&named, to)?,
+        }
+        self.published = true;
+        Ok(())
+    }
+
+    /// Gives an unnamed file a fresh name beside `to`, for a replacing rename.
+    fn link_to_unique_name(&self, to: &Path) -> io::Result<PathBuf> {
+        let folder = to
+            .parent()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        for attempt in 0..STAGING_ATTEMPTS {
+            let candidate = folder.join(staging_name(attempt));
+            match link_unnamed(&self.file, &candidate) {
+                Ok(()) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::from(io::ErrorKind::AlreadyExists))
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        if let Some(named) = &self.named {
+            if self.owns(named) {
+                let _ = fs::remove_file(named);
+            }
+        }
+    }
+}
+
+/// A hidden, per-attempt name; uniqueness comes from the process, the clock,
+/// and the attempt, and exclusive creation settles any collision.
+fn staging_name(attempt: u32) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!(
+        ".kestrel-staging-{}-{nanos:x}-{attempt}",
+        std::process::id()
+    )
+}
+
+/// A kernel or file system without `O_TMPFILE`.
+fn unnamed_unsupported(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EOPNOTSUPP) | Some(libc::EISDIR) | Some(libc::EINVAL)
+    )
+}
+
+/// Names an unnamed file; `linkat` refuses an existing name.
+fn link_unnamed(file: &fs::File, to: &Path) -> io::Result<()> {
+    let source = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+    let target = path_c_string(to)?;
+    // SAFETY: both pointers are NUL-terminated strings that outlive the call.
+    let result = unsafe {
+        libc::linkat(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::AT_SYMLINK_FOLLOW,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -389,7 +579,7 @@ pub fn move_to_with(
             method: MoveMethod::Renamed,
         }),
         Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
-            copy_across_devices(ops, path, dest_dir, name, source, new_path)
+            copy_across_devices(ops, path, source, new_path)
         }
         Err(error) => Err(error.into()),
     }
@@ -398,8 +588,6 @@ pub fn move_to_with(
 fn copy_across_devices(
     ops: &dyn FileSystemOps,
     path: &Path,
-    dest_dir: &Path,
-    name: &std::ffi::OsStr,
     source: FileIdentity,
     new_path: PathBuf,
 ) -> Result<MoveOutcome, FileActionError> {
@@ -408,37 +596,19 @@ fn copy_across_devices(
         FileKind::Directory => return Err(FileActionError::CrossDeviceFolder),
         FileKind::Symlink => return Err(FileActionError::CrossDevice),
     }
-    let partial = dest_dir.join(format!(
-        ".{}.kestrel-partial-{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
-    let copied = ops
-        .copy_file(path, &partial)
-        .and_then(|()| ops.sync_file(&partial))
-        .and_then(|()| match fs::metadata(&partial) {
-            Ok(metadata) if metadata.len() == source.size => Ok(()),
-            Ok(_) => Err(io::Error::from(io::ErrorKind::InvalidData)),
-            Err(error) => Err(error),
-        });
-    if let Err(error) = copied {
-        let _ = fs::remove_file(&partial);
-        return Err(error.into());
-    }
-    if let Err(error) = ops.rename_no_replace(&partial, &new_path) {
-        let _ = fs::remove_file(&partial);
-        return Err(error.into());
-    }
-    match ops.remove_file(path) {
-        Ok(()) => Ok(MoveOutcome::Moved {
+    ops.copy_no_replace(path, &new_path, source.size)?;
+    // The original goes only while it is still the file that was copied.
+    let unchanged = FileIdentity::read(path).is_ok_and(|current| current == source);
+    if unchanged && ops.remove_file(path).is_ok() {
+        return Ok(MoveOutcome::Moved {
             new_path,
             method: MoveMethod::CopiedAndRemoved,
-        }),
-        Err(_) => Ok(MoveOutcome::CopiedOriginalKept {
-            new_path,
-            original: path.to_path_buf(),
-        }),
+        });
     }
+    Ok(MoveOutcome::CopiedOriginalKept {
+        new_path,
+        original: path.to_path_buf(),
+    })
 }
 
 /// Writes PNG bytes to a new name, or replaces an existing one when the file
@@ -463,41 +633,19 @@ pub fn export_png(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or(FileActionError::InvalidDestination)?;
-    let name = dest_path
-        .file_name()
-        .ok_or(FileActionError::InvalidDestination)?;
-    let partial = dest_dir.join(format!(
-        ".{}.kestrel-export-{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
-    if let Err(error) = write_and_sync(&partial, bytes) {
-        let _ = fs::remove_file(&partial);
-        return Err(error.into());
+    if dest_path.file_name().is_none() {
+        return Err(FileActionError::InvalidDestination);
     }
-    let placed = if replace {
-        fs::rename(&partial, dest_path)
+    let mut staging = Staging::create(dest_dir)?;
+    staging.file.write_all(bytes)?;
+    staging.file.sync_all()?;
+    let mode = if replace {
+        Publish::Replace
     } else {
-        SystemFileSystem.rename_no_replace(&partial, dest_path)
+        Publish::NoReplace
     };
-    if let Err(error) = placed {
-        let _ = fs::remove_file(&partial);
-        return Err(error.into());
-    }
+    staging.publish(dest_path, mode)?;
     Ok(())
-}
-
-fn write_and_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            fs::remove_file(path)?;
-            OpenOptions::new().write(true).create_new(true).open(path)?
-        }
-        Err(error) => return Err(error),
-    };
-    file.write_all(bytes)?;
-    file.sync_all()
 }
 
 /// How a reveal finished.
@@ -676,8 +824,8 @@ mod tests {
 
     use super::{
         FileActionError, FileIdentity, FileKind, FileSystemOps, MoveMethod, MoveOutcome,
-        NameProblem, SystemFileSystem, export_png, move_to, move_to_with, rename_in_place,
-        validate_new_name,
+        NameProblem, Publish, Staging, SystemFileSystem, export_png, move_to, move_to_with,
+        rename_in_place, validate_new_name,
     };
 
     const PNG: &[u8] = &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
@@ -728,15 +876,11 @@ mod tests {
             SystemFileSystem.rename_no_replace(from, to)
         }
 
-        fn copy_file(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fn copy_no_replace(&self, from: &Path, to: &Path, expected_size: u64) -> io::Result<()> {
             match self.copy_error {
                 Some(code) => Err(io::Error::from_raw_os_error(code)),
-                None => SystemFileSystem.copy_file(from, to),
+                None => SystemFileSystem.copy_no_replace(from, to, expected_size),
             }
-        }
-
-        fn sync_file(&self, path: &Path) -> io::Result<()> {
-            SystemFileSystem.sync_file(path)
         }
 
         fn remove_file(&self, path: &Path) -> io::Result<()> {
@@ -867,6 +1011,14 @@ mod tests {
     #[test]
     fn export_keeps_an_existing_file_unless_replacing() {
         let directory = tempfile::TempDir::new().expect("temporary directory");
+        let elsewhere = tempfile::TempDir::new().expect("another folder");
+        let victim = elsewhere.path().join("victim.txt");
+        fs::write(&victim, b"victim").expect("fixture victim");
+        // Names a predictable temporary file would use, pointing outside.
+        let trap = directory
+            .path()
+            .join(format!(".image.png.kestrel-export-{}", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &trap).expect("fixture link");
         let destination = directory.path().join("image.png");
         fs::write(&destination, b"existing").expect("fixture target");
         assert_eq!(
@@ -879,7 +1031,23 @@ mod tests {
         );
         export_png(PNG, &destination, 1024, true).expect("the overwrite succeeds");
         assert_eq!(fs::read(&destination).expect("the target reads"), PNG);
-        assert_eq!(names(directory.path()), vec!["image.png".to_owned()]);
+
+        // A destination that is a link is replaced as a name; its target is kept.
+        let linked = directory.path().join("linked.png");
+        std::os::unix::fs::symlink(&victim, &linked).expect("fixture link");
+        assert_eq!(
+            export_png(PNG, &linked, 1024, false),
+            Err(FileActionError::Exists)
+        );
+        export_png(PNG, &linked, 1024, true).expect("the overwrite succeeds");
+        assert_eq!(fs::read(&linked).expect("the new file reads"), PNG);
+
+        assert_eq!(fs::read(&victim).expect("the victim reads"), b"victim");
+        assert!(
+            fs::symlink_metadata(&trap).is_ok(),
+            "the foreign link stays"
+        );
+        assert_eq!(names(directory.path()).len(), 3, "no staging file is left");
     }
 
     #[test]
@@ -923,6 +1091,11 @@ mod tests {
     fn a_failed_removal_after_copying_reports_both_copies() {
         let (_directory, path) = fixture("large.bin", b"contents");
         let destination = tempfile::TempDir::new().expect("destination");
+        // A link where a predictable staging name would sit must not redirect the copy.
+        let trap = destination
+            .path()
+            .join(format!(".large.bin.kestrel-partial-{}", std::process::id()));
+        std::os::unix::fs::symlink(&path, &trap).expect("fixture link");
         let expected = FileIdentity::read(&path).expect("identity reads");
         let ops = FakeOps {
             remove_error: Some(libc::EACCES),
@@ -938,8 +1111,68 @@ mod tests {
                 original: path.clone(),
             }
         );
-        assert!(path.exists(), "the original is still there");
+        assert_eq!(fs::read(&path).expect("the original reads"), b"contents");
         assert_eq!(fs::read(&new_path).expect("the copy reads"), b"contents");
+        assert!(
+            fs::symlink_metadata(&trap).is_ok(),
+            "the foreign link stays"
+        );
+        assert_eq!(
+            names(destination.path()).len(),
+            2,
+            "no staging file is left"
+        );
+    }
+
+    #[test]
+    fn a_cross_device_copy_never_writes_through_an_existing_name() {
+        let (_directory, path) = fixture("large.bin", b"contents");
+        let destination = tempfile::TempDir::new().expect("destination");
+        let taken = destination.path().join("large.bin");
+        std::os::unix::fs::symlink(&path, &taken).expect("fixture link");
+        let expected = FileIdentity::read(&path).expect("identity reads");
+        assert_eq!(
+            move_to_with(
+                &FakeOps::cross_device(),
+                &path,
+                destination.path(),
+                &expected
+            ),
+            Err(FileActionError::Exists)
+        );
+        assert_eq!(fs::read(&path).expect("the original reads"), b"contents");
+        assert!(
+            fs::symlink_metadata(&taken)
+                .expect("the link stays")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(names(destination.path()), vec!["large.bin".to_owned()]);
+    }
+
+    #[test]
+    fn a_named_staging_file_is_removed_only_while_it_is_still_ours() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let taken = directory.path().join("taken.png");
+        fs::write(&taken, b"existing").expect("fixture target");
+        let staging = Staging::create_named(directory.path()).expect("staging file");
+        assert_eq!(
+            staging
+                .publish(&taken, Publish::NoReplace)
+                .map_err(FileActionError::from),
+            Err(FileActionError::Exists)
+        );
+        assert_eq!(names(directory.path()), vec!["taken.png".to_owned()]);
+
+        let staging = Staging::create_named(directory.path()).expect("staging file");
+        let name = staging.named.clone().expect("a named staging file");
+        fs::remove_file(&name).expect("the name is freed");
+        fs::write(&name, b"someone else").expect("a foreign file takes the name");
+        drop(staging);
+        assert_eq!(
+            fs::read(&name).expect("the foreign file stays"),
+            b"someone else"
+        );
     }
 
     #[test]
