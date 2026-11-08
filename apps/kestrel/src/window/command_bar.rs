@@ -141,6 +141,7 @@ pub(super) fn build_command_panel(
     });
     ranking_row.add_suffix(&reset);
     group.add(&ranking_row);
+    group.add(&super::install::install_entry_row(commands));
 
     let results = gtk::Box::new(Orientation::Vertical, 6);
     let panel = CommandPanel {

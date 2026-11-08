@@ -683,6 +683,15 @@ pub enum ApplicationCommand {
     CopyShelfItem(u64),
     /// Opens one image entry, or an image file entry, in the capture editor.
     EditShelfImage(u64),
+    /// Classifies a package or disk-image file and offers its default app.
+    InstallHandoff {
+        path: std::path::PathBuf,
+    },
+    /// Launches the confirmed app with the classified file.
+    ConfirmInstallHandoff {
+        target: kestrel_platform::install_handoff::InstallTarget,
+        provider: kestrel_platform::install_handoff::Provider,
+    },
     /// Keeps entries in a private file across restarts.
     SetShelfKeep(bool),
     /// Adds every new screenshot to the shelf.

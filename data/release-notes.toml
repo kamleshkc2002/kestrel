@@ -11,3 +11,7 @@ text = "Clean links removes tracking parameters such as utm_source from a link, 
 [[change]]
 feature = "files.shelf"
 text = "The new Shelf holds files, text, and links you drag in until you drag them out to another app, with a floating surface you can pin open while you work in other windows; it is cleared on quit unless you choose to keep it."
+
+[[change]]
+feature = "files.shelf"
+text = "A shelf entry for a package or disk image can be handed to the app your desktop uses for that type, after a confirmation that names the app and leaves the file unchanged."

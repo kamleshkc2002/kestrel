@@ -12,6 +12,7 @@ pub mod clipboard;
 pub mod clock;
 pub mod dbus_error;
 pub mod global_shortcuts;
+pub mod install_handoff;
 pub mod launcher;
 pub mod logind_session;
 pub mod network_addresses;
