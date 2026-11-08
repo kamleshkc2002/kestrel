@@ -12,55 +12,55 @@
       "preset": "essentials",
       "window": "open",
       "seconds": 20,
-      "cpu_percent": 1.00,
-      "wakeups_per_second": 6.20,
-      "rss_kib": 301880,
+      "cpu_percent": 1.20,
+      "wakeups_per_second": 2.10,
+      "rss_kib": 301272,
       "threads": 20
     },
     {
       "preset": "essentials",
       "window": "closed",
       "seconds": 20,
-      "cpu_percent": 0.65,
-      "wakeups_per_second": 15.00,
-      "rss_kib": 300704,
+      "cpu_percent": 0.70,
+      "wakeups_per_second": 14.15,
+      "rss_kib": 300912,
       "threads": 20
     },
     {
       "preset": "balanced",
       "window": "open",
       "seconds": 20,
-      "cpu_percent": 5.20,
-      "wakeups_per_second": 17.00,
-      "rss_kib": 309608,
+      "cpu_percent": 7.15,
+      "wakeups_per_second": 16.65,
+      "rss_kib": 307992,
       "threads": 26
     },
     {
       "preset": "balanced",
       "window": "closed",
       "seconds": 20,
-      "cpu_percent": 2.40,
+      "cpu_percent": 3.30,
       "wakeups_per_second": 20.90,
-      "rss_kib": 306280,
-      "threads": 25
+      "rss_kib": 306828,
+      "threads": 26
     },
     {
       "preset": "everything",
       "window": "open",
       "seconds": 20,
-      "cpu_percent": 5.30,
-      "wakeups_per_second": 17.75,
-      "rss_kib": 308596,
-      "threads": 25
+      "cpu_percent": 7.20,
+      "wakeups_per_second": 17.15,
+      "rss_kib": 308760,
+      "threads": 26
     },
     {
       "preset": "everything",
       "window": "closed",
       "seconds": 20,
-      "cpu_percent": 2.45,
-      "wakeups_per_second": 21.25,
-      "rss_kib": 305852,
-      "threads": 25
+      "cpu_percent": 3.30,
+      "wakeups_per_second": 21.05,
+      "rss_kib": 307296,
+      "threads": 26
     }
   ]
 }
