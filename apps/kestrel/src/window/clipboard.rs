@@ -531,7 +531,8 @@ fn build_list(
             item.kind, item.preview
         ))]);
         row.add_suffix(&tick_button(panel, item));
-        row.add_suffix(&entry_controls(item, commands, false));
+        // Icon buttons keep the six actions inside a narrow row.
+        row.add_suffix(&entry_controls(item, commands, true));
         list.append(&row);
         ids.push(Some(item.id));
         if let Some(preview) = clipboard

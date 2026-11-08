@@ -1,6 +1,6 @@
 //! Screen tools: read text, read QR codes, and pick colors.
 
-use super::widgets::{plain_row, turn_on_row};
+use super::widgets::{plain_row, stacked_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -16,9 +16,18 @@ pub(super) fn build_screen_tools_group(
         .title("Screen tools")
         .description(gtk::glib::markup_escape_text(&tools.status).as_str())
         .build();
-    let row = plain_row().title("Read from the screen").build();
+    // One button per tool; wrapping keeps the row inside a narrow window.
+    let buttons = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .homogeneous(false)
+        .build();
     for button in &tools.buttons {
         let widget = gtk::Button::with_label(button.label);
+        widget.set_halign(Align::Start);
         widget.set_valign(Align::Center);
         widget.set_sensitive(button.enabled && !tools.busy);
         if let Some(reason) = &button.reason {
@@ -32,16 +41,18 @@ pub(super) fn build_screen_tools_group(
                 tool,
             )));
         });
-        row.add_suffix(&widget);
+        buttons.append(&widget);
     }
     if tools.busy {
-        row.add_suffix(&request_button(
-            "Cancel",
-            ScreenToolRequest::Cancel,
-            commands,
-        ));
+        let cancel = request_button("Cancel", ScreenToolRequest::Cancel, commands);
+        cancel.set_halign(Align::Start);
+        buttons.append(&cancel);
     }
-    group.add(&row);
+    group.add(&stacked_row(
+        "Read from the screen",
+        "Read text or a QR code, or pick a color.",
+        &buttons,
+    ));
     for button in tools.buttons.iter().filter(|button| !button.enabled) {
         if let Some(turn_on) = &button.turn_on {
             group.add(&turn_on_row(turn_on, commands));
