@@ -1945,7 +1945,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             Err(error) => {
                 self.last_error = Some(error.message);
                 self.wipe_owned();
-                self.sync_pin_hold();
+                self.hold_pins();
                 self.publish(snapshot, ClipboardLifecycle::Unavailable);
                 true
             }
@@ -1959,16 +1959,21 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
     /// Keeps saved pins closed during a hold and reopens them once it clears.
     fn sync_pin_hold(&mut self) {
         if self.session_held() {
-            self.pins_held = true;
-            self.pins_loaded = false;
-            self.pins_dirty = false;
-            self.last_pin_revision = self.history.pin_revision;
-            if let Some(persistence) = self.pins.current() {
-                persistence.hold();
-            }
+            self.hold_pins();
         } else if self.pins_held {
             self.pins_held = false;
             self.reload_saved_pins();
+        }
+    }
+
+    /// Closes saved pins: no queued save, no load, no keyring retry.
+    fn hold_pins(&mut self) {
+        self.pins_held = true;
+        self.pins_loaded = false;
+        self.pins_dirty = false;
+        self.last_pin_revision = self.history.pin_revision;
+        if let Some(persistence) = self.pins.current() {
+            persistence.hold();
         }
     }
 
@@ -2714,7 +2719,7 @@ mod tests {
         path::PathBuf,
         sync::{
             Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         thread,
         time::{Duration, Instant},
@@ -4877,6 +4882,65 @@ mod tests {
                 .expect("preview succeeds")
                 .text,
             "startup secret"
+        );
+        service.stop();
+    }
+
+    struct FailingPrivacy {
+        failed: Arc<AtomicBool>,
+    }
+
+    impl PrivacyEventSource for FailingPrivacy {
+        fn poll_events(&mut self) -> Result<Vec<SessionPrivacyEvent>, ClipboardError> {
+            if self.failed.load(Ordering::Relaxed) {
+                return Err(ClipboardError {
+                    kind: ClipboardErrorKind::PrivacyMonitorFailed,
+                    message: "logind unavailable".to_string(),
+                });
+            }
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn privacy_monitor_failure_stops_keyring_retries() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[8; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(
+            &path,
+            &writer,
+            &[SavedPin::new("monitor secret", super::unix_seconds())],
+        )
+        .expect("encrypted write");
+
+        let store = Arc::new(FakeKeyStore::with_key(8));
+        store.set_locked(true);
+        let key_store: Arc<dyn PinKeyStore> = store.clone();
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
+        service.set_pin_key_store(key_store);
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::new(Mutex::new(FakeState::default())),
+                },
+                FailingPrivacy {
+                    failed: Arc::clone(&failed),
+                },
+            )
+            .expect("worker starts");
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+
+        failed.store(true, Ordering::Relaxed);
+        wait_until(|| service.latest().lifecycle == ClipboardLifecycle::Unavailable);
+        store.set_locked(false);
+        let reads = store.reads.load(Ordering::Relaxed);
+        thread::sleep(PIN_RETRY_INTERVAL * 4);
+        assert_eq!(
+            store.reads.load(Ordering::Relaxed),
+            reads,
+            "a failed privacy monitor must stop keyring retries"
         );
         service.stop();
     }
