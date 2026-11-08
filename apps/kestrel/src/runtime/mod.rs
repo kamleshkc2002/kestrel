@@ -60,7 +60,7 @@ use kestrel_platform::{
     },
     quick_toggles::{
         ALL_QUICK_TOGGLES, LinuxQuickToggleBackend, QuickToggleCapabilityProbe, QuickToggleError,
-        QuickToggleId,
+        QuickToggleErrorKind, QuickToggleId,
     },
     recording::{
         AudioTrack, FEATURE_ID as RECORDING_ID, GstTakeEditor, PortalRecordingBackend,
@@ -81,7 +81,7 @@ use kestrel_platform::{
     },
 };
 use kestrel_services::{
-    FeatureRegistry, RegistryError, ServiceRegistration,
+    FeatureRegistry, RegistryError, ServiceLifecycle, ServiceRegistration,
     alerts::{AlertEngine, AlertEvent, AlertPolicy},
     audio::{
         AudioCommand, AudioCommandResult, AudioMixerService, AudioPolicy, AudioSnapshot,
@@ -945,6 +945,64 @@ impl ApplicationRuntime {
         self.registry.registrations()
     }
 
+    /// One tab-separated line per feature: lifecycle, enablement, capability
+    /// kind, and the typed counters the recovery checks assert on. Clipboard
+    /// content, device names, and paths never appear.
+    pub fn diagnostics_state(&self) -> String {
+        let clipboard = self.clipboard_snapshot();
+        let audio = self.audio_snapshot();
+        let microphone = self.microphone_snapshot();
+        let recording = self.recording.snapshot();
+        let mut output = String::new();
+        for registration in self.registry.registrations() {
+            let feature = &registration.feature;
+            let mut line = format!(
+                "feature\t{}\tlifecycle={}\tenabled={}\tcapability={}",
+                feature.id,
+                lifecycle_label(registration.lifecycle()),
+                u8::from(registration.enabled),
+                capability_label(&registration.capability.status),
+            );
+            if feature.id == CLIPBOARD_HISTORY_ID {
+                line.push_str(&format!(
+                    "\titems={}\twipes={}",
+                    clipboard.items.len(),
+                    clipboard.wipe_count
+                ));
+            }
+            if feature.id == AUDIO_MIXER_ID {
+                line.push_str(&format!("\toutputs={}", audio.outputs.len()));
+            }
+            if feature.id == MICROPHONE_FEATURE_ID {
+                line.push_str(&format!("\tinputs={}", microphone.inputs.len()));
+            }
+            if feature.id == RECORDING_ID {
+                line.push_str(&format!(
+                    "\tphase={}",
+                    recording_phase_label(&recording.phase)
+                ));
+            }
+            if feature.id == QuickToggleId::KeepAwake.feature_id() {
+                line.push_str(&format!(
+                    "\tactive={}",
+                    u8::from(self.keep_awake_is_active())
+                ));
+            }
+            if let Some(snapshot) = self
+                .quick_toggles
+                .snapshots()
+                .find(|snapshot| snapshot.id.feature_id() == feature.id)
+            {
+                if let Some(error) = &snapshot.error {
+                    line.push_str(&format!("\terror={}", quick_toggle_error_label(error.kind)));
+                }
+            }
+            output.push_str(&line);
+            output.push('\n');
+        }
+        output
+    }
+
     pub fn view_model_with_panels(
         &self,
         warnings: &[ConfigurationWarning],
@@ -1214,6 +1272,70 @@ impl ApplicationRuntime {
     }
 }
 
+fn lifecycle_label(lifecycle: ServiceLifecycle) -> &'static str {
+    match lifecycle {
+        ServiceLifecycle::Registered => "registered",
+        ServiceLifecycle::Available => "available",
+        ServiceLifecycle::Unavailable => "unavailable",
+        ServiceLifecycle::Running => "running",
+    }
+}
+
+fn capability_label(status: &CapabilityStatus) -> String {
+    match status {
+        CapabilityStatus::Supported => "supported".to_owned(),
+        CapabilityStatus::Limited { .. } => "limited".to_owned(),
+        CapabilityStatus::NeedsPermission { permission } => {
+            format!("needs-permission:{}", permission_label(*permission))
+        }
+        CapabilityStatus::MissingDependency { name } => {
+            format!("missing-dependency:{name}")
+        }
+        CapabilityStatus::Unsupported { .. } => "unsupported".to_owned(),
+    }
+}
+
+fn permission_label(permission: kestrel_core::Permission) -> &'static str {
+    use kestrel_core::Permission;
+    match permission {
+        Permission::ScreenCapture => "screen-capture",
+        Permission::GlobalShortcut => "global-shortcut",
+        Permission::InputInjection => "input-injection",
+        Permission::HardwareControl => "hardware-control",
+        Permission::SessionControl => "session-control",
+        Permission::DesktopSettings => "desktop-settings",
+        Permission::NetworkControl => "network-control",
+        Permission::FileDeletion => "file-deletion",
+        Permission::RemovableMedia => "removable-media",
+        Permission::Camera => "camera",
+        Permission::Notifications => "notifications",
+    }
+}
+
+fn quick_toggle_error_label(kind: QuickToggleErrorKind) -> &'static str {
+    match kind {
+        QuickToggleErrorKind::Unavailable => "unavailable",
+        QuickToggleErrorKind::PermissionDenied => "permission-denied",
+        QuickToggleErrorKind::InvalidRequest => "invalid-request",
+        QuickToggleErrorKind::ConfirmationRequired => "confirmation-required",
+        QuickToggleErrorKind::Protocol => "protocol",
+        QuickToggleErrorKind::Io => "io",
+    }
+}
+
+fn recording_phase_label(phase: &RecordingPhase) -> &'static str {
+    match phase {
+        RecordingPhase::Idle => "idle",
+        RecordingPhase::Requesting { .. } => "requesting",
+        RecordingPhase::ChoosingArea { .. } => "choosing-area",
+        RecordingPhase::Recording { paused: true, .. } => "paused",
+        RecordingPhase::Recording { paused: false, .. } => "recording",
+        RecordingPhase::Stopping => "stopping",
+        RecordingPhase::Completed { .. } => "completed",
+        RecordingPhase::Failed { .. } => "failed",
+    }
+}
+
 mod audio;
 mod capture;
 mod clipboard;
@@ -1255,6 +1377,43 @@ mod tests {
         quick_toggles::{ALL_QUICK_TOGGLES, KEEP_AWAKE_ID, SCREEN_LOCK_ID},
         system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID,
     };
+    #[test]
+    fn diagnostics_cover_every_feature_without_user_content() {
+        let runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        let state = runtime.diagnostics_state();
+        let registrations = runtime.registrations().collect::<Vec<_>>();
+        let lines = state.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), registrations.len());
+        for (line, registration) in lines.iter().zip(&registrations) {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            assert_eq!(fields[0], "feature", "{line}");
+            assert_eq!(fields[1], registration.feature.id, "{line}");
+            assert!(
+                fields.iter().any(|field| field.starts_with("lifecycle=")),
+                "{line}"
+            );
+            assert!(
+                fields.iter().any(|field| field.starts_with("capability=")),
+                "{line}"
+            );
+        }
+        assert!(
+            state
+                .lines()
+                .any(|line| line.contains("\tclipboard.history\t") && line.contains("\titems=0\t")),
+            "clipboard state is a counter, not content"
+        );
+        assert!(
+            state
+                .lines()
+                .any(|line| line.contains("\tpower.keep-awake\t") && line.contains("\tactive=0")),
+            "keep-awake reports whether an inhibitor is held"
+        );
+        assert!(!state.contains('/'), "no paths appear in diagnostics");
+    }
+
     #[test]
     fn startup_keeps_unavailable_features_visible() {
         let mut runtime =
