@@ -5031,6 +5031,9 @@ impl ControllerState {
     }
 
     fn set_autostart(&mut self, enabled: bool, config_path: Option<&Path>) -> Result<(), String> {
+        if let Some(reason) = kestrel::autostart_unavailable_reason() {
+            return Err(reason);
+        }
         let old = self.configuration.clone();
         if old.startup.autostart != enabled {
             set_autostart_side_effect(enabled)

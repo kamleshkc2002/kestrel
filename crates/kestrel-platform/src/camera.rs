@@ -93,6 +93,7 @@ pub fn can_open(path: &Path) -> bool {
 pub fn camera_capability(
     cameras: &[CameraInfo],
     accessible: impl Fn(&Path) -> bool,
+    sandboxed: bool,
 ) -> CapabilityReport {
     let usable = cameras
         .iter()
@@ -108,6 +109,13 @@ pub fn camera_capability(
             "No camera is connected.",
         )
         .with_remediation("Connect a camera, or check that its driver is loaded, then refresh.")
+    } else if usable == 0 && sandboxed {
+        // A device-less camera list is a sandbox fact, not a seat permission.
+        crate::sandbox::unsupported(
+            FEATURE_ID,
+            "The camera cannot be opened inside the sandbox.",
+            crate::sandbox::SandboxReason::CameraDevices,
+        )
     } else if usable == 0 {
         CapabilityReport::new(
             FEATURE_ID,
@@ -135,7 +143,7 @@ pub struct CameraProbe;
 
 impl CapabilityProbe for CameraProbe {
     fn probe(&self) -> CapabilityReport {
-        camera_capability(&system_cameras(), can_open)
+        camera_capability(&system_cameras(), can_open, crate::sandbox::flatpak())
     }
 }
 
@@ -478,18 +486,40 @@ mod tests {
             name: "Camera".into(),
         };
         assert!(matches!(
-            camera_capability(&[], |_| true).status,
+            camera_capability(&[], |_| true, false).status,
             CapabilityStatus::Unsupported { .. }
         ));
         assert_eq!(
-            camera_capability(std::slice::from_ref(&camera), |_| false).status,
+            camera_capability(std::slice::from_ref(&camera), |_| false, false).status,
             CapabilityStatus::NeedsPermission {
                 permission: Permission::Camera
             }
         );
         assert_eq!(
-            camera_capability(&[camera], |_| true).status,
+            camera_capability(std::slice::from_ref(&camera), |_| true, false).status,
             CapabilityStatus::Supported
+        );
+
+        let root = TempDir::new().expect("root");
+        fs::write(root.path().join(".flatpak-info"), "[Application]\n").expect("marker");
+        let sandboxed = crate::sandbox::flatpak_in(root.path());
+        let report = camera_capability(std::slice::from_ref(&camera), |_| false, sandboxed);
+        assert!(matches!(
+            report.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "camera-devices")
+        );
+        assert!(
+            !report
+                .remediation
+                .as_deref()
+                .is_some_and(|text| text.contains("video group")),
+            "a sandboxed camera never asks for the video group"
         );
     }
 

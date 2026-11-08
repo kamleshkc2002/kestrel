@@ -710,12 +710,21 @@ fn add_general_rows(
 
     let autostart = plain_row()
         .title("Start automatically")
-        .subtitle("Launch Kestrel when your desktop session starts.")
+        .subtitle(
+            view_model
+                .autostart_unavailable
+                .as_deref()
+                .unwrap_or("Launch Kestrel when your desktop session starts."),
+        )
         .build();
     let autostart_switch = gtk::Switch::builder()
-        .active(view_model.autostart)
+        .active(view_model.autostart && view_model.autostart_unavailable.is_none())
+        .sensitive(view_model.autostart_unavailable.is_none())
         .valign(Align::Center)
         .build();
+    if let Some(reason) = view_model.autostart_unavailable.as_deref() {
+        autostart_switch.set_tooltip_text(Some(reason));
+    }
     let sender = commands.clone();
     autostart_switch.connect_state_set(move |_, enabled| {
         let _ = sender.try_send(ApplicationCommand::SetAutostart(enabled));

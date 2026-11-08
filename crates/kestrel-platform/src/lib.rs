@@ -24,6 +24,7 @@ pub mod process_exit;
 pub mod processes;
 pub mod quick_toggles;
 pub mod recording;
+pub mod sandbox;
 pub mod screen_tools;
 pub mod secret_service;
 pub mod snippets;

@@ -55,3 +55,7 @@ text = "The background tick runs once a second instead of four times when no fea
 [[change]]
 feature = "kestrel"
 text = "The AppImage is now built against glibc 2.35, so it starts on Ubuntu 22.04, Linux Mint 21, and Debian 12 as well as newer distributions."
+
+[[change]]
+feature = "kestrel"
+text = "A Flatpak build reports each feature its sandbox limits or blocks with the reason, offers View release instead of downloading updates, and asks the desktop to start at login through its Background portal."

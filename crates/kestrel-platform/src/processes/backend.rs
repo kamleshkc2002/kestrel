@@ -818,11 +818,17 @@ fn parse_address(value: &str) -> Option<(IpAddr, u16)> {
 #[derive(Debug, Clone)]
 pub struct ProcessProbe {
     source: ProcfsProcesses,
+    sandboxed: bool,
 }
 impl ProcessProbe {
     pub fn new(proc_root: impl AsRef<Path>) -> Self {
+        Self::with_sandbox(proc_root, crate::sandbox::flatpak())
+    }
+    /// Sets the sandbox state explicitly, for fixtures outside a sandbox.
+    pub fn with_sandbox(proc_root: impl AsRef<Path>, sandboxed: bool) -> Self {
         Self {
             source: ProcfsProcesses::new(proc_root),
+            sandboxed,
         }
     }
 }
@@ -833,6 +839,13 @@ impl Default for ProcessProbe {
 }
 impl CapabilityProbe for ProcessProbe {
     fn probe(&self) -> CapabilityReport {
+        if self.sandboxed {
+            return crate::sandbox::unsupported(
+                FEATURE_ID,
+                "Process inspection is unavailable inside the sandbox.",
+                crate::sandbox::SandboxReason::OwnProcesses,
+            );
+        }
         if !self.source.proc_root.join("self/stat").is_file() {
             return CapabilityReport::new(
                 FEATURE_ID,
@@ -862,11 +875,17 @@ impl CapabilityProbe for ProcessProbe {
 #[derive(Debug, Clone)]
 pub struct ListenersProbe {
     proc_root: PathBuf,
+    sandboxed: bool,
 }
 impl ListenersProbe {
     pub fn new(proc_root: impl AsRef<Path>) -> Self {
+        Self::with_sandbox(proc_root, crate::sandbox::flatpak())
+    }
+    /// Sets the sandbox state explicitly, for fixtures outside a sandbox.
+    pub fn with_sandbox(proc_root: impl AsRef<Path>, sandboxed: bool) -> Self {
         Self {
             proc_root: proc_root.as_ref().to_path_buf(),
+            sandboxed,
         }
     }
 }
@@ -877,21 +896,27 @@ impl Default for ListenersProbe {
 }
 impl CapabilityProbe for ListenersProbe {
     fn probe(&self) -> CapabilityReport {
-        if self.proc_root.join("net/tcp").is_file() {
-            CapabilityReport::new(
-                LISTENERS_FEATURE_ID,
-                CapabilityStatus::Supported,
-                "Open ports are available.",
-            )
-        } else {
-            CapabilityReport::new(
+        if !self.proc_root.join("net/tcp").is_file() {
+            return CapabilityReport::new(
                 LISTENERS_FEATURE_ID,
                 CapabilityStatus::Unsupported {
                     reason: "procfs network tables are unavailable".into(),
                 },
                 "Open ports are unavailable.",
-            )
+            );
         }
+        if self.sandboxed {
+            return crate::sandbox::limited(
+                LISTENERS_FEATURE_ID,
+                "Open ports are listed without owners outside the sandbox.",
+                crate::sandbox::SandboxReason::ListenerOwners,
+            );
+        }
+        CapabilityReport::new(
+            LISTENERS_FEATURE_ID,
+            CapabilityStatus::Supported,
+            "Open ports are available.",
+        )
     }
 }
 
@@ -1425,6 +1450,41 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.kind, ProcessErrorKind::Refused);
+    }
+
+    #[test]
+    fn a_sandboxed_probe_names_its_own_processes_and_ownerless_ports() {
+        let root = TempDir::new().expect("proc root");
+        fs::create_dir_all(root.path().join("self")).expect("self");
+        fs::write(root.path().join("self/stat"), "1 (kestrel) R 1 1\n").expect("stat");
+        fs::create_dir_all(root.path().join("net")).expect("net");
+        fs::write(root.path().join("net/tcp"), "  sl  local_address\n").expect("tcp");
+        fs::write(root.path().join(".flatpak-info"), "[Application]\n").expect("marker");
+        let sandboxed = crate::sandbox::flatpak_in(root.path());
+
+        let processes = ProcessProbe::with_sandbox(root.path(), sandboxed).probe();
+        assert!(matches!(
+            processes.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(
+            processes
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "own-processes")
+        );
+
+        let listeners = ListenersProbe::with_sandbox(root.path(), sandboxed).probe();
+        assert!(matches!(listeners.status, CapabilityStatus::Limited { .. }));
+        assert!(
+            listeners
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "listener-owners")
+        );
+
+        let host = ProcessProbe::with_sandbox(root.path(), false).probe();
+        assert!(!matches!(host.status, CapabilityStatus::Unsupported { .. }));
     }
 
     #[test]

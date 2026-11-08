@@ -177,6 +177,8 @@ pub struct ApplicationViewModel {
     pub appearance_overridden: bool,
     pub close_action: kestrel_core::CloseAction,
     pub autostart: bool,
+    /// Why the autostart switch cannot work here, when it cannot.
+    pub autostart_unavailable: Option<String>,
     pub logging: LoggingViewModel,
     pub overlay: OverlayViewModel,
     pub can_undo: bool,
@@ -280,6 +282,7 @@ impl ApplicationViewModel {
             ),
             close_action: configuration.ui.close_action,
             autostart: configuration.startup.autostart,
+            autostart_unavailable: None,
             logging: LoggingViewModel::new(&configuration.logging, crate::logging::logger()),
             overlay: OverlayViewModel::new(
                 registrations

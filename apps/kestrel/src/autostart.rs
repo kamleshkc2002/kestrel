@@ -53,6 +53,8 @@ pub enum AutostartError {
     Remove { path: PathBuf, source: io::Error },
     /// Temporary names were exhausted.
     TemporaryFileNameExhausted { directory: PathBuf },
+    /// The desktop's Background portal refused or did not answer.
+    Portal { message: String },
 }
 
 impl std::fmt::Display for AutostartError {
@@ -126,6 +128,7 @@ impl std::fmt::Display for AutostartError {
                 "cannot allocate a temporary autostart filename in {}",
                 directory.display()
             ),
+            Self::Portal { message } => write!(formatter, "autostart was not changed: {message}"),
         }
     }
 }
@@ -145,7 +148,13 @@ impl std::error::Error for AutostartError {
 }
 
 /// Enables the user autostart entry from the current environment.
+///
+/// A sandbox cannot write the host's autostart directory, so it asks the
+/// desktop's Background portal instead.
 pub fn enable() -> Result<(), AutostartError> {
+    if kestrel_platform::sandbox::flatpak() {
+        return request_portal_autostart(true);
+    }
     let config_home = config_home()?;
     let executable = executable_path()?;
     enable_at(&config_home, &executable)
@@ -153,8 +162,37 @@ pub fn enable() -> Result<(), AutostartError> {
 
 /// Succeeds when the entry is missing.
 pub fn disable() -> Result<(), AutostartError> {
+    if kestrel_platform::sandbox::flatpak() {
+        return request_portal_autostart(false);
+    }
     let config_home = config_home()?;
     disable_at(&config_home)
+}
+
+fn request_portal_autostart(enable: bool) -> Result<(), AutostartError> {
+    kestrel_platform::sandbox::request_autostart(enable)
+        .map_err(|message| AutostartError::Portal { message })
+}
+
+/// Why autostart cannot change here, when it cannot.
+///
+/// The answer is read once: the sandbox and the portal are fixed for the
+/// process lifetime, and the UI asks on every refresh.
+pub fn unavailable_reason() -> Option<String> {
+    static REASON: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(|| {
+        unavailable_reason_for(
+            kestrel_platform::sandbox::flatpak(),
+            kestrel_platform::sandbox::background_portal(),
+        )
+    });
+    REASON.clone()
+}
+
+fn unavailable_reason_for(sandboxed: bool, background_portal: bool) -> Option<String> {
+    (sandboxed && !background_portal).then(|| {
+        "Autostart needs the desktop's Background portal, which this session does not export."
+            .to_owned()
+    })
 }
 
 fn config_home() -> Result<PathBuf, AutostartError> {
@@ -338,7 +376,7 @@ fn create_temporary_file(parent: &Path, target: &Path) -> Result<(PathBuf, File)
 mod tests {
     use super::{
         AutostartError, DESKTOP_FILE_NAME, autostart_path_in, disable_at, enable_at,
-        enable_for_config_home,
+        enable_for_config_home, unavailable_reason_for,
     };
     use std::{
         fs,
@@ -454,5 +492,13 @@ mod tests {
                 .join(DESKTOP_FILE_NAME)
                 .exists()
         );
+    }
+
+    #[test]
+    fn sandboxed_autostart_needs_the_background_portal() {
+        assert!(unavailable_reason_for(false, false).is_none());
+        assert!(unavailable_reason_for(false, true).is_none());
+        assert!(unavailable_reason_for(true, true).is_none());
+        assert!(unavailable_reason_for(true, false).is_some());
     }
 }
