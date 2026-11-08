@@ -358,6 +358,8 @@ fn run_pin_worker(
                 pending = None;
                 deadline = None;
                 needs_load = false;
+                // An unmerged read must not bring back the pins being deleted.
+                set_loaded(&loaded, None);
                 let report = wipe(&path, key_store.as_ref(), &status);
                 let _ = response.send(report);
             }

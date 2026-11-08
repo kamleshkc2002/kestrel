@@ -4469,6 +4469,14 @@ mod tests {
         assert_eq!(loaded[0].text(), "first saved");
         assert_eq!(loaded[1].text(), "second saved");
         assert_eq!(second.status().saved_count, 2);
+
+        // Commands run in order, so this read finishes before the wipe starts.
+        second.request_load();
+        second.wipe().expect("wipe succeeds");
+        assert!(
+            second.take_loaded().is_none(),
+            "a wipe must drop an unmerged read of the deleted pins"
+        );
         second.shutdown();
     }
 
