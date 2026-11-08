@@ -37,7 +37,7 @@ The autostart entry is the one file outside these folders: it lives in
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
 | Clipboard image export | The file you choose in Save as | The retained image, as a PNG, written through a hidden temporary beside it and renamed once complete | Your umask | The clipboard image limit (`clipboard.max_image_bytes`, 64 MiB at most) | You |
-| Saved clipboard pins | `clipboard-pins.bin` in the data folder | Pinned **text** entries, encrypted with XChaCha20-Poly1305; the 256-bit key is a Secret Service item in your default collection with `application` and `purpose=clipboard-store` attributes, and the file is a magic and version header, a fresh nonce per write, and the ciphertext of a versioned list. No plaintext and no key file | 0600 file, 0700 folder, replaced atomically | At most the global clipboard count, per-entry, and total-byte bounds, and `clipboard.pinned_max_age_days` (1–365, default 90); unlimited retention is rejected | Delete saved pins, turning the switch off and choosing delete, or a history wipe |
+| Saved clipboard pins | `clipboard-pins.bin` in the data folder | Pinned **text** entries, encrypted with XChaCha20-Poly1305; the 256-bit key is a Secret Service item in your default collection with `application` and `purpose=clipboard-store` attributes, and the file is a magic and version header, a fresh nonce per write, and the ciphertext of length-prefixed records (pin time, byte length, text). No plaintext and no key file | 0600 file, 0700 folder, replaced atomically | At most the global clipboard count, per-entry, and total-byte bounds, and `clipboard.pinned_max_age_days` (1–365, default 90); unlimited retention is rejected | Delete saved pins, turning the switch off and choosing delete, or a history wipe |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
 | Settings export | The file you choose in Settings → Export | Your settings as TOML, the same contents as `config.toml`, including any command-bar file roots and scripts | Your umask | None | You |
 
@@ -110,7 +110,8 @@ the matching unlock or resume, so a session that starts locked decrypts nothing 
 unlocked. Deleting the key while held still works.
 
 **Documented limits.** Zeroization covers memory, not swap or core dumps, so encrypt swap if
-that matters to you. A backup of the data folder contains only ciphertext; the key is not in the
+that matters to you. Saving and loading size every buffer that holds pin text exactly, so none
+is reallocated and each is wiped when dropped. A backup of the data folder contains only ciphertext; the key is not in the
 backup unless your keyring is. `unlink` on SSD and copy-on-write filesystems cannot guarantee
 that blocks are erased, which is why deleting the key is part of the wipe.
 Diagnostics and logs record counts and states only, never clipboard content, paths, or key

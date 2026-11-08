@@ -1,7 +1,7 @@
 //! Encrypted, atomic storage for pinned clipboard text.
 //!
 //! The file is a magic and version header, a fresh nonce, and the
-//! XChaCha20-Poly1305 ciphertext of a versioned list. Plaintext buffers are
+//! XChaCha20-Poly1305 ciphertext of length-prefixed records. Plaintext buffers are
 //! zeroized after use, and any truncated, corrupt, re-keyed, or unknown
 //! version is reported without exposing partial content.
 
@@ -18,7 +18,6 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, Payload},
 };
-use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::secret_service::PinKey;
@@ -52,6 +51,14 @@ impl SavedPin {
         }
     }
 
+    /// Wraps text that is already in a wiping buffer, without copying it.
+    pub fn from_zeroizing(text: Zeroizing<String>, pinned_at_unix: u64) -> Self {
+        Self {
+            text,
+            pinned_at_unix,
+        }
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -72,17 +79,11 @@ impl fmt::Debug for SavedPin {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct PinDocument {
-    version: u8,
-    pins: Vec<PinRecord>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct PinRecord {
-    text: String,
-    pinned_at_unix: u64,
-}
+// Plaintext payload: a u32 record count, then per record a u64 pin time, a
+// u32 UTF-8 byte length, and the bytes; all integers little-endian. Lengths
+// are exact, so encoding and decoding never reallocate a buffer holding text.
+const COUNT_LEN: usize = 4;
+const RECORD_HEADER_LEN: usize = 8 + 4;
 
 /// Why saved pins could not be read or written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,18 +157,22 @@ pub fn pins_file_present(path: &Path) -> bool {
 
 /// Encrypts `pins` into complete file contents.
 fn encode(key: &PinKey, pins: &[SavedPin]) -> Result<Zeroizing<Vec<u8>>, PinStoreError> {
-    let document = PinDocument {
-        version: FORMAT_VERSION,
-        pins: pins
-            .iter()
-            .map(|pin| PinRecord {
-                text: pin.text().to_owned(),
-                pinned_at_unix: pin.pinned_at_unix,
-            })
-            .collect(),
-    };
-    let plaintext =
-        Zeroizing::new(serde_json::to_vec(&document).map_err(|_| PinStoreError::Unreadable)?);
+    let count = u32::try_from(pins.len()).map_err(|_| PinStoreError::Unreadable)?;
+    let capacity = pins.iter().try_fold(COUNT_LEN, |total, pin| {
+        total
+            .checked_add(RECORD_HEADER_LEN)?
+            .checked_add(pin.text().len())
+    });
+    let mut plaintext = Zeroizing::new(Vec::with_capacity(
+        capacity.ok_or(PinStoreError::Unreadable)?,
+    ));
+    plaintext.extend_from_slice(&count.to_le_bytes());
+    for pin in pins {
+        let length = u32::try_from(pin.text().len()).map_err(|_| PinStoreError::Unreadable)?;
+        plaintext.extend_from_slice(&pin.pinned_at_unix.to_le_bytes());
+        plaintext.extend_from_slice(&length.to_le_bytes());
+        plaintext.extend_from_slice(pin.text().as_bytes());
+    }
     let mut header = [0u8; HEADER_LEN];
     header[..MAGIC.len()].copy_from_slice(MAGIC);
     header[MAGIC.len()] = FORMAT_VERSION;
@@ -219,16 +224,45 @@ fn decode(key: &PinKey, bytes: &[u8]) -> Result<Vec<SavedPin>, PinStoreError> {
             )
             .map_err(|_| PinStoreError::Unreadable)?,
     );
-    let document: PinDocument =
-        serde_json::from_slice(&plaintext).map_err(|_| PinStoreError::Unreadable)?;
-    if document.version != FORMAT_VERSION {
-        return Err(PinStoreError::UnsupportedVersion);
+    decode_records(&plaintext)
+}
+
+/// Parses the plaintext payload; any inconsistency is `Unreadable`.
+fn decode_records(plaintext: &[u8]) -> Result<Vec<SavedPin>, PinStoreError> {
+    let (count, mut rest) = plaintext
+        .split_first_chunk::<COUNT_LEN>()
+        .ok_or(PinStoreError::Unreadable)?;
+    let count = u32::from_le_bytes(*count) as usize;
+    // Each record needs at least its header, which bounds the allocation.
+    if count > rest.len() / RECORD_HEADER_LEN {
+        return Err(PinStoreError::Unreadable);
     }
-    Ok(document
-        .pins
-        .into_iter()
-        .map(|pin| SavedPin::new(pin.text, pin.pinned_at_unix))
-        .collect())
+    let mut pins = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (pinned_at, after_time) = rest
+            .split_first_chunk::<8>()
+            .ok_or(PinStoreError::Unreadable)?;
+        let (length, after_length) = after_time
+            .split_first_chunk::<4>()
+            .ok_or(PinStoreError::Unreadable)?;
+        let length = u32::from_le_bytes(*length) as usize;
+        if length > after_length.len() {
+            return Err(PinStoreError::Unreadable);
+        }
+        let (bytes, remaining) = after_length.split_at(length);
+        let text = std::str::from_utf8(bytes).map_err(|_| PinStoreError::Unreadable)?;
+        let mut owned = Zeroizing::new(String::with_capacity(length));
+        owned.push_str(text);
+        pins.push(SavedPin::from_zeroizing(
+            owned,
+            u64::from_le_bytes(*pinned_at),
+        ));
+        rest = remaining;
+    }
+    if !rest.is_empty() {
+        return Err(PinStoreError::Unreadable);
+    }
+    Ok(pins)
 }
 
 fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -284,8 +318,8 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::{
-        PinStoreError, SavedPin, decode, delete_pins, encode, pins_file_present, read_pins,
-        write_pins,
+        PinStoreError, SavedPin, decode, decode_records, delete_pins, encode, pins_file_present,
+        read_pins, write_pins,
     };
     use crate::secret_service::{PIN_KEY_BYTES, PinKey};
 
@@ -297,6 +331,11 @@ mod tests {
         vec![
             SavedPin::new("first secret", 1_700_000_000),
             SavedPin::new("second value", 1_700_000_100),
+            SavedPin::new(
+                "\"quoted\" \\ back\nline\ttab\u{0}nul\u{1b}[0m é 🦅",
+                1_700_000_200,
+            ),
+            SavedPin::new("", u64::MAX),
         ]
     }
 
@@ -311,9 +350,12 @@ mod tests {
                 .any(|window| window == b"first secret")
         );
         let decoded = decode(&key, &encoded).expect("decryption succeeds");
-        assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0].text(), "first secret");
-        assert_eq!(decoded[1].pinned_at_unix(), 1_700_000_100);
+        let original = pins();
+        assert_eq!(decoded.len(), original.len());
+        for (decoded, original) in decoded.iter().zip(&original) {
+            assert_eq!(decoded.text(), original.text());
+            assert_eq!(decoded.pinned_at_unix(), original.pinned_at_unix());
+        }
         assert_eq!(format!("{:?}", decoded[0]), "SavedPin(..)");
     }
 
@@ -337,6 +379,42 @@ mod tests {
             decode(&key(3), &unknown).err(),
             Some(PinStoreError::UnsupportedVersion)
         );
+
+        let record = |time: u64, length: u32, bytes: &[u8]| {
+            let mut record = time.to_le_bytes().to_vec();
+            record.extend_from_slice(&length.to_le_bytes());
+            record.extend_from_slice(bytes);
+            record
+        };
+        let payload = |count: u32, records: &[Vec<u8>]| {
+            let mut payload = count.to_le_bytes().to_vec();
+            for record in records {
+                payload.extend_from_slice(record);
+            }
+            payload
+        };
+        assert_eq!(
+            decode_records(&payload(0, &[])).map(|pins| pins.len()),
+            Ok(0)
+        );
+        for (label, malformed) in [
+            ("no count", Vec::new()),
+            ("count beyond the payload", payload(u32::MAX, &[])),
+            ("missing record", payload(2, &[record(1, 2, b"ok")])),
+            ("length past the end", payload(1, &[record(1, 9, b"short")])),
+            ("invalid UTF-8", payload(1, &[record(1, 2, &[0xff, 0xfe])])),
+            ("trailing bytes", {
+                let mut extra = payload(1, &[record(1, 2, b"ok")]);
+                extra.push(0);
+                extra
+            }),
+        ] {
+            assert_eq!(
+                decode_records(&malformed).err(),
+                Some(PinStoreError::Unreadable),
+                "{label}"
+            );
+        }
     }
 
     #[test]
