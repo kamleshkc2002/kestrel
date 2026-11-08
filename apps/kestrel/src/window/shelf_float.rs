@@ -13,7 +13,7 @@ use std::{
 
 use adw::prelude::*;
 use async_channel::Sender;
-use gtk::{Orientation, accessible::Property, cairo, gdk, glib};
+use gtk::{Orientation, accessible::Property, gdk, glib};
 use kestrel::{ApplicationCommand, view_model::ShelfViewModel};
 
 use super::shelf::{ShelfDragEvent, ShelfDragHook, attach_shelf_drop_target, build_shelf_entries};
@@ -33,7 +33,7 @@ pub(crate) enum DragDismissAction {
     Cancel,
     /// Start the dismissal delay.
     Schedule,
-    /// Hide without unmapping, so the drag keeps its source.
+    /// Unmap until the drag ends; the drag keeps its data source.
     Hide,
     /// The drag is over; destroy the surface.
     Close,
@@ -332,10 +332,8 @@ fn start_timer(
         let Some(window) = window.upgrade() else {
             return;
         };
-        window.set_opacity(0.0);
-        if let Some(surface) = window.surface() {
-            surface.set_input_region(Some(&cairo::Region::create()));
-        }
+        // The drag keeps its data source after the origin surface unmaps; drag-end closes it.
+        window.set_visible(false);
     });
     dismiss_timer.borrow_mut().replace(id);
 }
