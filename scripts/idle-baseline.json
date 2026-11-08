@@ -1,6 +1,6 @@
 {
-  "cpu": "12th Gen Intel(R) Core(TM) i9-12900HX",
-  "session": "headless Sway (WLR_BACKENDS=headless, WLR_RENDERER=pixman)",
+  "cpu": "GitHub Actions ubuntu-24.04 runner (quality-and-test job)",
+  "session": "headless Sway (WLR_BACKENDS=headless, WLR_RENDERER=pixman), debug build, no logind",
   "seconds": 20,
   "margins": {
     "wakeups_percent": 50,
@@ -11,55 +11,55 @@
       "preset": "essentials",
       "window": "open",
       "seconds": 20,
-      "cpu_percent": 2.60,
-      "wakeups_per_second": 8.15,
-      "rss_kib": 419444,
-      "threads": 81
+      "cpu_percent": 1.20,
+      "wakeups_per_second": 7.90,
+      "rss_kib": 300452,
+      "threads": 20
     },
     {
       "preset": "essentials",
       "window": "closed",
       "seconds": 20,
-      "cpu_percent": 1.45,
-      "wakeups_per_second": 8.45,
-      "rss_kib": 420928,
-      "threads": 81
+      "cpu_percent": 0.75,
+      "wakeups_per_second": 14.20,
+      "rss_kib": 299648,
+      "threads": 20
     },
     {
       "preset": "balanced",
       "window": "open",
       "seconds": 20,
-      "cpu_percent": 12.20,
-      "wakeups_per_second": 15.25,
-      "rss_kib": 430600,
-      "threads": 84
+      "cpu_percent": 7.10,
+      "wakeups_per_second": 18.25,
+      "rss_kib": 306752,
+      "threads": 22
     },
     {
       "preset": "balanced",
       "window": "closed",
       "seconds": 20,
-      "cpu_percent": 6.45,
-      "wakeups_per_second": 15.85,
-      "rss_kib": 429564,
-      "threads": 85
+      "cpu_percent": 3.30,
+      "wakeups_per_second": 21.00,
+      "rss_kib": 304328,
+      "threads": 22
     },
     {
       "preset": "everything",
       "window": "open",
       "seconds": 20,
-      "cpu_percent": 15.65,
-      "wakeups_per_second": 113.65,
-      "rss_kib": 431024,
-      "threads": 85
+      "cpu_percent": 7.10,
+      "wakeups_per_second": 18.55,
+      "rss_kib": 306824,
+      "threads": 22
     },
     {
       "preset": "everything",
       "window": "closed",
       "seconds": 20,
-      "cpu_percent": 9.65,
-      "wakeups_per_second": 116.60,
-      "rss_kib": 430980,
-      "threads": 85
+      "cpu_percent": 3.25,
+      "wakeups_per_second": 20.95,
+      "rss_kib": 304504,
+      "threads": 22
     }
   ]
 }

@@ -297,7 +297,7 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 
 ## Idle cost
 
-`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%.
+`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the CI session has no logind, so clipboard history does not run there. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
 
 Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer:
 
