@@ -886,25 +886,27 @@ impl ClipboardHistoryService {
             }
         }
         let mut privacy_watch = false;
-        if let Ok(Some(mut watch)) = privacy.take_watch() {
-            let sender = sender.clone();
-            let cancel = watch.cancel_handle();
-            match thread::Builder::new()
-                .name("kestrel-clipboard-privacy".to_string())
-                .spawn(move || {
-                    if !watch.run(&mut || sender.send(WorkerCommand::PrivacyChanged).is_ok()) {
-                        let _ = sender.send(WorkerCommand::PrivacyWatchFailed);
+        if let Ok(privacy_watches) = privacy.take_watches() {
+            for mut watch in privacy_watches {
+                let sender = sender.clone();
+                let cancel = watch.cancel_handle();
+                match thread::Builder::new()
+                    .name("kestrel-clipboard-privacy".to_string())
+                    .spawn(move || {
+                        if !watch.run(&mut || sender.send(WorkerCommand::PrivacyChanged).is_ok()) {
+                            let _ = sender.send(WorkerCommand::PrivacyWatchFailed);
+                        }
+                    }) {
+                    Ok(handle) => {
+                        watches.push(WatchJoin { cancel, handle });
+                        privacy_watch = true;
                     }
-                }) {
-                Ok(handle) => {
-                    watches.push(WatchJoin { cancel, handle });
-                    privacy_watch = true;
-                }
-                Err(error) => {
-                    log::warn!(
-                        target: kestrel_platform::clipboard::FEATURE_ID,
-                        "clipboard privacy watch thread failed to start: {error}"
-                    );
+                    Err(error) => {
+                        log::warn!(
+                            target: kestrel_platform::clipboard::FEATURE_ID,
+                            "clipboard privacy watch thread failed to start: {error}"
+                        );
+                    }
                 }
             }
         }

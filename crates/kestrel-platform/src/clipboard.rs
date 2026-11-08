@@ -15,7 +15,6 @@ use std::{
 };
 
 use arboard::Clipboard;
-use futures_lite::{StreamExt, future};
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 use wl_clipboard_rs::{
     copy::{
@@ -38,7 +37,10 @@ use x11rb::{
 };
 use zbus::{
     MatchRule,
-    blocking::{Connection as BusConnection, Proxy, connection::Builder as BusConnectionBuilder},
+    blocking::{
+        Connection as BusConnection, MessageIterator, Proxy,
+        connection::Builder as BusConnectionBuilder,
+    },
     message::Type as MessageType,
     zvariant::{OwnedObjectPath, OwnedValue},
 };
@@ -1010,10 +1012,10 @@ fn drain_event_fd(fd: RawFd) {
 pub trait PrivacyEventSource: Send + 'static {
     fn poll_events(&mut self) -> Result<Vec<SessionPrivacyEvent>, ClipboardError>;
 
-    /// Takes a blocking trigger for session state changes when the bus reports
+    /// Takes blocking triggers for session state changes when the bus reports
     /// them. Polling remains the fallback.
-    fn take_watch(&mut self) -> Result<Option<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
-        Ok(None)
+    fn take_watches(&mut self) -> Result<Vec<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
+        Ok(Vec::new())
     }
 }
 
@@ -1066,10 +1068,11 @@ impl PrivacyEventSource for LogindPrivacyMonitor {
         Ok(events)
     }
 
-    fn take_watch(&mut self) -> Result<Option<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
-        Ok(Some(Box::new(LogindPrivacyWatch::new(
-            self.session_path.clone(),
-        )?)))
+    fn take_watches(&mut self) -> Result<Vec<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
+        Ok(vec![
+            Box::new(LogindPrivacyWatch::new(self.session_path.clone())?),
+            Box::new(LogindOwnerWatch::new()?),
+        ])
     }
 }
 
@@ -1120,62 +1123,80 @@ impl LogindPrivacyWatch {
     }
 }
 
-enum PrivacyStreamEvent {
-    Logind(Option<Result<zbus::Message, zbus::Error>>),
-    Owner(Option<Result<zbus::Message, zbus::Error>>),
-}
-
 impl PrivacyChangeWatch for LogindPrivacyWatch {
     fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool {
-        let Ok(login_rule) = privacy_match_rule() else {
+        let Ok(rule) = privacy_match_rule() else {
             return false;
         };
-        let Ok(owner_rule) = logind_owner_match_rule() else {
+        let Ok(messages) = MessageIterator::for_match_rule(rule, &self.connection, Some(32)) else {
             return false;
         };
-        let setup = async_io::block_on(async {
-            let login =
-                zbus::MessageStream::for_match_rule(login_rule, self.connection.inner(), Some(32))
-                    .await?;
-            let owner =
-                zbus::MessageStream::for_match_rule(owner_rule, self.connection.inner(), Some(8))
-                    .await?;
-            Ok::<_, zbus::Error>((login, owner))
-        });
-        let Ok((mut login, mut owner)) = setup else {
-            return false;
-        };
-        // Read the current state once the rules exist so a change during
-        // startup is not missed between the worker's first poll and the rules.
+        // Read the current state once the rule exists so a change during
+        // startup is not missed between the worker's first poll and the rule.
         if !changed() {
             return true;
         }
-        loop {
-            let event = async_io::block_on(future::race(
-                async { PrivacyStreamEvent::Logind(login.next().await) },
-                async { PrivacyStreamEvent::Owner(owner.next().await) },
-            ));
-            match event {
-                PrivacyStreamEvent::Logind(Some(Ok(message))) => {
-                    if self.matches(&message) && !changed() {
-                        return true;
-                    }
-                }
-                PrivacyStreamEvent::Owner(Some(Ok(message))) => {
-                    let Some(lost) = logind_owner_lost(&message) else {
-                        continue;
-                    };
-                    if lost {
-                        return false;
-                    }
-                    // A new owner replaced the old one; read it once more.
-                    if !changed() {
-                        return true;
-                    }
-                }
-                PrivacyStreamEvent::Logind(_) | PrivacyStreamEvent::Owner(_) => return false,
+        for message in messages {
+            let Ok(message) = message else {
+                return false;
+            };
+            if self.matches(&message) && !changed() {
+                return true;
             }
         }
+        false
+    }
+
+    fn cancel_handle(&self) -> ChangeWatchCancel {
+        let shutdown = self.shutdown.clone();
+        ChangeWatchCancel::new(move || {
+            let connection = shutdown.clone();
+            let _ = async_io::block_on(connection.close());
+        })
+    }
+}
+
+/// Reports when logind leaves the bus, so history can fail closed.
+struct LogindOwnerWatch {
+    connection: BusConnection,
+    shutdown: zbus::Connection,
+}
+
+impl LogindOwnerWatch {
+    fn new() -> Result<Self, ClipboardError> {
+        let connection = BusConnectionBuilder::system()
+            .map_err(privacy_error)?
+            .method_timeout(PRIVACY_METHOD_TIMEOUT)
+            .build()
+            .map_err(privacy_error)?;
+        let shutdown = connection.inner().clone();
+        Ok(Self {
+            connection,
+            shutdown,
+        })
+    }
+}
+
+impl PrivacyChangeWatch for LogindOwnerWatch {
+    fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool {
+        let Ok(rule) = logind_owner_match_rule() else {
+            return false;
+        };
+        let Ok(messages) = MessageIterator::for_match_rule(rule, &self.connection, Some(8)) else {
+            return false;
+        };
+        for message in messages {
+            let Ok(message) = message else {
+                return false;
+            };
+            match logind_owner_lost(&message) {
+                Some(true) => return false,
+                // A new owner replaced the old one; read it once more.
+                Some(false) if !changed() => return true,
+                _ => {}
+            }
+        }
+        false
     }
 
     fn cancel_handle(&self) -> ChangeWatchCancel {
