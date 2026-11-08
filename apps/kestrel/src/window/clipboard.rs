@@ -122,7 +122,16 @@ pub(super) fn build_clipboard_panel(
     group.add(&status_row);
 
     let counts = Rc::new(Cell::new(ClearCounts::default()));
-    let action_box = gtk::Box::new(Orientation::Horizontal, 6);
+    // Three actions share one line in a wide window and wrap one per line in a
+    // narrow one, so the row never sets the page's minimum width.
+    let action_box = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .min_children_per_line(1)
+        .max_children_per_line(3)
+        .homogeneous(false)
+        .build();
     let clear = gtk::Button::with_label("Clear selection");
     clear.set_valign(Align::Center);
     clear.set_tooltip_text(Some("Clear the live clipboard; retained entries stay"));

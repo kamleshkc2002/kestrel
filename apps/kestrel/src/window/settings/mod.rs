@@ -700,7 +700,16 @@ fn add_general_rows(
     ));
     group.add(&autostart);
 
-    let presets = gtk::Box::new(Orientation::Horizontal, 6);
+    // Four actions share one line in a wide window and wrap in a narrow one,
+    // so the row never sets the page's minimum width.
+    let presets = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .min_children_per_line(1)
+        .max_children_per_line(4)
+        .homogeneous(false)
+        .build();
     for (label, preset) in [
         ("Essentials", kestrel::FeaturePreset::Essentials),
         ("Balanced", kestrel::FeaturePreset::Balanced),
