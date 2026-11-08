@@ -52,7 +52,9 @@ pub enum PinStoreState {
     Locked,
     /// The file is truncated, corrupt, or encrypted with another key.
     Unreadable,
-    /// The file could not be read or written.
+    /// The store could not be read because its file was inaccessible.
+    ReadFailed,
+    /// The file could not be written.
     Failed,
 }
 
@@ -112,6 +114,7 @@ pub enum PinSaveState {
     StoreUnavailable,
     StoreLocked,
     StoreUnreadable,
+    StoreReadFailed,
     StoreFailed,
 }
 
@@ -129,6 +132,7 @@ impl PinSaveState {
             Self::StoreUnavailable => "Not saved: no keyring is available",
             Self::StoreLocked => "Not saved: the keyring is locked",
             Self::StoreUnreadable => "Not saved: saved pins could not be read",
+            Self::StoreReadFailed => "Not saved: the saved-pins file could not be read",
             Self::StoreFailed => "Not saved: the store could not be written",
         }
     }
@@ -369,7 +373,7 @@ fn load(path: &std::path::Path, key_store: &dyn PinKeyStore) -> LoadOutcome {
         Ok(Some(key)) => key,
         // A file without its key cannot be decrypted; treat it like key loss.
         Ok(None) => return LoadOutcome::Unavailable(PinStoreState::Unreadable),
-        Err(error) => return LoadOutcome::Unavailable(key_state(error)),
+        Err(error) => return LoadOutcome::Unavailable(read_key_state(error)),
     };
     match pin_store::read_pins(path, &key) {
         Ok(Some(pins)) => LoadOutcome::Loaded(pins),
@@ -377,7 +381,7 @@ fn load(path: &std::path::Path, key_store: &dyn PinKeyStore) -> LoadOutcome {
         Err(PinStoreError::Unreadable | PinStoreError::UnsupportedVersion) => {
             LoadOutcome::Unavailable(PinStoreState::Unreadable)
         }
-        Err(_) => LoadOutcome::Unavailable(PinStoreState::Failed),
+        Err(_) => LoadOutcome::Unavailable(PinStoreState::ReadFailed),
     }
 }
 
@@ -456,6 +460,14 @@ fn key_state(error: PinKeyError) -> PinStoreState {
         PinKeyError::Unavailable => PinStoreState::Unavailable,
         PinKeyError::Locked => PinStoreState::Locked,
         PinKeyError::Failed => PinStoreState::Failed,
+    }
+}
+
+fn read_key_state(error: PinKeyError) -> PinStoreState {
+    match error {
+        PinKeyError::Unavailable => PinStoreState::Unavailable,
+        PinKeyError::Locked => PinStoreState::Locked,
+        PinKeyError::Failed => PinStoreState::ReadFailed,
     }
 }
 

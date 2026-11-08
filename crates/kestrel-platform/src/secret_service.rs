@@ -194,8 +194,9 @@ impl PinKeyStore for SecretServiceKeyStore {
                     ITEM_INTERFACE,
                 )
                 .map_err(classify)?;
-                let secret: (OwnedObjectPath, Vec<u8>, Vec<u8>, String) =
-                    item.get_property("Secret").map_err(classify)?;
+                let secret: (OwnedObjectPath, Vec<u8>, Vec<u8>, String) = item
+                    .call("GetSecret", &(session.clone(),))
+                    .map_err(classify)?;
                 let (secret_session, _parameters, value, _content_type) = secret;
                 // A plain session returns the bytes as stored; another session
                 // means the service transformed them and they are unusable.
@@ -319,5 +320,35 @@ mod tests {
         let first = PinKey::generate().expect("operating-system randomness");
         let second = PinKey::generate().expect("operating-system randomness");
         assert_ne!(first.expose(), second.expose());
+    }
+
+    #[test]
+    fn real_secret_service_round_trip() {
+        if std::env::var("KESTREL_SECRET_SERVICE_TEST").as_deref() != Ok("1") {
+            return;
+        }
+        use super::{PinKeyStore, SecretServiceKeyStore};
+
+        let store = match SecretServiceKeyStore::connect() {
+            Ok(store) => store,
+            Err(error) => panic!("connect failed: {error:?}"),
+        };
+        let _ = store.delete();
+        let created = match store.create() {
+            Ok(key) => key,
+            Err(error) => panic!("create failed: {error:?}"),
+        };
+        let second = match SecretServiceKeyStore::connect() {
+            Ok(store) => store,
+            Err(error) => panic!("second connect failed: {error:?}"),
+        };
+        let loaded = match second.get() {
+            Ok(Some(key)) => key,
+            Ok(None) => panic!("the created item was not found"),
+            Err(error) => panic!("get failed: {error:?}"),
+        };
+        assert_eq!(created.expose(), loaded.expose());
+        assert_eq!(second.delete(), Ok(true));
+        assert!(second.get().expect("get after delete").is_none());
     }
 }

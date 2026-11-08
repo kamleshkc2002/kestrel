@@ -340,6 +340,11 @@ fn clipboard_pin_store(
                 ),
                 true,
             ),
+            PinStoreState::ReadFailed => (
+                "Saved pins could not be read.".to_owned(),
+                Some("Check that the data folder and the saved-pins file are readable.".to_owned()),
+                false,
+            ),
             PinStoreState::Failed => (
                 "Saved pins could not be saved.".to_owned(),
                 Some(

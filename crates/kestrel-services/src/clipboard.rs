@@ -1416,6 +1416,7 @@ impl HistoryStore {
             PinStoreState::Unavailable => PinSaveState::StoreUnavailable,
             PinStoreState::Locked => PinSaveState::StoreLocked,
             PinStoreState::Unreadable => PinSaveState::StoreUnreadable,
+            PinStoreState::ReadFailed => PinSaveState::StoreReadFailed,
             PinStoreState::Failed => PinSaveState::StoreFailed,
             PinStoreState::Disabled => PinSaveState::PersistenceOff,
         }
@@ -2664,7 +2665,9 @@ mod tests {
         SessionPrivacyEvent,
     };
     use kestrel_platform::pin_store::{self, SavedPin};
-    use kestrel_platform::secret_service::{PIN_KEY_BYTES, PinKey, PinKeyError, PinKeyStore};
+    use kestrel_platform::secret_service::{
+        PIN_KEY_BYTES, PinKey, PinKeyError, PinKeyStore, SecretServiceKeyStore,
+    };
 
     use super::{
         ClipboardCommand, ClipboardHistoryService, ClipboardLifecycle, ClipboardPolicy,
@@ -4559,6 +4562,43 @@ mod tests {
             PinSaveState::StoreUnavailable
         );
         service.stop();
+    }
+
+    #[test]
+    fn real_keyring_save_and_reload_with_a_new_instance() {
+        if std::env::var("KESTREL_SECRET_SERVICE_TEST").as_deref() != Ok("1") {
+            return;
+        }
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(SecretServiceKeyStore::connect().expect("secret service connects"));
+        let _ = store.delete();
+        let shared: Arc<dyn PinKeyStore> = store;
+        let first = PinPersistence::start(path.clone(), shared).expect("pin worker starts");
+        wait_until(|| first.status().state == PinStoreState::Idle);
+        first.save(vec![SavedPin::new(
+            "secret note 42 for pinning",
+            super::unix_seconds(),
+        )]);
+        wait_until(|| first.status().state == PinStoreState::Saved && path.exists());
+        first.shutdown();
+
+        let second_store: Arc<dyn PinKeyStore> =
+            Arc::new(SecretServiceKeyStore::connect().expect("secret service reconnects"));
+        let second = PinPersistence::start(path, second_store).expect("pin worker starts");
+        let mut loaded = None;
+        wait_until(|| {
+            if let Some(pins) = second.take_loaded() {
+                loaded = Some(pins);
+                true
+            } else {
+                false
+            }
+        });
+        let loaded = loaded.expect("a load completed");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].text(), "secret note 42 for pinning");
+        second.shutdown();
     }
 
     #[test]
