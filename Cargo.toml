@@ -6,3 +6,9 @@ members = [
     "crates/kestrel-services",
 ]
 resolver = "2"
+
+# Incremental caches make up most of a debug target directory; full rebuilds
+# of a changed crate cost a few seconds more. `CARGO_INCREMENTAL=1` turns them
+# back on for one command.
+[profile.dev]
+incremental = false
