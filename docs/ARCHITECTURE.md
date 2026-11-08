@@ -377,6 +377,9 @@ while a paste waits. A backend that cannot bind a watch keeps the 250 ms read
 loop, and the snapshot carries `ClipboardWatchMode::{Events, Polling}` so the
 Clipboard page can say which one is active. The stop request travels through the
 worker's channel, so a blocked wait wakes immediately and the thread joins.
+Each wait lasts at most until the nearest real deadline — the automatic
+selection clear, the oldest entry's retention expiry, a pin load retry, or the
+next paste-staging step — with a 60-second safety cap for slower maintenance.
 
 Session privacy is unchanged from the retention contract: lock, sleep, service
 stop, shutdown, and wipe drop every retained entry (pinned entries included) and

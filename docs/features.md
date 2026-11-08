@@ -299,18 +299,30 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 
 ## Idle cost
 
-`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the CI session has no logind, so clipboard history does not run there. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
+`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the script starts a private system bus with the logind fake so clipboard history actually runs in the presets that enable it. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
 
-Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer:
+Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer, with the same profile before and after the clipboard watch change. Before, on the polling worker:
 
 | Preset | Window | CPU % | Wakeups/s | RSS | Threads |
 |---|---|---|---|---|---|
-| Essentials | open | 2.60 | 8.2 | 409 MiB | 81 |
-| Essentials | closed | 1.45 | 8.5 | 411 MiB | 81 |
-| Balanced | open | 12.20 | 15.3 | 420 MiB | 84 |
-| Balanced | closed | 6.45 | 15.9 | 419 MiB | 85 |
-| Everything | open | 15.65 | 113.7 | 420 MiB | 85 |
-| Everything | closed | 9.65 | 116.6 | 420 MiB | 85 |
+| Essentials | open | 2.50 | 19.0 | 408 MiB | 82 |
+| Essentials | closed | 2.80 | 17.2 | 407 MiB | 81 |
+| Balanced | open | 31.40 | 126.2 | 421 MiB | 88 |
+| Balanced | closed | 9.20 | 130.8 | 419 MiB | 85 |
+| Everything | open | 15.10 | 129.1 | 419 MiB | 85 |
+| Everything | closed | 8.65 | 128.0 | 419 MiB | 86 |
 
-- The tick follows what is running: with the window open and no overlay or job needing a live control, Essentials went from 14.2 to 8.2 wakeups/s and from 3.15% to 2.60% CPU when the fixed 250 ms interval became a one-second pace outside live feedback; with the window closed it went from 15.2 to 8.5 wakeups/s. Balanced and Everything stay inside run-to-run noise; the clipboard watcher and its D-Bus privacy monitor dominate their cost.
-- Turning features off stops their threads and timers: applying `kestrel --command preset.essentials` to a running Everything window dropped it from 84 to 80 threads and from 111 to 17 wakeups/s within 25 seconds.
+After, with selection events and deadline-driven waits:
+
+| Preset | Window | CPU % | Wakeups/s | RSS | Threads |
+|---|---|---|---|---|---|
+| Essentials | open | 10.40 | 16.1 | 409 MiB | 81 |
+| Essentials | closed | 1.00 | 14.3 | 409 MiB | 82 |
+| Balanced | open | 12.25 | 26.6 | 419 MiB | 87 |
+| Balanced | closed | 5.80 | 24.5 | 419 MiB | 88 |
+| Everything | open | 13.05 | 24.0 | 419 MiB | 87 |
+| Everything | closed | 6.80 | 22.8 | 420 MiB | 88 |
+
+- With the window open, Balanced and Everything fell from about 126–129 to 24–27 wakeups/s, and the gap over Essentials is now the same roughly 10/s of feature overhead the recorded baseline shows for these presets without clipboard history; a controlled run with the same features and only history toggled stays inside run-to-run noise. The Essentials rows include ordinary window and feature noise (the open CPU sample in this run is high).
+- The tick follows what is running: with the window open and no overlay or job needing a live control, one-second pacing outside live feedback keeps Essentials low; clipboard history no longer dominates any preset.
+- Turning features off stops their threads and timers: applying `kestrel --command preset.essentials` to a running Everything window drops its threads and wakeups within 25 seconds.

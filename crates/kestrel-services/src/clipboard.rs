@@ -27,7 +27,7 @@ use kestrel_platform::secret_service::{PinKeyError, PinKeyStore};
 use kestrel_platform::snippets::InsertionBackend;
 use zeroize::Zeroizing;
 
-use crate::clipboard_pins::PinPersistence;
+use crate::clipboard_pins::{PIN_RETRY_INTERVAL, PinPersistence};
 use crate::paste::{PasteObservation, PasteOperation, PasteSettings, PasteStage};
 
 pub use crate::clipboard_pins::{
@@ -41,10 +41,9 @@ pub const DEFAULT_MAX_ITEMS: usize = 100;
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// Change events wake the worker directly, so expiry, saved-pin debounce, the
-/// automatic selection clear deadline, and the privacy backstop only need this
-/// slow pace; paste staging wakes on observations and keeps the poll interval.
-pub const DEFAULT_EVENT_INTERVAL: Duration = Duration::from_secs(5);
+/// Upper bound on a blocked event wait; real deadlines (selection clear,
+/// retention expiry, pin load retry, paste staging) schedule earlier wakes.
+pub const DEFAULT_SAFETY_INTERVAL: Duration = Duration::from_secs(60);
 pub const DEFAULT_IMAGE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub const MAX_HISTORY_ITEMS: usize = 1000;
 pub const MAX_PREVIEW_BYTES: usize = 4096;
@@ -1455,6 +1454,17 @@ impl HistoryStore {
         removed_pinned
     }
 
+    /// The earliest instant at which [`HistoryStore::prune`] drops an entry.
+    fn next_expiry(&self) -> Option<Instant> {
+        self.items
+            .iter()
+            .filter_map(|item| match item.pinned_at {
+                Some(pinned_at) => pinned_at.checked_add(self.policy.pinned_max_age),
+                None => item.captured_at.checked_add(self.policy.max_age),
+            })
+            .min()
+    }
+
     fn total_bytes(&self) -> usize {
         self.items
             .iter()
@@ -2251,11 +2261,15 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
     }
 
     /// How long the worker may block before the next timed check.
+    ///
+    /// Real deadlines win over the safety cap: the automatic selection clear,
+    /// the oldest entry's expiry, a pin load retry, and paste staging. The cap
+    /// only covers slower maintenance such as pin writes.
     fn wait_timeout(&self, now: Instant) -> Duration {
         if self.watch_mode == ClipboardWatchMode::Polling {
             return self.policy.poll_interval;
         }
-        let mut timeout = DEFAULT_EVENT_INTERVAL;
+        let mut timeout = DEFAULT_SAFETY_INTERVAL;
         if self
             .paste
             .as_ref()
@@ -2263,16 +2277,30 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         {
             timeout = timeout.min(self.policy.poll_interval);
         }
-        if let (Some(interval), Some(since)) = (self.policy.selection_clear_after, self.owned_since)
+        if let Some(deadline) = self.selection_clear_deadline() {
+            timeout = timeout.min(deadline.saturating_duration_since(now));
+        }
+        if let Some(deadline) = self.history.next_expiry() {
+            timeout = timeout.min(deadline.saturating_duration_since(now));
+        }
+        if self.policy.keep_pinned
+            && !self.pins_held
+            && (!self.pins_loaded || self.pins_dirty)
+            && self.pins.current().is_some()
         {
-            let remaining = interval.saturating_sub(now.saturating_duration_since(since));
-            timeout = timeout.min(remaining);
+            timeout = timeout.min(PIN_RETRY_INTERVAL);
         }
         if !self.privacy_watch {
             // Without property signals the session state keeps the old latency.
             timeout = timeout.min(self.policy.poll_interval);
         }
         timeout
+    }
+
+    /// When the automatic selection clear becomes due.
+    fn selection_clear_deadline(&self) -> Option<Instant> {
+        let interval = self.policy.selection_clear_after?;
+        self.owned_since?.checked_add(interval)
     }
 
     /// Runs maintenance that needs a clock but not a fresh selection.
@@ -3687,6 +3715,29 @@ mod tests {
         );
         service.stop();
         assert_eq!(service.latest().lifecycle, ClipboardLifecycle::Stopped);
+    }
+
+    #[test]
+    fn event_mode_wakes_for_the_selection_clear_deadline() {
+        let mut policy = policy();
+        // Keep every non-deadline wake far away so only the clear can meet it.
+        policy.poll_interval = Duration::from_secs(5);
+        policy.selection_clear_after = Some(Duration::from_millis(20));
+        let (mut service, state, steps) = start_fake_events(policy, FakeState::default());
+        state.lock().expect("fake state").current = Some(FakeSelection::Text("timed".to_string()));
+        steps.send(WatchStep::Changed).expect("watch receives");
+        wait_for_items(&service, 1);
+
+        let started = Instant::now();
+        while state.lock().expect("fake state").current.is_some() {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "the automatic clear missed its deadline"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(service.latest().selection_clears, 1);
+        service.stop();
     }
 
     #[test]
@@ -5262,6 +5313,7 @@ mod tests {
             .start(
                 FakeBackend {
                     state: Arc::new(Mutex::new(FakeState::default())),
+                    watch: None,
                 },
                 FailingPrivacy {
                     failed: Arc::clone(&failed),
