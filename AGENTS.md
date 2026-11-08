@@ -55,6 +55,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 - `scripts/`: packaging automation (the AppImage builder), the clipboard clean-session QA runner, the layer-shell smoke check, and the no-GStreamer startup smoke check.
 - `data/`: desktop metadata and icons used by packaging, and `release-notes.toml`, the upcoming release's notes that Overview offers after an update. A user-visible change adds a one-sentence entry tagged with its feature ID (or `kestrel` for app-wide changes); the file is cleared after each release, so it only ever holds one release.
 - `docs/`: user documentation (`features.md`, `privacy.md`, `configuration.md`, `development.md`), plus the product requirements and architecture contracts. `README.md` stays a short landing page; feature detail goes in `docs/features.md`.
+- `packaging/aur/`: the AUR package, installed as `kestrel-desktop` because the AUR name `kestrel` is an unrelated package; the PKGBUILD builds and installs both `kestrel` and `kestrel-record`, and `.SRCINFO` is generated from it.
 
 ## Development Commands
 
@@ -118,6 +119,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `rust-toolchain.toml`, `rustfmt.toml`: pinned compiler/components and formatting policy.
 - `.github/workflows/ci.yml`: canonical quality, build, test, and clean-session checks.
 - `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
+- `.github/workflows/aur.yml`: builds the AUR package in an Arch container, checks the packaged files and generated metadata, and runs namcap.
 - `scripts/build-appimage.sh`: release artifact construction.
 - `apps/kestrel/build.rs`, `apps/kestrel/src/layer_shell.rs`: optional gtk4-layer-shell link and the FFI shim behind the `kestrel_layer_shell` cfg.
 - `scripts/layer-shell-smoke.sh`: opens the command bar on a private headless Sway and requires a layer-shell surface.

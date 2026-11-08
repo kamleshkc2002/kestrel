@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.kamleshkc2002.Kestrel</id>
+
+  <name>Kestrel</name>
+  <summary>Monitoring, audio, clipboard, capture, and system tools for any Linux desktop</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>System monitoring with sustained alerts, an audio mixer, private clipboard history, snippets, screenshots with OCR, screen recording with trim, and process and port tools in one window.</p>
+    <p>Every feature reports whether it works in the current session and what to install or allow when it does not.</p>
+  </description>
+
+  <launchable type="desktop-id">io.github.kamleshkc2002.Kestrel.desktop</launchable>
+
+  <url type="homepage">https://github.com/kamleshkc2002/kestrel</url>
+  <url type="bugtracker">https://github.com/kamleshkc2002/kestrel/issues</url>
+
+  <developer id="io.github.kamleshkc2002">
+    <name>Kamlesh</name>
+  </developer>
+
+  <categories>
+    <category>Utility</category>
+    <category>System</category>
+  </categories>
+
+  <content_rating type="oars-1.1"/>
+</component>
