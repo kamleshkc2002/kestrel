@@ -3,6 +3,7 @@
 mod media;
 mod panels;
 mod tools;
+mod url_cleanup;
 
 use crate::window::widgets::{
     FilterRows, choose_path, configure_wrapping_label, icon_button, on_spin_row_settled, plain_row,
@@ -65,6 +66,11 @@ pub(super) fn build_settings_group(
         }
         SettingsPage::Clipboard => {
             tools::add_clipboard_limits_group(&group, view_model, commands, &mut filter_rows);
+            extra_groups.extend(url_cleanup::url_cleanup_groups(
+                view_model,
+                commands,
+                &mut filter_rows,
+            ));
         }
         SettingsPage::CommandBar => {
             tools::add_command_bar_group(&group, view_model, commands, &mut filter_rows);

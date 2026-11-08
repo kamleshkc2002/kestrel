@@ -21,6 +21,16 @@ update check is due once a day from the last attempt and contacts
 `api.github.com` for the release list. Settings → Updates shows the state, has
 Check now, and can turn the check off.
 
+`[url_cleanup] automatic` is `false` by default and turns on automatic
+cleaning of a single copied link. `extra_global` adds parameter names that
+apply to every site, and each `[[url_cleanup.sites]]` entry has `host`,
+`enabled`, and `params` as a TOML string list. Parameter names may end in `*`
+for a prefix match, and a site host matches its subdomains.
+Built-in rules cover common tracking parameters and sites; a configured site
+with the same host replaces the built-in rule, so switching one off keeps its
+parameter names. Invalid entries are reported and skipped. These rules are
+also editable on the Clipboard page.
+
 Essentials, Balanced, and Everything presets change feature enablement in one
 reversible operation. The Feature Hub marks each feature as running, needing
 attention (a missing dependency or permission, or a fix to apply), unavailable

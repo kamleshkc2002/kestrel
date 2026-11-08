@@ -14,6 +14,11 @@ pub use keep_awake::{
 };
 mod updates;
 pub use updates::{InstallAssets, ReleaseInfo, UpdateCheck, UpdatesConfiguration, newest_offer};
+mod url_cleanup;
+pub use url_cleanup::{
+    CleanedUrl, MAX_URL_BYTES, RemovedParam, SiteRule, UrlCleanupConfiguration, UrlCleanupError,
+    UrlCleanupErrorKind, UrlRules, UrlSiteConfiguration, clean_url, single_http_link,
+};
 
 /// Debug builds run as a separate application: their own bus name, settings,
 /// and data, so development never touches an installed release.
@@ -517,6 +522,8 @@ pub struct ApplicationConfiguration {
     #[serde(default)]
     pub clipboard: ClipboardConfiguration,
     #[serde(default)]
+    pub url_cleanup: UrlCleanupConfiguration,
+    #[serde(default)]
     pub snippets: SnippetConfiguration,
     #[serde(default)]
     pub quick_panel: QuickPanelConfiguration,
@@ -548,6 +555,7 @@ impl Default for ApplicationConfiguration {
             screen_tools: ScreenToolsConfiguration::default(),
             shortcuts: ShortcutConfiguration::default(),
             clipboard: ClipboardConfiguration::default(),
+            url_cleanup: UrlCleanupConfiguration::default(),
             snippets: SnippetConfiguration::default(),
             quick_panel: QuickPanelConfiguration::default(),
             command_bar: CommandBarConfiguration::default(),

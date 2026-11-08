@@ -19,6 +19,7 @@ use super::{
     snippets::parse_snippets,
     speed_test::parse_speed_test,
     updates::parse_updates,
+    url_cleanup::parse_url_cleanup,
     warning,
 };
 
@@ -41,6 +42,7 @@ pub(super) fn parse_current(
     parse_screen_tools(&mut loaded, document.get("screen_tools"));
     parse_shortcuts(&mut loaded, document.get("shortcuts"));
     parse_clipboard(&mut loaded, document.get("clipboard"));
+    parse_url_cleanup(&mut loaded, document.get("url_cleanup"));
     parse_snippets(&mut loaded, document.get("snippets"));
     parse_scratchpad(&mut loaded, document.get("scratchpad"));
     parse_recording(&mut loaded, document.get("recording"));

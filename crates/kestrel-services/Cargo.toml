@@ -16,6 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 pulldown-cmark = "0.13"
 semver = "1"
+log = "0.4"
 
 [dev-dependencies]
 qrcode = { version = "0.14", default-features = false }
