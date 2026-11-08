@@ -56,6 +56,7 @@ Service lifecycle is `register -> probe -> configure -> start -> publish/refresh
 - `data/`: desktop metadata and icons used by packaging, and `release-notes.toml`, the upcoming release's notes that Overview offers after an update. A user-visible change adds a one-sentence entry tagged with its feature ID (or `kestrel` for app-wide changes); the file is cleared after each release, so it only ever holds one release.
 - `docs/`: user documentation (`features.md`, `privacy.md`, `configuration.md`, `development.md`), plus the product requirements and architecture contracts. `README.md` stays a short landing page; feature detail goes in `docs/features.md`.
 - `packaging/aur/`: the AUR package, installed as `kestrel-desktop` because the AUR name `kestrel` is an unrelated package; the PKGBUILD builds and installs both `kestrel` and `kestrel-record`, and `.SRCINFO` is generated from it.
+- `packaging/flatpak/`: the GNOME 50 Flatpak manifest with its per-permission comments, and `cargo-sources.json`, generated from `Cargo.lock` by `scripts/flatpak-sources.sh`; `scripts/flatpak-build.sh` builds the checkout into a bundle.
 
 ## Development Commands
 
@@ -120,6 +121,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `.github/workflows/ci.yml`: canonical quality, build, test, and clean-session checks.
 - `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
 - `.github/workflows/aur.yml`: builds the AUR package in an Arch container, checks the packaged files and generated metadata, and runs namcap.
+- `.github/workflows/flatpak.yml`: checks that `cargo-sources.json` matches `Cargo.lock`, builds the Flatpak bundle in the Flathub builder container, runs the manifest and AppStream lints, and starts the installed bundle headless.
 - `scripts/build-appimage.sh`: release artifact construction.
 - `apps/kestrel/build.rs`, `apps/kestrel/src/layer_shell.rs`: optional gtk4-layer-shell link and the FFI shim behind the `kestrel_layer_shell` cfg.
 - `scripts/layer-shell-smoke.sh`: opens the command bar on a private headless Sway and requires a layer-shell surface.

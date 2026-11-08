@@ -1,0 +1,85 @@
+name: Flatpak
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/flatpak.yml"
+      - "Cargo.lock"
+      - "apps/**/Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "data/**"
+      - "packaging/flatpak/**"
+      - "scripts/flatpak-*.sh"
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sources:
+    name: Cargo sources
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Check cargo-sources.json matches Cargo.lock
+        run: bash scripts/flatpak-sources.sh --check
+
+  bundle:
+    name: Build bundle
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install the Rust SDK extension
+        # The image carries the GNOME runtime and SDK; the extension is not.
+        run: |
+          flatpak install --system --noninteractive flathub \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Lint the manifest
+        run: |
+          flatpak-builder-lint --exceptions \
+            --user-exceptions packaging/flatpak/linter-exceptions.json \
+            manifest packaging/flatpak/io.github.kamleshkc2002.Kestrel.yml
+
+      - name: Validate metadata
+        run: |
+          appstreamcli validate --no-net \
+            data/io.github.kamleshkc2002.Kestrel.metainfo.xml
+
+      - name: Build the bundle
+        run: bash scripts/flatpak-build.sh
+
+      - name: Lint the build
+        run: |
+          flatpak-builder-lint appstream \
+            build/flatpak/app/files/share/app-info/xmls/io.github.kamleshkc2002.Kestrel.xml.gz
+
+      - name: Start the installed bundle headless
+        run: |
+          flatpak install --user --noninteractive dist/*.flatpak
+          flatpak run io.github.kamleshkc2002.Kestrel --version
+          flatpak run io.github.kamleshkc2002.Kestrel --list-commands
+          flatpak uninstall --user --noninteractive io.github.kamleshkc2002.Kestrel
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: Kestrel-x86_64-Flatpak
+          path: dist/*.flatpak
+          if-no-files-found: error
+          retention-days: 30

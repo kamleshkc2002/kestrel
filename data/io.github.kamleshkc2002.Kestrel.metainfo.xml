@@ -27,5 +27,16 @@
     <category>System</category>
   </categories>
 
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/kamleshkc2002/kestrel/main/docs/images/overview.png</image>
+      <caption>System monitoring, audio, clipboard, and capture in one window</caption>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.6.0-preview.6" date="2026-11-06"/>
+  </releases>
+
   <content_rating type="oars-1.1"/>
 </component>
