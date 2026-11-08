@@ -164,6 +164,8 @@ fn build_shelf_row(
         item.kind_label, item.name
     ))]);
 
+    super::install::add_handoff_button(&row, item, commands);
+
     let copy = icon_button("edit-copy-symbolic", "Copy this entry", true);
     let sender = commands.clone();
     let id = item.id;

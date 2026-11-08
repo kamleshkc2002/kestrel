@@ -99,6 +99,7 @@ reporting, and `curl` is used only by the update check and the speed test.
 - **Open ports Open:** a TCP listener opens in your browser at `http://127.0.0.1:<port>/` or `http://localhost:<port>/`; only the loopback address is contacted.
 - **Command-bar URL and file results:** `xdg-open` is run with the URL or path as an argument; the handler sees it, a URL may leave the computer, and the argument appears in the process list.
 - **Opening folders and files:** the log folder, the recordings folder, a take, or a trimmed copy is handed to your desktop as a `file://` address; Save as, Export, and the file choosers write to the path you pick.
+- **Install a package or open a disk image:** the chosen file's path goes to the default app for its type, which reads it; the file is not copied, changed, or deleted.
 - **Application launches and process Restart:** the desktop entry or action is launched by ID, with no URIs or app data passed.
 - **Command-bar scripts:** receive the executable and arguments configured for them, inherit the app's environment, and get empty standard input; their bounded output is read back.
 - **Snippet insertion:** the expanded snippet text, including any `{{clipboard}}` value, goes to `wtype`, `ydotool`, or `xdotool` on standard input.

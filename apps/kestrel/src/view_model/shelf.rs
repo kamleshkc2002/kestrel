@@ -24,6 +24,8 @@ pub struct ShelfItemViewModel {
     pub available: bool,
     /// A file entry whose path is a directory.
     pub directory: bool,
+    /// The hand-off type named by the file extension, without reading it.
+    pub install: Option<kestrel_platform::install_handoff::InstallTargetKind>,
     pub content: kestrel_core::ShelfContent,
 }
 
@@ -73,6 +75,12 @@ impl ShelfViewModel {
                             &entry,
                             now.duration_since(entry.added).unwrap_or_default(),
                         );
+                        let install = match &entry.content {
+                            kestrel_core::ShelfContent::File { path, .. } => {
+                                kestrel_platform::install_handoff::kind_for_path(path)
+                            }
+                            _ => None,
+                        };
                         ShelfItemViewModel {
                             id: entry.id,
                             kind: entry.kind,
@@ -82,6 +90,7 @@ impl ShelfViewModel {
                             pinned: entry.pinned,
                             available: entry.available,
                             directory: entry.directory,
+                            install,
                             content: entry.content,
                         }
                     })
@@ -195,6 +204,44 @@ mod tests {
         assert!(model.items[1].detail.starts_with("/tmp/here.txt · 9 B"));
         assert_eq!(model.items[1].kind, ShelfItemKind::File);
         assert_eq!(model.unpinned, 1);
+    }
+
+    #[test]
+    fn only_supported_file_names_offer_a_handoff_hint() {
+        let package = entry(
+            ShelfContent::File {
+                path: "/tmp/example.deb".into(),
+                name: "example.deb".to_owned(),
+            },
+            true,
+            Some(9),
+        );
+        let text = ShelfEntry {
+            id: 2,
+            ..entry(
+                ShelfContent::File {
+                    path: "/tmp/example.txt".into(),
+                    name: "example.txt".to_owned(),
+                },
+                true,
+                Some(9),
+            )
+        };
+        let model = ShelfViewModel::from_presentation(ShelfPresentation {
+            running: true,
+            keep: false,
+            snapshot: Some(ShelfSnapshot {
+                entries: vec![package, text],
+                warning: None,
+            }),
+            limits: kestrel_core::ShelfConfiguration::default(),
+            warning: None,
+        });
+        assert_eq!(
+            model.items[0].install,
+            Some(kestrel_platform::install_handoff::InstallTargetKind::DebianPackage)
+        );
+        assert_eq!(model.items[1].install, None);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use super::*;
 use kestrel_platform::clipboard::ClipboardEntryKind;
+use kestrel_platform::install_handoff::{self, HandoffOutcome, InstallTarget, Provider};
 use kestrel_services::shelf::{ShelfInput, ShelfService};
 
 impl ApplicationRuntime {
@@ -114,6 +115,38 @@ impl ApplicationRuntime {
             .cloned()
     }
 
+    /// Checks a file and resolves the app for its type; work for a worker thread.
+    pub fn shelf_install_prepare(
+        &self,
+        path: &Path,
+    ) -> Result<(InstallTarget, Option<Provider>), String> {
+        let target = install_handoff::classify(path).map_err(|error| error.to_string())?;
+        if !target.kind.is_supported() {
+            return Err(
+                "Only packages and disk images can be handed to the app that handles them."
+                    .to_owned(),
+            );
+        }
+        let provider = install_handoff::provider_for(&target.content_type);
+        Ok((target, provider))
+    }
+
+    /// Launches the confirmed app; the file is re-checked and left unchanged.
+    pub fn shelf_install(
+        &self,
+        target: &InstallTarget,
+        provider: &Provider,
+    ) -> Result<String, String> {
+        let outcome = install_handoff::hand_off(target, provider, &install_handoff::GioDesktopApps)
+            .map_err(|error| error.to_string())?;
+        match outcome {
+            HandoffOutcome::Launched { provider_name } => Ok(format!(
+                "Opened {} with {provider_name}",
+                target.display_name()
+            )),
+        }
+    }
+
     /// Turns keeping entries across restarts on or off, syncing the file.
     pub fn shelf_set_keep(&mut self, keep: bool) -> Result<(), String> {
         self.shelf_keep = keep;
@@ -163,6 +196,19 @@ mod tests {
             .shelf_add(ShelfInput::Text("test".to_owned()))
             .expect_err("disabled feature");
         assert!(error.contains(SHELF_ID));
+    }
+
+    #[test]
+    fn handoff_refuses_a_file_that_is_not_a_package_or_image() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join("notes.txt");
+        std::fs::write(&path, b"plain text\n").expect("fixture writes");
+        let runtime =
+            ApplicationRuntime::new(&ApplicationConfiguration::default()).expect("runtime builds");
+        let error = runtime
+            .shelf_install_prepare(&path)
+            .expect_err("text is not a package");
+        assert!(error.contains("packages and disk images"));
     }
 
     #[test]

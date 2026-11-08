@@ -41,6 +41,7 @@ use kestrel::{
 };
 use kestrel_core::{ApplicationConfiguration, FeatureConfigurationSnapshot};
 use kestrel_platform::cancellation::CancellationToken;
+use kestrel_platform::install_handoff::{InstallTarget, Provider};
 use kestrel_platform::notifications::{
     AlertNotification, AlertNotifier, CaptureNotificationAction, DesktopNotifier, NotificationEvent,
 };
@@ -995,9 +996,15 @@ enum ShelfOperation {
     AddClipboard,
     Remove(u64),
     Pin(u64, bool),
-    Clear { include_pinned: bool },
+    Clear {
+        include_pinned: bool,
+    },
     SetKeep(bool),
     SetAddScreenshots(bool),
+    InstallHandoff {
+        target: InstallTarget,
+        provider: Provider,
+    },
 }
 
 /// What a close request does; quitting ends the application, not only the window.
@@ -3289,6 +3296,46 @@ impl ApplicationController {
         );
     }
 
+    /// Classifies a file off the GTK thread, then offers the app for its type.
+    fn prepare_install_handoff(self: &Rc<Self>, path: PathBuf, application: &adw::Application) {
+        let (results, receiver) = async_channel::bounded(1);
+        let state = Arc::clone(&self.state);
+        let spawned = thread::Builder::new()
+            .name("kestrel-shelf-install".to_owned())
+            .spawn(move || {
+                let result = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .runtime
+                    .shelf_install_prepare(&path);
+                let _ = results.send_blocking(result);
+            });
+        if spawned.is_err() {
+            log::warn!("kestrel-shelf-install could not start");
+            self.show_message("The file could not be checked");
+            return;
+        }
+        let controller = Rc::clone(self);
+        let application = application.clone();
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                return;
+            };
+            match result {
+                Ok((target, provider)) => {
+                    let parent = application.active_window();
+                    window::present_handoff(
+                        &target,
+                        provider.as_ref(),
+                        parent.as_ref(),
+                        &controller.commands,
+                    );
+                }
+                Err(message) => controller.show_message(&message),
+            }
+        });
+    }
+
     /// Runs a confirmed action on a worker without holding the controller
     /// lock, since a termination waits for its grace period.
     fn request_process_action(
@@ -4549,6 +4596,9 @@ impl ControllerState {
                     },
                 )
             }
+            ShelfOperation::InstallHandoff { target, provider } => {
+                self.runtime.shelf_install(&target, &provider)
+            }
         }
     }
 
@@ -5585,6 +5635,19 @@ fn dispatch_commands(
                 ApplicationCommand::EditShelfImage(id) => {
                     controller.edit_shelf_image(id);
                     continue;
+                }
+                ApplicationCommand::InstallHandoff { path } => {
+                    controller.prepare_install_handoff(path, &application);
+                    continue;
+                }
+                ApplicationCommand::ConfirmInstallHandoff { target, provider } => {
+                    controller.request_operation(
+                        ControllerOperation::Shelf(ShelfOperation::InstallHandoff {
+                            target,
+                            provider,
+                        }),
+                        "kestrel-shelf-install",
+                    );
                 }
                 ApplicationCommand::OpenShelfFloat => {
                     controller.open_shelf_float(&application);

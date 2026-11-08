@@ -7,6 +7,7 @@ mod clipboard;
 mod command_bar;
 mod features;
 mod floating;
+mod install;
 mod monitor;
 mod overlay;
 mod processes;
@@ -58,6 +59,7 @@ use std::{
 use widgets::{FilterRows, configure_wrapping_label, plain_row};
 
 pub use floating::{FloatingSurface, QuickPanelEntry};
+pub(crate) use install::present_handoff;
 pub use overlay::StatusOverlay;
 pub(crate) use setup::open_setup;
 pub(crate) use shelf::copy_shelf_content;
