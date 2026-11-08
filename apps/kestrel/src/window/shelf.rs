@@ -454,8 +454,10 @@ fn open_rename_dialog(
 
     let stem = stem_chars(name);
     entry.connect_map(move |entry| {
-        entry.select_region(0, stem as i32);
+        // Focusing selects the whole text, so the stem is selected afterwards.
         entry.grab_focus();
+        let entry = entry.clone();
+        glib::idle_add_local_once(move || entry.select_region(0, stem as i32));
     });
 
     let validate: std::rc::Rc<dyn Fn()> = {

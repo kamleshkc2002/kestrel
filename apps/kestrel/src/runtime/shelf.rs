@@ -179,13 +179,10 @@ impl ApplicationRuntime {
         match file_actions::show_items(std::slice::from_ref(&path)) {
             Ok(RevealOutcome::Selected) => Ok("Shown in your file manager.".to_owned()),
             Ok(RevealOutcome::OpenedFolder { provider }) => Ok(match provider {
-                Some(provider) => format!(
-                    "The file manager could not select this file, so its folder opened in \
-                     {provider}."
-                ),
-                None => "The file manager could not select this file, so its folder opened \
-                         instead."
-                    .to_owned(),
+                Some(provider) => {
+                    format!("Opened the folder in {provider}; selecting the file is not available.")
+                }
+                None => "Opened the folder; selecting the file is not available.".to_owned(),
             }),
             Err(error) => Err(error.to_string()),
         }

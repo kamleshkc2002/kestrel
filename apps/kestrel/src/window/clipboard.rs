@@ -792,6 +792,12 @@ fn save_clipboard_image(
         .modal(true)
         .build();
     dialog.set_initial_name(Some(&clipboard_image_name()));
+    // Pictures, else home; never the process's working directory.
+    if let Some(folder) = gtk::glib::user_special_dir(gtk::glib::UserDirectory::Pictures)
+        .or_else(|| Some(gtk::glib::home_dir()))
+    {
+        dialog.set_initial_folder(Some(&gtk::gio::File::for_path(folder)));
+    }
     let commands = commands.clone();
     dialog.save(Some(&window), gtk::gio::Cancellable::NONE, move |result| {
         let Some(dest) = result.ok().and_then(|file| file.path()) else {
