@@ -978,9 +978,10 @@ impl ApplicationRuntime {
             );
             if feature.id == CLIPBOARD_HISTORY_ID {
                 line.push_str(&format!(
-                    "\titems={}\twipes={}",
+                    "\titems={}\twipes={}\twatch={}",
                     clipboard.items.len(),
-                    clipboard.wipe_count
+                    clipboard.wipe_count,
+                    clipboard.watch_mode.evidence_value()
                 ));
             }
             if feature.id == AUDIO_MIXER_ID {

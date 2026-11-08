@@ -18,16 +18,16 @@ use std::{
 
 use kestrel_core::{ClipboardPasteKeys, UrlRules, clean_url, single_http_link};
 use kestrel_platform::clipboard::{
-    ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardKindSupport, ClipboardProvider,
-    OwnedSelection, PrivacyEventSource, SessionPrivacyEvent, kind_from_types, png_dimensions,
-    temporary_write,
+    ChangeWatchCancel, ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardKindSupport,
+    ClipboardProvider, ClipboardWatchMode, OwnedSelection, PrivacyEventSource, SessionPrivacyEvent,
+    kind_from_types, png_dimensions, temporary_write,
 };
 use kestrel_platform::pin_store::{self, PinStoreError, SavedPin};
 use kestrel_platform::secret_service::{PinKeyError, PinKeyStore};
 use kestrel_platform::snippets::InsertionBackend;
 use zeroize::Zeroizing;
 
-use crate::clipboard_pins::PinPersistence;
+use crate::clipboard_pins::{PIN_RETRY_INTERVAL, PinPersistence};
 use crate::paste::{PasteObservation, PasteOperation, PasteSettings, PasteStage};
 
 pub use crate::clipboard_pins::{
@@ -41,6 +41,9 @@ pub const DEFAULT_MAX_ITEMS: usize = 100;
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Upper bound on a blocked event wait; real deadlines (selection clear,
+/// retention expiry, pin load retry, paste staging) schedule earlier wakes.
+pub const DEFAULT_SAFETY_INTERVAL: Duration = Duration::from_secs(60);
 pub const DEFAULT_IMAGE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub const MAX_HISTORY_ITEMS: usize = 1000;
 pub const MAX_PREVIEW_BYTES: usize = 4096;
@@ -483,6 +486,8 @@ pub struct ClipboardSnapshot {
     pub lifecycle: ClipboardLifecycle,
     pub provider: Option<ClipboardProvider>,
     pub kind_support: ClipboardKindSupport,
+    /// Whether the worker reacts to change events or polls the selection.
+    pub watch_mode: ClipboardWatchMode,
     pub items: Vec<ClipboardItemMetadata>,
     pub total_bytes: usize,
     pub pinned_items: usize,
@@ -521,6 +526,7 @@ impl ClipboardSnapshot {
             lifecycle: ClipboardLifecycle::Stopped,
             provider: None,
             kind_support: ClipboardKindSupport::TEXT_ONLY,
+            watch_mode: ClipboardWatchMode::Polling,
             items: Vec::new(),
             total_bytes: 0,
             pinned_items: 0,
@@ -675,6 +681,14 @@ enum WorkerCommand {
     ),
     /// A fresh observation of focus and modifier state; no response is awaited.
     PasteObservation(PasteObservation),
+    /// The backend's change watch reported a selection change.
+    SelectionChanged,
+    /// The privacy watch reported a session state change.
+    PrivacyChanged,
+    /// The privacy watch stopped working; the worker returns to polling.
+    PrivacyWatchFailed,
+    /// The change watch stopped working; the worker returns to polling.
+    WatchFailed(String),
     /// Replaces the insertion provider after discovery or a preference change.
     SetPasteProvider {
         provider: Option<Box<dyn InsertionBackend>>,
@@ -777,9 +791,23 @@ pub struct ClipboardHistoryService {
     policy: Mutex<ClipboardPolicy>,
     sender: Option<Sender<WorkerCommand>>,
     worker: Option<JoinHandle<()>>,
+    watches: Vec<WatchJoin>,
     snapshot: Arc<Mutex<ClipboardSnapshot>>,
     pin_key_store: Option<Arc<dyn PinKeyStore>>,
     pins: PinSession,
+}
+
+/// A watch thread and the handle that interrupts it.
+struct WatchJoin {
+    cancel: ChangeWatchCancel,
+    handle: JoinHandle<()>,
+}
+
+impl WatchJoin {
+    fn finish(self) {
+        self.cancel.cancel();
+        let _ = self.handle.join();
+    }
 }
 
 impl ClipboardHistoryService {
@@ -788,6 +816,7 @@ impl ClipboardHistoryService {
             policy: Mutex::new(policy.validate()?),
             sender: None,
             worker: None,
+            watches: Vec::new(),
             snapshot: Arc::new(Mutex::new(ClipboardSnapshot::stopped())),
             pin_key_store: None,
             pins: PinSession::disabled(),
@@ -799,7 +828,11 @@ impl ClipboardHistoryService {
         self.pin_key_store = Some(key_store);
     }
 
-    pub fn start<B, P>(&mut self, backend: B, privacy: P) -> Result<(), ClipboardServiceError>
+    pub fn start<B, P>(
+        &mut self,
+        mut backend: B,
+        mut privacy: P,
+    ) -> Result<(), ClipboardServiceError>
     where
         B: ClipboardBackend,
         P: PrivacyEventSource,
@@ -814,21 +847,101 @@ impl ClipboardHistoryService {
             .clone();
         self.rebuild_pin_session(&policy);
         let (sender, receiver) = mpsc::channel();
+        let mut watches = Vec::new();
+        let mut watch_mode = ClipboardWatchMode::Polling;
+        match backend.take_change_watch() {
+            Ok(Some(mut watch)) => {
+                let sender = sender.clone();
+                let cancel = watch.cancel_handle();
+                match thread::Builder::new()
+                    .name("kestrel-clipboard-watch".to_string())
+                    .spawn(move || {
+                        while let Ok(true) = watch.next_change() {
+                            if sender.send(WorkerCommand::SelectionChanged).is_err() {
+                                return;
+                            }
+                        }
+                        let _ = sender.send(WorkerCommand::WatchFailed(
+                            "the clipboard change watch stopped unexpectedly".to_string(),
+                        ));
+                    }) {
+                    Ok(handle) => {
+                        watches.push(WatchJoin { cancel, handle });
+                        watch_mode = ClipboardWatchMode::Events;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: kestrel_platform::clipboard::FEATURE_ID,
+                            "clipboard change watch thread failed to start: {error}"
+                        );
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                log::debug!(
+                    target: kestrel_platform::clipboard::FEATURE_ID,
+                    "clipboard change events are unavailable: {error}"
+                );
+            }
+        }
+        let mut privacy_watch = false;
+        if let Ok(privacy_watches) = privacy.take_watches() {
+            for mut watch in privacy_watches {
+                let sender = sender.clone();
+                let cancel = watch.cancel_handle();
+                match thread::Builder::new()
+                    .name("kestrel-clipboard-privacy".to_string())
+                    .spawn(move || {
+                        if !watch.run(&mut || sender.send(WorkerCommand::PrivacyChanged).is_ok()) {
+                            let _ = sender.send(WorkerCommand::PrivacyWatchFailed);
+                        }
+                    }) {
+                    Ok(handle) => {
+                        watches.push(WatchJoin { cancel, handle });
+                        privacy_watch = true;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            target: kestrel_platform::clipboard::FEATURE_ID,
+                            "clipboard privacy watch thread failed to start: {error}"
+                        );
+                    }
+                }
+            }
+        }
         let snapshot = Arc::clone(&self.snapshot);
         let pins = self.pins.clone();
         let worker_policy = policy.clone();
-        let worker = thread::Builder::new()
+        let worker = match thread::Builder::new()
             .name("kestrel-clipboard-history".to_string())
             .spawn(move || {
-                run_worker(worker_policy, backend, privacy, receiver, snapshot, pins);
-            })
-            .map_err(|error| {
-                ClipboardServiceError::InvalidPolicy(format!(
+                run_worker(
+                    worker_policy,
+                    backend,
+                    privacy,
+                    WatchSetup {
+                        clipboard: watch_mode,
+                        privacy: privacy_watch,
+                    },
+                    receiver,
+                    snapshot,
+                    pins,
+                );
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                for watch in watches {
+                    watch.finish();
+                }
+                return Err(ClipboardServiceError::InvalidPolicy(format!(
                     "failed to start clipboard worker: {error}"
-                ))
-            })?;
+                )));
+            }
+        };
         self.sender = Some(sender);
         self.worker = Some(worker);
+        self.watches = watches;
         Ok(())
     }
 
@@ -1058,6 +1171,9 @@ impl ClipboardHistoryService {
         }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+        for watch in self.watches.drain(..) {
+            watch.finish();
         }
         if let Some(persistence) = self.pins.current() {
             persistence.shutdown();
@@ -1338,6 +1454,17 @@ impl HistoryStore {
             self.pin_revision = self.pin_revision.saturating_add(1);
         }
         removed_pinned
+    }
+
+    /// The earliest instant at which [`HistoryStore::prune`] drops an entry.
+    fn next_expiry(&self) -> Option<Instant> {
+        self.items
+            .iter()
+            .filter_map(|item| match item.pinned_at {
+                Some(pinned_at) => pinned_at.checked_add(self.policy.pinned_max_age),
+                None => item.captured_at.checked_add(self.policy.max_age),
+            })
+            .min()
     }
 
     fn total_bytes(&self) -> usize {
@@ -1663,6 +1790,7 @@ impl HistoryStore {
             lifecycle,
             provider: context.provider,
             kind_support: context.support,
+            watch_mode: context.watch_mode,
             total_bytes: items.iter().map(|item| item.size_bytes).sum(),
             pinned_items: items.iter().filter(|item| item.pinned).count(),
             items,
@@ -1685,6 +1813,7 @@ impl HistoryStore {
 struct SnapshotContext {
     provider: Option<ClipboardProvider>,
     support: ClipboardKindSupport,
+    watch_mode: ClipboardWatchMode,
     last_error: Option<String>,
     paste: Option<PasteStage>,
     paste_unavailable: Option<String>,
@@ -1768,6 +1897,14 @@ struct WorkerState<B, P> {
     history: HistoryStore,
     provider: ClipboardProvider,
     support: ClipboardKindSupport,
+    /// Whether the worker reacts to change events or polls the selection.
+    watch_mode: ClipboardWatchMode,
+    /// A change watch event is waiting for a selection read.
+    selection_pending: bool,
+    /// Logind property changes arrive as signals instead of a periodic read.
+    privacy_watch: bool,
+    /// The session state must be read after a privacy signal or at startup.
+    privacy_poll_due: bool,
     /// Whether offered types can be listed, so temporary writes are recognised.
     type_listing: bool,
     observed: Option<ObservedSelection>,
@@ -1808,10 +1945,18 @@ struct ReturnWindow {
 /// How long a replaced selection may return and still be treated as retained.
 const RETURN_WINDOW: Duration = Duration::from_secs(3);
 
+/// How the worker waits for changes.
+#[derive(Debug, Clone, Copy)]
+struct WatchSetup {
+    clipboard: ClipboardWatchMode,
+    privacy: bool,
+}
+
 fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
     policy: ClipboardPolicy,
     backend: B,
     privacy: P,
+    watches: WatchSetup,
     receiver: Receiver<WorkerCommand>,
     snapshot: Arc<Mutex<ClipboardSnapshot>>,
     pins: PinSession,
@@ -1828,6 +1973,10 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
         history,
         provider,
         support,
+        watch_mode: watches.clipboard,
+        selection_pending: false,
+        privacy_watch: watches.privacy,
+        privacy_poll_due: true,
         type_listing,
         observed: None,
         owned: None,
@@ -1848,10 +1997,14 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
         pins_held: true,
     };
     state.publish(&snapshot, ClipboardLifecycle::Running);
+    state.privacy_poll_due = true;
+    if state.poll_privacy_if_due(&snapshot) {
+        return;
+    }
 
     loop {
-        let poll_interval = state.policy.poll_interval;
-        match receiver.recv_timeout(poll_interval) {
+        let timeout = state.wait_timeout(Instant::now());
+        match receiver.recv_timeout(timeout) {
             Ok(WorkerCommand::SetPolicy { policy, response }) => {
                 let previous = state.policy.clone();
                 let pin_target_changed = previous.keep_pinned != policy.keep_pinned
@@ -1879,7 +2032,11 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
                 let _ = response.send(result);
             }
             Ok(WorkerCommand::Execute(command, response)) => {
+                let refresh = matches!(command, ClipboardCommand::Refresh);
                 let result = state.execute(command);
+                if refresh {
+                    state.selection_pending = true;
+                }
                 if let Ok(value) = &result {
                     publish(&snapshot, value.clone());
                 }
@@ -1900,6 +2057,22 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
                 state.paste_unavailable = unavailable;
                 state.publish(&snapshot, ClipboardLifecycle::Running);
             }
+            Ok(WorkerCommand::SelectionChanged) => {
+                state.selection_pending = true;
+            }
+            Ok(WorkerCommand::PrivacyChanged) => {
+                state.privacy_poll_due = true;
+            }
+            Ok(WorkerCommand::PrivacyWatchFailed) => {
+                state.privacy_watch = false;
+                state.privacy_poll_due = true;
+            }
+            Ok(WorkerCommand::WatchFailed(message)) => {
+                // The watch is gone, so the worker re-reads on every tick again.
+                state.watch_mode = ClipboardWatchMode::Polling;
+                state.selection_pending = true;
+                state.last_error = Some(message);
+            }
             Ok(WorkerCommand::Stop(done)) => {
                 state.wipe_owned();
                 state.publish(&snapshot, ClipboardLifecycle::Stopped);
@@ -1913,15 +2086,29 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
             Err(RecvTimeoutError::Timeout) => {}
         }
 
-        if state.poll_privacy(&snapshot) {
+        if state.poll_privacy_if_due(&snapshot) {
             break;
         }
         state.tick();
+        if state.watch_mode == ClipboardWatchMode::Polling || state.selection_pending {
+            state.selection_pending = false;
+            state.poll_selection(Instant::now());
+        }
         state.publish(&snapshot, ClipboardLifecycle::Running);
     }
 }
 
 impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
+    /// Reads the session state only when a signal asked for it, or on every
+    /// tick when the property watch is unavailable.
+    fn poll_privacy_if_due(&mut self, snapshot: &Arc<Mutex<ClipboardSnapshot>>) -> bool {
+        if self.privacy_watch && !self.privacy_poll_due {
+            return false;
+        }
+        self.privacy_poll_due = false;
+        self.poll_privacy(snapshot)
+    }
+
     fn poll_privacy(&mut self, snapshot: &Arc<Mutex<ClipboardSnapshot>>) -> bool {
         match self.privacy.poll_events() {
             Ok(events) => {
@@ -2075,6 +2262,50 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         self.pins_dirty = false;
     }
 
+    /// How long the worker may block before the next timed check.
+    ///
+    /// Real deadlines win over the safety cap: the automatic selection clear,
+    /// the oldest entry's expiry, a pin load retry, and paste staging. The cap
+    /// only covers slower maintenance such as pin writes.
+    fn wait_timeout(&self, now: Instant) -> Duration {
+        if self.watch_mode == ClipboardWatchMode::Polling {
+            return self.policy.poll_interval;
+        }
+        let mut timeout = DEFAULT_SAFETY_INTERVAL;
+        if self
+            .paste
+            .as_ref()
+            .is_some_and(|paste| !paste.is_terminal())
+        {
+            timeout = timeout.min(self.policy.poll_interval);
+        }
+        if let Some(deadline) = self.selection_clear_deadline() {
+            timeout = timeout.min(deadline.saturating_duration_since(now));
+        }
+        if let Some(deadline) = self.history.next_expiry() {
+            timeout = timeout.min(deadline.saturating_duration_since(now));
+        }
+        if self.policy.keep_pinned
+            && !self.pins_held
+            && (!self.pins_loaded || self.pins_dirty)
+            && self.pins.current().is_some()
+        {
+            timeout = timeout.min(PIN_RETRY_INTERVAL);
+        }
+        if !self.privacy_watch {
+            // Without property signals the session state keeps the old latency.
+            timeout = timeout.min(self.policy.poll_interval);
+        }
+        timeout
+    }
+
+    /// When the automatic selection clear becomes due.
+    fn selection_clear_deadline(&self) -> Option<Instant> {
+        let interval = self.policy.selection_clear_after?;
+        self.owned_since?.checked_add(interval)
+    }
+
+    /// Runs maintenance that needs a clock but not a fresh selection.
     fn tick(&mut self) {
         let now = Instant::now();
         self.poll_pins(now);
@@ -2083,7 +2314,10 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         self.auto_clear_selection(now);
         self.sync_pin_revision();
         self.save_pins(now);
+    }
 
+    /// Reads the selection after a change event or on the polling cadence.
+    fn poll_selection(&mut self, now: Instant) {
         // One type listing serves both the temporary check and the kind.
         let listed = match self.backend.offered_types() {
             Ok(listed) => listed,
@@ -2674,6 +2908,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             SnapshotContext {
                 provider: Some(self.provider),
                 support: self.support,
+                watch_mode: self.watch_mode,
                 last_error: self.last_error.clone(),
                 paste: self.paste.as_ref().map(|paste| paste.stage().clone()),
                 paste_unavailable: self.paste_unavailable.clone(),
@@ -2720,15 +2955,16 @@ mod tests {
         sync::{
             Arc, Mutex,
             atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc::{Receiver, Sender},
         },
         thread,
         time::{Duration, Instant},
     };
 
     use kestrel_platform::clipboard::{
-        ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardErrorKind,
-        ClipboardKindSupport, ClipboardProvider, OwnedSelection, PrivacyEventSource,
-        SessionPrivacyEvent,
+        ChangeWatchCancel, ClipboardBackend, ClipboardChangeWatch, ClipboardEntryKind,
+        ClipboardError, ClipboardErrorKind, ClipboardKindSupport, ClipboardProvider,
+        ClipboardWatchMode, OwnedSelection, PrivacyEventSource, SessionPrivacyEvent,
     };
     use kestrel_platform::pin_store::{self, SavedPin};
     use kestrel_platform::secret_service::{
@@ -2767,15 +3003,61 @@ mod tests {
         offered_types: Option<Vec<String>>,
         /// The password-manager hint payload, when offered.
         password_hint: Option<String>,
+        /// Text reads the worker performed.
+        reads: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    enum WatchStep {
+        Changed,
+        Stop,
+    }
+
+    struct FakeWatchParts {
+        receiver: Receiver<WatchStep>,
+        cancel: Sender<WatchStep>,
+    }
+
+    struct FakeChangeWatch {
+        receiver: Receiver<WatchStep>,
+        cancel: Sender<WatchStep>,
+    }
+
+    impl ClipboardChangeWatch for FakeChangeWatch {
+        fn next_change(&mut self) -> Result<bool, ClipboardError> {
+            Ok(match self.receiver.recv() {
+                Ok(WatchStep::Changed) => true,
+                Ok(WatchStep::Stop) | Err(_) => false,
+            })
+        }
+
+        fn cancel_handle(&self) -> ChangeWatchCancel {
+            let cancel = self.cancel.clone();
+            ChangeWatchCancel::new(move || {
+                let _ = cancel.send(WatchStep::Stop);
+            })
+        }
     }
 
     struct FakeBackend {
         state: Arc<Mutex<FakeState>>,
+        watch: Option<FakeWatchParts>,
     }
 
     impl ClipboardBackend for FakeBackend {
         fn provider(&self) -> ClipboardProvider {
             ClipboardProvider::WaylandDataControl
+        }
+
+        fn take_change_watch(
+            &mut self,
+        ) -> Result<Option<Box<dyn ClipboardChangeWatch>>, ClipboardError> {
+            Ok(self.watch.take().map(|parts| {
+                Box::new(FakeChangeWatch {
+                    receiver: parts.receiver,
+                    cancel: parts.cancel,
+                }) as Box<dyn ClipboardChangeWatch>
+            }))
         }
 
         fn kind_support(&self) -> ClipboardKindSupport {
@@ -2784,6 +3066,7 @@ mod tests {
 
         fn read_text(&mut self) -> Result<Option<String>, ClipboardError> {
             let mut state = self.state.lock().expect("fake state");
+            state.reads += 1;
             if let Some(error) = state.read_error.take() {
                 return Err(error);
             }
@@ -2945,6 +3228,7 @@ mod tests {
             super::SnapshotContext {
                 provider: None,
                 support: ClipboardKindSupport::ALL,
+                watch_mode: kestrel_platform::clipboard::ClipboardWatchMode::Polling,
                 last_error: None,
                 paste: None,
                 paste_unavailable: None,
@@ -3368,6 +3652,7 @@ mod tests {
             .start(
                 FakeBackend {
                     state: Arc::clone(&state),
+                    watch: None,
                 },
                 FakePrivacy {
                     events: Arc::clone(&events),
@@ -3377,11 +3662,92 @@ mod tests {
         (service, state, events)
     }
 
+    type EventFakeHarness = (
+        ClipboardHistoryService,
+        Arc<Mutex<FakeState>>,
+        Sender<WatchStep>,
+    );
+
+    fn start_fake_events(policy: ClipboardPolicy, state: FakeState) -> EventFakeHarness {
+        let state = Arc::new(Mutex::new(state));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut service = ClipboardHistoryService::new(policy).expect("valid policy");
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::clone(&state),
+                    watch: Some(FakeWatchParts {
+                        receiver,
+                        cancel: sender.clone(),
+                    }),
+                },
+                FakePrivacy {
+                    events: Arc::new(Mutex::new(Vec::new())),
+                },
+            )
+            .expect("worker starts");
+        (service, state, sender)
+    }
+
+    #[test]
+    fn change_events_drive_reads_and_the_safety_tick_stays_idle() {
+        let (mut service, state, steps) = start_fake_events(policy(), FakeState::default());
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(
+            state.lock().expect("fake state").reads,
+            0,
+            "no change event means no selection read"
+        );
+        assert_eq!(service.latest().watch_mode, ClipboardWatchMode::Events);
+
+        state.lock().expect("fake state").current = Some(FakeSelection::Text("event".to_string()));
+        steps.send(WatchStep::Changed).expect("watch receives");
+        wait_for_items(&service, 1);
+        assert_eq!(
+            state.lock().expect("fake state").reads,
+            1,
+            "one change event reads the selection once"
+        );
+
+        thread::sleep(Duration::from_millis(40));
+        assert_eq!(
+            state.lock().expect("fake state").reads,
+            1,
+            "the safety tick must not read the selection"
+        );
+        service.stop();
+        assert_eq!(service.latest().lifecycle, ClipboardLifecycle::Stopped);
+    }
+
+    #[test]
+    fn event_mode_wakes_for_the_selection_clear_deadline() {
+        let mut policy = policy();
+        // Keep every non-deadline wake far away so only the clear can meet it.
+        policy.poll_interval = Duration::from_secs(5);
+        policy.selection_clear_after = Some(Duration::from_millis(20));
+        let (mut service, state, steps) = start_fake_events(policy, FakeState::default());
+        state.lock().expect("fake state").current = Some(FakeSelection::Text("timed".to_string()));
+        steps.send(WatchStep::Changed).expect("watch receives");
+        wait_for_items(&service, 1);
+
+        let started = Instant::now();
+        while state.lock().expect("fake state").current.is_some() {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "the automatic clear missed its deadline"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(service.latest().selection_clears, 1);
+        service.stop();
+    }
+
     #[test]
     fn worker_captures_and_wipes_owned_content_on_privacy_event() {
         let (mut service, state, events) =
             start_fake(policy(), Some(FakeSelection::Text("secret".to_string())));
         wait_for_items(&service, 1);
+        assert_eq!(service.latest().watch_mode, ClipboardWatchMode::Polling);
 
         events
             .lock()
@@ -3519,6 +3885,7 @@ mod tests {
             policy: cleaning_policy,
             backend: FakeBackend {
                 state: Arc::clone(&state),
+                watch: None,
             },
             privacy: FakePrivacy {
                 events: Arc::new(Mutex::new(Vec::new())),
@@ -3526,6 +3893,10 @@ mod tests {
             history: HistoryStore::new(policy()),
             provider: ClipboardProvider::WaylandDataControl,
             support: ClipboardKindSupport::ALL,
+            watch_mode: ClipboardWatchMode::Polling,
+            selection_pending: false,
+            privacy_watch: false,
+            privacy_poll_due: true,
             type_listing: false,
             observed: None,
             owned: None,
@@ -4405,6 +4776,7 @@ mod tests {
             .start(
                 FakeBackend {
                     state: Arc::clone(&state),
+                    watch: None,
                 },
                 FakePrivacy {
                     events: Arc::clone(&events),
@@ -4873,6 +5245,7 @@ mod tests {
             .start(
                 FakeBackend {
                     state: Arc::clone(&state),
+                    watch: None,
                 },
                 FakePrivacy {
                     events: Arc::clone(&events),
@@ -4936,12 +5309,17 @@ mod tests {
         store.set_locked(true);
         let key_store: Arc<dyn PinKeyStore> = store.clone();
         let failed = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(Mutex::new(FakeState {
+            current: Some(FakeSelection::Text("monitor secret".to_string())),
+            ..FakeState::default()
+        }));
         let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
         service.set_pin_key_store(key_store);
         service
             .start(
                 FakeBackend {
-                    state: Arc::new(Mutex::new(FakeState::default())),
+                    state: Arc::clone(&state),
+                    watch: None,
                 },
                 FailingPrivacy {
                     failed: Arc::clone(&failed),
@@ -4949,9 +5327,19 @@ mod tests {
             )
             .expect("worker starts");
         wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+        wait_until(|| service.latest().items.len() == 1);
 
+        // A logind owner loss takes this same error path.
         failed.store(true, Ordering::Relaxed);
         wait_until(|| service.latest().lifecycle == ClipboardLifecycle::Unavailable);
+        assert!(
+            service.latest().items.is_empty(),
+            "a failed privacy monitor must wipe retained content"
+        );
+        assert!(
+            state.lock().expect("fake state").current.is_none(),
+            "a failed privacy monitor must release the owned selection"
+        );
         store.set_locked(false);
         let reads = store.reads.load(Ordering::Relaxed);
         thread::sleep(PIN_RETRY_INTERVAL * 4);

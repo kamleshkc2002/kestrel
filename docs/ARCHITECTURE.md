@@ -368,8 +368,24 @@ Wayland data-control (text under the common plain-text MIME types, PNG under
 source down. Text reads still use arboard, and the X11 path keeps arboard's
 ownership. A release only ever removes Kestrel's own source: if another source
 still exposes those bytes, that is not Kestrel's selection to clear, and the
-next poll captures the re-published content again so the state stays visible
-rather than silently diverging.
+next change notification reads the re-published content again so the state stays
+visible rather than silently diverging.
+
+The worker learns about selection changes from the adapter instead of re-reading
+on a fixed cadence. Wayland binds a data-control watcher and blocks on the
+compositor's selection event; X11 selects XFixes owner, window-destroy, and
+client-close events for `CLIPBOARD`. Logind lock arrives as session
+`PropertiesChanged` for `LockedHint` and sleep as the manager's
+`PrepareForSleep` signal, which is the only shape logind emits for sleep. Each
+wait lasts until the nearest deadline: the automatic selection clear, the oldest
+entry's retention expiry, a pin load retry, or the next paste-staging step, with
+a 60-second safety cap for slower maintenance. A backend that cannot bind a watch keeps the 250 ms read
+loop, and the snapshot carries `ClipboardWatchMode::{Events, Polling}` so the
+Clipboard page can say which one is active. The stop request travels through the
+worker's channel, so a blocked wait wakes immediately and the thread joins.
+Each wait lasts at most until the nearest real deadline — the automatic
+selection clear, the oldest entry's retention expiry, a pin load retry, or the
+next paste-staging step — with a 60-second safety cap for slower maintenance.
 
 Session privacy is unchanged from the retention contract: lock, sleep, service
 stop, shutdown, and wipe drop every retained entry (pinned entries included) and

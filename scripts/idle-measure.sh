@@ -12,17 +12,20 @@
 #
 # The measured process is started with fresh XDG directories seeded with one
 # config.toml per preset, so setup never runs and the presets differ only in
-# the features they enable. Sway ignores xdg_toplevel.set_minimized, so the
-# closed state sends the window's close request (Kestrel's minimize path) and
-# then moves it to the scratchpad, which stops compositing it.
+# the features they enable. A private system bus serves the logind fake, so
+# clipboard history (which requires a logind session) runs in the presets that
+# enable it. Sway ignores xdg_toplevel.set_minimized, so the closed state sends
+# the window's close request (Kestrel's minimize path) and then moves it to the
+# scratchpad, which stops compositing it.
 #
-# Missing sway or dbus-run-session skips the run; KESTREL_REQUIRE_IDLE_MEASURE=1
-# makes it fatal. SWAY_FLAGS adds Sway options (for example --unsupported-gpu
-# on NVIDIA hosts).
+# Missing sway, dbus-run-session, or python3-gi skips the run;
+# KESTREL_REQUIRE_IDLE_MEASURE=1 makes it fatal. SWAY_FLAGS adds Sway options
+# (for example --unsupported-gpu on NVIDIA hosts).
 
 set -euo pipefail
 
 script_path="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+script_dir="$(dirname -- "$script_path")"
 
 # Feature IDs the setup presets choose between; see FeaturePreset in
 # apps/kestrel/src/runtime/mod.rs. The tray stays as the user left it.
@@ -78,8 +81,10 @@ preset_enables() {
       return 1
       ;;
     balanced)
+      # Clipboard history stays on here so the idle guard measures its event
+      # wait in both feature-rich presets.
       case "$feature" in
-        clipboard.history | global.shortcuts) return 1 ;;
+        global.shortcuts) return 1 ;;
         *) return 0 ;;
       esac
       ;;
@@ -213,6 +218,22 @@ measure_preset() {
     return 1
   fi
   sleep "$settle"
+  if preset_enables "$preset" clipboard.history; then
+    local state
+    state="$(timeout 15 "$binary" --command diagnostics.dump-state 2>/dev/null || true)"
+    if ! printf '%s\n' "$state" | grep -F $'\tclipboard.history\t' |
+      grep -q 'lifecycle=running'; then
+      printf 'clipboard history did not start in the %s/%s run:\n' \
+        "$preset" "$window" >&2
+      printf '%s\n' "$state" | grep -F clipboard.history >&2 || true
+      tail -n 20 -- "$log" >&2 || true
+      kill "$pid" 2>/dev/null || true
+      return 1
+    fi
+    printf 'clipboard history in %s/%s: %s\n' "$preset" "$window" \
+      "$(printf '%s\n' "$state" | grep -F $'\tclipboard.history\t')"
+    sleep 1
+  fi
   if [ "$window" = "closed" ] && ! close_window "$pid" "$app_id"; then
     kill "$pid" 2>/dev/null || true
     return 1
@@ -349,7 +370,7 @@ if [ -n "$baseline" ]; then
 fi
 
 require_measure="${KESTREL_REQUIRE_IDLE_MEASURE:-0}"
-for command in sway swaymsg dbus-run-session; do
+for command in sway swaymsg dbus-run-session dbus-daemon python3; do
   if ! command -v "$command" >/dev/null; then
     if [ "$require_measure" = "1" ]; then
       printf 'required idle-measure dependency is unavailable: %s\n' "$command" >&2
@@ -359,12 +380,22 @@ for command in sway swaymsg dbus-run-session; do
     exit 0
   fi
 done
+if ! python3 -c 'import gi; gi.require_version("Gio", "2.0")' >/dev/null 2>&1; then
+  if [ "$require_measure" = "1" ]; then
+    printf 'required idle-measure dependency is unavailable: python3-gi\n' >&2
+    exit 1
+  fi
+  printf 'idle measurement skipped: python3-gi is unavailable\n'
+  exit 0
+fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/kestrel-idle.XXXXXX")"
 chmod 700 "$work"
 mkdir -p "$work/run"
 chmod 700 "$work/run"
 sway_pid=""
+system_bus_pid=""
+fake_logind_pid=""
 cleanup() {
   if [ -n "$sway_pid" ]; then
     kill "$sway_pid" 2>/dev/null || true
@@ -373,6 +404,14 @@ cleanup() {
       sleep 0.1
     done
     kill -9 "$sway_pid" 2>/dev/null || true
+  fi
+  if [ -n "$fake_logind_pid" ]; then
+    kill "$fake_logind_pid" 2>/dev/null || true
+    wait "$fake_logind_pid" 2>/dev/null || true
+  fi
+  if [ -n "$system_bus_pid" ]; then
+    kill "$system_bus_pid" 2>/dev/null || true
+    wait "$system_bus_pid" 2>/dev/null || true
   fi
   rm -rf "$work"
 }
@@ -393,6 +432,48 @@ cat >"$work/bus.conf" <<EOF
   </policy>
 </busconfig>
 EOF
+
+# A private system bus serves the logind fake, so clipboard history starts
+# instead of reporting that no logind session is available.
+mkdir -p "$work/run/system-bus" "$work/logind"
+chmod 700 "$work/run/system-bus"
+cat >"$work/system-bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>system</type>
+  <listen>unix:dir=$work/run/system-bus</listen>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF
+system_bus_output="$(dbus-daemon --config-file="$work/system-bus.conf" --fork \
+  --print-address=1 --print-pid=1)"
+export DBUS_SYSTEM_BUS_ADDRESS="$(printf '%s\n' "$system_bus_output" | sed -n 1p)"
+system_bus_pid="$(printf '%s\n' "$system_bus_output" | sed -n 2p)"
+FAKE_LOGIND_BUS_ADDRESS="$DBUS_SYSTEM_BUS_ADDRESS" \
+  FAKE_LOGIND_STATE_DIR="$work/logind" \
+  python3 "$script_dir/fakes/logind.py" >"$work/logind.log" 2>&1 &
+fake_logind_pid="$!"
+for _ in $(seq 1 100); do
+  if [ -f "$work/logind/ready" ]; then
+    break
+  fi
+  if ! kill -0 "$fake_logind_pid" 2>/dev/null; then
+    printf 'fake logind exited before becoming ready:\n' >&2
+    cat "$work/logind.log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [ ! -f "$work/logind/ready" ]; then
+  printf 'fake logind did not become ready:\n' >&2
+  cat "$work/logind.log" >&2
+  exit 1
+fi
 
 # shellcheck disable=SC2086 # SWAY_FLAGS is a list of options.
 env -u DISPLAY -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
