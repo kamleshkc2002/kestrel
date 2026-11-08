@@ -61,6 +61,7 @@ mod ffi {
     pub const KEYBOARD_MODE_EXCLUSIVE: c_int = 1;
     pub const KEYBOARD_MODE_ON_DEMAND: c_int = 2;
     pub const EDGE_TOP: c_int = 2;
+    pub const EDGE_RIGHT: c_int = 1;
 
     unsafe extern "C" {
         pub fn gtk_layer_is_supported() -> c_int;
@@ -139,6 +140,32 @@ pub fn configure_window(window: &gtk::Window, namespace: &str) {
 
 #[cfg(not(kestrel_layer_shell))]
 pub fn configure_window(_window: &gtk::Window, _namespace: &str) {}
+
+/// Makes `window` a floating shelf overlay at the right edge, centred
+/// vertically, taking the keyboard only when the user clicks it. Same
+/// preconditions as [`configure_window`].
+#[cfg(kestrel_layer_shell)]
+pub fn configure_shelf_window(window: &gtk::Window, namespace: &str) {
+    use gtk::glib::object::ObjectType;
+    use std::ffi::CString;
+
+    let Ok(namespace) = CString::new(namespace) else {
+        return;
+    };
+    let window = window.as_ptr().cast::<std::os::raw::c_void>();
+    // SAFETY: `window` is a live, unmapped GtkWindow and `namespace` outlives the call.
+    unsafe {
+        ffi::gtk_layer_init_for_window(window);
+        ffi::gtk_layer_set_layer(window, ffi::LAYER_OVERLAY);
+        ffi::gtk_layer_set_keyboard_mode(window, ffi::KEYBOARD_MODE_ON_DEMAND);
+        ffi::gtk_layer_set_anchor(window, ffi::EDGE_RIGHT, 1);
+        ffi::gtk_layer_set_margin(window, ffi::EDGE_RIGHT, 24);
+        ffi::gtk_layer_set_namespace(window, namespace.as_ptr());
+    }
+}
+
+#[cfg(not(kestrel_layer_shell))]
+pub fn configure_shelf_window(_window: &gtk::Window, _namespace: &str) {}
 
 /// Makes `window` a status overlay at the top centre: above normal windows,
 /// taking the keyboard only while [`set_status_keyboard`] allows it, with

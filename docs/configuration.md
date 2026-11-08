@@ -58,12 +58,13 @@ Settings) and shows one at a time. Each feature's settings sit on its own page,
 and the Settings page keeps app-wide choices. The sidebar search filters pages
 and settings together. On narrow windows the sidebar and the page take turns.
 
-`shelf` holds the shelf's bounds and whether its entries survive a
-restart: `keep_across_restarts` (default `false`), `max_items` (1–200; default
-50), `max_text_megabytes` (1–4; default 1), `max_image_megabytes` (1–64; default
-16), and `max_age_hours` (0–720; default 0, never). The switch on the Shelf page
-writes `keep_across_restarts`; the bounds are edited here. See
-[Shelf](features.md#shelf--filesshelf).
+`shelf` holds the shelf's bounds, whether its entries survive a restart, and
+whether new screenshots join it: `keep_across_restarts` (default `false`),
+`add_screenshots` (default `false`), `max_items` (1–200; default 50),
+`max_text_megabytes` (1–4; default 1), `max_image_megabytes` (1–64; default 16),
+and `max_age_hours` (0–720; default 0, never). The switches on the Shelf page
+write `keep_across_restarts` and `add_screenshots`; the bounds are edited here.
+See [Shelf](features.md#shelf--filesshelf).
 
 - **First launch:** when no configuration file exists yet, setup offers a preset
   and explains what each feature it turns on uses and keeps; anything you

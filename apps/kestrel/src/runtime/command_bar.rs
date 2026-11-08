@@ -320,14 +320,21 @@ impl ApplicationRuntime {
                     "Open shelf",
                     "Keep files, text, and links ready to drag into another app",
                     "shelf.open",
-                    &["shelf", "stage", "files", "links", "drop"][..],
+                    &["shelf", "floating", "files", "links", "drop"][..],
+                ),
+                (
+                    "kestrel:shelf-page",
+                    "Show Shelf page",
+                    "Open the shelf's page in the main window",
+                    "shelf.page",
+                    &["shelf", "page", "settings", "files", "links"][..],
                 ),
                 (
                     "kestrel:shelf-add-clipboard",
                     "Add clipboard to shelf",
                     "Add the current clipboard text, link, or files to the shelf",
                     "shelf.add-clipboard",
-                    &["shelf", "clipboard", "paste", "stage"][..],
+                    &["shelf", "clipboard", "paste", "copy"][..],
                 ),
                 (
                     "kestrel:shelf-clear",
@@ -957,6 +964,7 @@ mod tests {
             "kestrel:capture.color",
             "kestrel:scratchpad",
             "kestrel:shelf-open",
+            "kestrel:shelf-page",
             "kestrel:shelf-add-clipboard",
             "kestrel:shelf-clear",
         ] {

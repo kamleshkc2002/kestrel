@@ -285,9 +285,14 @@ impl CaptureService {
         self.locked_history()?.read(id)
     }
 
+    /// The stored PNG's file path.
+    pub fn path(&self, id: CaptureId) -> Option<PathBuf> {
+        self.history.as_ref()?.lock().ok()?.path(id)
+    }
+
     /// File path of `id` for thumbnail rendering.
     pub fn thumbnail_path(&self, id: CaptureId) -> Option<PathBuf> {
-        self.history.as_ref()?.lock().ok()?.path(id)
+        self.path(id)
     }
 
     /// Atomically copies `id` to `destination`.
