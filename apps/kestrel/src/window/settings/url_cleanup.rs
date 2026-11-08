@@ -85,6 +85,7 @@ fn build_preview_group(
         "Paste or type one link; the result updates as you type.",
         &link,
     );
+    link.set_halign(gtk::Align::Fill);
     group.add(&link_row);
     filter_rows.push((
         link_row.clone().upcast(),
@@ -101,22 +102,21 @@ fn build_preview_group(
         "The link after cleanup. Nothing is copied until you ask.",
         &result,
     );
+    result.set_halign(gtk::Align::Fill);
     group.add(&result_row);
     filter_rows.push((
         result_row.clone().upcast(),
         "clean links cleaned result preview".to_owned(),
     ));
 
+    // The removed list and the error show with a result, so the search leaves them alone.
     let removed = plain_row()
         .title("Removed parameters")
         .subtitle("Nothing to remove")
         .subtitle_lines(0)
         .build();
+    removed.set_visible(false);
     group.add(&removed);
-    filter_rows.push((
-        removed.clone().upcast(),
-        "clean links removed parameters utm".to_owned(),
-    ));
 
     let error = plain_row()
         .title("Link error")
@@ -125,10 +125,6 @@ fn build_preview_group(
         .build();
     error.set_visible(false);
     group.add(&error);
-    filter_rows.push((
-        error.clone().upcast(),
-        "clean links link error unsupported malformed".to_owned(),
-    ));
 
     let copy = gtk::Button::with_label("Copy cleaned link");
     copy.set_valign(Align::Center);
@@ -318,7 +314,7 @@ fn update_preview(preview: &PreviewWidgets, rules: &UrlRules) {
     let link = link.trim();
     if link.is_empty() {
         preview.result.set_text("");
-        preview.removed.set_subtitle("");
+        preview.removed.set_visible(false);
         preview.error.set_subtitle("");
         preview.error.set_visible(false);
         preview.copy.set_sensitive(false);
@@ -330,13 +326,14 @@ fn update_preview(preview: &PreviewWidgets, rules: &UrlRules) {
             preview
                 .removed
                 .set_subtitle(&removed_lines(&cleaned.removed));
+            preview.removed.set_visible(true);
             preview.error.set_subtitle("");
             preview.error.set_visible(false);
             preview.copy.set_sensitive(true);
         }
         Err(error) => {
             preview.result.set_text("");
-            preview.removed.set_subtitle("");
+            preview.removed.set_visible(false);
             preview.error.set_subtitle(match error.kind {
                 UrlCleanupErrorKind::Unsupported => "Only http and https links can be cleaned.",
                 UrlCleanupErrorKind::Malformed => "The link is not a well-formed address.",
