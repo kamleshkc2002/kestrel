@@ -683,8 +683,8 @@ enum WorkerCommand {
     PasteObservation(PasteObservation),
     /// The backend's change watch reported a selection change.
     SelectionChanged,
-    /// The privacy watch reported a session state change.
-    PrivacyChanged,
+    /// The privacy watch reported an edge, or asks for a re-read.
+    PrivacyChanged(Option<SessionPrivacyEvent>),
     /// The privacy watch stopped working; the worker returns to polling.
     PrivacyWatchFailed,
     /// The change watch stopped working; the worker returns to polling.
@@ -893,7 +893,9 @@ impl ClipboardHistoryService {
                 match thread::Builder::new()
                     .name("kestrel-clipboard-privacy".to_string())
                     .spawn(move || {
-                        if !watch.run(&mut || sender.send(WorkerCommand::PrivacyChanged).is_ok()) {
+                        if !watch.run(&mut |event| {
+                            sender.send(WorkerCommand::PrivacyChanged(event)).is_ok()
+                        }) {
                             let _ = sender.send(WorkerCommand::PrivacyWatchFailed);
                         }
                     }) {
@@ -2060,9 +2062,10 @@ fn run_worker<B: ClipboardBackend, P: PrivacyEventSource>(
             Ok(WorkerCommand::SelectionChanged) => {
                 state.selection_pending = true;
             }
-            Ok(WorkerCommand::PrivacyChanged) => {
-                state.privacy_poll_due = true;
-            }
+            Ok(WorkerCommand::PrivacyChanged(event)) => match event {
+                Some(event) => state.apply_privacy_edge(event),
+                None => state.privacy_poll_due = true,
+            },
             Ok(WorkerCommand::PrivacyWatchFailed) => {
                 state.privacy_watch = false;
                 state.privacy_poll_due = true;
@@ -2109,22 +2112,33 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         self.poll_privacy(snapshot)
     }
 
+    /// Applies one signal edge and keeps the monitor's edge state in step.
+    fn apply_privacy_edge(&mut self, event: SessionPrivacyEvent) {
+        self.privacy.observe_edge(event);
+        self.apply_privacy_event(event);
+        self.sync_pin_hold();
+    }
+
+    fn apply_privacy_event(&mut self, event: SessionPrivacyEvent) {
+        match event {
+            SessionPrivacyEvent::Locked => {
+                self.session_locked = true;
+                self.wipe_owned();
+            }
+            SessionPrivacyEvent::PreparingForSleep => {
+                self.asleep = true;
+                self.wipe_owned();
+            }
+            SessionPrivacyEvent::Unlocked => self.session_locked = false,
+            SessionPrivacyEvent::Resumed => self.asleep = false,
+        }
+    }
+
     fn poll_privacy(&mut self, snapshot: &Arc<Mutex<ClipboardSnapshot>>) -> bool {
         match self.privacy.poll_events() {
             Ok(events) => {
                 for event in events {
-                    match event {
-                        SessionPrivacyEvent::Locked => {
-                            self.session_locked = true;
-                            self.wipe_owned();
-                        }
-                        SessionPrivacyEvent::PreparingForSleep => {
-                            self.asleep = true;
-                            self.wipe_owned();
-                        }
-                        SessionPrivacyEvent::Unlocked => self.session_locked = false,
-                        SessionPrivacyEvent::Resumed => self.asleep = false,
-                    }
+                    self.apply_privacy_event(event);
                 }
                 self.sync_pin_hold();
                 false
@@ -2964,7 +2978,8 @@ mod tests {
     use kestrel_platform::clipboard::{
         ChangeWatchCancel, ClipboardBackend, ClipboardChangeWatch, ClipboardEntryKind,
         ClipboardError, ClipboardErrorKind, ClipboardKindSupport, ClipboardProvider,
-        ClipboardWatchMode, OwnedSelection, PrivacyEventSource, SessionPrivacyEvent,
+        ClipboardWatchMode, OwnedSelection, PrivacyChangeWatch, PrivacyEventSource,
+        SessionPrivacyEvent,
     };
     use kestrel_platform::pin_store::{self, SavedPin};
     use kestrel_platform::secret_service::{
@@ -5349,5 +5364,135 @@ mod tests {
             "a failed privacy monitor must stop keyring retries"
         );
         service.stop();
+    }
+
+    enum PrivacyStep {
+        Signal(Option<SessionPrivacyEvent>),
+        Stop,
+    }
+
+    struct FakePrivacyWatch {
+        steps: Receiver<PrivacyStep>,
+        cancel: Sender<PrivacyStep>,
+    }
+
+    impl PrivacyChangeWatch for FakePrivacyWatch {
+        fn run(&mut self, changed: &mut dyn FnMut(Option<SessionPrivacyEvent>) -> bool) -> bool {
+            loop {
+                match self.steps.recv() {
+                    Ok(PrivacyStep::Signal(event)) => {
+                        if !changed(event) {
+                            return true;
+                        }
+                    }
+                    Ok(PrivacyStep::Stop) | Err(_) => return true,
+                }
+            }
+        }
+
+        fn cancel_handle(&self) -> ChangeWatchCancel {
+            let cancel = self.cancel.clone();
+            ChangeWatchCancel::new(move || {
+                let _ = cancel.send(PrivacyStep::Stop);
+            })
+        }
+    }
+
+    /// Properties always read false; only the signal payloads carry edges.
+    struct SignalPrivacy {
+        steps: Option<Receiver<PrivacyStep>>,
+        cancel: Sender<PrivacyStep>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl PrivacyEventSource for SignalPrivacy {
+        fn poll_events(&mut self) -> Result<Vec<SessionPrivacyEvent>, ClipboardError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+
+        fn take_watches(&mut self) -> Result<Vec<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
+            let cancel = self.cancel.clone();
+            Ok(self
+                .steps
+                .take()
+                .map(|steps| {
+                    Box::new(FakePrivacyWatch { steps, cancel }) as Box<dyn PrivacyChangeWatch>
+                })
+                .into_iter()
+                .collect())
+        }
+    }
+
+    fn queued_privacy_edges_keep_both(first: SessionPrivacyEvent, second: SessionPrivacyEvent) {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let writer = PinKey::from_bytes(&[9; PIN_KEY_BYTES]).expect("exact length");
+        pin_store::write_pins(
+            &path,
+            &writer,
+            &[SavedPin::new("queued secret", super::unix_seconds())],
+        )
+        .expect("encrypted write");
+        let store = Arc::new(FakeKeyStore::with_key(9));
+        let key_store: Arc<dyn PinKeyStore> = store.clone();
+        let state = Arc::new(Mutex::new(FakeState {
+            current: Some(FakeSelection::Text("owned".to_string())),
+            ..FakeState::default()
+        }));
+        let (steps, receiver) = std::sync::mpsc::channel();
+        let mut service = ClipboardHistoryService::new(pin_policy(path)).expect("valid policy");
+        service.set_pin_key_store(key_store);
+        service
+            .start(
+                FakeBackend {
+                    state: Arc::clone(&state),
+                    watch: None,
+                },
+                SignalPrivacy {
+                    steps: Some(receiver),
+                    cancel: steps.clone(),
+                    reads: Arc::new(AtomicUsize::new(0)),
+                },
+            )
+            .expect("worker starts");
+        wait_until(|| service.latest().items.len() == 1);
+        wait_until(|| service.latest().items.iter().any(|item| item.pinned));
+        let reads = store.reads.load(Ordering::Relaxed);
+
+        // Both edges are queued before the worker handles either, and the
+        // properties still read the released state.
+        steps
+            .send(PrivacyStep::Signal(Some(first)))
+            .expect("watch receives");
+        steps
+            .send(PrivacyStep::Signal(Some(second)))
+            .expect("watch receives");
+
+        wait_until(|| service.latest().items.is_empty());
+        assert!(
+            service.latest().items.is_empty(),
+            "the hold edge must wipe even when the properties read released"
+        );
+        assert!(
+            state.lock().expect("fake state").current.is_none(),
+            "the hold edge must release the owned selection"
+        );
+        // The release edge reloads saved pins, which reads the key again.
+        wait_until(|| store.reads.load(Ordering::Relaxed) > reads);
+        service.stop();
+    }
+
+    #[test]
+    fn queued_sleep_edges_wipe_and_resume_reloads_pins() {
+        queued_privacy_edges_keep_both(
+            SessionPrivacyEvent::PreparingForSleep,
+            SessionPrivacyEvent::Resumed,
+        );
+    }
+
+    #[test]
+    fn queued_lock_edges_wipe_and_unlock_reloads_pins() {
+        queued_privacy_edges_keep_both(SessionPrivacyEvent::Locked, SessionPrivacyEvent::Unlocked);
     }
 }

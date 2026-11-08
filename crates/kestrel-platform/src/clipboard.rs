@@ -139,12 +139,14 @@ pub trait ClipboardChangeWatch: Send + 'static {
 
 /// A blocking source of session lock and sleep changes.
 pub trait PrivacyChangeWatch: Send + 'static {
-    /// Runs until cancelled or the bus closes, calling `changed` after each
-    /// session state change.
+    /// Runs until cancelled or the bus closes, calling `changed` for each
+    /// session signal edge.
     ///
+    /// `Some(event)` is an edge the signal carried; `None` asks the worker to
+    /// re-read the current state (an invalidated property or a new owner).
     /// Returns `true` when `changed` asked to stop and `false` when the signal
     /// stream ended or could not be registered.
-    fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool;
+    fn run(&mut self, changed: &mut dyn FnMut(Option<SessionPrivacyEvent>) -> bool) -> bool;
 
     /// Interrupts a blocked [`PrivacyChangeWatch::run`].
     fn cancel_handle(&self) -> ChangeWatchCancel;
@@ -1017,6 +1019,12 @@ pub trait PrivacyEventSource: Send + 'static {
     fn take_watches(&mut self) -> Result<Vec<Box<dyn PrivacyChangeWatch>>, ClipboardError> {
         Ok(Vec::new())
     }
+
+    /// Records an edge a watch already delivered, so a later re-read neither
+    /// repeats nor drops it.
+    fn observe_edge(&mut self, event: SessionPrivacyEvent) {
+        let _ = event;
+    }
 }
 
 pub struct LogindPrivacyMonitor {
@@ -1074,6 +1082,15 @@ impl PrivacyEventSource for LogindPrivacyMonitor {
             Box::new(LogindOwnerWatch::new()?),
         ])
     }
+
+    fn observe_edge(&mut self, event: SessionPrivacyEvent) {
+        match event {
+            SessionPrivacyEvent::Locked => self.was_locked = true,
+            SessionPrivacyEvent::Unlocked => self.was_locked = false,
+            SessionPrivacyEvent::PreparingForSleep => self.was_preparing_for_sleep = true,
+            SessionPrivacyEvent::Resumed => self.was_preparing_for_sleep = false,
+        }
+    }
 }
 
 /// Reports logind property changes from a dedicated connection.
@@ -1081,6 +1098,15 @@ struct LogindPrivacyWatch {
     connection: BusConnection,
     shutdown: zbus::Connection,
     session_path: OwnedObjectPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivacySignal {
+    /// Not a property or signal this watch cares about.
+    Ignored,
+    /// The property was invalidated; read the current state.
+    Reread,
+    Edge(SessionPrivacyEvent),
 }
 
 impl LogindPrivacyWatch {
@@ -1098,33 +1124,52 @@ impl LogindPrivacyWatch {
         })
     }
 
-    fn matches(&self, message: &zbus::Message) -> bool {
+    fn decode(&self, message: &zbus::Message) -> PrivacySignal {
         let header = message.header();
         let interface = header.interface().map(|interface| interface.as_str());
         let member = header.member().map(|member| member.as_str());
         match (interface, member) {
             // Sleep is a signal only: the manager property refuses changes.
-            (Some(MANAGER_INTERFACE), Some("PrepareForSleep")) => true,
+            (Some(MANAGER_INTERFACE), Some("PrepareForSleep")) => {
+                match message.body().deserialize::<bool>() {
+                    Ok(true) => PrivacySignal::Edge(SessionPrivacyEvent::PreparingForSleep),
+                    Ok(false) => PrivacySignal::Edge(SessionPrivacyEvent::Resumed),
+                    Err(_) => PrivacySignal::Reread,
+                }
+            }
             (Some("org.freedesktop.DBus.Properties"), Some("PropertiesChanged")) => {
                 let Ok((changed_interface, changed, invalidated)) =
                     message
                         .body()
                         .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
                 else {
-                    return false;
+                    return PrivacySignal::Reread;
                 };
                 let path = header.path().map(|path| path.as_str());
-                changed_interface == SESSION_INTERFACE
-                    && path == Some(self.session_path.as_str())
-                    && mentions_property(&changed, &invalidated, "LockedHint")
+                if changed_interface != SESSION_INTERFACE
+                    || path != Some(self.session_path.as_str())
+                {
+                    return PrivacySignal::Ignored;
+                }
+                match changed.get("LockedHint") {
+                    Some(value) => match value.downcast_ref::<bool>() {
+                        Ok(true) => PrivacySignal::Edge(SessionPrivacyEvent::Locked),
+                        Ok(false) => PrivacySignal::Edge(SessionPrivacyEvent::Unlocked),
+                        Err(_) => PrivacySignal::Reread,
+                    },
+                    None if invalidated.iter().any(|name| name == "LockedHint") => {
+                        PrivacySignal::Reread
+                    }
+                    None => PrivacySignal::Ignored,
+                }
             }
-            _ => false,
+            _ => PrivacySignal::Ignored,
         }
     }
 }
 
 impl PrivacyChangeWatch for LogindPrivacyWatch {
-    fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool {
+    fn run(&mut self, changed: &mut dyn FnMut(Option<SessionPrivacyEvent>) -> bool) -> bool {
         let Ok(rule) = privacy_match_rule() else {
             return false;
         };
@@ -1133,14 +1178,25 @@ impl PrivacyChangeWatch for LogindPrivacyWatch {
         };
         // Read the current state once the rule exists so a change during
         // startup is not missed between the worker's first poll and the rule.
-        if !changed() {
+        if !changed(None) {
             return true;
         }
+        let mut last = None;
         for message in messages {
             let Ok(message) = message else {
                 return false;
             };
-            if self.matches(&message) && !changed() {
+            let event = match self.decode(&message) {
+                PrivacySignal::Ignored => continue,
+                PrivacySignal::Reread => None,
+                PrivacySignal::Edge(event) => Some(event),
+            };
+            // Coalesce only an adjacent duplicate; opposite edges both go.
+            if event.is_some() && event == last {
+                continue;
+            }
+            last = event;
+            if !changed(event) {
                 return true;
             }
         }
@@ -1178,7 +1234,7 @@ impl LogindOwnerWatch {
 }
 
 impl PrivacyChangeWatch for LogindOwnerWatch {
-    fn run(&mut self, changed: &mut dyn FnMut() -> bool) -> bool {
+    fn run(&mut self, changed: &mut dyn FnMut(Option<SessionPrivacyEvent>) -> bool) -> bool {
         let Ok(rule) = logind_owner_match_rule() else {
             return false;
         };
@@ -1192,7 +1248,7 @@ impl PrivacyChangeWatch for LogindOwnerWatch {
             match logind_owner_lost(&message) {
                 Some(true) => return false,
                 // A new owner replaced the old one; read it once more.
-                Some(false) if !changed() => return true,
+                Some(false) if !changed(None) => return true,
                 _ => {}
             }
         }
@@ -1234,14 +1290,6 @@ fn logind_owner_lost(message: &zbus::Message) -> Option<bool> {
         return None;
     };
     (name == LOGIN_DESTINATION).then_some(new.is_empty())
-}
-
-fn mentions_property(
-    changed: &HashMap<String, OwnedValue>,
-    invalidated: &[String],
-    name: &str,
-) -> bool {
-    changed.contains_key(name) || invalidated.iter().any(|invalidated| invalidated == name)
 }
 
 fn read_privacy_state(
