@@ -677,10 +677,14 @@ mod tests {
     fn scanned_entries_launch_through_gio_with_their_own_exec() {
         let dir = TempDir::new().expect("temp dir");
         let marker = dir.path().join("launched.txt");
+        // Renamed into place, so the marker never exists before its text does.
         let script = write(
             &dir,
             "run.sh",
-            &format!("echo launched > {}\n", marker.display()),
+            &format!(
+                "echo launched > {0}.part && mv {0}.part {0}\n",
+                marker.display()
+            ),
         );
         write(
             &dir,
