@@ -37,7 +37,9 @@ design with little real use so far, so reports are welcome.
 - **Should run:** glibc 2.39+ distributions such as Fedora 40+, Debian 13, and Arch (untested).
 - **Won't start:** Ubuntu 22.04, Debian 12, and older.
 
-Known limits are listed in [docs/features.md](docs/features.md#known-limits).
+Which features work on each desktop is in the
+[compatibility table](docs/compatibility.md). Known limits are listed in
+[docs/features.md](docs/features.md#known-limits).
 
 ## Install
 
@@ -73,9 +75,11 @@ Full detail is in [docs/privacy.md](docs/privacy.md).
 Feedback on the preview is welcome in
 [issue #331](https://github.com/kamleshkc2002/kestrel/issues/331); for a bug,
 use the [bug report form](https://github.com/kamleshkc2002/kestrel/issues/new?template=bug_report.yml).
-Settings → Diagnostic logs → Report a problem opens the form with your
-version, session, and distribution filled in; include the feature's status
-line and logs.
+To say whether a feature works on your desktop, use the
+[compatibility report form](https://github.com/kamleshkc2002/kestrel/issues/new?template=compatibility_report.yml).
+Settings → Diagnostic logs → Report a problem opens the bug form with your
+version, desktop, session, and distribution filled in; include the feature's
+status line and logs.
 
 ## Documentation
 

@@ -1,0 +1,76 @@
+name: Compatibility report
+description: Say whether a feature works on your desktop
+title: "[Compatibility]"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [compatibility table](https://github.com/kamleshkc2002/kestrel/blob/main/docs/compatibility.md) records what has been tested or reported for each desktop. A report here adds evidence for one feature.
+  - type: input
+    id: feature
+    attributes:
+      label: Feature
+      description: The feature name and its ID, such as `capture.recording` or `clipboard.history`. `kestrel --list-commands` prints the IDs.
+      placeholder: Screen recording — capture.recording
+    validations:
+      required: true
+  - type: dropdown
+    id: desktop
+    attributes:
+      label: Desktop
+      description: "The desktop or compositor you ran. `echo $XDG_CURRENT_DESKTOP` prints the value that ends up in the report."
+      options:
+        - COSMIC
+        - Sway
+        - Hyprland
+        - KDE Plasma
+        - GNOME
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: desktop-version
+    attributes:
+      label: Desktop and version
+      description: The desktop release and the distribution, such as COSMIC on Pop!_OS 24.04.
+      placeholder: COSMIC on Pop!_OS 24.04
+    validations:
+      required: true
+  - type: dropdown
+    id: session-type
+    attributes:
+      label: Session type
+      description: "`echo $XDG_SESSION_TYPE` prints the value that ends up in the report."
+      options:
+        - Wayland
+        - X11
+    validations:
+      required: true
+  - type: input
+    id: kestrel-version
+    attributes:
+      label: Kestrel version
+      description: The output of `kestrel --version`, or the AppImage file name.
+      placeholder: 0.1.0-preview.1
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      description: What the feature did on this desktop.
+      options:
+        - Works
+        - Partly works
+        - Does not work
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: What you did, what happened, and the status line the Feature Hub or the feature's page shows. Mention anything you installed or allowed to make it work.
+  - type: markdown
+    attributes:
+      value: |
+        Please don't paste clipboard contents, screenshots of private windows, or anything you wouldn't share publicly.
