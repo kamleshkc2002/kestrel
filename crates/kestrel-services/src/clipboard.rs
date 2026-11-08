@@ -1964,7 +1964,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             self.pins_dirty = false;
             self.last_pin_revision = self.history.pin_revision;
             if let Some(persistence) = self.pins.current() {
-                persistence.discard_pending();
+                persistence.hold();
             }
         } else if self.pins_held {
             self.pins_held = false;
@@ -2735,7 +2735,7 @@ mod tests {
         HistoryStore, MAX_MATCH_PREVIEW_CHARS, PinSaveState, PinStoreState, UrlRules, WorkerState,
         match_sensitive, plain_text,
     };
-    use crate::clipboard_pins::PinPersistence;
+    use crate::clipboard_pins::{PIN_RETRY_INTERVAL, PinPersistence};
 
     const PNG_2X2: &[u8] = &[
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6,
@@ -4316,6 +4316,7 @@ mod tests {
         locked: Mutex<bool>,
         unavailable: Mutex<bool>,
         deletes: AtomicUsize,
+        reads: AtomicUsize,
     }
 
     impl FakeKeyStore {
@@ -4339,6 +4340,7 @@ mod tests {
 
     impl PinKeyStore for FakeKeyStore {
         fn get(&self) -> Result<Option<PinKey>, PinKeyError> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
             if *self.unavailable.lock().expect("fake key store") {
                 return Err(PinKeyError::Unavailable);
             }
@@ -4740,6 +4742,40 @@ mod tests {
             .expect("preview succeeds");
         assert_eq!(preview.text, "survivor");
         wait_until(|| service.latest().pin_store.state == PinStoreState::Saved);
+
+        // A reload stuck on a locked keyring stops retrying once the session
+        // locks again, so a keyring that opens meanwhile decrypts nothing.
+        store.set_locked(true);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Locked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Locked);
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Locked);
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Held);
+        store.set_locked(false);
+        let reads = store.reads.load(Ordering::Relaxed);
+        thread::sleep(PIN_RETRY_INTERVAL * 4);
+        assert_eq!(
+            store.reads.load(Ordering::Relaxed),
+            reads,
+            "a held session must not retry the keyring"
+        );
+        assert!(service.latest().items.is_empty());
+
+        events
+            .lock()
+            .expect("fake events")
+            .push(SessionPrivacyEvent::Unlocked);
+        wait_until(|| service.latest().items.len() == 1);
         service.stop();
     }
 

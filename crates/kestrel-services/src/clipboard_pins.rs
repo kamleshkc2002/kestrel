@@ -147,7 +147,7 @@ impl PinSaveState {
 enum PinCommand {
     Save(Vec<SavedPin>),
     Load,
-    DiscardPending,
+    Hold,
     Wipe {
         response: Sender<Result<PinWipeReport, PinStoreError>>,
     },
@@ -213,9 +213,10 @@ impl PinPersistence {
         let _ = self.inner.sender.send(PinCommand::Load);
     }
 
-    /// Drops a queued save without reading or writing the store.
-    pub fn discard_pending(&self) {
-        let _ = self.inner.sender.send(PinCommand::DiscardPending);
+    /// Drops a queued save and any outstanding load or keyring retry; nothing
+    /// is read or written until the next `request_load`.
+    pub fn hold(&self) {
+        let _ = self.inner.sender.send(PinCommand::Hold);
     }
 
     /// Loaded pins waiting to be merged, oldest first; `Some` marks a finished
@@ -342,9 +343,10 @@ fn run_pin_worker(
                 pending = Some(pins);
                 deadline = Some(Instant::now() + PIN_SAVE_DEBOUNCE);
             }
-            Ok(PinCommand::DiscardPending) => {
+            Ok(PinCommand::Hold) => {
                 pending = None;
                 deadline = None;
+                needs_load = false;
             }
             Ok(PinCommand::Load) => {
                 // A reload follows a lock or a fresh start; queued content must
