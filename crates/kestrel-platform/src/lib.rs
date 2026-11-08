@@ -11,6 +11,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod clock;
 pub mod dbus_error;
+pub mod file_actions;
 pub mod global_shortcuts;
 pub mod install_handoff;
 pub mod launcher;

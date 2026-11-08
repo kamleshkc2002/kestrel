@@ -2,6 +2,7 @@
 
 use super::*;
 use kestrel_core::ShelfItemKind;
+use kestrel_platform::file_actions::{FileIdentity, RevealSupport};
 use std::time::{Duration, SystemTime};
 
 pub(crate) struct ShelfPresentation {
@@ -10,6 +11,8 @@ pub(crate) struct ShelfPresentation {
     pub snapshot: Option<ShelfSnapshot>,
     pub limits: kestrel_core::ShelfConfiguration,
     pub warning: Option<String>,
+    /// What the desktop offers for showing a file in its folder.
+    pub reveal: RevealSupport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +30,12 @@ pub struct ShelfItemViewModel {
     /// The hand-off type named by the file extension, without reading it.
     pub install: Option<kestrel_platform::install_handoff::InstallTargetKind>,
     pub content: kestrel_core::ShelfContent,
+    /// The file entry's identity when the row was built.
+    pub identity: Option<FileIdentity>,
+    /// The display name of the app that shows files, when it reports one.
+    pub reveal_provider: Option<String>,
+    /// The file manager interface can select the file, not only open its folder.
+    pub reveal_selects: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +70,8 @@ impl ShelfViewModel {
     pub(crate) fn from_presentation(presentation: ShelfPresentation) -> Self {
         let now = SystemTime::now();
         let snapshot = presentation.snapshot;
+        let reveal_provider = presentation.reveal.provider.clone();
+        let reveal_selects = presentation.reveal.selects;
         let warning = snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.warning.clone())
@@ -92,6 +103,9 @@ impl ShelfViewModel {
                             directory: entry.directory,
                             install,
                             content: entry.content,
+                            identity: entry.identity,
+                            reveal_provider: reveal_provider.clone(),
+                            reveal_selects,
                         }
                     })
                     .collect::<Vec<_>>()
@@ -150,6 +164,7 @@ mod tests {
 
     use super::ShelfPresentation;
     use crate::view_model::ShelfViewModel;
+    use kestrel_platform::file_actions::RevealSupport;
     use kestrel_services::shelf::{ShelfEntry, ShelfSnapshot};
 
     fn entry(content: ShelfContent, available: bool, size: Option<u64>) -> ShelfEntry {
@@ -163,6 +178,7 @@ mod tests {
             available,
             directory: false,
             size_bytes: size,
+            identity: None,
         }
     }
 
@@ -198,6 +214,7 @@ mod tests {
             }),
             limits: kestrel_core::ShelfConfiguration::default(),
             warning: None,
+            reveal: RevealSupport::none(),
         });
         assert_eq!(model.items.len(), 2);
         assert_eq!(model.items[0].detail, "Missing · /tmp/gone.txt");
@@ -258,6 +275,7 @@ mod tests {
             }),
             limits: kestrel_core::ShelfConfiguration::default(),
             warning: None,
+            reveal: RevealSupport::none(),
         });
         assert_eq!(model.items[0].detail, "11 B · 1 h old");
         assert!(model.keep);

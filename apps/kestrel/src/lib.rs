@@ -696,6 +696,26 @@ pub enum ApplicationCommand {
     SetShelfKeep(bool),
     /// Adds every new screenshot to the shelf.
     SetShelfAddScreenshots(bool),
+    /// Moves one file entry into a folder the dialog confirmed.
+    ShelfMoveItem {
+        id: u64,
+        dest_dir: std::path::PathBuf,
+        expected: kestrel_platform::file_actions::FileIdentity,
+    },
+    /// Renames one file entry after the dialog confirmed its identity.
+    ShelfRenameItem {
+        id: u64,
+        new_name: String,
+        expected: kestrel_platform::file_actions::FileIdentity,
+    },
+    /// Shows one file entry in the file manager, or opens its folder.
+    ShelfRevealItem(u64),
+    /// Saves one clipboard image entry as a bounded PNG.
+    ExportClipboardImage {
+        entry_id: u64,
+        dest: std::path::PathBuf,
+        replace: bool,
+    },
     /// Opens the floating shelf without closing it when it is already open.
     OpenShelfFloat,
     SetSnippetExpansionTiming(SnippetExpansionTiming),

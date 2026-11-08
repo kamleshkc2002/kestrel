@@ -9,6 +9,7 @@ use kestrel_core::{
     ShelfAddOutcome, ShelfContent, ShelfError, ShelfItem, ShelfItemKind, ShelfLimits, shelf_expire,
     shelf_place,
 };
+use kestrel_platform::file_actions::FileIdentity;
 
 pub const FEATURE_ID: &str = "files.shelf";
 
@@ -42,6 +43,9 @@ pub struct ShelfEntry {
     /// A file entry whose path is a directory.
     pub directory: bool,
     pub size_bytes: Option<u64>,
+    /// The file entry's identity, captured with the snapshot so an action can
+    /// confirm the same file before it changes anything.
+    pub identity: Option<FileIdentity>,
 }
 
 /// Entries and the warning a failed load left.
@@ -166,6 +170,26 @@ impl ShelfService {
         Ok(())
     }
 
+    /// Points a file entry at its new path after a move or rename.
+    pub fn update_file(&mut self, id: u64, path: PathBuf, name: String) -> Result<(), ShelfError> {
+        let item = self
+            .items
+            .iter_mut()
+            .find(|item| item.id == id)
+            .ok_or(ShelfError::UnknownItem)?;
+        match &mut item.content {
+            ShelfContent::File {
+                path: current,
+                name: current_name,
+            } => {
+                *current = path;
+                *current_name = name;
+                Ok(())
+            }
+            _ => Err(ShelfError::NotAFile),
+        }
+    }
+
     /// Removes unpinned entries, or every entry; returns how many left.
     pub fn clear(&mut self, include_pinned: bool) -> usize {
         let before = self.items.len();
@@ -203,6 +227,10 @@ impl ShelfService {
                     },
                     _ => (true, false, item.content.size_bytes()),
                 };
+                let identity = match &item.content {
+                    ShelfContent::File { path, .. } => FileIdentity::read(path).ok(),
+                    _ => None,
+                };
                 ShelfEntry {
                     id: item.id,
                     added: item.added,
@@ -213,6 +241,7 @@ impl ShelfService {
                     available,
                     directory,
                     size_bytes,
+                    identity,
                 }
             })
             .collect();
@@ -236,6 +265,7 @@ impl ShelfService {
 mod tests {
     use std::{
         fs,
+        path::PathBuf,
         time::{Duration, UNIX_EPOCH},
     };
 
@@ -330,12 +360,17 @@ mod tests {
             .find(|entry| entry.available && !entry.directory)
             .expect("the present file is available");
         assert_eq!(present_entry.size_bytes, Some(5));
+        assert!(
+            present_entry.identity.is_some(),
+            "an available file carries the identity an action confirms"
+        );
         let missing_entry = snapshot
             .entries
             .iter()
             .find(|entry| !entry.available)
             .expect("the missing file is reported");
         assert_eq!(missing_entry.size_bytes, None);
+        assert_eq!(missing_entry.identity, None);
         assert_eq!(missing_entry.name, "missing.txt");
         let folder_entry = snapshot
             .entries
@@ -344,6 +379,41 @@ mod tests {
             .expect("the directory is reported as one");
         assert!(folder_entry.available);
         assert_eq!(folder_entry.size_bytes, None);
+    }
+
+    #[test]
+    fn a_moved_file_entry_points_at_its_new_path_and_text_refuses_the_change() {
+        let mut shelf = service();
+        shelf
+            .add(
+                ShelfInput::Files(vec![PathBuf::from("/tmp/before.txt")]),
+                at(1),
+            )
+            .expect("a file reference fits");
+        let id = shelf.items()[0].id;
+        shelf
+            .update_file(id, PathBuf::from("/tmp/after.txt"), "after.txt".to_owned())
+            .expect("a file entry updates");
+        assert_eq!(
+            shelf.items()[0].content,
+            ShelfContent::File {
+                path: PathBuf::from("/tmp/after.txt"),
+                name: "after.txt".to_owned(),
+            }
+        );
+        shelf
+            .add(ShelfInput::Text("kept".to_owned()), at(2))
+            .expect("text fits");
+        let text_id = shelf
+            .items()
+            .iter()
+            .find(|item| item.content.kind() == kestrel_core::ShelfItemKind::Text)
+            .map(|item| item.id)
+            .expect("the text entry exists");
+        assert_eq!(
+            shelf.update_file(text_id, PathBuf::from("/tmp/x"), "x".to_owned()),
+            Err(ShelfError::NotAFile)
+        );
     }
 
     #[test]

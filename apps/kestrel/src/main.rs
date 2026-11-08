@@ -989,6 +989,11 @@ enum ControllerOperation {
     ExportConfiguration(PathBuf),
     Scratchpad(kestrel::ScratchpadCommand),
     Shelf(ShelfOperation),
+    ExportClipboardImage {
+        entry_id: u64,
+        dest: PathBuf,
+        replace: bool,
+    },
 }
 
 enum ShelfOperation {
@@ -1005,6 +1010,17 @@ enum ShelfOperation {
         target: InstallTarget,
         provider: Provider,
     },
+    Move {
+        id: u64,
+        dest_dir: PathBuf,
+        expected: kestrel_platform::file_actions::FileIdentity,
+    },
+    Rename {
+        id: u64,
+        new_name: String,
+        expected: kestrel_platform::file_actions::FileIdentity,
+    },
+    Reveal(u64),
 }
 
 /// What a close request does; quitting ends the application, not only the window.
@@ -4492,6 +4508,15 @@ impl ControllerState {
             ControllerOperation::Shelf(operation) => {
                 self.run_shelf_operation(operation, config_path)?
             }
+            ControllerOperation::ExportClipboardImage {
+                entry_id,
+                dest,
+                replace,
+            } => {
+                let max_bytes = u64::from(self.configuration.clipboard.max_image_bytes);
+                self.runtime
+                    .export_clipboard_image(entry_id, &dest, replace, max_bytes)?
+            }
             ControllerOperation::ImportConfiguration(path) => {
                 let imported = import_file(&path)
                     .map_err(|error| format!("Could not import {}: {error}", path.display()))?;
@@ -4599,6 +4624,17 @@ impl ControllerState {
             ShelfOperation::InstallHandoff { target, provider } => {
                 self.runtime.shelf_install(&target, &provider)
             }
+            ShelfOperation::Move {
+                id,
+                dest_dir,
+                expected,
+            } => self.runtime.shelf_move_item(id, &dest_dir, &expected),
+            ShelfOperation::Rename {
+                id,
+                new_name,
+                expected,
+            } => self.runtime.shelf_rename_item(id, &new_name, &expected),
+            ShelfOperation::Reveal(id) => self.runtime.shelf_reveal_item(id),
         }
     }
 
@@ -5627,6 +5663,46 @@ fn dispatch_commands(
                 ApplicationCommand::SetShelfAddScreenshots(add) => controller.request_operation(
                     ControllerOperation::Shelf(ShelfOperation::SetAddScreenshots(add)),
                     "kestrel-shelf-screenshots",
+                ),
+                ApplicationCommand::ShelfMoveItem {
+                    id,
+                    dest_dir,
+                    expected,
+                } => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Move {
+                        id,
+                        dest_dir,
+                        expected,
+                    }),
+                    "kestrel-shelf-move",
+                ),
+                ApplicationCommand::ShelfRenameItem {
+                    id,
+                    new_name,
+                    expected,
+                } => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Rename {
+                        id,
+                        new_name,
+                        expected,
+                    }),
+                    "kestrel-shelf-rename",
+                ),
+                ApplicationCommand::ShelfRevealItem(id) => controller.request_operation(
+                    ControllerOperation::Shelf(ShelfOperation::Reveal(id)),
+                    "kestrel-shelf-reveal",
+                ),
+                ApplicationCommand::ExportClipboardImage {
+                    entry_id,
+                    dest,
+                    replace,
+                } => controller.request_operation(
+                    ControllerOperation::ExportClipboardImage {
+                        entry_id,
+                        dest,
+                        replace,
+                    },
+                    "kestrel-clipboard-export",
                 ),
                 ApplicationCommand::CopyShelfItem(id) => {
                     controller.copy_shelf_item(id);

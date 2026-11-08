@@ -751,6 +751,17 @@ fn entry_controls(
     });
     controls.append(&preview);
 
+    if item.is_image {
+        let save = button(
+            "Save as…",
+            "document-save-as-symbolic",
+            format!("Save image entry {id} as a PNG file"),
+        );
+        let sender = commands.clone();
+        save.connect_clicked(move |button| save_clipboard_image(button, id, &sender));
+        controls.append(&save);
+    }
+
     let delete = button(
         "Delete",
         "user-trash-symbolic",
@@ -764,6 +775,46 @@ fn entry_controls(
     });
     controls.append(&delete);
     controls
+}
+
+/// Saves an image entry as a PNG; the save dialog confirms any overwrite.
+fn save_clipboard_image(
+    anchor: &gtk::Button,
+    entry_id: u64,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let Some(window) = anchor.root().and_downcast::<gtk::Window>() else {
+        return;
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Save image")
+        .accept_label("Save")
+        .modal(true)
+        .build();
+    dialog.set_initial_name(Some(&clipboard_image_name()));
+    let commands = commands.clone();
+    dialog.save(Some(&window), gtk::gio::Cancellable::NONE, move |result| {
+        let Some(dest) = result.ok().and_then(|file| file.path()) else {
+            return;
+        };
+        let _ = commands.try_send(ApplicationCommand::ExportClipboardImage {
+            entry_id,
+            dest,
+            replace: true,
+        });
+    });
+}
+
+fn clipboard_image_name() -> String {
+    let stamp = glib::DateTime::now_local()
+        .and_then(|time| time.format("%Y%m%d-%H%M%S"))
+        .map(|stamp| stamp.to_string())
+        .unwrap_or_default();
+    if stamp.is_empty() {
+        "clipboard.png".to_owned()
+    } else {
+        format!("clipboard-{stamp}.png")
+    }
 }
 
 /// Builds the explicitly requested preview row.
