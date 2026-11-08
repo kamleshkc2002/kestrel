@@ -253,6 +253,7 @@ mod tests {
             }),
             limits: kestrel_core::ShelfConfiguration::default(),
             warning: None,
+            reveal: RevealSupport::none(),
         });
         assert_eq!(
             model.items[0].install,

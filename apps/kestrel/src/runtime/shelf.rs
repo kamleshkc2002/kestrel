@@ -3,8 +3,8 @@
 use super::*;
 use kestrel_core::ShelfContent;
 use kestrel_platform::clipboard::ClipboardEntryKind;
-use kestrel_platform::install_handoff::{self, HandoffOutcome, InstallTarget, Provider};
 use kestrel_platform::file_actions::{self, FileIdentity, MoveMethod, MoveOutcome, RevealOutcome};
+use kestrel_platform::install_handoff::{self, HandoffOutcome, InstallTarget, Provider};
 use kestrel_services::shelf::{ShelfInput, ShelfService};
 
 impl ApplicationRuntime {
