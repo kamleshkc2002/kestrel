@@ -14,6 +14,7 @@ struct ToolAvailability {
     recording_active: bool,
     recording_source: Option<kestrel_platform::recording::RecordingSource>,
     scratchpad_running: bool,
+    shelf_running: bool,
     keep_awake_running: bool,
     keep_awake_active: bool,
 }
@@ -116,6 +117,7 @@ impl ApplicationRuntime {
             recording_active: self.recording.snapshot().phase.is_active(),
             recording_source,
             scratchpad_running: running(SCRATCHPAD_ID),
+            shelf_running: running(SHELF_ID),
             keep_awake_running: running(kestrel_platform::quick_toggles::KEEP_AWAKE_ID),
             keep_awake_active: self.keep_awake_is_active(),
         })
@@ -190,6 +192,7 @@ impl ApplicationRuntime {
             recording_active,
             recording_source,
             scratchpad_running,
+            shelf_running,
             keep_awake_running,
             keep_awake_active,
         } = availability;
@@ -309,6 +312,42 @@ impl ApplicationRuntime {
                 )
                 .with_keywords(["scratchpad", "notes", "note", "pad"]),
             );
+        }
+        if shelf_running {
+            for (id, title, subtitle, action, keywords) in [
+                (
+                    "kestrel:shelf-open",
+                    "Open shelf",
+                    "Stage files, text, and links for another app",
+                    "shelf.open",
+                    &["shelf", "stage", "files", "links", "drop"][..],
+                ),
+                (
+                    "kestrel:shelf-add-clipboard",
+                    "Add clipboard to shelf",
+                    "Stage the current clipboard text or files",
+                    "shelf.add-clipboard",
+                    &["shelf", "clipboard", "paste", "stage"][..],
+                ),
+                (
+                    "kestrel:shelf-clear",
+                    "Clear shelf",
+                    "Remove every unpinned shelf entry",
+                    "shelf.clear",
+                    &["shelf", "clear", "empty", "remove"][..],
+                ),
+            ] {
+                items.push(
+                    CommandItem::new(
+                        id,
+                        CommandSource::Kestrel,
+                        title,
+                        subtitle,
+                        kestrel_services::command_bar::CommandAction::Kestrel(action.to_owned()),
+                    )
+                    .with_keywords(keywords.iter().copied()),
+                );
+            }
         }
         if keep_awake_running {
             for duration in kestrel_core::KEEP_AWAKE_PRESETS {
@@ -889,6 +928,7 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: false,
+            shelf_running: false,
             keep_awake_running: false,
             keep_awake_active: false,
         });
@@ -904,6 +944,7 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: true,
+            shelf_running: true,
             keep_awake_running: false,
             keep_awake_active: false,
         });
@@ -915,6 +956,9 @@ mod tests {
             "kestrel:capture.qr",
             "kestrel:capture.color",
             "kestrel:scratchpad",
+            "kestrel:shelf-open",
+            "kestrel:shelf-add-clipboard",
+            "kestrel:shelf-clear",
         ] {
             assert!(ids.contains(&id), "missing visible tool {id}");
         }
@@ -1014,6 +1058,7 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: false,
+            shelf_running: false,
             keep_awake_running: false,
             keep_awake_active: false,
         });
@@ -1032,6 +1077,7 @@ mod tests {
             recording_active: false,
             recording_source: None,
             scratchpad_running: false,
+            shelf_running: false,
             keep_awake_running: false,
             keep_awake_active: false,
         });
@@ -1054,6 +1100,7 @@ mod tests {
             recording_active: false,
             recording_source: Some(kestrel_platform::recording::RecordingSource::Screen),
             scratchpad_running: false,
+            shelf_running: false,
             keep_awake_running: false,
             keep_awake_active: false,
         });
@@ -1068,6 +1115,7 @@ mod tests {
             recording_active: true,
             recording_source: None,
             scratchpad_running: false,
+            shelf_running: false,
             keep_awake_running: false,
             keep_awake_active: false,
         });

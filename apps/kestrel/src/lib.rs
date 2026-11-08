@@ -10,6 +10,7 @@ pub mod logging;
 mod private_file;
 mod runtime;
 pub mod setup;
+mod shelf_store;
 mod snippets;
 mod status_notifier;
 pub mod text_lines;
@@ -416,6 +417,8 @@ pub enum FocusTarget {
     CommandBar,
     QuickPanel,
     Clipboard,
+    /// The Shelf page, where staged entries are listed.
+    Shelf,
     Capture,
     Processes,
     Scratchpad,
@@ -665,6 +668,19 @@ pub enum ApplicationCommand {
     SetSnippetProvider(SnippetProviderPreference),
     /// Scratchpad tab and editor actions.
     Scratchpad(ScratchpadCommand),
+    /// Stages dropped or pasted content on the shelf.
+    AddToShelf(kestrel_services::shelf::ShelfInput),
+    /// Stages the current clipboard text, link, or files.
+    AddClipboardToShelf,
+    RemoveShelfItem(u64),
+    PinShelfItem(u64, bool),
+    ClearShelf {
+        include_pinned: bool,
+    },
+    /// Copies one entry through the window's clipboard.
+    CopyShelfItem(u64),
+    /// Keeps entries in a private file across restarts.
+    SetShelfKeep(bool),
     SetSnippetExpansionTiming(SnippetExpansionTiming),
     /// Runs the command bar query whose results the window shows.
     CommandQuery(String),

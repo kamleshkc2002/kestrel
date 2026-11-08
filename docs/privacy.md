@@ -6,7 +6,7 @@ debug builds use `kestrel-devel` instead.
 | Folder | Default path | Holds |
 |---|---|---|
 | Config | `$XDG_CONFIG_HOME/kestrel` (usually `~/.config/kestrel`) | `config.toml` |
-| Data | `$XDG_DATA_HOME/kestrel` (usually `~/.local/share/kestrel`) | captures, scratchpad, snippets, command ranking |
+| Data | `$XDG_DATA_HOME/kestrel` (usually `~/.local/share/kestrel`) | captures, scratchpad, shelf, snippets, command ranking |
 | State | `$XDG_STATE_HOME/kestrel` (usually `~/.local/state/kestrel`) | logs, and the `setup`, `update-check`, and `last-version` files |
 | Videos | `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`; `Kestrel (Development)` in debug builds) | recordings, and trim exports you save there |
 
@@ -25,6 +25,8 @@ The autostart entry is the one file outside these folders: it lives in
 | Trim exports | The folder you choose | The kept range as VP8/Opus WebM, written as `.<name>.partial` and renamed once complete | 0600 | None | Cancelling, failing, or quitting removes the partial; the finished export is yours |
 | Scratchpad | `scratchpad.json` | Notes with their titles, text, and times, and the open tab | 0600 file, 0700 folder | 20 notes of up to 256 KiB each (`scratchpad.max_notes`, `scratchpad.max_note_bytes`); age removal happens only when `scratchpad.max_age_days` is above 0 | Closing a note, or confirming expired notes; turning the feature off or quitting keeps them |
 | Scratchpad, unreadable copy | `scratchpad.json.corrupt-<time>` | A file that could not be read, kept instead of overwriting it | 0600 | None | Only you; it is never deleted automatically |
+| Shelf | `shelf.toml` | Links, text, and file locations with their pins and times; never images or file contents. Written only while "Keep across restarts" is on | 0600 file, 0700 folder | 50 entries of up to 1 MiB of text and 16 MiB of images by default (`shelf.max_items`, `shelf.max_text_megabytes`, `shelf.max_image_megabytes`); nothing is written while the switch is off | Turning the switch off deletes it; entry clears, expiry, and removal rewrite it |
+| Shelf, unreadable copy | `shelf.toml.corrupt-<time>` | A file that could not be read, kept instead of overwriting it | 0600 | None | Only you; it is never deleted automatically |
 | Snippets | `snippets.toml` | Name, folder, trigger, and the text with its `{{…}}` variables | 0600 file, 0700 folder | 64 KiB per snippet by default, up to 1 MiB (`snippets.max_content_bytes`) | Deleting a snippet; turning the feature off keeps the file |
 | Command ranking | `command_ranking.toml` | Command IDs, usage counts, and pins; never search text | 0600 file, 0700 folder | 200 commands | Nothing; it is rewritten as you use commands |
 | Setup | `setup` | Whether setup was offered, and whether it finished or was skipped | 0600 | One line | Nothing |

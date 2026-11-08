@@ -15,6 +15,7 @@ mod scratchpad;
 mod screen_tools;
 mod settings;
 mod setup;
+mod shelf;
 mod snippets;
 mod trim;
 mod whats_new;
@@ -47,6 +48,7 @@ use recording::build_recording_group;
 use scratchpad::{ScratchpadPanel, build_scratchpad_panel};
 use screen_tools::build_screen_tools_group;
 use settings::{SettingsPage, build_settings_group};
+use shelf::build_shelf_page;
 use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use std::{
     cell::{Cell, RefCell},
@@ -57,6 +59,7 @@ use widgets::{FilterRows, configure_wrapping_label, plain_row};
 pub use floating::{FloatingSurface, QuickPanelEntry};
 pub use overlay::StatusOverlay;
 pub(crate) use setup::open_setup;
+pub(crate) use shelf::copy_shelf_content;
 
 const MINIMUM_WINDOW_WIDTH: i32 = 360;
 const MINIMUM_WINDOW_HEIGHT: i32 = 360;
@@ -70,6 +73,7 @@ enum SidebarPage {
     Monitoring,
     Audio,
     Clipboard,
+    Shelf,
     CommandBar,
     Capture,
     Notes,
@@ -80,11 +84,12 @@ enum SidebarPage {
 }
 
 impl SidebarPage {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Overview,
         Self::Monitoring,
         Self::Audio,
         Self::Clipboard,
+        Self::Shelf,
         Self::Capture,
         Self::Notes,
         Self::Processes,
@@ -100,6 +105,7 @@ impl SidebarPage {
             Self::Monitoring => "Monitoring",
             Self::Audio => "Audio",
             Self::Clipboard => "Clipboard",
+            Self::Shelf => "Shelf",
             Self::CommandBar => "Command bar",
             Self::Capture => "Capture",
             Self::Notes => "Notes",
@@ -116,6 +122,7 @@ impl SidebarPage {
             Self::Monitoring => "power-profile-performance-symbolic",
             Self::Audio => "audio-volume-high-symbolic",
             Self::Clipboard => "edit-paste-symbolic",
+            Self::Shelf => "folder-symbolic",
             Self::CommandBar => "system-search-symbolic",
             Self::Capture => "camera-photo-symbolic",
             Self::Notes => "accessories-text-editor-symbolic",
@@ -132,6 +139,7 @@ impl SidebarPage {
             Self::Monitoring => "monitoring",
             Self::Audio => "audio",
             Self::Clipboard => "clipboard",
+            Self::Shelf => "shelf",
             Self::CommandBar => "command-bar",
             Self::Capture => "capture",
             Self::Notes => "notes",
@@ -441,6 +449,7 @@ impl WindowView {
                 *self.shortcuts_container.borrow_mut() = Some(build.shortcuts_container);
             }
             SidebarPage::Clipboard => *self.clipboard_panel.borrow_mut() = build.clipboard_panel,
+            SidebarPage::Shelf => {}
             SidebarPage::Notes => {
                 *self.snippet_panel.borrow_mut() = build.snippet_panel;
                 *self.scratchpad_panel.borrow_mut() = build.scratchpad_panel;
@@ -496,6 +505,10 @@ impl WindowView {
                 ) && panel
                     .as_ref()
                     .is_some_and(|panel| panel.search.grab_focus())
+            }
+            FocusTarget::Shelf => {
+                self.select_page(SidebarPage::Shelf);
+                true
             }
             FocusTarget::Processes => {
                 let panel = self.processes_panel.borrow();
@@ -1367,6 +1380,9 @@ fn build_page(
                 SettingsPage::Clipboard,
             );
         }
+        SidebarPage::Shelf => {
+            body.append(&build_shelf_page(&view_model.shelf, commands));
+        }
         SidebarPage::CommandBar => {
             let panel = build_command_panel(&view_model.command_bar, commands);
             body.append(&panel.container);
@@ -1557,6 +1573,7 @@ fn page_keywords(page: SidebarPage) -> String {
         SidebarPage::Monitoring => "monitoring monitor system speed test",
         SidebarPage::Audio => "audio sound mixer microphone volume",
         SidebarPage::Clipboard => "clipboard history",
+        SidebarPage::Shelf => "shelf files text links drops staging",
         SidebarPage::CommandBar => "command bar launcher quick panel",
         SidebarPage::Capture => "capture screenshots screen tools recording camera",
         SidebarPage::Notes => "notes snippets scratchpad",

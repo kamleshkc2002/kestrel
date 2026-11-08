@@ -16,6 +16,7 @@ pub mod quick_toggles;
 pub mod recording;
 pub mod scratchpad;
 pub mod screen_tools;
+pub mod shelf;
 pub mod snippets;
 pub mod speed_test;
 pub mod system_monitor;

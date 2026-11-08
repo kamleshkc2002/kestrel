@@ -15,6 +15,7 @@ use super::{
     monitoring::parse_monitoring,
     overlay::parse_overlay,
     quick_panel::parse_quick_panel,
+    shelf::parse_shelf,
     shortcuts::parse_shortcuts,
     snippets::parse_snippets,
     speed_test::parse_speed_test,
@@ -48,6 +49,7 @@ pub(super) fn parse_current(
     parse_recording(&mut loaded, document.get("recording"));
     parse_command_bar(&mut loaded, document.get("command_bar"));
     parse_quick_panel(&mut loaded, document.get("quick_panel"));
+    parse_shelf(&mut loaded, document.get("shelf"));
     parse_logging(&mut loaded, document.get("logging"));
     parse_overlay(&mut loaded, document.get("overlay"));
     retire_battery_alerts_toggle(&mut loaded);

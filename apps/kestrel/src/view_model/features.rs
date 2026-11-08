@@ -582,9 +582,10 @@ impl FeatureHubSection {
             AUDIO_MIXER_FEATURE_ID | MICROPHONE_FEATURE_ID => Some(Self::Audio),
             CAPTURE_FEATURE_ID | RECORDING_FEATURE_ID | CAMERA_FEATURE_ID | TEXT_FEATURE_ID
             | QR_FEATURE_ID | COLOR_FEATURE_ID => Some(Self::Capture),
-            CLIPBOARD_FEATURE_ID | SNIPPETS_FEATURE_ID | crate::runtime::SCRATCHPAD_ID => {
-                Some(Self::ClipboardAndNotes)
-            }
+            CLIPBOARD_FEATURE_ID
+            | SNIPPETS_FEATURE_ID
+            | crate::runtime::SCRATCHPAD_ID
+            | crate::runtime::SHELF_ID => Some(Self::ClipboardAndNotes),
             _ if ALL_QUICK_TOGGLES
                 .iter()
                 .any(|toggle| toggle.feature_id() == feature_id) =>
