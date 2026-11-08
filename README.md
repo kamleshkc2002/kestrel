@@ -1,16 +1,12 @@
 # Kestrel
 
-Kestrel is the set of utilities your Linux desktop leaves out: system
-monitoring with sustained alerts and tray readouts, audio routing with device
-priority, private clipboard history, snippets, screenshots with OCR, QR and
-color picking, screen recording with trim, a camera check, and process and
-port tools, all in one window alongside your existing desktop.
+Kestrel adds the utilities a COSMIC, Sway, or Hyprland desktop leaves out —
+clipboard history that pastes back into the application you came from,
+screenshots with an editor and OCR, a floating shelf, a command bar, audio
+routing, and quiet status readouts — in one window that runs beside your
+compositor rather than replacing it.
 
-Every feature says whether it works on your session, what it needs, and what
-to install or allow when it doesn't; everything runs as your normal user, with
-no root helpers, accounts, or telemetry.
-
-![Kestrel's Overview page: the sidebar of pages, one-click tools, and quick toggles such as Keep awake and Desktop dark mode](docs/images/overview.png)
+![Kestrel's Overview page: the sidebar of pages, one-click tools, and quick toggles such as Keep awake and Desktop dark mode](docs/images/hero.png)
 
 ## What's in it
 
@@ -24,6 +20,8 @@ no root helpers, accounts, or telemetry.
 - [Quick toggles](docs/features.md#quick-toggles): desktop dark mode, Keep awake from 15 minutes up to 24 hours, screen brightness, keyboard light, Wi-Fi, Bluetooth, lock screen, eject, Empty Trash, hidden files and desktop icons.
 - [Command bar](docs/features.md#command-bar--commandsbar) and [keyboard shortcuts](docs/features.md#keyboard-shortcuts): search the app's actions, with computed answers for arithmetic, units, dates and colours, or bind actions to keys and `kestrel --command`.
 - [Status bar overlay](docs/features.md#status-bar-overlay--overlaystatus): recording, alerts, volume and Keep awake in a small pill that appears only while a module has something active.
+- [Shelf](docs/features.md#shelf--filesshelf): a floating shelf you can pin open, drag files, text, and links into, and drag back out to another application.
+- [Clean links](docs/features.md#clean-links): see each tracking parameter removed from a link before it is copied, or clean a single copied link automatically.
 
 ## Status
 
@@ -33,9 +31,9 @@ design with little real use so far, so reports are welcome.
 
 **Where it runs**
 
-- **Tested:** Pop!_OS 24.04 with COSMIC on Wayland, and Ubuntu 24.04 in CI under Xvfb.
-- **Should run:** glibc 2.39+ distributions such as Fedora 40+, Debian 13, and Arch (untested).
-- **Won't start:** Ubuntu 22.04, Debian 12, and older.
+- **Tested:** Pop!_OS 24.04 with COSMIC on Wayland, and the AppImage in CI on Ubuntu 22.04 under Xvfb and headless Sway.
+- **Should run:** glibc 2.35 or newer: Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Fedora 38+, and Arch (untested).
+- **Won't start:** systems with glibc older than 2.35, such as Ubuntu 20.04 and Debian 11.
 
 Which features work on each desktop is in the
 [compatibility table](docs/compatibility.md). Known limits are listed in
@@ -43,7 +41,7 @@ Which features work on each desktop is in the
 
 ## Install
 
-Set `VERSION` to the latest preview on
+The AppImage is the current channel. Set `VERSION` to the latest preview on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
@@ -61,7 +59,7 @@ chmod +x "$FILE"
 - **Arch Linux:** install `kestrel-desktop` from the AUR, or build [packaging/aur](packaging/aur) with `makepkg`. The package builds the tagged release from source and never installs updates by itself, and its GStreamer optional dependencies cover screen recording.
 - **Flatpak:** the 0.9 release also ships a restricted Flatpak build from the releases page; it is not available on Flathub yet.
 - If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
-- To build from source, see [docs/development.md](docs/development.md).
+- To build from source, see [Development](docs/development.md).
 
 ## Privacy
 
@@ -71,7 +69,14 @@ chmod +x "$FILE"
 - Settings and data stay in your XDG folders, under a `kestrel` folder.
 - Settings → Remove Kestrel's data… lists everything Kestrel keeps and removes only what you choose.
 
-Full detail is in [docs/privacy.md](docs/privacy.md).
+Full detail is in [Privacy](docs/privacy.md).
+
+## Documentation
+
+[Features](docs/features.md) · [Compatibility](docs/compatibility.md) ·
+[Privacy](docs/privacy.md) · [Configuration](docs/configuration.md) ·
+[Stability](docs/stability.md) · [Development](docs/development.md) ·
+[Requirements](docs/REQUIREMENTS.md) · [Architecture](docs/ARCHITECTURE.md)
 
 ## Feedback
 
@@ -81,15 +86,7 @@ use the [bug report form](https://github.com/kamleshkc2002/kestrel/issues/new?te
 To say whether a feature works on your desktop, use the
 [compatibility report form](https://github.com/kamleshkc2002/kestrel/issues/new?template=compatibility_report.yml).
 Settings → Diagnostic logs → Report a problem opens the bug form with your
-version, desktop, session, and distribution filled in; include the feature's
-status line and logs.
-
-## Documentation
-
-[Features](docs/features.md) · [Privacy](docs/privacy.md) ·
-[Configuration](docs/configuration.md) · [Stability](docs/stability.md) ·
-[Development](docs/development.md) ·
-[Requirements](docs/REQUIREMENTS.md) · [Architecture](docs/ARCHITECTURE.md)
+version and desktop filled in.
 
 ## License
 

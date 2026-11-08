@@ -41,6 +41,10 @@ feature = "clipboard.history"
 text = "Clipboard writes that an application marks as temporary or secret are left out of history, and the selection they replace returns as the entry it already was."
 
 [[change]]
+feature = "clipboard.history"
+text = "Clipboard history reacts to clipboard change events instead of reading the selection four times a second, so an idle Kestrel wakes far less often; backends that cannot report changes keep the 250 ms check and the Clipboard page says so."
+
+[[change]]
 feature = "kestrel"
 text = "Settings → Remove Kestrel's data… lists every file and folder Kestrel keeps, with sizes, and removes only what you choose before quitting; `kestrel --uninstall-preview` prints the same list without deleting anything."
 
@@ -55,3 +59,11 @@ text = "The background tick runs once a second instead of four times when no fea
 [[change]]
 feature = "kestrel"
 text = "Kestrel also ships as a Flatpak with a restricted sandbox, which marks the features the sandbox blocks and links to the release page instead of updating itself."
+
+[[change]]
+feature = "kestrel"
+text = "The AppImage is now built against glibc 2.35, so it starts on Ubuntu 22.04, Linux Mint 21, and Debian 12 as well as newer distributions."
+
+[[change]]
+feature = "kestrel"
+text = "A Flatpak build reports each feature its sandbox limits or blocks with the reason, offers View release instead of downloading updates, and asks the desktop to start at login through its Background portal."

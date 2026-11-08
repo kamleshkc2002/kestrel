@@ -158,6 +158,7 @@ pub struct ProcSysMonitor {
     proc_root: PathBuf,
     sys_root: PathBuf,
     devices: Option<DeviceServices>,
+    sandboxed: bool,
 }
 
 /// NVML and UPower handles shared by the source and its capability probe.
@@ -197,7 +198,14 @@ impl ProcSysMonitor {
             proc_root: proc_root.into(),
             sys_root: sys_root.into(),
             devices: None,
+            sandboxed: crate::sandbox::flatpak(),
         }
+    }
+
+    /// Sets the sandbox state explicitly, for fixtures outside a sandbox.
+    pub fn with_sandbox(mut self, sandboxed: bool) -> Self {
+        self.sandboxed = sandboxed;
+        self
     }
 
     /// Adds NVIDIA GPUs through NVML and accessory batteries through UPower.
@@ -505,11 +513,17 @@ impl ProcSysMonitor {
                 available_bytes: (stats.f_bavail as u64).saturating_mul(stats.f_frsize as u64),
             });
         }
+        if self.sandboxed {
+            let home = std::env::var("HOME").ok();
+            readable.retain(|usage| sandbox_mount_visible(&usage.mount_point, home.as_deref()));
+        }
         if readable.is_empty() {
-            Metric::Unavailable(SourceIssue::new(
-                source,
-                "no mounted /dev/ filesystem could be read with statvfs",
-            ))
+            let reason = if self.sandboxed {
+                "the sandbox hides the host's root and home filesystems"
+            } else {
+                "no mounted /dev/ filesystem could be read with statvfs"
+            };
+            Metric::Unavailable(SourceIssue::new(source, reason))
         } else {
             Metric::Available(readable)
         }
@@ -666,7 +680,17 @@ impl CapabilityProbe for ProcSysMonitor {
         ];
         let optional_total = optional.len();
         let optional_count = optional.into_iter().filter(|available| *available).count();
-        let status = if core_count == 3 && optional_count == optional_total {
+        let status = if core_count == 0 {
+            CapabilityStatus::Unsupported {
+                reason: "No core procfs monitor sources are readable.".to_string(),
+            }
+        } else if self.sandboxed {
+            CapabilityStatus::Limited {
+                reason: crate::sandbox::SandboxReason::HostFilesystems
+                    .reason()
+                    .to_owned(),
+            }
+        } else if core_count == 3 && optional_count == optional_total {
             CapabilityStatus::Supported
         } else if core_count > 0 {
             CapabilityStatus::Limited {
@@ -712,10 +736,16 @@ impl CapabilityProbe for ProcSysMonitor {
             "per_process_metrics",
             "not_collected",
         ));
-        if core_count < 3 || optional_count < optional_total {
+        if !self.sandboxed && (core_count < 3 || optional_count < optional_total) {
             report = report.with_remediation(
                 "Unavailable metrics stay visible; verify procfs/sysfs mounts and kernel hardware drivers. NVIDIA GPU readings need a working NVML driver, and per-process metrics are not collected.",
             );
+        }
+        if self.sandboxed {
+            report = report.with_evidence(CapabilityEvidence::new(
+                "sandbox",
+                crate::sandbox::SandboxReason::HostFilesystems.key(),
+            ));
         }
         report
     }
@@ -759,6 +789,54 @@ fn decode_mount_field(field: &str) -> String {
 
 fn read_i64(path: &Path) -> Result<i64, ()> {
     read_optional(path).ok_or(())?.parse().map_err(|_| ())
+}
+
+/// Whether a sandboxed process may present `mount_point` as a host filesystem.
+///
+/// The sandbox's own root, its runtime binds, and its private home are not the
+/// host's disks; folders it was granted are.
+fn sandbox_mount_visible(mount_point: &str, home: Option<&str>) -> bool {
+    const SANDBOX_PATHS: [&str; 11] = [
+        "/app",
+        "/usr",
+        "/etc",
+        "/var",
+        "/run/host",
+        "/run/flatpak",
+        "/dev",
+        "/sys",
+        "/proc",
+        "/nix",
+        "/.flatpak-info",
+    ];
+    let within = |path: &str, prefix: &str| {
+        path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if mount_point == "/"
+        || SANDBOX_PATHS
+            .iter()
+            .any(|prefix| within(mount_point, prefix))
+    {
+        return false;
+    }
+    let Some(home) = home else {
+        return true;
+    };
+    if !within(mount_point, home) {
+        return true;
+    }
+    let relative = mount_point
+        .strip_prefix(home)
+        .unwrap_or_default()
+        .trim_start_matches('/');
+    !relative.is_empty()
+        && !relative
+            .split('/')
+            .next()
+            .is_some_and(|first| first.starts_with('.'))
 }
 
 fn parse_u64_fields<'a>(
@@ -970,6 +1048,53 @@ mod tests {
         )
         .expect("remove GPU attribute");
         assert!(matches!(monitor.sample().gpu, Metric::Unavailable(_)));
+    }
+
+    #[test]
+    fn sandbox_disks_keep_granted_folders_and_hide_sandbox_paths() {
+        use super::sandbox_mount_visible;
+
+        let home = Some("/home/alex");
+        for hidden in [
+            "/",
+            "/app",
+            "/usr/share",
+            "/etc/pulse",
+            "/var/config",
+            "/run/host/fonts",
+            "/run/flatpak/doc",
+            "/home/alex",
+            "/home/alex/.var/app/app",
+            "/home/alex/.config/gtk-3.0",
+        ] {
+            assert!(!sandbox_mount_visible(hidden, home), "{hidden}");
+        }
+        for visible in ["/home/alex/Videos", "/run/media/alex/disk", "/mnt/data"] {
+            assert!(sandbox_mount_visible(visible, home), "{visible}");
+        }
+    }
+
+    #[test]
+    fn a_sandboxed_monitor_reports_a_limited_disk_source() {
+        use crate::{CapabilityProbe, sandbox::flatpak_in};
+        use kestrel_core::CapabilityStatus;
+
+        let (root, monitor) = fixture();
+        fs::write(root.path().join(".flatpak-info"), "[Application]\n").expect("marker");
+        let mut monitor = monitor.with_sandbox(flatpak_in(root.path()));
+        let report = CapabilityProbe::probe(&monitor);
+
+        assert!(matches!(report.status, CapabilityStatus::Limited { .. }));
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "host-filesystems")
+        );
+        assert!(
+            matches!(monitor.sample().disk_usage, Metric::Available(filesystems) if filesystems.len() == 1),
+            "a mount the sandbox was granted stays visible"
+        );
     }
 
     #[test]

@@ -1,3 +1,8 @@
+---
+layout: default
+title: Requirements
+---
+
 # Kestrel Requirements & Architecture
 
 Status: **Draft — for discussion**

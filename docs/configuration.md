@@ -1,3 +1,8 @@
+---
+layout: default
+title: Configuration
+---
+
 # Configuration
 
 Preferences are stored in `$XDG_CONFIG_HOME/kestrel/config.toml` (or
@@ -83,3 +88,18 @@ See [Shelf](features.md#shelf--filesshelf).
   opens again on the next launch, Skip setup records it as done without
   changing anything, and Settings → Run setup again reopens it. The preset
   change it applies is undone like any other.
+
+## Flatpak
+
+Inside the Flatpak, a command from a terminal or a desktop shortcut is
+
+```bash
+flatpak run io.github.kamleshkc2002.Kestrel --command <id>
+```
+
+where `<id>` is the same ID that `--list-commands` prints, for example
+`flatpak run io.github.kamleshkc2002.Kestrel --command window.show`. The Flatpak
+stores its configuration in `~/.var/app/io.github.kamleshkc2002.Kestrel/config/kestrel/config.toml`,
+so edits to `~/.config/kestrel/config.toml` do not reach it. See
+[Flatpak permissions](privacy.md#flatpak-permissions) and
+[the feature limits](features.md#flatpak).

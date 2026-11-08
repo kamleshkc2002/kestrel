@@ -31,7 +31,15 @@ impl StatusNotifierIntegration {
             update: TrayUpdate::default(),
             shelf: TrayShelf::default(),
         };
-        match tray.spawn() {
+        // A sandbox cannot own the item's well-known name, so it registers the
+        // connection's unique name, which watchers accept the same way.
+        let sandboxed = kestrel_platform::sandbox::flatpak();
+        let spawned = if sandboxed {
+            tray.disable_dbus_name(true).spawn()
+        } else {
+            tray.spawn()
+        };
+        match spawned {
             Ok(handle) => Self {
                 handle: Some(handle),
                 sender,
@@ -41,6 +49,19 @@ impl StatusNotifierIntegration {
                     "The desktop tray host accepted the optional StatusNotifierItem.",
                 )
                 .with_selected_backend("StatusNotifierItem over the user session D-Bus"),
+            },
+            Err(error) if sandboxed => Self {
+                handle: None,
+                sender,
+                capability: kestrel_platform::sandbox::unsupported(
+                    FEATURE_ID,
+                    "The tray cannot register inside the sandbox.",
+                    kestrel_platform::sandbox::SandboxReason::TrayName,
+                )
+                .with_evidence(kestrel_core::CapabilityEvidence::new(
+                    "registration_error",
+                    error.to_string(),
+                )),
             },
             Err(error) => Self {
                 handle: None,

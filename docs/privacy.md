@@ -1,3 +1,8 @@
+---
+layout: default
+title: Privacy
+---
+
 # What's stored and sent
 
 Files go in the standard XDG folders, under a `kestrel` folder;
@@ -47,6 +52,32 @@ The autostart entry is the one file outside these folders: it lives in
 - Turning a feature off does not delete what it stored. Captures, recordings, notes, snippets, ranking, state files, and settings stay until you remove them.
 - `install-local.sh --uninstall` removes the installed binary, desktop entry, icon, and autostart entry, but keeps settings and data. Use Settings → Remove Kestrel's data… (or `kestrel --uninstall-preview`) to review and remove them too.
 - The recordings folder uses normal folder permissions, so other local users can see take names and sizes even though the files themselves are 0600.
+
+## Flatpak permissions
+
+The Flatpak build asks for one permission per shipped feature and nothing else. The rest of the session stays outside the sandbox, which is why some features report a limit (see [the feature list](features.md#flatpak)).
+
+| Permission | Why it is there |
+|---|---|
+| `--socket=wayland` | Drawing and input on a Wayland session. |
+| `--socket=fallback-x11` | The same on an X11 session. |
+| `--share=ipc` | Shared memory the X11 path needs. |
+| `--device=dri` | GTK's GPU rendering. |
+| `--socket=pulseaudio` | The audio mixer, the microphone controls, and recorded audio tracks. |
+| `--share=network` | The opt-in update check and the speed test you start. |
+| `--talk-name=org.freedesktop.Notifications` | Desktop alerts, such as a saved screenshot or a finished keep-awake session. |
+| `--talk-name=org.freedesktop.FileManager1` | **Show in** from the shelf. |
+| `--talk-name=org.kde.StatusNotifierWatcher` | The optional tray entry, registered under the app's own bus name. |
+| `--system-talk-name=org.freedesktop.login1` | Keep awake, screen lock, and the clipboard wipe on lock or sleep. |
+| `--system-talk-name=org.freedesktop.NetworkManager` | The Wi-Fi quick toggle. |
+| `--system-talk-name=org.bluez` | The Bluetooth quick toggle. |
+| `--system-talk-name=org.freedesktop.UDisks2` | Eject. |
+| `--system-talk-name=org.freedesktop.UPower` | Accessory batteries, and the overlay's battery module. |
+| `--filesystem=xdg-videos:create` | Recordings and trim exports in `~/Videos/Kestrel`. |
+
+The build does not ask for home access, writable `/sys`, dconf, the host autostart folder, full device access, or the Flatpak socket that launches host programs. Those would each replace the sandbox for one feature.
+
+Inside the Flatpak, the folders in the table above move under `~/.var/app/io.github.kamleshkc2002.Kestrel/`: settings go in `config/kestrel`, data in `data/kestrel`, state in `.local/state/kestrel`, and the cache in `cache`. Recordings stay in `~/Videos/Kestrel`, which is the one folder the sandbox shares with the host. The app's autostart entry is managed by the desktop's Background portal, not written by the sandbox.
 
 ## Removing Kestrel
 

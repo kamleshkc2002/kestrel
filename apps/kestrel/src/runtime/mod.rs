@@ -508,11 +508,7 @@ impl ApplicationRuntime {
         registry.register_probe(
             shelf,
             configuration.feature_enabled(SHELF_ID),
-            StaticCapabilityProbe::new(CapabilityReport::new(
-                SHELF_ID,
-                CapabilityStatus::Supported,
-                "Dragging entries in and out uses the window's own drag and drop.",
-            )),
+            ShelfProbe(kestrel_platform::sandbox::flatpak()),
         )?;
         let overlay = FeatureSpec::new(
             OVERLAY_ID,
@@ -620,10 +616,11 @@ impl ApplicationRuntime {
             stored_updates,
             &updates::current_version(),
         );
-        // Self-update is offered only to a running AppImage; a packaged or
-        // development build cannot replace itself.
+        // Self-update is offered only to a running AppImage; a packaged,
+        // sandboxed, or development build cannot replace itself.
         update_service.set_self_update_available(
-            kestrel_platform::update_install::running_appimage().is_some(),
+            !kestrel_platform::sandbox::flatpak()
+                && kestrel_platform::update_install::running_appimage().is_some(),
         );
 
         let mut runtime = Self {
@@ -978,9 +975,10 @@ impl ApplicationRuntime {
             );
             if feature.id == CLIPBOARD_HISTORY_ID {
                 line.push_str(&format!(
-                    "\titems={}\twipes={}",
+                    "\titems={}\twipes={}\twatch={}",
                     clipboard.items.len(),
-                    clipboard.wipe_count
+                    clipboard.wipe_count,
+                    clipboard.watch_mode.evidence_value()
                 ));
             }
             if feature.id == AUDIO_MIXER_ID {
@@ -1114,6 +1112,7 @@ impl ApplicationRuntime {
         model.monitor = model
             .monitor
             .with_local_addresses(self.local_addresses.as_ref());
+        model.autostart_unavailable = crate::autostart::unavailable_reason();
         model.scratchpad = self.scratchpad_view_model();
         model.shelf = self.shelf_view_model();
         model.processes = self.processes_view_model("");
@@ -1372,8 +1371,8 @@ use capture::capture_directory;
 pub use clipboard::CleanLinkOutcome;
 pub use probes::CommandBarProbe;
 use probes::{
-    ScreenToolProbe, SharedCaptureProbe, SharedRecordingProbe, clipboard_ocr_unavailable,
-    ocr_recognizer,
+    ScreenToolProbe, SharedCaptureProbe, SharedRecordingProbe, ShelfProbe,
+    clipboard_ocr_unavailable, ocr_recognizer,
 };
 pub use processes::run_process_action;
 pub use window_decision::ApplicationWindowDecision;

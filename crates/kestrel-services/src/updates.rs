@@ -181,9 +181,13 @@ impl UpdateService {
         self.latest.as_ref()
     }
 
-    /// Starts a download after an explicit command; `false` means there is no
-    /// offer with signed assets or a step is already running.
+    /// Starts a download after an explicit command; `false` means the running
+    /// build cannot replace itself, has no offer with signed assets, or a step
+    /// is already running.
     pub fn begin_install_download(&mut self) -> bool {
+        if !self.can_self_update() {
+            return false;
+        }
         match update_install::download_started(&self.install, self.latest.as_ref()) {
             Some(phase) => {
                 self.install = phase;

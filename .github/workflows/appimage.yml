@@ -17,33 +17,56 @@ jobs:
     name: Build AppImage (x86_64)
     env:
       KESTREL_LAYER_SHELL: required
+      PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
+      # Bumping a source in scripts/build-gtk-stack.sh changes this list and
+      # the script hash below, so the stack cache misses and rebuilds.
+      GTK_STACK_VERSIONS: wayland-1.22.0-wayland-protocols-1.34-glib-2.80.0-gtk-4.14.5-libadwaita-1.5.0-gtk4-layer-shell-1.3.0
     runs-on: ubuntu-24.04
+    # glibc 2.35: Ubuntu 22.04, Linux Mint 21 and Debian 12 start the artifact.
+    container:
+      image: ubuntu:22.04
+      # Docker's default 64 MB /dev/shm is too small for headless Sway.
+      options: --shm-size=1g
+    # Container jobs default to sh; the inspection steps use bash arrays and
+    # process substitution.
+    defaults:
+      run:
+        shell: bash
     steps:
+      - name: Install checkout prerequisites
+        # The container image has neither git nor curl; checkout needs git.
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates curl git
+
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Install pinned Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.0
+      - name: Install build and packaging dependencies
+        run: bash scripts/build-gtk-stack.sh --install-dependencies
 
-      - name: Install packaging dependencies
+      - name: Restore the GTK stack
+        id: gtk-stack
+        uses: actions/cache@v6
+        with:
+          path: /usr/local
+          key: gtk-stack-${{ env.GTK_STACK_VERSIONS }}-${{ hashFiles('scripts/build-gtk-stack.sh') }}
+
+      - name: Build the GTK stack
+        if: steps.gtk-stack.outputs.cache-hit != 'true'
+        run: bash scripts/build-gtk-stack.sh
+
+      - name: Refresh the linker cache
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            desktop-file-utils file libadwaita-1-dev libgdk-pixbuf-2.0-dev \
-            libglib2.0-bin libgtk-4-dev libpulse-dev librsvg2-dev patchelf xvfb \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            meson ninja-build libwayland-dev wayland-protocols sway minisign
-      - name: Build gtk4-layer-shell
+          ldconfig
+          pkg-config --modversion gtk4 libadwaita-1
+
+      - name: Install Rust 1.98
         run: |
-          git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
-          meson setup /tmp/gtk4-layer-shell-build /tmp/gtk4-layer-shell \
-            --prefix=/usr/local -Dintrospection=false -Dvapi=false -Ddocs=false \
-            -Dexamples=false -Dtests=false -Dsmoke-tests=false
-          meson compile -C /tmp/gtk4-layer-shell-build
-          sudo meson install -C /tmp/gtk4-layer-shell-build
-          sudo ldconfig
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain 1.98.0 \
+              --component rustfmt --component clippy
+          printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Validate desktop metadata
         run: desktop-file-validate data/io.github.kamleshkc2002.Kestrel.desktop
@@ -51,6 +74,8 @@ jobs:
       - name: Build AppImage
         env:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.0-preview' }}
+          # linuxdeploy resolves the source libraries through ldd.
+          LD_LIBRARY_PATH: /usr/local/lib
         run: |
           version="${VERSION#v}"
           bash scripts/build-appimage.sh "$version"
@@ -84,9 +109,40 @@ jobs:
             sha256sum --check "$(basename "$appimage").sha256"
           )
 
+      - name: Inspect bundled glibc requirements
+        # The build host is the oldest supported base: every ELF must run on
+        # glibc 2.35. A higher tag means a library was built somewhere newer.
+        run: |
+          max_allowed=2.35
+          offenders=()
+          while IFS= read -r -d '' file; do
+            if [ "$(head -c 4 "$file" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+              continue
+            fi
+            versions="$(objdump -T "$file" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' || true)"
+            [ -n "$versions" ] || continue
+            version="$(printf '%s\n' "$versions" | sed 's/^GLIBC_//' | sort -V | tail -n 1)"
+            if dpkg --compare-versions "$version" gt "$max_allowed"; then
+              offenders+=("${file#squashfs-root/} needs GLIBC_$version")
+            fi
+          done < <(find squashfs-root -type f -print0)
+          if [ "${#offenders[@]}" -ne 0 ]; then
+            printf '%s ELF file(s) need glibc newer than %s:\n' \
+              "${#offenders[@]}" "$max_allowed" >&2
+            printf '  %s\n' "${offenders[@]}" >&2
+            exit 1
+          fi
+          echo "Every bundled object runs with glibc $max_allowed or older."
+
       - name: Smoke-test layer-shell placement
         # The bundled gtk4-layer-shell must turn the command bar into an overlay.
-        run: bash scripts/layer-shell-smoke.sh squashfs-root/AppRun
+        # Sway refuses to run as root, and container jobs run as root, so give
+        # the smoke its own unprivileged user and let it read the AppDir.
+        run: |
+          useradd --create-home --uid 1001 smoke
+          chmod -R a+rX squashfs-root
+          runuser -u smoke -- env HOME=/home/smoke \
+            bash scripts/layer-shell-smoke.sh "$PWD/squashfs-root/AppRun"
 
       - name: Smoke-test application startup
         run: |
@@ -104,8 +160,39 @@ jobs:
         # recording must report what to install.
         run: bash scripts/no-gstreamer-smoke.sh squashfs-root
 
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Kestrel-x86_64-AppImage
+          path: |
+            dist/*.AppImage
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  sign:
+    name: Sign and publish
+    needs: build
+    # minisign is not packaged in jammy; signing runs on the host instead.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Download AppImage
+        uses: actions/download-artifact@v7
+        with:
+          name: Kestrel-x86_64-AppImage
+          path: dist
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y minisign
+
       - name: Sign AppImage
         # Releases must carry a signature; builds without the secret (forks) skip it.
+        id: sign
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -116,6 +203,7 @@ jobs:
               echo "MINISIGN_SECRET_KEY is required to publish a release" >&2
               exit 1
             fi
+            echo "signed=false" >> "$GITHUB_OUTPUT"
             echo "No signing key in this build; the AppImage stays unsigned."
             exit 0
           fi
@@ -124,8 +212,10 @@ jobs:
           minisign -S -s "$key" -m "$appimage" -t "$(basename "$appimage")"
           rm -f "$key"
           minisign -V -p data/release-signing.pub -m "$appimage"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload workflow artifact
+      - name: Upload signed artifact
+        if: steps.sign.outputs.signed == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: Kestrel-x86_64-AppImage
@@ -133,7 +223,7 @@ jobs:
             dist/*.AppImage
             dist/*.sha256
             dist/*.minisig
-          if-no-files-found: error
+          overwrite: true
           retention-days: 30
 
       - name: Publish GitHub prerelease

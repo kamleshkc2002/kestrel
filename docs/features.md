@@ -1,3 +1,8 @@
+---
+layout: default
+title: Features
+---
+
 # Features
 
 ## Known limits
@@ -6,6 +11,28 @@
 - The status overlay needs layer-shell (COSMIC, KDE Plasma, Sway, Hyprland, and other wlroots compositors), so it is unavailable on GNOME.
 - Keyboard shortcuts need the desktop's shortcuts portal (KDE Plasma, GNOME 48+, Hyprland) or X11; elsewhere, bind `kestrel --command` in your desktop's shortcut settings.
 - Downloads and installs are never automatic: the AppImage can update itself only after **Get update** and **Install and restart** (see [Update check](#update-check)); otherwise download each preview by hand.
+
+## Flatpak
+
+The Flatpak build runs in a sandbox with a small set of permissions. Those permissions and their reasons are listed in [What's stored and sent](privacy.md#flatpak-permissions). Everything else works, and the features the sandbox restricts say so in the Feature Hub:
+
+| Feature | In the Flatpak | Lifts it |
+|---|---|---|
+| `system.processes` | Unavailable: the sandbox lists only Kestrel's own processes. | Full process access, which is not shipped. |
+| `network.listeners` | Limited: sockets owned outside the sandbox have no visible process. | — |
+| `camera.preview` | Unavailable: camera devices are not exposed. | `--device=all`. |
+| `desktop.appearance`, `files.show-hidden`, `desktop.icons` | Unavailable: desktop settings are private to the sandbox. | dconf access. |
+| `files.empty-trash` | Unavailable: the host Trash is outside the sandbox. | Home access. |
+| `display.brightness`, `keyboard.backlight` | Unavailable: system settings are read-only in the sandbox. | Writable `/sys`. |
+| `clipboard.history` | Unavailable where the compositor filters clipboard protocols: it gives no clipboard access to sandboxed apps. | — |
+| `commands.bar` | Limited while Applications, Files, or Windows sources are on: those are outside the sandbox. | Configured file roots. |
+| `files.shelf` | Limited for file actions: files from other apps arrive through the document portal. | — |
+| `system.monitor` | Limited: the Disk row shows only the mounts the sandbox can see. | — |
+| Autostart | Limited: it needs the desktop's Background portal. | A desktop that exports it. |
+| Update check | The offer shows **View release**; the Flatpak updates through its store. | — |
+| Tray, screen recording, screenshots, quick toggles | Work as described above. | — |
+
+Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kestrel --command <id>`; see [Configuration](configuration.md#flatpak).
 
 ## Monitoring — `system.monitor`
 
@@ -73,6 +100,7 @@
 - **Default:** disabled and requires explicit opt-in.
 - **Configuration:** `[clipboard] max_items` (1–1,000; default 100), `max_item_bytes` (1 KiB–16 MiB; default 1 MiB), `max_image_bytes` (1 KiB–64 MiB; default 4 MiB), `max_file_entries` (1–1,024; default 64), `max_total_bytes` (1 KiB–128 MiB; default 16 MiB), `max_age_hours` (1–720; default 24), `clear_seconds` (0–86,400; default 0), `filter_sensitive` (default false), `paste_plain_text` (default true), `history_layout` (`list` or `cards`; default `list`), `paste_keys` (`ctrl_v`, `ctrl_shift_v`, or `shift_insert`; default `ctrl_v`), `keep_pinned` (default false), and `pinned_max_age_days` (1–365; default 90), also editable on the Clipboard page.
 - History is memory-only by default and bounded; wipe, lock, sleep, shutdown, and service stop drop retained buffers, and diagnostics carry metadata only. See [What's stored and sent](privacy.md#whats-stored-and-sent).
+- Kestrel reads the clipboard only after the session reports a selection change: Wayland data-control selection events, or XFixes selection notifications on X11. Session lock arrives as a logind property change and sleep as the manager's `PrepareForSleep` signal. On a backend that cannot report changes it checks every 250 ms instead, and the Clipboard page says which mode is in use.
 - **Saved pins (second opt-in):** "Keep pinned entries across restarts" saves pinned **text** entries in an encrypted file in the data folder; the key lives in the desktop keyring (Secret Service). Image and file pins stay in memory and say so. Saved pins obey the global count, per-entry, total-byte, and saved-pin age bounds, and a history wipe removes them. Without an unlockable keyring pinning keeps working in memory with the remedy shown. A truncated, corrupt, or re-keyed file is not loaded: the page says "Saved pins could not be read" and offers Reset (delete the file and key) or Keep. **Delete saved pins** shows the count and byte estimate, asks first, removes the file and the keyring item, and verifies the file is gone. See the [decision](privacy.md#saved-clipboard-entries-threat-model-and-decision).
 - Copying an entry again moves it to the top; pinned entries keep their place. Wipe history and Clear unpinned ask first and state how many entries go; anything copied while the prompt is open is kept.
 - Search highlights matches. Ctrl+N and Ctrl+P move through results and Return copies the selected entry, or the first one when none is selected.
@@ -298,18 +326,30 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 
 ## Idle cost
 
-`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the CI session has no logind, so clipboard history does not run there. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
+`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% (plus 1/s of sampling slack) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the script starts a private system bus with the logind fake so clipboard history actually runs in the presets that enable it. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
 
-Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer:
+Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer, with the same profile before and after the clipboard watch change. Before, on the polling worker:
 
 | Preset | Window | CPU % | Wakeups/s | RSS | Threads |
 |---|---|---|---|---|---|
-| Essentials | open | 2.60 | 8.2 | 409 MiB | 81 |
-| Essentials | closed | 1.45 | 8.5 | 411 MiB | 81 |
-| Balanced | open | 12.20 | 15.3 | 420 MiB | 84 |
-| Balanced | closed | 6.45 | 15.9 | 419 MiB | 85 |
-| Everything | open | 15.65 | 113.7 | 420 MiB | 85 |
-| Everything | closed | 9.65 | 116.6 | 420 MiB | 85 |
+| Essentials | open | 2.50 | 19.0 | 408 MiB | 82 |
+| Essentials | closed | 2.80 | 17.2 | 407 MiB | 81 |
+| Balanced | open | 31.40 | 126.2 | 421 MiB | 88 |
+| Balanced | closed | 9.20 | 130.8 | 419 MiB | 85 |
+| Everything | open | 15.10 | 129.1 | 419 MiB | 85 |
+| Everything | closed | 8.65 | 128.0 | 419 MiB | 86 |
 
-- The tick follows what is running: with the window open and no overlay or job needing a live control, Essentials went from 14.2 to 8.2 wakeups/s and from 3.15% to 2.60% CPU when the fixed 250 ms interval became a one-second pace outside live feedback; with the window closed it went from 15.2 to 8.5 wakeups/s. Balanced and Everything stay inside run-to-run noise; the clipboard watcher and its D-Bus privacy monitor dominate their cost.
-- Turning features off stops their threads and timers: applying `kestrel --command preset.essentials` to a running Everything window dropped it from 84 to 80 threads and from 111 to 17 wakeups/s within 25 seconds.
+After, with selection events and deadline-driven waits:
+
+| Preset | Window | CPU % | Wakeups/s | RSS | Threads |
+|---|---|---|---|---|---|
+| Essentials | open | 10.40 | 16.1 | 409 MiB | 81 |
+| Essentials | closed | 1.00 | 14.3 | 409 MiB | 82 |
+| Balanced | open | 12.25 | 26.6 | 419 MiB | 87 |
+| Balanced | closed | 5.80 | 24.5 | 419 MiB | 88 |
+| Everything | open | 13.05 | 24.0 | 419 MiB | 87 |
+| Everything | closed | 6.80 | 22.8 | 420 MiB | 88 |
+
+- With the window open, Balanced and Everything fell from about 126–129 to 24–27 wakeups/s, and the gap over Essentials is now the same roughly 10/s of feature overhead the recorded baseline shows for these presets without clipboard history; a controlled run with the same features and only history toggled stays inside run-to-run noise. The Essentials rows include ordinary window and feature noise (the open CPU sample in this run is high).
+- The tick follows what is running: with the window open and no overlay or job needing a live control, one-second pacing outside live feedback keeps Essentials low; clipboard history no longer dominates any preset.
+- Turning features off stops their threads and timers: applying `kestrel --command preset.essentials` to a running Everything window drops its threads and wakeups within 25 seconds.

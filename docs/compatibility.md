@@ -1,3 +1,8 @@
+---
+layout: default
+title: Compatibility
+---
+
 # Compatibility
 
 Capability probes in the running app decide whether a feature works in a session. This table records the evidence behind that decision: what the project has tested, what people have reported, and where a probe reports a feature unsupported. A cell that says Untested can still work on your desktop.
@@ -6,6 +11,12 @@ The desktop columns assume a Wayland session. The X11 column is a session type, 
 
 Keyboard shortcuts depend on the session: a real X11 session uses key grabs, and a Wayland session needs a GlobalShortcuts portal from the installed portal backend, so their cells stay Untested until a run records the result.
 
+## System baseline
+
+The AppImage bundles GTK 4.14, libadwaita 1.5, and the rest of the desktop stack from source, so a desktop does not need its own GTK version. That leaves glibc: the artifact needs glibc 2.35 or newer, which covers Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Fedora 38+ (glibc 2.37), and Arch. Older systems such as Ubuntu 20.04 and Debian 11 cannot start it.
+
+CI builds the AppImage and runs both startup smoke tests plus the layer-shell check in an Ubuntu 22.04 container, so a build cannot quietly raise that floor. The workflow also inspects every bundled ELF object with `objdump -T` and fails if any file needs a GLIBC_ version above 2.35.
+
 ## Cell values
 
 - **Tested** — observed by the project on that desktop, with the version and date. A CI or QA-script run names the run instead.
@@ -13,7 +24,7 @@ Keyboard shortcuts depend on the session: a real X11 session uses key grabs, and
 - **Untested** — no evidence either way.
 - **Unsupported** — the capability probe reports the feature unavailable on that desktop, with the probe's reason, such as no wlr-layer-shell or no data-control.
 
-The Tested cells come from CI: the clipboard clean-session run, which uses a private Xvfb session and headless Sway, and the layer-shell smoke check on headless Sway. CI installs the runner's own Xvfb and Sway packages, so those cells name the session and CI instead of a version. The Reported cells come from the maintainer's day-to-day use of Pop!_OS 24.04 with COSMIC in November 2026, and from a COSMIC tester report about output port switching in [issue #331](https://github.com/kamleshkc2002/kestrel/issues/331).
+The Tested cells come from CI: the clipboard clean-session run, which uses a private Xvfb session and headless Sway, and the layer-shell smoke check on headless Sway. CI installs Xvfb and Sway in the environment where it runs those checks, so those cells name the session and CI instead of a version. The Reported cells come from the maintainer's day-to-day use of Pop!_OS 24.04 with COSMIC in November 2026, and from a COSMIC tester report about output port switching in [issue #331](https://github.com/kamleshkc2002/kestrel/issues/331).
 
 ## How to report
 
