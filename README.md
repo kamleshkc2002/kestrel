@@ -67,6 +67,7 @@ chmod +x "$FILE"
 - Nothing contacts a network host without your action, except the sound-server connection, which goes where libpulse is configured to connect, and the update check once you turn it on.
 - Clipboard history is memory only; locking the session, sleeping, or quitting wipes it.
 - Settings and data stay in your XDG folders, under a `kestrel` folder.
+- Settings → Remove Kestrel's data… lists everything Kestrel keeps and removes only what you choose.
 
 Full detail is in [docs/privacy.md](docs/privacy.md).
 

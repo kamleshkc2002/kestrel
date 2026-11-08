@@ -359,6 +359,8 @@ pub enum Invocation {
     ListCommands,
     Help,
     Version,
+    /// Lists Kestrel's files without removing them, even with no window.
+    UninstallPreview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -534,6 +536,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> Result<Invocation, CommandLine
         ["--help" | "-h"] => Ok(Invocation::Help),
         ["--version" | "-V"] => Ok(Invocation::Version),
         ["--list-commands"] => Ok(Invocation::ListCommands),
+        ["--uninstall-preview"] => Ok(Invocation::UninstallPreview),
         ["--command"] => Err(CommandLineError::MissingCommandId),
         ["--command", id] => CommandLineAction::parse(id).map(Invocation::Run),
         [single] if single.starts_with("--command=") => {
@@ -549,9 +552,10 @@ pub fn parse_arguments(arguments: &[OsString]) -> Result<Invocation, CommandLine
 
 /// Usage text for `--help`.
 pub fn usage() -> String {
-    "Usage:\n  kestrel                  Open the Kestrel window\n  kestrel --command <id>   \
-     Run one action in the running instance\n  kestrel --list-commands  List command IDs\n  \
-     kestrel --version        Print the version\n"
+    "Usage:\n  kestrel                     Open the Kestrel window\n  kestrel --command <id>      \
+     Run one action in the running instance\n  kestrel --list-commands     List command IDs\n  \
+     kestrel --uninstall-preview\n                              List Kestrel's files without \
+     removing them\n  kestrel --version           Print the version\n"
         .to_owned()
 }
 
@@ -721,6 +725,17 @@ mod tests {
         assert_eq!(
             parse_arguments(&arguments(&["--list-commands"])),
             Ok(Invocation::ListCommands)
+        );
+        assert_eq!(
+            parse_arguments(&arguments(&["--uninstall-preview"])),
+            Ok(Invocation::UninstallPreview)
+        );
+        assert!(
+            matches!(
+                CommandLineAction::parse("--uninstall-preview"),
+                Err(CommandLineError::UnknownCommand(_))
+            ),
+            "--uninstall-preview is an app flag, not a --command ID"
         );
         assert_eq!(parse_arguments(&arguments(&["-h"])), Ok(Invocation::Help));
         assert_eq!(

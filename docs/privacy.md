@@ -44,8 +44,18 @@ The autostart entry is the one file outside these folders: it lives in
 - Recordings have no automatic retention: they stay until you delete them.
 - Files are replaced through a hidden temporary beside them and then renamed, so a crash can leave one behind. It is never read back: the scratchpad removes its own on the next load, screenshots remove theirs when the folder is opened, and the rest can be deleted by hand.
 - Turning a feature off does not delete what it stored. Captures, recordings, notes, snippets, ranking, state files, and settings stay until you remove them.
-- `install-local.sh --uninstall` removes the installed binary, desktop entry, icon, and autostart entry, but keeps settings and data. Full uninstall cleanup is tracked in [issue #178](https://github.com/kamleshkc2002/kestrel/issues/178).
+- `install-local.sh --uninstall` removes the installed binary, desktop entry, icon, and autostart entry, but keeps settings and data. Use Settings → Remove Kestrel's data… (or `kestrel --uninstall-preview`) to review and remove them too.
 - The recordings folder uses normal folder permissions, so other local users can see take names and sizes even though the files themselves are 0600.
+
+## Removing Kestrel
+
+Settings → Remove Kestrel's data… lists every file and folder Kestrel keeps, with its size, before anything is deleted: the configuration, data, state and cache folders, recordings, the autostart entry, the desktop entry and icon, launcher scripts, and the binary. Kestrel's settings and metadata start selected; your recordings and the binary do not, and a previous AppImage beside it is its own choice too.
+
+Choosing Remove stops monitoring, clipboard ownership, shortcut registration, recording, and other running features first, then deletes only the selected paths and reports each one that could not be removed, with the path to remove by hand. Cancelling changes nothing, and the flow quits after the report. No step asks for root: a package-managed install is left in place and the dialog says to remove the `kestrel` package with your package manager.
+
+`kestrel --uninstall-preview` prints the same list and deletes nothing, including when no window can open.
+
+Files you saved elsewhere through Save as or Export are yours: they are not listed and are not deleted. The recordings folder is deleted as a whole when selected, so move any take you want to keep before selecting it.
 
 ## Settings changed on your desktop
 

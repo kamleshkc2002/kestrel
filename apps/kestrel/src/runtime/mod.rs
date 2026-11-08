@@ -744,6 +744,21 @@ impl ApplicationRuntime {
         self.refresh_quick_toggles();
     }
 
+    /// Stops every feature and releases the session resources an uninstall
+    /// deletes, using the same lifecycle path as normal shutdown.
+    pub fn shutdown(&mut self) {
+        let feature_ids = self
+            .registry
+            .registrations()
+            .map(|registration| registration.feature.id)
+            .collect::<Vec<_>>();
+        for feature_id in feature_ids {
+            let _ = self.registry.set_enabled(feature_id, false);
+        }
+        self.registry.start_enabled();
+        self.reconcile_resources();
+    }
+
     pub fn refresh_capabilities(&mut self) -> Result<(), RegistryError> {
         let before = self.feature_states();
         let feature_ids = self
