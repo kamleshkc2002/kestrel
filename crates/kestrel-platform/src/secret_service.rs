@@ -314,6 +314,14 @@ impl PinKeyStore for SecretServiceKeyStore {
             self.confirm_prompt(&prompt)?;
             deleted = true;
         }
+        // A wipe must remove every matching item, not only the first.
+        let (remaining, locked) = self.search()?;
+        if !remaining.is_empty() {
+            return Err(PinKeyError::Failed);
+        }
+        if !locked.is_empty() {
+            return Err(PinKeyError::Locked);
+        }
         Ok(deleted)
     }
 }
@@ -388,7 +396,55 @@ mod tests {
             Err(error) => panic!("get failed: {error:?}"),
         };
         assert_eq!(created.expose(), loaded.expose());
+        add_duplicate_item(&store);
         assert_eq!(second.delete(), Ok(true));
-        assert!(second.get().expect("get after delete").is_none());
+        assert!(
+            second.get().expect("get after delete").is_none(),
+            "every matching item is deleted"
+        );
+    }
+
+    /// Creates a second item with the same attributes, as the earlier bug did.
+    fn add_duplicate_item(store: &super::SecretServiceKeyStore) {
+        use std::collections::HashMap;
+
+        use zbus::zvariant::{OwnedObjectPath, Value};
+
+        let collection_path = store
+            .default_collection()
+            .expect("default collection exists");
+        let key = PinKey::generate().expect("operating-system randomness");
+        store
+            .with_session(|session| -> Result<(), PinKeyError> {
+                let collection = zbus::blocking::Proxy::new(
+                    &store.connection,
+                    super::SERVICE,
+                    collection_path.as_str(),
+                    super::COLLECTION_INTERFACE,
+                )
+                .map_err(super::classify)?;
+                let mut properties: HashMap<String, Value<'_>> = HashMap::new();
+                properties.insert(
+                    "org.freedesktop.Secret.Item.Label".to_owned(),
+                    Value::new("Kestrel clipboard pin key duplicate"),
+                );
+                properties.insert(
+                    "org.freedesktop.Secret.Item.Attributes".to_owned(),
+                    Value::new(super::attributes()),
+                );
+                let secret = (
+                    session.clone(),
+                    Vec::<u8>::new(),
+                    key.expose().to_vec(),
+                    super::CONTENT_TYPE,
+                );
+                let (item, prompt): (OwnedObjectPath, OwnedObjectPath) = collection
+                    .call("CreateItem", &(properties, secret, false))
+                    .map_err(super::classify)?;
+                store.confirm_prompt(&prompt)?;
+                assert_ne!(item.as_str(), "/");
+                Ok(())
+            })
+            .expect("duplicate item created");
     }
 }

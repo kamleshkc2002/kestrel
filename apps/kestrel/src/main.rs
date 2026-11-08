@@ -877,6 +877,10 @@ struct ClipboardFingerprint {
     has_error: bool,
     paste: Option<u8>,
     skipped_temporary: u64,
+    pin_store: kestrel_services::clipboard::PinStoreState,
+    saved_pins: usize,
+    saved_bytes: usize,
+    pin_saves: u64,
 }
 
 impl ClipboardFingerprint {
@@ -893,6 +897,14 @@ impl ClipboardFingerprint {
             has_error: snapshot.last_error.is_some(),
             paste: snapshot.paste.as_ref().map(|stage| stage.code()),
             skipped_temporary: snapshot.skipped_temporary_writes,
+            pin_store: snapshot.pin_store.state,
+            saved_pins: snapshot.pin_store.saved_count,
+            saved_bytes: snapshot.pin_store.saved_bytes,
+            pin_saves: snapshot.items.iter().fold(0u64, |fingerprint, item| {
+                fingerprint
+                    .wrapping_mul(31)
+                    .wrapping_add(item.pin_save as u8 as u64)
+            }),
         }
     }
 }

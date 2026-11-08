@@ -4524,6 +4524,10 @@ mod tests {
             })
             .expect("pin succeeds");
         wait_until(|| path.exists() && service.latest().pin_store.state == PinStoreState::Saved);
+        let saved = service.latest();
+        assert_eq!(saved.pin_store.saved_count, 1);
+        assert_eq!(saved.pin_store.saved_bytes, "durable text".len());
+        assert_eq!(saved.items[0].pin_save, PinSaveState::Saved);
 
         let report = service.wipe_saved_pins(false).expect("wipe succeeds");
         assert_eq!(report.saved_count, 1);
