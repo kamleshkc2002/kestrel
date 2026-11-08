@@ -4,7 +4,9 @@
 //! memory. An unreadable file is moved aside rather than overwritten.
 
 use std::{
+    ffi::OsString,
     fs, io,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -36,9 +38,21 @@ struct StoredItem {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum StoredContent {
-    File { path: String, name: String },
-    Text { text: String },
-    Link { url: String },
+    /// `path` holds a UTF-8 path as text; any other path is kept exactly as
+    /// hex `path_bytes`. `name` is for display only.
+    File {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path_bytes: Option<String>,
+        name: String,
+    },
+    Text {
+        text: String,
+    },
+    Link {
+        url: String,
+    },
 }
 
 /// The shelf's private file beside the other Kestrel data files.
@@ -83,14 +97,16 @@ pub fn load(path: &Path, limits: &ShelfLimits) -> (Vec<ShelfItem>, Option<String
     let mut items = Vec::with_capacity(document.items.len());
     for item in document.items {
         let content = match item.content {
-            StoredContent::File { path, name } => {
-                if path.is_empty() {
+            StoredContent::File {
+                path,
+                path_bytes,
+                name,
+            } => {
+                // An undecodable path is dropped; a guessed path could name another file.
+                let Some(path) = stored_path(path, path_bytes) else {
                     continue;
-                }
-                ShelfContent::File {
-                    path: PathBuf::from(path),
-                    name,
-                }
+                };
+                ShelfContent::File { path, name }
             }
             StoredContent::Text { text } => ShelfContent::Text(text),
             StoredContent::Link { url } => ShelfContent::Link { url },
@@ -129,10 +145,17 @@ pub fn save(path: &Path, items: &[ShelfItem]) -> Result<(), String> {
             .iter()
             .filter_map(|item| {
                 let content = match &item.content {
-                    ShelfContent::File { path, name } => StoredContent::File {
-                        path: path.display().to_string(),
-                        name: name.clone(),
-                    },
+                    ShelfContent::File { path, name } => {
+                        let (text, bytes) = match path.to_str() {
+                            Some(text) => (Some(text.to_owned()), None),
+                            None => (None, Some(hex_encode(path.as_os_str().as_bytes()))),
+                        };
+                        StoredContent::File {
+                            path: text,
+                            path_bytes: bytes,
+                            name: name.clone(),
+                        }
+                    }
                     ShelfContent::Text(text) => StoredContent::Text { text: text.clone() },
                     ShelfContent::Link { url } => StoredContent::Link { url: url.clone() },
                     ShelfContent::Image { .. } => return None,
@@ -150,6 +173,30 @@ pub fn save(path: &Path, items: &[ShelfItem]) -> Result<(), String> {
         .map_err(|error| format!("The shelf was not saved: {error}"))?;
     crate::private_file::write_private_atomic(path, contents.as_bytes())
         .map_err(|error| format!("The shelf was not saved: {error}"))
+}
+
+/// The exact path a stored entry names, or `None` when it names none.
+fn stored_path(text: Option<String>, bytes: Option<String>) -> Option<PathBuf> {
+    let path = match (text, bytes) {
+        (_, Some(bytes)) => PathBuf::from(OsString::from_vec(hex_decode(&bytes)?)),
+        (Some(text), None) => PathBuf::from(text),
+        (None, None) => return None,
+    };
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok())
+        .collect()
 }
 
 /// Deletes the stored file; a file that is already gone is fine.
@@ -189,7 +236,7 @@ fn unix_millis(time: SystemTime) -> u64 {
 mod tests {
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
+        os::unix::{ffi::OsStrExt, fs::PermissionsExt},
         time::{Duration, UNIX_EPOCH},
     };
 
@@ -236,6 +283,10 @@ mod tests {
                     height: 1,
                 },
             ),
+            // Two names that display the same, and one whose real name is that display.
+            file_item(5, b"/tmp/a\xffb"),
+            file_item(6, b"/tmp/a\xfeb"),
+            file_item(7, "/tmp/a\u{fffd}b".as_bytes()),
         ];
         save(&path, &items).expect("the shelf saves");
         let mode = fs::metadata(&path)
@@ -249,10 +300,29 @@ mod tests {
         );
         let (loaded, warning) = load(&path, &ShelfLimits::default());
         assert!(warning.is_none());
-        assert_eq!(loaded.len(), 3, "the image is not stored");
-        assert_eq!(loaded[0], items[0]);
-        assert_eq!(loaded[1], items[1]);
-        assert_eq!(loaded[2], items[2]);
+        assert_eq!(loaded.len(), 6, "the image is not stored");
+        assert_eq!(loaded[..3], items[..3]);
+        assert_eq!(loaded[3..], items[4..], "paths keep their exact bytes");
+
+        // A stored path whose bytes cannot be decoded names no file.
+        fs::write(
+            &path,
+            "version = 1\n\n[[items]]\nid = 9\nadded = 0\n\n[items.content]\n\
+             kind = \"file\"\npath_bytes = \"2f746d7z\"\nname = \"x\"\n",
+        )
+        .expect("fixture file");
+        let (loaded, warning) = load(&path, &ShelfLimits::default());
+        assert!(warning.is_none());
+        assert!(loaded.is_empty(), "an undecodable path is dropped");
+    }
+
+    fn file_item(id: u64, path: &[u8]) -> ShelfItem {
+        let path = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(path));
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        item(id, false, ShelfContent::File { path, name })
     }
 
     #[test]
