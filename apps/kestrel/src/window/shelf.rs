@@ -7,6 +7,7 @@ use gtk::{Align, Orientation, gdk, gio, glib};
 use kestrel::ApplicationCommand;
 use kestrel::view_model::{ShelfItemViewModel, ShelfViewModel};
 use kestrel_core::{ShelfContent, ShelfItemKind};
+use kestrel_platform::file_actions::{self, FileIdentity};
 use kestrel_services::shelf::ShelfInput;
 
 /// The shelf's list and drop area, rebuilt from the view model each time.
@@ -208,6 +209,9 @@ fn build_shelf_row(
     for button in [copy, pin, remove] {
         row.add_suffix(&button);
     }
+    if matches!(item.content, ShelfContent::File { .. }) {
+        row.add_suffix(&build_file_actions(item, commands));
+    }
 
     let source = gtk::DragSource::new();
     source.set_actions(gdk::DragAction::COPY);
@@ -237,6 +241,268 @@ fn editable_image(item: &ShelfItemViewModel) -> bool {
                 )
             }),
         _ => false,
+    }
+}
+
+/// A file row's menu: move, rename, and show in the file manager.
+fn build_file_actions(
+    item: &ShelfItemViewModel,
+    commands: &Sender<ApplicationCommand>,
+) -> gtk::MenuButton {
+    let menu = gtk::MenuButton::new();
+    menu.set_icon_name("view-more-symbolic");
+    menu.add_css_class("flat");
+    menu.set_valign(Align::Center);
+    menu.set_tooltip_text(Some("Move, rename, or show this file"));
+    menu.update_property(&[gtk::accessible::Property::Label("More actions")]);
+    let popover = gtk::Popover::new();
+    let content = gtk::Box::new(Orientation::Vertical, 2);
+    content.set_margin_top(6);
+    content.set_margin_bottom(6);
+    content.set_margin_start(6);
+    content.set_margin_end(6);
+    let ShelfContent::File { path, .. } = &item.content else {
+        menu.set_popover(Some(&popover));
+        return menu;
+    };
+    let id = item.id;
+    let name = item.name.clone();
+    let path = path.clone();
+    let can_change = item.available && item.identity.is_some();
+
+    let move_to = gtk::Button::with_label("Move to…");
+    move_to.add_css_class("flat");
+    move_to.set_halign(Align::Fill);
+    move_to.set_sensitive(can_change);
+    if !can_change {
+        move_to.set_tooltip_text(Some("The file is not there to move"));
+    }
+    {
+        let popover = popover.clone();
+        let commands = commands.clone();
+        let name = name.clone();
+        let path = path.clone();
+        let expected = item.identity;
+        move_to.connect_clicked(move |button| {
+            popover.popdown();
+            if let Some(expected) = expected {
+                open_move_dialog(button, id, &name, &path, expected, &commands);
+            }
+        });
+    }
+    content.append(&move_to);
+
+    let rename = gtk::Button::with_label("Rename…");
+    rename.add_css_class("flat");
+    rename.set_halign(Align::Fill);
+    rename.set_sensitive(can_change);
+    if !can_change {
+        rename.set_tooltip_text(Some("The file is not there to rename"));
+    }
+    {
+        let popover = popover.clone();
+        let commands = commands.clone();
+        let name = name.clone();
+        let expected = item.identity;
+        rename.connect_clicked(move |button| {
+            popover.popdown();
+            if let Some(expected) = expected {
+                open_rename_dialog(button, id, &name, expected, &commands);
+            }
+        });
+    }
+    content.append(&rename);
+
+    let provider = item.reveal_provider.as_deref().unwrap_or("Files");
+    let show = gtk::Button::with_label(&format!("Show in {provider}"));
+    show.add_css_class("flat");
+    show.set_halign(Align::Fill);
+    show.set_sensitive(item.available);
+    let tooltip = if item.reveal_selects {
+        format!("Selects this file in {provider}")
+    } else {
+        format!(
+            "The file manager interface is unavailable, so this opens the file's folder in \
+             {provider}"
+        )
+    };
+    show.set_tooltip_text(Some(&tooltip));
+    {
+        let popover = popover.clone();
+        let commands = commands.clone();
+        show.connect_clicked(move |_| {
+            popover.popdown();
+            let _ = commands.try_send(ApplicationCommand::ShelfRevealItem(id));
+        });
+    }
+    content.append(&show);
+
+    popover.set_child(Some(&content));
+    menu.set_popover(Some(&popover));
+    menu
+}
+
+/// Asks for a destination folder, then confirms the move and its method.
+fn open_move_dialog(
+    anchor: &gtk::Button,
+    id: u64,
+    name: &str,
+    path: &std::path::Path,
+    expected: FileIdentity,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let Some(window) = anchor.root().and_downcast::<gtk::Window>() else {
+        return;
+    };
+    let dialog = gtk::FileDialog::builder()
+        .title("Move to a folder")
+        .accept_label("Choose")
+        .modal(true)
+        .build();
+    let name = name.to_owned();
+    let path = path.to_path_buf();
+    let commands = commands.clone();
+    let parent = window.clone();
+    dialog.select_folder(Some(&window), gtk::gio::Cancellable::NONE, move |result| {
+        let Some(destination) = result.ok().and_then(|file| file.path()) else {
+            return;
+        };
+        confirm_move(&parent, id, &name, &path, expected, &destination, &commands);
+    });
+}
+
+fn confirm_move(
+    parent: &gtk::Window,
+    id: u64,
+    name: &str,
+    path: &std::path::Path,
+    expected: FileIdentity,
+    destination: &std::path::Path,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let same_drive = FileIdentity::read(destination)
+        .ok()
+        .map(|identity| identity.dev == expected.dev);
+    let method = match same_drive {
+        Some(true) => "Same drive: the file is moved in one step.",
+        Some(false) => {
+            "Another drive: the file is copied, checked, and then the original is removed."
+        }
+        None => {
+            "The file is moved when both places are on the same drive; otherwise it is copied, \
+             checked, and the original is removed."
+        }
+    };
+    let dialog = adw::AlertDialog::builder()
+        .heading(format!("Move {name}?"))
+        .body(format!(
+            "Move {name} from {} to {}?\n\n{method}",
+            path.display(),
+            destination.display()
+        ))
+        .body_use_markup(false)
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("move", "Move");
+    dialog.set_response_appearance("move", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("move"));
+    dialog.set_close_response("cancel");
+    let destination = destination.to_path_buf();
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "move" {
+            let _ = commands.try_send(ApplicationCommand::ShelfMoveItem {
+                id,
+                dest_dir: destination.clone(),
+                expected,
+            });
+        }
+        dialog.close();
+    });
+    dialog.present(Some(parent));
+}
+
+/// Asks for a new name, with the stem selected and messages as it is typed.
+fn open_rename_dialog(
+    anchor: &gtk::Button,
+    id: u64,
+    name: &str,
+    expected: FileIdentity,
+    commands: &Sender<ApplicationCommand>,
+) {
+    let entry = gtk::Entry::new();
+    entry.set_text(name);
+    let message = gtk::Label::new(None);
+    message.add_css_class("error");
+    message.set_xalign(0.0);
+    message.set_wrap(true);
+    message.set_visible(false);
+    let extra = gtk::Box::new(Orientation::Vertical, 6);
+    extra.append(&entry);
+    extra.append(&message);
+    let dialog = adw::AlertDialog::builder()
+        .heading(format!("Rename {name}?"))
+        .body("Choose a new name. It stays in the same folder.")
+        .body_use_markup(false)
+        .extra_child(&extra)
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("rename", "Rename");
+    dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("rename"));
+    dialog.set_close_response("cancel");
+
+    let stem = stem_chars(name);
+    entry.connect_map(move |entry| {
+        // Focusing selects the whole text, so the stem is selected afterwards.
+        entry.grab_focus();
+        let entry = entry.clone();
+        glib::idle_add_local_once(move || entry.select_region(0, stem as i32));
+    });
+
+    let validate: std::rc::Rc<dyn Fn()> = {
+        let dialog = dialog.clone();
+        let entry = entry.clone();
+        let message = message.clone();
+        std::rc::Rc::new(
+            move || match file_actions::validate_new_name(&entry.text()) {
+                Ok(()) => {
+                    message.set_visible(false);
+                    dialog.set_response_enabled("rename", true);
+                }
+                Err(problem) => {
+                    message.set_text(problem.message());
+                    message.set_visible(true);
+                    dialog.set_response_enabled("rename", false);
+                }
+            },
+        )
+    };
+    {
+        let validate = std::rc::Rc::clone(&validate);
+        entry.connect_changed(move |_| validate());
+    }
+    validate();
+
+    let commands = commands.clone();
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "rename" {
+            let _ = commands.try_send(ApplicationCommand::ShelfRenameItem {
+                id,
+                new_name: entry.text().to_string(),
+                expected,
+            });
+        }
+        dialog.close();
+    });
+    dialog.present(Some(anchor));
+}
+
+/// How many characters of a name precede its extension.
+fn stem_chars(name: &str) -> usize {
+    match name.rfind('.') {
+        Some(index) if index > 0 => name[..index].chars().count(),
+        _ => name.chars().count(),
     }
 }
 

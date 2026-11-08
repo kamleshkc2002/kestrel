@@ -1,7 +1,9 @@
-//! Shelf runtime: drop, pin, clear, copy, and opt-in storage.
+//! Shelf runtime: drop, pin, clear, copy, move, rename, reveal, and opt-in storage.
 
 use super::*;
+use kestrel_core::ShelfContent;
 use kestrel_platform::clipboard::ClipboardEntryKind;
+use kestrel_platform::file_actions::{self, FileIdentity, MoveMethod, MoveOutcome, RevealOutcome};
 use kestrel_platform::install_handoff::{self, HandoffOutcome, InstallTarget, Provider};
 use kestrel_services::shelf::{ShelfInput, ShelfService};
 
@@ -20,6 +22,7 @@ impl ApplicationRuntime {
             snapshot: running.then(|| self.shelf.snapshot()),
             limits: self.shelf_policy,
             warning: None,
+            reveal: file_actions::reveal_support(),
         })
     }
 
@@ -104,6 +107,97 @@ impl ApplicationRuntime {
         let removed = self.shelf_service()?.clear(include_pinned);
         self.shelf_save()?;
         Ok(removed)
+    }
+
+    /// The path and display name of a file entry an action can change.
+    fn shelf_file_entry(&self, id: u64) -> Result<(PathBuf, String), String> {
+        if !self.shelf_is_running() {
+            return Err("Shelf is off; enable files.shelf in the Feature Hub.".to_owned());
+        }
+        match self.shelf.items().iter().find(|item| item.id == id) {
+            Some(ShelfItem {
+                content: ShelfContent::File { path, name },
+                ..
+            }) => Ok((path.clone(), name.clone())),
+            Some(_) => Err("Only a file entry can be moved or renamed.".to_owned()),
+            None => Err("That shelf entry is no longer there.".to_owned()),
+        }
+    }
+
+    /// Moves one file entry into `dest_dir` after confirming its identity.
+    pub fn shelf_move_item(
+        &mut self,
+        id: u64,
+        dest_dir: &Path,
+        expected: &FileIdentity,
+    ) -> Result<String, String> {
+        let (path, name) = self.shelf_file_entry(id)?;
+        let outcome =
+            file_actions::move_to(&path, dest_dir, expected).map_err(|error| error.to_string())?;
+        match outcome {
+            MoveOutcome::Moved { new_path, method } => {
+                self.shelf_point_at(id, &new_path)?;
+                Ok(match method {
+                    MoveMethod::Renamed => {
+                        format!("Moved {name} to {}.", dest_dir.display())
+                    }
+                    MoveMethod::CopiedAndRemoved => format!(
+                        "Copied {name} to {}, checked it, and removed the original.",
+                        dest_dir.display()
+                    ),
+                })
+            }
+            MoveOutcome::CopiedOriginalKept { new_path, original } => {
+                self.shelf_point_at(id, &new_path)?;
+                Ok(format!(
+                    "Copied {name} to {} but the original at {} could not be removed; both \
+                     copies exist.",
+                    new_path.display(),
+                    original.display()
+                ))
+            }
+        }
+    }
+
+    /// Renames one file entry in place after confirming its identity.
+    pub fn shelf_rename_item(
+        &mut self,
+        id: u64,
+        new_name: &str,
+        expected: &FileIdentity,
+    ) -> Result<String, String> {
+        let (path, _) = self.shelf_file_entry(id)?;
+        let new_path = file_actions::rename_in_place(&path, new_name, expected)
+            .map_err(|error| error.to_string())?;
+        self.shelf_point_at(id, &new_path)?;
+        Ok(format!("Renamed the file to {new_name}."))
+    }
+
+    /// Shows one entry in the file manager, or opens its folder.
+    pub fn shelf_reveal_item(&self, id: u64) -> Result<String, String> {
+        let (path, _) = self.shelf_file_entry(id)?;
+        match file_actions::show_items(std::slice::from_ref(&path)) {
+            Ok(RevealOutcome::Selected) => Ok("Shown in your file manager.".to_owned()),
+            Ok(RevealOutcome::OpenedFolder { provider }) => Ok(match provider {
+                Some(provider) => {
+                    format!("Opened the folder in {provider}; selecting the file is not available.")
+                }
+                None => "Opened the folder; selecting the file is not available.".to_owned(),
+            }),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Points a moved or renamed entry at its new path and saves when keeping.
+    fn shelf_point_at(&mut self, id: u64, new_path: &Path) -> Result<(), String> {
+        let name = new_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| new_path.display().to_string());
+        self.shelf
+            .update_file(id, new_path.to_path_buf(), name)
+            .map_err(|error| error.to_string())?;
+        self.shelf_save()
     }
 
     /// The entry as copied or dragged; the window builds the clipboard data.

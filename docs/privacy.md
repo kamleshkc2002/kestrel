@@ -36,6 +36,7 @@ The autostart entry is the one file outside these folders: it lives in
 | Previous version | Beside the AppImage: `<AppImage>.previous` | The AppImage the last update replaced | A copy is 0600; a hard link keeps the old file's mode | One previous version, about the AppImage's size | Replaced by the next update, or renamed over the AppImage by Go back |
 | Autostart | `$XDG_CONFIG_HOME/autostart/io.github.kamleshkc2002.Kestrel.desktop` (`…Kestrel.Devel.desktop` in debug builds) | `Type`, `Name`, and `Exec` | 0644 under your umask; the folder uses its default permissions | One entry | Turning Autostart off, or `install-local.sh --uninstall` |
 | Capture export | The file you choose in Save as | A copy of the capture | Your umask | None | You |
+| Clipboard image export | The file you choose in Save as | The retained image, as a PNG, written through a hidden temporary beside it and renamed once complete | Your umask | The clipboard image limit (`clipboard.max_image_bytes`, 64 MiB at most) | You |
 | Note export | The file you choose in Export | The note's text | Your umask | None | You |
 | Settings export | The file you choose in Settings → Export | Your settings as TOML, the same contents as `config.toml`, including any command-bar file roots and scripts | Your umask | None | You |
 
@@ -98,8 +99,9 @@ reporting, and `curl` is used only by the update check and the speed test.
 - **QR Open:** a QR result that is an `http://` or `https://` address with no whitespace opens in your browser, which then contacts that host.
 - **Open ports Open:** a TCP listener opens in your browser at `http://127.0.0.1:<port>/` or `http://localhost:<port>/`; only the loopback address is contacted.
 - **Command-bar URL and file results:** `xdg-open` is run with the URL or path as an argument; the handler sees it, a URL may leave the computer, and the argument appears in the process list.
-- **Opening folders and files:** the log folder, the recordings folder, a take, or a trimmed copy is handed to your desktop as a `file://` address; Save as, Export, and the file choosers write to the path you pick.
+- **Opening folders and files:** the log folder, the recordings folder, a take, or a trimmed copy is handed to your desktop as a `file://` address; Save as, Export, and the file choosers write to the path you pick. **Show in** on a shelf file hands the file's `file://` address to your file manager through the session bus; when the desktop's file manager interface is missing, the file's folder address goes to your default folder app instead. No contents are passed.
 - **Install a package or open a disk image:** the chosen file's path goes to the default app for its type, which reads it; the file is not copied, changed, or deleted.
+- **Shelf file actions:** Move to and Rename change or copy the file itself, using your own permissions; no contents go to another app, and nothing is logged.
 - **Application launches and process Restart:** the desktop entry or action is launched by ID, with no URIs or app data passed.
 - **Command-bar scripts:** receive the executable and arguments configured for them, inherit the app's environment, and get empty standard input; their bounded output is read back.
 - **Snippet insertion:** the expanded snippet text, including any `{{clipboard}}` value, goes to `wtype`, `ydotool`, or `xdotool` on standard input.

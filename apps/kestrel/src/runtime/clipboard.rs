@@ -86,6 +86,26 @@ impl ApplicationRuntime {
         self.clipboard_history.latest()
     }
 
+    /// Saves one image entry as a bounded PNG at the chosen path.
+    pub fn export_clipboard_image(
+        &self,
+        entry_id: u64,
+        dest: &Path,
+        replace: bool,
+        max_bytes: u64,
+    ) -> Result<String, String> {
+        if !self.clipboard_history_is_running() {
+            return Err("Clipboard history is not running".to_owned());
+        }
+        let png = self
+            .clipboard_history
+            .image_png(entry_id)
+            .map_err(|error| format!("The image could not be read: {error}"))?;
+        kestrel_platform::file_actions::export_png(png.expose(), dest, max_bytes, replace)
+            .map_err(|error| error.to_string())?;
+        Ok(format!("Saved {}", dest.display()))
+    }
+
     /// Returns bounded, explicitly requested previews outside snapshots and diagnostics.
     pub fn clipboard_search(
         &self,

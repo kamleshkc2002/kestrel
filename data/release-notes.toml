@@ -15,3 +15,7 @@ text = "The new Shelf holds files, text, and links you drag in until you drag th
 [[change]]
 feature = "files.shelf"
 text = "A shelf entry for a package or disk image can be handed to the app your desktop uses for that type, after a confirmation that names the app and leaves the file unchanged."
+
+[[change]]
+feature = "files.shelf"
+text = "Shelf file rows can move, rename, and show their file in your file manager, and copied images can be saved as PNG files."

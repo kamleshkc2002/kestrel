@@ -256,6 +256,8 @@ pub enum ShelfError {
     /// Every slot holds a pinned entry.
     NoRoom,
     UnknownItem,
+    /// Only file entries can be moved or renamed.
+    NotAFile,
 }
 
 impl fmt::Display for ShelfError {
@@ -278,6 +280,7 @@ impl fmt::Display for ShelfError {
             Self::NoRoom => formatter
                 .write_str("Every shelf slot holds a pinned entry; unpin one or raise the limit."),
             Self::UnknownItem => formatter.write_str("That shelf entry is no longer there."),
+            Self::NotAFile => formatter.write_str("Only a file entry can be moved or renamed."),
         }
     }
 }
