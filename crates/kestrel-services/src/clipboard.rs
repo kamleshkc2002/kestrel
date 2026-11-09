@@ -3763,7 +3763,8 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(service.latest().selection_clears, 1);
+        // The worker clears the selection before it publishes the count.
+        wait_until(|| service.latest().selection_clears == 1);
         service.stop();
     }
 
