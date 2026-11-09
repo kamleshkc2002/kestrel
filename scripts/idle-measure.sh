@@ -268,17 +268,20 @@ json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
 }
 
-# The margins absorb runner differences: 50% more wakeups (plus 1/s for the
-# one-second sampling grid and timer coalescing) and 25% more RSS (different
-# Mesa, fontconfig, and glibc caches). Both sit well past run-to-run noise.
+# The margins absorb runner differences: 50% more wakeups plus an absolute
+# slack (5/s by default; low-wakeup rows vary by several per second between
+# CI runs), and 25% more RSS (different Mesa, fontconfig, and glibc caches).
+# Both sit well past run-to-run noise and far below a polling regression.
 # Compares every measured run with its baseline; returns 1 when any exceeds a
 # margin. Prints one line per run either way.
 check_baseline() {
   local report="$1" baseline="$2"
-  local wakeup_margin rss_margin failures=0
+  local wakeup_margin wakeup_slack rss_margin failures=0
   wakeup_margin="$(jq -r '.margins.wakeups_percent // 50' "$baseline")"
+  wakeup_slack="$(jq -r '.margins.wakeups_slack // 5' "$baseline")"
   rss_margin="$(jq -r '.margins.rss_percent // 25' "$baseline")"
-  printf '\nBaseline check: wakeups +%s%% (+1/s), RSS +%s%%\n' "$wakeup_margin" "$rss_margin"
+  printf '\nBaseline check: wakeups +%s%% (+%s/s), RSS +%s%%\n' \
+    "$wakeup_margin" "$wakeup_slack" "$rss_margin"
   printf '%-11s %-7s %10s %10s %9s %9s\n' \
     "Preset" "Window" "Wakeups" "Baseline" "RSS KiB" "Baseline"
   local preset window wakeups rss baseline_wakeups baseline_rss wakeup_limit rss_limit verdict
@@ -293,7 +296,8 @@ check_baseline() {
       failures=$((failures + 1))
       continue
     fi
-    wakeup_limit="$(awk -v base="$baseline_wakeups" -v margin="$wakeup_margin" 'BEGIN {print base * (1 + margin / 100) + 1}')"
+    wakeup_limit="$(awk -v base="$baseline_wakeups" -v margin="$wakeup_margin" -v slack="$wakeup_slack" \
+      'BEGIN {print base * (1 + margin / 100) + slack}')"
     rss_limit="$(awk -v base="$baseline_rss" -v margin="$rss_margin" 'BEGIN {print base * (1 + margin / 100)}')"
     local over_wakeups=false over_rss=false
     verdict="ok"
