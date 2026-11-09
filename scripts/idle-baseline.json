@@ -5,6 +5,7 @@
   "settle_seconds": 8,
   "margins": {
     "wakeups_percent": 50,
+    "wakeups_slack": 5,
     "rss_percent": 25
   },
   "runs": [
