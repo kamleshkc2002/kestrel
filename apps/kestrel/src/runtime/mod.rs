@@ -779,6 +779,9 @@ impl ApplicationRuntime {
             let _ = self.microphone.refresh();
         }
         self.refresh_recording_applications();
+        // Takes and captures another program added or removed appear without a restart.
+        self.recording.refresh();
+        self.capture.refresh();
         self.refresh_quick_toggles();
         Ok(())
     }
