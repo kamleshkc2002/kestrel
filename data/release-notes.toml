@@ -3,3 +3,7 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "capture.recording"
+text = "Refresh now re-lists recordings and captures added to their folders outside Kestrel."
