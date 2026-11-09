@@ -771,10 +771,11 @@ fn deliver_alerts(
 
 /// Focus and held modifiers, observed on the GTK thread while a paste waits.
 fn paste_observation(application: &gtk::Application) -> kestrel_services::paste::PasteObservation {
+    // A hidden window keeps its last active state, and it cannot hold the focus.
     let focus_released = application
         .windows()
         .iter()
-        .all(|window| !window.is_active());
+        .all(|window| !window.is_visible() || !window.is_active());
     let held = gtk::gdk::Display::default()
         .and_then(|display| display.default_seat())
         .and_then(|seat| seat.keyboard())
@@ -1911,7 +1912,7 @@ impl ApplicationController {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Clipboard);
     }
 
-    /// Starts a paste; the window hides once the entry is staged.
+    /// Starts a paste; the window hides once the modifiers clear.
     fn start_clipboard_paste(self: &Rc<Self>, item_id: u64, plain_text: bool) {
         let unavailable = self
             .state
@@ -1937,26 +1938,21 @@ impl ApplicationController {
         );
     }
 
-    /// Hides every Kestrel window, then reports focus and modifier state until
-    /// the paste reaches a terminal stage.
+    /// Waits for held modifiers to clear while the window keeps the focus, hides
+    /// every Kestrel window, then reports the focus until the paste ends.
     fn begin_paste_observation(&self) {
+        use kestrel_services::paste::PasteStage;
+
         let Some(application) = gtk::gio::Application::default()
             .and_then(|application| application.downcast::<gtk::Application>().ok())
         else {
             return;
         };
-        // The floating surfaces are destroyed; the main window is hidden so the
-        // compositor can return focus to the previous application.
-        if let Some(surface) = self.floating.borrow_mut().take() {
-            surface.window.close();
-        }
-        for window in application.windows() {
-            window.set_visible(false);
-        }
         let Some(controller) = self.self_ref.borrow().upgrade() else {
             return;
         };
         let state = Arc::clone(&self.state);
+        let mut hidden = false;
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let observation = paste_observation(&application);
             let stage = {
@@ -1969,6 +1965,21 @@ impl ApplicationController {
             let Some(stage) = stage else {
                 return glib::ControlFlow::Break;
             };
+            let hides = matches!(
+                stage,
+                PasteStage::WaitingForFocus | PasteStage::Sending | PasteStage::Done
+            );
+            if hides && !hidden {
+                hidden = true;
+                // The floating surfaces are destroyed; the main window is hidden
+                // so the compositor returns focus to the previous application.
+                if let Some(surface) = controller.floating.borrow_mut().take() {
+                    surface.window.close();
+                }
+                for window in application.windows() {
+                    window.set_visible(false);
+                }
+            }
             if !stage.is_terminal() {
                 return glib::ControlFlow::Continue;
             }

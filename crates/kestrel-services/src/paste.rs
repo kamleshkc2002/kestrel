@@ -1,8 +1,9 @@
 //! One paste of a staged history entry into the previously focused application.
 //!
-//! The operation stages an entry on the clipboard, then waits for the window to
-//! lose focus and for held modifiers to be released before sending a single
-//! keystroke. The provider receives only the key combination.
+//! The operation stages an entry on the clipboard, then waits for held modifiers
+//! to be released while the window keeps the focus, then for the window to lose
+//! focus before sending a single keystroke. The provider receives only the key
+//! combination.
 
 use std::time::{Duration, Instant};
 
@@ -105,10 +106,12 @@ impl PasteFailure {
 /// The operation's typed lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteStage {
-    /// The entry is on the clipboard and the window may still hold focus.
+    /// The entry is on the clipboard and the window still holds focus.
     Staged,
-    WaitingForFocusLoss,
+    /// The shortcut's modifiers must clear while the window keeps the focus.
     WaitingForModifiers,
+    /// The window may hide now; the previous application has to take the focus.
+    WaitingForFocus,
     Sending,
     Done,
     Abandoned(PasteAbandonReason),
@@ -124,8 +127,8 @@ impl PasteStage {
     pub const fn code(&self) -> u8 {
         match self {
             Self::Staged => 1,
-            Self::WaitingForFocusLoss => 2,
-            Self::WaitingForModifiers => 3,
+            Self::WaitingForModifiers => 2,
+            Self::WaitingForFocus => 3,
             Self::Sending => 4,
             Self::Done => 5,
             Self::Abandoned(_) => 6,
@@ -137,9 +140,7 @@ impl PasteStage {
     pub fn message(&self) -> Option<String> {
         match self {
             Self::Staged | Self::Sending => None,
-            Self::WaitingForFocusLoss => {
-                Some("Paste: waiting for the window to lose focus".to_owned())
-            }
+            Self::WaitingForFocus => Some("Paste: waiting for the window to lose focus".to_owned()),
             Self::WaitingForModifiers => {
                 Some("Paste: waiting for modifier keys to be released".to_owned())
             }
@@ -161,7 +162,8 @@ pub struct PasteOperation {
 }
 
 impl PasteOperation {
-    /// Starts the bounded wait; the caller hides its window once staging lands.
+    /// Starts the bounded wait; the caller hides its window once the modifiers
+    /// clear.
     pub fn staged(
         item_id: u64,
         staged: OwnedSelection,
@@ -203,6 +205,9 @@ impl PasteOperation {
     /// Advances the wait with the observations and, once both holds are gone,
     /// confirms the staged selection through `backend` before sending.
     ///
+    /// Modifier release is observed while the window still holds the focus; the
+    /// caller hides once the stage reaches [`PasteStage::WaitingForFocus`].
+    ///
     /// `still_owned` is whether Kestrel still tracks the staged selection as the
     /// one it owns; a newer copy clears it before this call. The backend also
     /// confirms the live selection, so a takeover with matching bytes aborts.
@@ -216,21 +221,21 @@ impl PasteOperation {
     ) -> &PasteStage {
         loop {
             match self.stage {
-                PasteStage::Staged => self.stage = PasteStage::WaitingForFocusLoss,
-                PasteStage::WaitingForFocusLoss => {
-                    if now >= self.deadline {
-                        self.stage = PasteStage::Abandoned(PasteAbandonReason::FocusTimeout);
-                    } else if observation.focus_released {
-                        self.stage = PasteStage::WaitingForModifiers;
-                        self.deadline = now + self.settings.modifier_timeout;
-                    } else {
-                        break;
-                    }
-                }
+                PasteStage::Staged => self.stage = PasteStage::WaitingForModifiers,
                 PasteStage::WaitingForModifiers => {
                     if now >= self.deadline {
                         self.stage = PasteStage::Abandoned(PasteAbandonReason::ModifiersHeld);
                     } else if observation.modifiers_released {
+                        self.stage = PasteStage::WaitingForFocus;
+                        self.deadline = now + self.settings.focus_timeout;
+                    } else {
+                        break;
+                    }
+                }
+                PasteStage::WaitingForFocus => {
+                    if now >= self.deadline {
+                        self.stage = PasteStage::Abandoned(PasteAbandonReason::FocusTimeout);
+                    } else if observation.focus_released {
                         self.send(still_owned, backend, provider);
                     } else {
                         break;
@@ -454,32 +459,42 @@ mod tests {
         let now = Instant::now();
         let (mut operation, mut backend, mut provider) = staged_text("one", now);
 
+        // The focus can leave first; the chord still waits for the modifiers.
         assert_eq!(
             operation.advance(
                 now,
-                PasteObservation::default(),
-                true,
-                &mut backend,
-                &mut provider
-            ),
-            &PasteStage::WaitingForFocusLoss
-        );
-        assert_eq!(
-            operation.advance(
-                now + Duration::from_millis(10),
                 PasteObservation {
                     focus_released: true,
                     modifiers_released: false,
                 },
                 true,
                 &mut backend,
-                &mut provider,
+                &mut provider
             ),
             &PasteStage::WaitingForModifiers
         );
         assert!(
             provider.keys.is_empty(),
-            "nothing is sent while a hold remains"
+            "nothing is sent while a modifier remains"
+        );
+
+        // The release is observed while the window still holds the focus.
+        assert_eq!(
+            operation.advance(
+                now + Duration::from_millis(10),
+                PasteObservation {
+                    focus_released: false,
+                    modifiers_released: true,
+                },
+                true,
+                &mut backend,
+                &mut provider,
+            ),
+            &PasteStage::WaitingForFocus
+        );
+        assert!(
+            provider.keys.is_empty(),
+            "nothing is sent while the window holds the focus"
         );
 
         let sent_at = now + Duration::from_millis(20);
@@ -552,44 +567,52 @@ mod tests {
     fn modifier_timeout_and_focus_timeout_abandon_the_operation() {
         let now = Instant::now();
         let (mut operation, mut backend, mut provider) = staged_text("one", now);
-        let focus_late = now + Duration::from_secs(2);
+        let modifiers_late = now + Duration::from_secs(2);
 
+        // A held modifier is a modifier timeout, whatever the focus did.
         assert_eq!(
             operation.advance(
-                focus_late,
-                PasteObservation::default(),
-                true,
-                &mut backend,
-                &mut provider
-            ),
-            &PasteStage::Abandoned(PasteAbandonReason::FocusTimeout)
-        );
-        assert!(provider.keys.is_empty());
-
-        let (mut operation, mut backend, mut provider) = staged_text("one", now);
-        let focus_lost = now + Duration::from_millis(10);
-        operation.advance(
-            focus_lost,
-            PasteObservation {
-                focus_released: true,
-                modifiers_released: false,
-            },
-            true,
-            &mut backend,
-            &mut provider,
-        );
-        assert_eq!(
-            operation.advance(
-                focus_lost + Duration::from_millis(600),
+                modifiers_late,
                 PasteObservation {
                     focus_released: true,
                     modifiers_released: false,
                 },
                 true,
                 &mut backend,
-                &mut provider,
+                &mut provider
             ),
             &PasteStage::Abandoned(PasteAbandonReason::ModifiersHeld)
+        );
+        assert!(provider.keys.is_empty());
+
+        let (mut operation, mut backend, mut provider) = staged_text("one", now);
+        let modifiers_clear = now + Duration::from_millis(10);
+        assert_eq!(
+            operation.advance(
+                modifiers_clear,
+                PasteObservation {
+                    focus_released: false,
+                    modifiers_released: true,
+                },
+                true,
+                &mut backend,
+                &mut provider,
+            ),
+            &PasteStage::WaitingForFocus
+        );
+        // The window keeps the focus for the whole focus bound.
+        assert_eq!(
+            operation.advance(
+                modifiers_clear + Duration::from_secs(1),
+                PasteObservation {
+                    focus_released: false,
+                    modifiers_released: true,
+                },
+                true,
+                &mut backend,
+                &mut provider,
+            ),
+            &PasteStage::Abandoned(PasteAbandonReason::FocusTimeout)
         );
         assert!(provider.keys.is_empty());
     }
