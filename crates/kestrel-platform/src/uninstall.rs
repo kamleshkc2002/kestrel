@@ -3,7 +3,9 @@
 //! Every path here comes from a folder Kestrel names itself under the XDG
 //! directories, from the autostart and desktop entries it writes, or from
 //! the running binary. Removal unlinks each path in place, so a symlink is
-//! removed as a link and never followed.
+//! removed as a link and never followed. Directory trees are removed through
+//! the standard library's handle-based walk, which keeps that rule when a
+//! path is replaced during removal.
 
 use std::{
     env, fmt, fs, io,
@@ -341,18 +343,10 @@ fn remove_exact(path: &Path) -> Result<(), UninstallError> {
         }
     };
     if metadata.is_dir() {
-        let entries = fs::read_dir(path).map_err(|source| UninstallError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|source| UninstallError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-            remove_exact(&entry.path())?;
-        }
-        return match fs::remove_dir(path) {
+        // The standard library walks the tree through directory handles it
+        // opens itself, so a path replaced by a symlink mid-walk is unlinked
+        // and its target is left alone.
+        return match fs::remove_dir_all(path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(source) => Err(UninstallError::Io {
@@ -589,20 +583,29 @@ mod tests {
         fs::create_dir_all(&outside).expect("outside folder");
         let kept = outside.join("keep.txt");
         fs::write(&kept, b"not Kestrel's").expect("outside file");
-        symlink(
-            &outside,
-            layout
-                .data
-                .join(kestrel_core::DATA_DIRECTORY_NAME)
-                .join("escape"),
-        )
-        .expect("inner symlink");
+        let kestrel_data = layout.data.join(kestrel_core::DATA_DIRECTORY_NAME);
+        symlink(&outside, kestrel_data.join("escape")).expect("inner symlink");
+        let nested = kestrel_data.join("nested");
+        fs::create_dir_all(&nested).expect("nested folder");
+        fs::write(nested.join("state.json"), b"kestrel").expect("nested file");
+        symlink(&outside, nested.join("deep-escape")).expect("nested symlink");
+        symlink(&kept, kestrel_data.join("file-escape")).expect("file symlink");
 
         remove(&layout.item(UninstallItemKind::Data)).expect("remove data");
-        assert!(!layout.data.join(kestrel_core::DATA_DIRECTORY_NAME).exists());
+        assert!(!kestrel_data.exists());
         assert!(
             kept.exists(),
             "a symlink inside the folder was not followed"
+        );
+        let mut remaining = fs::read_dir(&outside)
+            .expect("outside folder")
+            .map(|entry| entry.expect("outside entry").file_name())
+            .collect::<Vec<_>>();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            [std::ffi::OsString::from("keep.txt")],
+            "nothing else in the link target was touched"
         );
 
         let linked = layout.state.join("linked-state");
@@ -614,6 +617,19 @@ mod tests {
         .expect("remove linked state");
         assert!(linked.symlink_metadata().is_err(), "the link is gone");
         assert!(kept.exists(), "the item path itself was not followed");
+
+        let linked_file = layout.state.join("linked-file");
+        symlink(&kept, &linked_file).expect("file item symlink");
+        remove(&UninstallItem::new(
+            UninstallItemKind::State,
+            linked_file.clone(),
+        ))
+        .expect("remove linked file");
+        assert!(
+            linked_file.symlink_metadata().is_err(),
+            "the file link is gone"
+        );
+        assert!(kept.exists(), "the file link's target was not followed");
     }
 
     #[test]
