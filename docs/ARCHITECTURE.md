@@ -371,6 +371,12 @@ still exposes those bytes, that is not Kestrel's selection to clear, and the
 next change notification reads the re-published content again so the state stays
 visible rather than silently diverging.
 
+Paste asks the adapter for live ownership immediately before it sends a
+keystroke: the data-control source must still be alive, or the X11 CLIPBOARD
+owner window must still be the one recorded at the write. Matching bytes alone
+are not ownership, since another source can offer the same plain text under
+richer formats.
+
 The worker learns about selection changes from the adapter instead of re-reading
 on a fixed cadence. Wayland binds a data-control watcher and blocks on the
 compositor's selection event; X11 selects XFixes owner, window-destroy, and

@@ -204,7 +204,8 @@ impl PasteOperation {
     /// confirms the staged selection through `backend` before sending.
     ///
     /// `still_owned` is whether Kestrel still tracks the staged selection as the
-    /// one it owns; a newer copy clears it before this call.
+    /// one it owns; a newer copy clears it before this call. The backend also
+    /// confirms the live selection, so a takeover with matching bytes aborts.
     pub fn advance<B: ClipboardBackend, I: InsertionBackend + ?Sized>(
         &mut self,
         now: Instant,
@@ -250,6 +251,19 @@ impl PasteOperation {
         if !still_owned {
             self.stage = PasteStage::Abandoned(PasteAbandonReason::ClipboardChanged);
             return;
+        }
+        // The cached ownership predates this tick, and a takeover may offer the
+        // same bytes, so the backend confirms the live selection first.
+        match backend.owns_selection(&self.staged) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.stage = PasteStage::Abandoned(PasteAbandonReason::ClipboardChanged);
+                return;
+            }
+            Err(error) => {
+                self.stage = PasteStage::Abandoned(read_abandon_reason(&error));
+                return;
+            }
         }
         match holds_staged(backend, &self.staged, &self.settings) {
             Ok(true) => {
@@ -313,10 +327,19 @@ mod tests {
 
     use super::{PasteAbandonReason, PasteObservation, PasteOperation, PasteSettings, PasteStage};
 
+    /// The owner of everything this fake writes.
+    const SELF_OWNER: u32 = 1;
+    /// An application that took the selection after Kestrel wrote it.
+    const FOREIGN_OWNER: u32 = 2;
+
     #[derive(Default)]
     struct FakeBackend {
         text: Option<String>,
         read_error: Option<ClipboardErrorKind>,
+        /// The current owner of the selection.
+        owner: u32,
+        /// Formats the current selection offers.
+        offered_types: Vec<String>,
     }
 
     impl ClipboardBackend for FakeBackend {
@@ -353,6 +376,15 @@ mod tests {
                 self.text = None;
             }
             Ok(matches)
+        }
+
+        fn owns_selection(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError> {
+            let matches = matches!((expected, self.text.as_deref()), (OwnedSelection::Text(text), Some(current)) if text == current);
+            Ok(self.owner == SELF_OWNER && matches)
+        }
+
+        fn offered_types(&mut self) -> Result<Option<Vec<String>>, ClipboardError> {
+            Ok(Some(self.offered_types.clone()))
         }
     }
 
@@ -403,6 +435,8 @@ mod tests {
             FakeBackend {
                 text: Some(text.to_owned()),
                 read_error: None,
+                owner: SELF_OWNER,
+                offered_types: vec!["text/plain;charset=utf-8".to_owned()],
             },
             FakeProvider::default(),
         )
@@ -481,6 +515,22 @@ mod tests {
         assert!(
             provider.keys.is_empty(),
             "a changed clipboard sends nothing"
+        );
+
+        // Another application owns the selection now: the plain text still
+        // matches while the owner and the offered formats differ.
+        let (mut operation, mut backend, mut provider) = staged_text("one", now);
+        backend.owner = FOREIGN_OWNER;
+        backend.offered_types = vec!["text/html".to_owned(), "text/plain".to_owned()];
+
+        let stage = operation.advance(now, released(), true, &mut backend, &mut provider);
+        assert_eq!(
+            stage,
+            &PasteStage::Abandoned(PasteAbandonReason::ClipboardChanged)
+        );
+        assert!(
+            provider.keys.is_empty(),
+            "a takeover with identical text sends nothing"
         );
     }
 

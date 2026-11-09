@@ -3007,6 +3007,22 @@ mod tests {
         Files(Vec<String>),
     }
 
+    /// Whether the fake selection is the owned payload the worker expects.
+    fn same_selection(expected: &OwnedSelection, current: Option<&FakeSelection>) -> bool {
+        match (expected, current) {
+            (OwnedSelection::Text(expected), Some(FakeSelection::Text(current))) => {
+                expected == current
+            }
+            (OwnedSelection::ImagePng(expected), Some(FakeSelection::Image(current))) => {
+                expected == current
+            }
+            (OwnedSelection::Files(expected), Some(FakeSelection::Files(current))) => {
+                expected == current
+            }
+            _ => false,
+        }
+    }
+
     #[derive(Default)]
     struct FakeState {
         current: Option<FakeSelection>,
@@ -3178,20 +3194,14 @@ mod tests {
             Ok(())
         }
 
+        fn owns_selection(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError> {
+            let state = self.state.lock().expect("fake state");
+            Ok(same_selection(expected, state.current.as_ref()))
+        }
+
         fn clear_if_matches(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError> {
             let mut state = self.state.lock().expect("fake state");
-            let matches = match (expected, state.current.as_ref()) {
-                (OwnedSelection::Text(expected), Some(FakeSelection::Text(current))) => {
-                    expected == current
-                }
-                (OwnedSelection::ImagePng(expected), Some(FakeSelection::Image(current))) => {
-                    expected == current
-                }
-                (OwnedSelection::Files(expected), Some(FakeSelection::Files(current))) => {
-                    expected == current
-                }
-                _ => false,
-            };
+            let matches = same_selection(expected, state.current.as_ref());
             if !matches {
                 return Ok(false);
             }
