@@ -5502,6 +5502,7 @@ mod tests {
         wait_until(|| service.latest().items.len() == 1);
         wait_until(|| service.latest().items.iter().any(|item| item.pinned));
         let reads = store.reads.load(Ordering::Relaxed);
+        let wipes = service.latest().wipe_count;
 
         // Both edges are queued before the worker handles either, and the
         // properties still read the released state.
@@ -5512,11 +5513,9 @@ mod tests {
             .send(PrivacyStep::Signal(Some(second)))
             .expect("watch receives");
 
-        wait_until(|| service.latest().items.is_empty());
-        assert!(
-            service.latest().items.is_empty(),
-            "the hold edge must wipe even when the properties read released"
-        );
+        // The release edge may reload the pin before a snapshot with no
+        // items is ever sampled, so the wipe is observed through its count.
+        wait_until(|| service.latest().wipe_count > wipes);
         assert!(
             state.lock().expect("fake state").current.is_none(),
             "the hold edge must release the owned selection"
