@@ -56,6 +56,8 @@ pub enum PinStoreState {
     ReadFailed,
     /// The session is locked or asleep; saved pins stay closed until it ends.
     Held,
+    /// The sandbox withholds the keyring that the store encrypts with.
+    Sandboxed,
     /// The file could not be written.
     Failed,
 }
@@ -120,6 +122,7 @@ pub enum PinSaveState {
     StoreUnreadable,
     StoreReadFailed,
     StoreHeld,
+    StoreSandboxed,
     StoreFailed,
 }
 
@@ -139,6 +142,7 @@ impl PinSaveState {
             Self::StoreUnreadable => "Not saved: saved pins could not be read",
             Self::StoreReadFailed => "Not saved: the saved-pins file could not be read",
             Self::StoreHeld => "Not saved: saved pins reload after you unlock",
+            Self::StoreSandboxed => "Not saved: the sandbox does not give keyring access",
             Self::StoreFailed => "Not saved: the store could not be written",
         }
     }

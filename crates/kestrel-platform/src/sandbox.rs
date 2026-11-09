@@ -57,6 +57,8 @@ pub enum SandboxReason {
     Autostart,
     /// The sandbox cannot own an item bus name.
     TrayName,
+    /// Saved pins need the host keyring, which the sandbox does not reach.
+    SavedPins,
 }
 
 impl SandboxReason {
@@ -75,6 +77,7 @@ impl SandboxReason {
             Self::HostFilesystems => "host-filesystems",
             Self::Autostart => "autostart",
             Self::TrayName => "tray-name",
+            Self::SavedPins => "saved-pins",
         }
     }
 
@@ -95,6 +98,7 @@ impl SandboxReason {
             Self::HostFilesystems => "the sandbox hides the host's root and home filesystems",
             Self::Autostart => "autostart needs the desktop's Background portal",
             Self::TrayName => "a sandboxed build cannot own a StatusNotifierItem bus name",
+            Self::SavedPins => "saved pins need keyring access, which the sandbox does not give",
         }
     }
 
@@ -122,7 +126,17 @@ impl SandboxReason {
             | Self::ClipboardAccess
             | Self::ShelfFiles
             | Self::HostFilesystems
-            | Self::Autostart => None,
+            | Self::Autostart
+            | Self::SavedPins => None,
+        }
+    }
+
+    /// The reason as a standalone sentence, for surfaces that show it alone.
+    pub fn sentence(self) -> String {
+        let reason = self.reason();
+        match reason.chars().next() {
+            Some(first) => format!("{}{}.", first.to_uppercase(), &reason[first.len_utf8()..]),
+            None => String::new(),
         }
     }
 }
@@ -325,6 +339,36 @@ mod tests {
         assert!(
             !remediation.contains("video group"),
             "the desktop group remedy does not apply in a sandbox"
+        );
+    }
+
+    #[test]
+    fn saved_pins_are_a_restriction_without_a_recommended_permission() {
+        let report = unsupported(
+            "clipboard.history",
+            "Saved pins are unavailable.",
+            SandboxReason::SavedPins,
+        );
+        assert!(matches!(
+            report.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(
+            report
+                .evidence
+                .iter()
+                .any(|item| item.key == "sandbox" && item.value == "saved-pins")
+        );
+        assert!(
+            report.remediation.is_none(),
+            "keyring access would expose every secret and is not advised"
+        );
+
+        let sentence = SandboxReason::SavedPins.sentence();
+        assert!(sentence.ends_with('.'));
+        assert!(
+            sentence.chars().next().is_some_and(char::is_uppercase),
+            "a standalone sentence starts with a capital"
         );
     }
 

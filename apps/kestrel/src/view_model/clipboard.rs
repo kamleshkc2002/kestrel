@@ -51,6 +51,8 @@ pub struct ClipboardPinStoreViewModel {
     pub max_pinned_age_days: u32,
     /// There is something to delete from the store.
     pub can_delete: bool,
+    /// Why the switch cannot be turned on here, when it cannot.
+    pub unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +194,7 @@ impl ClipboardViewModel {
                 .snapshot
                 .as_ref()
                 .map(|snapshot| &snapshot.pin_store),
+            kestrel_platform::sandbox::flatpak(),
         );
         let Some(snapshot) = presentation
             .snapshot
@@ -287,6 +290,7 @@ fn clipboard_pin_store(
     configuration: &kestrel_core::ClipboardConfiguration,
     running: bool,
     status: Option<&kestrel_services::clipboard::PinStoreStatus>,
+    sandboxed: bool,
 ) -> ClipboardPinStoreViewModel {
     use kestrel_services::clipboard::{PIN_STORE_REMEDY, PinStoreState};
 
@@ -296,7 +300,10 @@ fn clipboard_pin_store(
     let saved_count = status.map_or(0, |status| status.saved_count);
     let saved_bytes = status.map_or(0, |status| status.saved_bytes);
     let keep_pinned = configuration.keep_pinned;
-    let (message, remedy, needs_reset) = if !keep_pinned {
+    let sandbox_reason = || kestrel_platform::sandbox::SandboxReason::SavedPins.sentence();
+    let (message, remedy, needs_reset) = if sandboxed {
+        (sandbox_reason(), None, false)
+    } else if !keep_pinned {
         (
             "Pinned entries stay in memory only. Turn this on to keep text pins across \
              restarts."
@@ -367,6 +374,11 @@ fn clipboard_pin_store(
                 None,
                 false,
             ),
+            PinStoreState::Sandboxed => (
+                kestrel_platform::sandbox::SandboxReason::SavedPins.sentence(),
+                None,
+                false,
+            ),
             PinStoreState::Failed => (
                 "Saved pins could not be saved.".to_owned(),
                 Some(
@@ -387,7 +399,8 @@ fn clipboard_pin_store(
         needs_reset,
         pinned_max_age_days: configuration.pinned_max_age_days,
         max_pinned_age_days: kestrel_core::MAX_CLIPBOARD_PINNED_MAX_AGE_DAYS,
-        can_delete: keep_pinned && running && (saved_count > 0 || needs_reset),
+        can_delete: !sandboxed && keep_pinned && running && (saved_count > 0 || needs_reset),
+        unavailable: sandboxed.then(sandbox_reason),
     }
 }
 
@@ -538,6 +551,36 @@ mod tests {
                     && text[start..end].to_lowercase() == "größe")
         );
         assert!(super::match_ranges("anything", "  ").is_empty());
+    }
+
+    #[test]
+    fn a_sandboxed_pin_store_cannot_be_enabled() {
+        use kestrel_services::clipboard::{PinStoreState, PinStoreStatus};
+
+        let configuration = kestrel_core::ClipboardConfiguration {
+            keep_pinned: true,
+            ..kestrel_core::ClipboardConfiguration::default()
+        };
+        let status = PinStoreStatus::new(PinStoreState::Sandboxed);
+        let pin_store = clipboard_pin_store(&configuration, true, Some(&status), true);
+
+        assert_eq!(pin_store.state, PinStoreState::Sandboxed);
+        assert!(pin_store.unavailable.is_some());
+        assert!(pin_store.remedy.is_none());
+        assert!(!pin_store.can_delete, "there is nothing to delete");
+
+        // Turning it on is equally unavailable before the setting has ever
+        // been enabled.
+        let off = kestrel_core::ClipboardConfiguration::default();
+        let pin_store = clipboard_pin_store(&off, true, None, true);
+        assert!(pin_store.unavailable.is_some());
+        assert!(!pin_store.can_delete);
+
+        let host = clipboard_pin_store(&configuration, true, Some(&status), false);
+        assert!(
+            host.unavailable.is_none(),
+            "a host build may still enable it"
+        );
     }
 
     #[test]

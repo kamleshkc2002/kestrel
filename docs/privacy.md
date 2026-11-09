@@ -75,7 +75,7 @@ The Flatpak build asks for one permission per shipped feature and nothing else. 
 | `--system-talk-name=org.freedesktop.UPower` | Accessory batteries, and the overlay's battery module. |
 | `--filesystem=xdg-videos:create` | Recordings and trim exports in `~/Videos/Kestrel`. |
 
-The build does not ask for home access, writable `/sys`, dconf, the host autostart folder, full device access, or the Flatpak socket that launches host programs. Those would each replace the sandbox for one feature.
+The build does not ask for home access, writable `/sys`, dconf, the host autostart folder, full device access, or the Flatpak socket that launches host programs. Those would each replace the sandbox for one feature. It also stays away from the keyring (`org.freedesktop.secrets`), because that would expose every secret stored there: **Keep pinned entries across restarts** is unavailable in the Flatpak for that reason, and the Clipboard page says so instead of asking for a keyring. Delete saved pins and Reset have nothing to remove.
 
 Inside the Flatpak, the folders in the table above move under `~/.var/app/io.github.kamleshkc2002.Kestrel/`: settings go in `config/kestrel`, data in `data/kestrel`, state in `.local/state/kestrel`, and the cache in `cache`. Recordings stay in `~/Videos/Kestrel`, which is the one folder the sandbox shares with the host. The app's autostart entry is managed by the desktop's Background portal, not written by the sandbox.
 

@@ -3,3 +3,7 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "clipboard.history"
+text = "In the Flatpak, Keep pinned entries across restarts is unavailable because the sandbox cannot reach the desktop keyring, and the switch says so instead of asking for one."

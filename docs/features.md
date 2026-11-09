@@ -28,6 +28,7 @@ The Flatpak build runs in a sandbox with a small set of permissions. Those permi
 | `commands.bar` | Limited while Applications, Files, or Windows sources are on: those are outside the sandbox. | Configured file roots. |
 | `files.shelf` | Limited for file actions: files from other apps arrive through the document portal. | — |
 | `system.monitor` | Limited: the Disk row shows only the mounts the sandbox can see. | — |
+| Saved clipboard pins | Unavailable: they need keyring access, which the sandbox does not give. | — |
 | Autostart | Limited: it needs the desktop's Background portal. | A desktop that exports it. |
 | Update check | The offer shows **View release**; the Flatpak updates through its store. | — |
 | Tray, screen recording, screenshots, quick toggles | Work as described above. | — |

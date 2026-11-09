@@ -160,16 +160,20 @@ pub(super) fn add_clipboard_limits_group(
 
     let keep = plain_row()
         .title("Keep pinned entries across restarts")
-        .subtitle(
+        .subtitle(clipboard.pin_store.unavailable.as_deref().unwrap_or(
             "Pinned text entries are encrypted with a key in your desktop keyring and written \
              to the data folder. Images and file pins stay in memory only.",
-        )
+        ))
         .subtitle_lines(0)
         .build();
     let keep_switch = gtk::Switch::builder()
-        .active(clipboard.pin_store.keep_pinned)
+        .active(clipboard.pin_store.keep_pinned && clipboard.pin_store.unavailable.is_none())
+        .sensitive(clipboard.pin_store.unavailable.is_none())
         .valign(Align::Center)
         .build();
+    if let Some(reason) = clipboard.pin_store.unavailable.as_deref() {
+        keep_switch.set_tooltip_text(Some(reason));
+    }
     keep_switch.update_property(&[
         Property::Label("Keep pinned clipboard entries across restarts"),
         Property::Description(

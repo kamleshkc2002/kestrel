@@ -972,10 +972,11 @@ impl ApplicationRuntime {
             );
             if feature.id == CLIPBOARD_HISTORY_ID {
                 line.push_str(&format!(
-                    "\titems={}\twipes={}\twatch={}",
+                    "\titems={}\twipes={}\twatch={}\tpin={}",
                     clipboard.items.len(),
                     clipboard.wipe_count,
-                    clipboard.watch_mode.evidence_value()
+                    clipboard.watch_mode.evidence_value(),
+                    pin_store_label(clipboard.pin_store.state)
                 ));
             }
             if feature.id == AUDIO_MIXER_ID {
@@ -1345,6 +1346,23 @@ fn recording_phase_label(phase: &RecordingPhase) -> &'static str {
     }
 }
 
+fn pin_store_label(state: kestrel_services::clipboard::PinStoreState) -> &'static str {
+    use kestrel_services::clipboard::PinStoreState;
+    match state {
+        PinStoreState::Disabled => "disabled",
+        PinStoreState::Idle => "idle",
+        PinStoreState::Saving => "saving",
+        PinStoreState::Saved => "saved",
+        PinStoreState::Unavailable => "unavailable",
+        PinStoreState::Locked => "locked",
+        PinStoreState::Unreadable => "unreadable",
+        PinStoreState::ReadFailed => "read-failed",
+        PinStoreState::Held => "held",
+        PinStoreState::Sandboxed => "sandboxed",
+        PinStoreState::Failed => "failed",
+    }
+}
+
 mod audio;
 mod capture;
 mod clipboard;
@@ -1411,8 +1429,10 @@ mod tests {
         assert!(
             state
                 .lines()
-                .any(|line| line.contains("\tclipboard.history\t") && line.contains("\titems=0\t")),
-            "clipboard state is a counter, not content"
+                .any(|line| line.contains("\tclipboard.history\t")
+                    && line.contains("\titems=0\t")
+                    && line.contains("\tpin=")),
+            "clipboard state is a counter and a pin-store state, not content"
         );
         assert!(
             state
