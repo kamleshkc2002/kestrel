@@ -5597,17 +5597,18 @@ mod tests {
             .send(PrivacyStep::Signal(Some(second)))
             .expect("watch receives");
 
-        wait_until(|| service.latest().items.is_empty());
-        assert!(
-            service.latest().items.is_empty(),
-            "the hold edge must wipe even when the properties read released"
-        );
-        assert!(
-            state.lock().expect("fake state").current.is_none(),
+        // The resume merge can restore the saved pin before this thread next
+        // looks, so the hold's wipe is asserted through its counter.
+        wait_until(|| service.latest().wipe_count > 0);
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            None,
             "the hold edge must release the owned selection"
         );
-        // The release edge reloads saved pins, which reads the key again.
+        // The release edge reloads saved pins, which reads the key again and
+        // restores the pinned entry the hold wiped.
         wait_until(|| store.reads.load(Ordering::Relaxed) > reads);
+        wait_until(|| service.latest().items.iter().any(|item| item.pinned));
         service.stop();
     }
 
