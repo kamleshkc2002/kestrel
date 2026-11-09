@@ -7,3 +7,7 @@
 [[change]]
 feature = "capture.screenshot"
 text = "Recent capture rows put their actions on a second line, so each title and detail stays readable in a narrow window."
+
+[[change]]
+feature = "capture.recording"
+text = "Refresh now re-lists recordings and captures added to their folders outside Kestrel."

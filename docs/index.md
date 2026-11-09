@@ -69,7 +69,7 @@ chmod +x "$FILE"
 ```
 
 - **Requires:** a GTK4 desktop session. Screen recording is the only feature that uses GStreamer, which the AppImage does not bundle; without it, recording says which packages to install and everything else works.
-- **Arch Linux:** install `kestrel-desktop` from the AUR.
+- **Arch Linux:** the `kestrel-desktop` AUR package is not published yet; until it is, build [packaging/aur](https://github.com/kamleshkc2002/kestrel/tree/main/packaging/aur) with `makepkg`.
 - If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
 - **Flatpak:** a restricted build is planned for 0.9.
 - To build from source, see [Development](development.md).
