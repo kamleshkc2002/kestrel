@@ -4621,7 +4621,7 @@ mod tests {
         assert!(
             matches!(
                 snapshot.paste,
-                Some(super::PasteStage::Staged | super::PasteStage::WaitingForFocusLoss)
+                Some(super::PasteStage::Staged | super::PasteStage::WaitingForModifiers)
             ),
             "the entry is staged before the window hides: {:?}",
             snapshot.paste
@@ -4629,6 +4629,38 @@ mod tests {
         assert!(
             keys.lock().expect("fake keys").is_empty(),
             "nothing is sent while the window holds focus"
+        );
+
+        // Held modifiers keep the window in place and the chord pending.
+        service.observe_paste(super::PasteObservation {
+            focus_released: false,
+            modifiers_released: false,
+        });
+        let snapshot = wait_for(&service, |snapshot| {
+            snapshot.paste == Some(super::PasteStage::WaitingForModifiers)
+        });
+        assert!(
+            !snapshot
+                .paste
+                .as_ref()
+                .is_some_and(|paste| paste.is_terminal())
+        );
+        assert!(
+            keys.lock().expect("fake keys").is_empty(),
+            "a held modifier sends nothing"
+        );
+
+        // The release is observed while focused; only then may the window hide.
+        service.observe_paste(super::PasteObservation {
+            focus_released: false,
+            modifiers_released: true,
+        });
+        let _ = wait_for(&service, |snapshot| {
+            snapshot.paste == Some(super::PasteStage::WaitingForFocus)
+        });
+        assert!(
+            keys.lock().expect("fake keys").is_empty(),
+            "the chord waits for the focus to leave"
         );
 
         service.observe_paste(super::PasteObservation {
