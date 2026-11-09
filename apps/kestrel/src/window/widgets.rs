@@ -255,6 +255,26 @@ pub(super) fn stacked_row(
     subtitle: &str,
     controls: &impl IsA<gtk::Widget>,
 ) -> adw::PreferencesRow {
+    stacked_row_body(title, subtitle, None, controls)
+}
+
+/// A stacked row whose thumbnail sits beside the text, so a picture does not
+/// narrow the title either.
+pub(super) fn stacked_row_with_prefix(
+    title: &str,
+    subtitle: &str,
+    prefix: &impl IsA<gtk::Widget>,
+    controls: &impl IsA<gtk::Widget>,
+) -> adw::PreferencesRow {
+    stacked_row_body(title, subtitle, Some(prefix.upcast_ref()), controls)
+}
+
+fn stacked_row_body(
+    title: &str,
+    subtitle: &str,
+    prefix: Option<&gtk::Widget>,
+    controls: &impl IsA<gtk::Widget>,
+) -> adw::PreferencesRow {
     let row = adw::PreferencesRow::builder()
         .title(title)
         .activatable(false)
@@ -264,6 +284,7 @@ pub(super) fn stacked_row(
     content.set_margin_bottom(12);
     content.set_margin_start(12);
     content.set_margin_end(12);
+    content.set_hexpand(true);
     let heading = gtk::Label::new(Some(title));
     configure_wrapping_label(&heading);
     let description = gtk::Label::new(Some(subtitle));
@@ -277,6 +298,28 @@ pub(super) fn stacked_row(
     controls.set_halign(Align::Fill);
     controls.set_margin_top(6);
     content.append(controls);
-    row.set_child(Some(&content));
+    match prefix {
+        Some(prefix) => {
+            prefix.set_valign(Align::Start);
+            let line = gtk::Box::new(Orientation::Horizontal, 12);
+            line.append(prefix);
+            line.append(&content);
+            row.set_child(Some(&line));
+        }
+        None => row.set_child(Some(&content)),
+    }
     row
+}
+
+/// A row of buttons that wraps onto more lines in a narrow window instead of
+/// setting the row's minimum width.
+pub(super) fn action_box(actions: u32) -> gtk::FlowBox {
+    gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .row_spacing(6)
+        .column_spacing(6)
+        .min_children_per_line(1)
+        .max_children_per_line(actions.max(1))
+        .homogeneous(false)
+        .build()
 }
