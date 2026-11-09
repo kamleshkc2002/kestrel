@@ -58,7 +58,7 @@ Set `VERSION` to the latest preview on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
-VERSION="0.7.0-preview.1"
+VERSION="0.9.0-preview.1"
 FILE="Kestrel-$VERSION-x86_64.AppImage"
 URL="https://github.com/kamleshkc2002/kestrel/releases/download/v$VERSION"
 curl -LO "$URL/$FILE"
@@ -71,7 +71,7 @@ chmod +x "$FILE"
 - **Requires:** a GTK4 desktop session. Screen recording is the only feature that uses GStreamer, which the AppImage does not bundle; without it, recording says which packages to install and everything else works.
 - **Arch Linux:** the `kestrel-desktop` AUR package is not published yet; until it is, build [packaging/aur](https://github.com/kamleshkc2002/kestrel/tree/main/packaging/aur) with `makepkg`.
 - If the AppImage does not mount, run it with `--appimage-extract-and-run`. No root is needed.
-- **Flatpak:** a restricted build is planned for 0.9.
+- **Flatpak:** each release from 0.9 on attaches a restricted `.flatpak` bundle; some features are unavailable in the sandbox and say why ([details](features.md#flatpak)). It is not on Flathub yet.
 - To build from source, see [Development](development.md).
 
 ## Where it runs
