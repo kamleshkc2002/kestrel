@@ -272,8 +272,6 @@ pub struct ApplicationRuntime {
     recording_settings: kestrel_core::RecordingConfiguration,
     /// Applications with playback, offered for one-application System audio.
     recording_applications: Vec<RecordingApplicationViewModel>,
-    /// Take editor for trim previews.
-    recording_editor: Arc<dyn TakeEditor>,
     screen_tool_settings: kestrel_core::ScreenToolsConfiguration,
     alerts: AlertEngine,
     scratchpad: Option<ScratchpadService>,
@@ -643,7 +641,6 @@ impl ApplicationRuntime {
             recording_detection,
             recording_settings: configuration.recording.clone(),
             recording_applications: Vec::new(),
-            recording_editor: Arc::new(HelperTakeEditor::new()),
             recording: RecordingService::new(
                 Arc::new(PortalRecordingBackend::new()),
                 Arc::new(HelperTakeEditor::new()),

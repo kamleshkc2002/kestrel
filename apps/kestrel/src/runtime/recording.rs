@@ -303,24 +303,40 @@ impl ApplicationRuntime {
         }
     }
 
-    /// The length of a listed take and a preview function over it, for the
-    /// trim editor.
-    pub fn recording_trim(
-        &self,
-        take: &Path,
-    ) -> Result<(std::time::Duration, crate::TrimPreview), String> {
+    /// A listed take prepared for trimming; reading it happens off the lock.
+    pub fn recording_trim(&self, take: &Path) -> Result<TrimTake, String> {
         if !self.recording_is_running() {
             return Err(
                 "Screen recording is not running; enable capture.recording in the Feature Hub."
                     .to_owned(),
             );
         }
-        let duration = self.recording.take_duration(take)?;
-        let editor = Arc::clone(&self.recording_editor);
-        let take = take.to_path_buf();
+        let editor = self.recording.take_editor(take)?;
+        Ok(TrimTake {
+            editor,
+            path: take.to_path_buf(),
+        })
+    }
+}
+
+/// A take whose length and preview frames the trim editor needs.
+pub struct TrimTake {
+    editor: Arc<dyn TakeEditor>,
+    path: PathBuf,
+}
+
+impl TrimTake {
+    /// The take's length and a preview over it.
+    pub fn load(self) -> Result<(std::time::Duration, crate::TrimPreview), String> {
+        let duration = self
+            .editor
+            .duration(&self.path)
+            .map_err(|error| error.message)?;
+        let editor = self.editor;
+        let path = self.path;
         let preview: crate::TrimPreview = Arc::new(move |position| {
             let frame = editor
-                .frame_at(&take, position)
+                .frame_at(&path, position)
                 .map_err(|error| error.message)?;
             kestrel_services::capture::image::RgbaImage::new(
                 frame.width,
