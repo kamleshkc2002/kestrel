@@ -180,7 +180,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download AppImage
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: Kestrel-x86_64-AppImage
           path: dist
