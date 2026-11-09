@@ -454,6 +454,12 @@ pub trait ClipboardBackend: Send + 'static {
         Err(unsupported_kind(ClipboardEntryKind::Files, self.provider()))
     }
 
+    /// Whether the live selection is still the one Kestrel wrote as `expected`.
+    ///
+    /// Matching content is not ownership: another source may offer the same
+    /// bytes with richer formats. Paste confirms this before typing.
+    fn owns_selection(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError>;
+
     /// Clears the live selection only when it matches `expected`.
     fn clear_if_matches(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError>;
 }
@@ -476,6 +482,10 @@ pub struct ArboardClipboardBackend {
     clipboard: Clipboard,
     /// Rich selections use a dedicated data-control connection.
     served: Option<ServedSelection>,
+    /// The X11 window that owned CLIPBOARD at the last write.
+    x11_owner: Option<u32>,
+    /// The connection used to read the live X11 CLIPBOARD owner.
+    x11: Option<X11SelectionOwner>,
 }
 
 impl ArboardClipboardBackend {
@@ -490,7 +500,26 @@ impl ArboardClipboardBackend {
             provider,
             clipboard,
             served: None,
+            x11_owner: None,
+            x11: None,
         })
+    }
+
+    /// Reads the live X11 CLIPBOARD owner, keeping one connection open.
+    fn x11_live_owner(&mut self) -> Result<Option<u32>, ClipboardError> {
+        if self.x11.is_none() {
+            self.x11 = Some(X11SelectionOwner::new()?);
+        }
+        let selection = self
+            .x11
+            .as_ref()
+            .expect("the X11 selection connection was just created");
+        selection.owner()
+    }
+
+    /// Records the owner window of a write, leaving it unconfirmed on failure.
+    fn record_x11_owner(&mut self) {
+        self.x11_owner = self.x11_live_owner().ok().flatten();
     }
 
     /// Releases rich selections, waiting briefly for takeover observation.
@@ -606,6 +635,7 @@ impl ArboardClipboardBackend {
     ///
     /// The same protocol family removes arboard's compositor-owned selection.
     fn release_text_selection(&mut self) -> Result<(), ClipboardError> {
+        self.x11_owner = None;
         if self.provider == ClipboardProvider::WaylandDataControl
             && clear(
                 WaylandCopyClipboardType::Regular,
@@ -685,7 +715,9 @@ impl ClipboardBackend for ArboardClipboardBackend {
                 ClipboardErrorKind::WriteFailed,
                 format!("clipboard ownership failed: {error}"),
             )
-        })
+        })?;
+        self.record_x11_owner();
+        Ok(())
     }
 
     fn offered_kind(&mut self) -> Result<Option<ClipboardEntryKind>, ClipboardError> {
@@ -802,6 +834,26 @@ impl ClipboardBackend for ArboardClipboardBackend {
         self.serve(OwnedSelection::Files(paths.to_vec()))
     }
 
+    fn owns_selection(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError> {
+        match self.provider {
+            // The data-control source ends when another client replaces it.
+            ClipboardProvider::WaylandDataControl => Ok(self
+                .served
+                .as_ref()
+                .is_some_and(|served| served.is_alive() && served.owned == *expected)),
+            // Arboard reports no owner, so the window recorded at write is compared.
+            ClipboardProvider::X11 => {
+                let OwnedSelection::Text(_) = expected else {
+                    return Ok(false);
+                };
+                let Some(recorded) = self.x11_owner else {
+                    return Err(x11_owner_error());
+                };
+                Ok(self.x11_live_owner()? == Some(recorded))
+            }
+        }
+    }
+
     fn clear_if_matches(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError> {
         if self.provider == ClipboardProvider::WaylandDataControl {
             return self.clear_served_if_matches(expected);
@@ -873,6 +925,46 @@ impl ClipboardChangeWatch for WaylandChangeWatch {
         let cancel = self.cancel.clone();
         ChangeWatchCancel::new(move || cancel.cancel())
     }
+}
+
+/// Reads the live X11 CLIPBOARD owner over a dedicated connection.
+struct X11SelectionOwner {
+    connection: RustConnection,
+    clipboard: Atom,
+}
+
+impl X11SelectionOwner {
+    fn new() -> Result<Self, ClipboardError> {
+        let (connection, _) = RustConnection::connect(None).map_err(|_| x11_owner_error())?;
+        let clipboard = connection
+            .intern_atom(false, b"CLIPBOARD")
+            .map_err(|_| x11_owner_error())?
+            .reply()
+            .map_err(|_| x11_owner_error())?
+            .atom;
+        Ok(Self {
+            connection,
+            clipboard,
+        })
+    }
+
+    fn owner(&self) -> Result<Option<u32>, ClipboardError> {
+        let owner = self
+            .connection
+            .get_selection_owner(self.clipboard)
+            .map_err(|_| x11_owner_error())?
+            .reply()
+            .map_err(|_| x11_owner_error())?
+            .owner;
+        Ok((owner != x11rb::NONE).then_some(owner))
+    }
+}
+
+fn x11_owner_error() -> ClipboardError {
+    ClipboardError::new(
+        ClipboardErrorKind::ReadFailed,
+        "the X11 CLIPBOARD owner could not be confirmed",
+    )
 }
 
 /// An XFixes selection watcher for the X11 compatibility path.
