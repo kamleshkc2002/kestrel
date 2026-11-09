@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use super::widgets::{plain_row, stacked_row, turn_on_row};
+use super::widgets::{action_box, plain_row, stacked_row, turn_on_row};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, Orientation, accessible::Property, glib};
@@ -329,18 +329,20 @@ fn takes_group(
         return group;
     }
     for take in &recording.takes {
-        let row = plain_row().title(&take.name).subtitle(&take.detail).build();
+        let actions = action_box(3);
         if let Ok(uri) = glib::filename_to_uri(&take.path, None) {
             let play = button("Play", false);
+            play.set_halign(Align::Start);
             play.update_property(&[Property::Label(&format!("Play {}", take.name))]);
             let sender = commands.clone();
             let uri = uri.to_string();
             play.connect_clicked(move |_| {
                 let _ = sender.try_send(ApplicationCommand::OpenUri(uri.clone()));
             });
-            row.add_suffix(&play);
+            actions.append(&play);
         }
         let trim = button("Trim", false);
+        trim.set_halign(Align::Start);
         trim.update_property(&[Property::Label(&format!("Trim {}", take.name))]);
         trim.set_sensitive(
             !recording
@@ -353,8 +355,9 @@ fn takes_group(
         trim.connect_clicked(move |_| {
             let _ = sender.try_send(ApplicationCommand::TrimRecording(path.clone()));
         });
-        row.add_suffix(&trim);
+        actions.append(&trim);
         let delete = gtk::Button::from_icon_name("user-trash-symbolic");
+        delete.set_halign(Align::Start);
         delete.set_valign(Align::Center);
         delete.add_css_class("flat");
         delete.set_tooltip_text(Some("Delete"));
@@ -372,8 +375,8 @@ fn takes_group(
                 RecordingRequest::Delete(path.clone()),
             );
         });
-        row.add_suffix(&delete);
-        group.add(&row);
+        actions.append(&delete);
+        group.add(&stacked_row(&take.name, &take.detail, &actions));
     }
     group
 }

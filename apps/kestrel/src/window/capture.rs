@@ -1,6 +1,8 @@
 //! Screenshot controls and recent captures.
 
-use super::widgets::{choose_path, plain_row, stacked_row, turn_on_row};
+use super::widgets::{
+    action_box, choose_path, plain_row, stacked_row, stacked_row_with_prefix, turn_on_row,
+};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Align, accessible::Property};
@@ -17,14 +19,7 @@ pub(super) fn build_capture_group(
         .build();
     if capture.running {
         // One button per mode; wrapping keeps the row inside a narrow window.
-        let modes = gtk::FlowBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .row_spacing(6)
-            .column_spacing(6)
-            .min_children_per_line(1)
-            .max_children_per_line(4)
-            .homogeneous(false)
-            .build();
+        let modes = action_box(4);
         for mode in &capture.modes {
             let button = gtk::Button::with_label(mode.label);
             button.set_halign(Align::Start);
@@ -110,29 +105,12 @@ fn build_capture_row(
     ocr_unavailable: Option<&str>,
     window: &adw::ApplicationWindow,
     commands: &Sender<ApplicationCommand>,
-) -> adw::ActionRow {
-    let row = plain_row()
-        .title(&entry.title)
-        .subtitle(&entry.subtitle)
-        .build();
-    let texture = entry.thumbnail.as_ref().and_then(|path| {
-        gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
-            path,
-            CAPTURE_THUMBNAIL_SIZE,
-            CAPTURE_THUMBNAIL_SIZE,
-            true,
-        )
-        .ok()
-    });
-    if let Some(pixbuf) = texture {
-        let picture = gtk::Picture::for_pixbuf(&pixbuf);
-        picture.set_size_request(CAPTURE_THUMBNAIL_SIZE, CAPTURE_THUMBNAIL_SIZE);
-        picture.set_can_shrink(true);
-        row.add_prefix(&picture);
-    }
+) -> adw::PreferencesRow {
+    let actions = action_box(5);
     let id = entry.id;
     let action = |icon: &str, label: &str, request: CaptureRequest| {
         let button = gtk::Button::from_icon_name(icon);
+        button.set_halign(Align::Start);
         button.set_valign(Align::Center);
         button.add_css_class("flat");
         button.set_tooltip_text(Some(label));
@@ -143,12 +121,13 @@ fn build_capture_row(
         });
         button
     };
-    row.add_suffix(&action(
+    actions.append(&action(
         "edit-copy-symbolic",
         "Copy",
         CaptureRequest::Copy(id),
     ));
     let copy_text = gtk::Button::with_label("Copy text");
+    copy_text.set_halign(Align::Start);
     copy_text.set_valign(Align::Center);
     copy_text.add_css_class("flat");
     copy_text.set_sensitive(ocr_unavailable.is_none());
@@ -161,8 +140,9 @@ fn build_capture_row(
     copy_text.connect_clicked(move |_| {
         let _ = sender.try_send(ApplicationCommand::Capture(CaptureRequest::CopyText(id)));
     });
-    row.add_suffix(&copy_text);
+    actions.append(&copy_text);
     let save = gtk::Button::from_icon_name("document-save-as-symbolic");
+    save.set_halign(Align::Start);
     save.set_valign(Align::Center);
     save.add_css_class("flat");
     save.set_tooltip_text(Some("Save as…"));
@@ -186,16 +166,33 @@ fn build_capture_row(
             },
         );
     });
-    row.add_suffix(&save);
-    row.add_suffix(&action(
+    actions.append(&save);
+    actions.append(&action(
         "document-edit-symbolic",
         "Edit",
         CaptureRequest::Edit(id),
     ));
-    row.add_suffix(&action(
+    actions.append(&action(
         "user-trash-symbolic",
         "Delete",
         CaptureRequest::Delete(id),
     ));
-    row
+    let thumbnail = entry.thumbnail.as_ref().and_then(|path| {
+        gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(
+            path,
+            CAPTURE_THUMBNAIL_SIZE,
+            CAPTURE_THUMBNAIL_SIZE,
+            true,
+        )
+        .ok()
+    });
+    match thumbnail {
+        Some(pixbuf) => {
+            let image = gtk::Image::from_pixbuf(Some(&pixbuf));
+            image.set_pixel_size(CAPTURE_THUMBNAIL_SIZE);
+            image.set_valign(Align::Start);
+            stacked_row_with_prefix(&entry.title, &entry.subtitle, &image, &actions)
+        }
+        None => stacked_row(&entry.title, &entry.subtitle, &actions),
+    }
 }
