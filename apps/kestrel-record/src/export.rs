@@ -147,6 +147,8 @@ pub fn media_duration(path: &Path) -> Result<Duration, RecordingError> {
 
 /// The video frame shown at `position`, as RGBA.
 pub fn frame_at(path: &Path, position: Duration) -> Result<VideoFrame, RecordingError> {
+    // The sink is built before `open`, so GStreamer must be up first.
+    init().map_err(|error| RecordingError::new(RecordingErrorKind::Unavailable, error))?;
     let sink = gst_app::AppSink::builder()
         .caps(
             &gst::Caps::builder("video/x-raw")
