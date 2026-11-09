@@ -63,3 +63,7 @@ text = "The AppImage is now built against glibc 2.35, so it starts on Ubuntu 22.
 [[change]]
 feature = "kestrel"
 text = "A Flatpak build reports each feature its sandbox limits or blocks with the reason, offers View release instead of downloading updates, and asks the desktop to start at login through its Background portal."
+
+[[change]]
+feature = "capture.recording"
+text = "Trimming a recording shows its first frame again instead of saying the recorder helper stopped."
