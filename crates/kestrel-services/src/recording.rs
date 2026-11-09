@@ -381,10 +381,17 @@ impl RecordingService {
             .ok_or_else(|| "That recording is not in the list.".to_owned())
     }
 
+    /// The editor for a listed take, without reading it.
+    pub fn take_editor(&self, path: &Path) -> Result<Arc<dyn TakeEditor>, String> {
+        self.listed(path)?;
+        Ok(Arc::clone(&self.editor))
+    }
+
     /// Length of a listed take, for the trim timeline.
     pub fn take_duration(&self, path: &Path) -> Result<Duration, String> {
-        self.listed(path)?;
-        self.editor.duration(path).map_err(|error| error.message)
+        self.take_editor(path)?
+            .duration(path)
+            .map_err(|error| error.message)
     }
 
     /// Writes `start..end` of a listed take to `destination` on the

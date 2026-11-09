@@ -3231,21 +3231,41 @@ impl ApplicationController {
         }
     }
 
-    fn open_trim(&self, take: std::path::PathBuf) {
-        let trim = self
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .runtime
-            .recording_trim(&take);
-        let window = self.window.borrow();
-        let Some(view) = window.as_ref() else {
+    /// Reads the take's length off the GTK thread, then opens the trim editor.
+    fn open_trim(self: &Rc<Self>, take: std::path::PathBuf) {
+        let (results, receiver) = async_channel::bounded(1);
+        let state = Arc::clone(&self.state);
+        let path = take.clone();
+        let spawned = thread::Builder::new()
+            .name("kestrel-recording-trim".to_owned())
+            .spawn(move || {
+                let trim = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .runtime
+                    .recording_trim(&path);
+                let trim = trim.and_then(|take| take.load());
+                let _ = results.send_blocking(trim);
+            });
+        if spawned.is_err() {
+            log::warn!("kestrel-recording-trim could not start");
+            self.show_message("The recording could not be opened");
             return;
-        };
-        match trim {
-            Ok((duration, preview)) => view.open_trim(take, duration, preview),
-            Err(error) => view.show_message(&error),
         }
+        let controller = Rc::clone(self);
+        glib::spawn_future_local(async move {
+            let Ok(trim) = receiver.recv().await else {
+                return;
+            };
+            let window = controller.window.borrow();
+            let Some(view) = window.as_ref() else {
+                return;
+            };
+            match trim {
+                Ok((duration, preview)) => view.open_trim(take, duration, preview),
+                Err(error) => view.show_message(&error),
+            }
+        });
     }
 
     /// Opens the area view while the recording waits for an area.

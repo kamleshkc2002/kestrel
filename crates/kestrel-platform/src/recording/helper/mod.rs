@@ -8,13 +8,13 @@
 pub mod protocol;
 
 use std::env;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 use std::os::fd::RawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     APPLICATION_AUDIO_ELEMENTS, AREA_ELEMENT, AUDIO_ELEMENTS, ActiveRecording, AudioTrack,
@@ -273,6 +273,7 @@ impl RecordingHelper {
             child,
             stdin,
             stdout,
+            deadline: None,
         })
     }
 }
@@ -348,6 +349,8 @@ struct HelperProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    /// The reply deadline the announced picture must also finish by.
+    deadline: Option<Instant>,
 }
 
 impl HelperProcess {
@@ -355,14 +358,31 @@ impl HelperProcess {
         write_line(&mut self.stdin, command).map_err(|_| helper_stopped())
     }
 
-    /// The next reply, or `None` when none arrived within `timeout`.
+    /// The next reply, or `None` when no byte arrived within `timeout`. The
+    /// deadline covers the whole control line and any picture it announces.
     fn reply_within(&mut self, timeout: Duration) -> Result<Option<HelperReply>, RecordingError> {
+        let deadline = Instant::now() + timeout;
         if self.stdout.buffer().is_empty()
             && !wait_readable(self.stdout.get_ref(), timeout).map_err(|_| helper_stopped())?
         {
             return Ok(None);
         }
-        read_reply(&mut self.stdout).map_err(|_| helper_stopped())
+        let reply = {
+            let mut reader = DeadlineReader {
+                reader: &mut self.stdout,
+                deadline,
+            };
+            read_reply(&mut reader)
+        };
+        match reply {
+            Ok(Some(reply)) => {
+                self.deadline = Some(deadline);
+                Ok(Some(reply))
+            }
+            Ok(None) => Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Err(self.timed_out()),
+            Err(_) => Err(helper_stopped()),
+        }
     }
 
     fn read_picture(
@@ -380,20 +400,80 @@ impl HelperProcess {
                 "The recorder helper sent a malformed picture.",
             ));
         };
+        // Every frame reply sets the deadline the payload shares.
+        let deadline = self.deadline.take().unwrap_or_else(Instant::now);
         let mut pixels = vec![0; bytes];
-        self.stdout
-            .read_exact(&mut pixels)
-            .map_err(|_| helper_stopped())?;
-        Ok(VideoFrame {
-            width,
-            height,
-            pixels,
-        })
+        let outcome = {
+            let mut reader = DeadlineReader {
+                reader: &mut self.stdout,
+                deadline,
+            };
+            reader.read_exact(&mut pixels)
+        };
+        match outcome {
+            Ok(()) => Ok(VideoFrame {
+                width,
+                height,
+                pixels,
+            }),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Err(self.timed_out()),
+            Err(_) => Err(helper_stopped()),
+        }
+    }
+
+    /// Kills and reaps the helper, then reports the missed deadline.
+    fn timed_out(&mut self) -> RecordingError {
+        self.stop();
+        RecordingError::new(
+            RecordingErrorKind::Timeout,
+            "The recorder helper did not answer in time.",
+        )
     }
 
     fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Reads from the helper's pipe until `deadline`, failing once it passes.
+struct DeadlineReader<'a> {
+    reader: &'a mut BufReader<ChildStdout>,
+    deadline: Instant,
+}
+
+impl DeadlineReader<'_> {
+    /// Waits for the next bytes, or reports that the deadline passed first.
+    fn ready(&mut self) -> io::Result<()> {
+        if !self.reader.buffer().is_empty() {
+            return Ok(());
+        }
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if wait_readable(self.reader.get_ref(), remaining)? {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "the helper did not answer in time",
+        ))
+    }
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.ready()?;
+        self.reader.read(buffer)
+    }
+}
+
+impl BufRead for DeadlineReader<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        self.ready()?;
+        self.reader.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.reader.consume(amount);
     }
 }
 
@@ -568,6 +648,70 @@ mod tests {
         recording.resume().expect("resume");
         assert_eq!(recording.poll(Duration::ZERO), None);
         Box::new(recording).finish().expect("finish");
+    }
+
+    /// A stand-in helper that runs `body`, then keeps both streams open.
+    fn scripted_program(body: &str) -> (tempfile::TempDir, RecordingHelper) {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::TempDir::new().expect("temp dir");
+        let path = directory.path().join("kestrel-record");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\ncat >/dev/null\n"))
+            .expect("write helper");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make helper executable");
+        (directory, RecordingHelper::at(path))
+    }
+
+    #[test]
+    fn a_stalled_control_line_times_out_and_reaps_the_helper() {
+        let (_directory, helper) = scripted_program(r#"printf '{"reply":'"#);
+        let mut process = helper.spawn(None).expect("the helper starts");
+        process.send(&HelperCommand::Probe).expect("probe");
+        let started = Instant::now();
+        let error = process
+            .reply_within(Duration::from_millis(500))
+            .expect_err("the partial line never completes");
+        assert_eq!(error.kind, RecordingErrorKind::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            process.child.try_wait().expect("wait").is_some(),
+            "the helper is reaped"
+        );
+    }
+
+    #[test]
+    fn a_stalled_frame_payload_times_out_and_reaps_the_helper() {
+        let (_directory, helper) = scripted_program(
+            r#"printf '{"reply":"frame","width":2,"height":2,"bytes":16}\n'
+printf '\000\000'"#,
+        );
+        let mut process = helper.spawn(None).expect("the helper starts");
+        process
+            .send(&HelperCommand::Still {
+                node: 1,
+                timeout_ms: 1,
+            })
+            .expect("still");
+        let Some(HelperReply::Frame {
+            width,
+            height,
+            bytes,
+        }) = process
+            .reply_within(Duration::from_millis(500))
+            .expect("the frame line arrives")
+        else {
+            panic!("a frame reply announces a picture");
+        };
+        let started = Instant::now();
+        let error = process
+            .read_picture(width, height, bytes)
+            .expect_err("the partial picture never completes");
+        assert_eq!(error.kind, RecordingErrorKind::Timeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            process.child.try_wait().expect("wait").is_some(),
+            "the helper is reaped"
+        );
     }
 
     #[test]
