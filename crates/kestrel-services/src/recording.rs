@@ -250,6 +250,16 @@ impl RecordingService {
         lock(&self.shared.snapshot).clone()
     }
 
+    /// Re-lists takes another program added or removed; an unchanged folder
+    /// publishes nothing.
+    pub fn refresh(&self) {
+        let takes = list_takes(&self.folder);
+        if takes == lock(&self.shared.snapshot).takes {
+            return;
+        }
+        self.shared.update(|snapshot| snapshot.takes = takes);
+    }
+
     /// Asks the desktop to share `options.source` and records once it agrees.
     pub fn start(&mut self, options: RecordingOptions) -> Result<(), String> {
         if self.shared.phase().is_active() {
@@ -1658,6 +1668,42 @@ mod tests {
             "another instance may still be writing it"
         );
         assert!(folder.path().join("holiday.webm").exists());
+        let unchanged = service.snapshot().generation;
+        service.refresh();
+        assert_eq!(
+            service.snapshot().generation,
+            unchanged,
+            "an unchanged folder publishes nothing"
+        );
+        let copied = folder.path().join("Kestrel-recording-3.webm");
+        fs::write(&copied, b"x").expect("copied take");
+        service.refresh();
+        let listed: Vec<String> = service
+            .snapshot()
+            .takes
+            .into_iter()
+            .map(|take| take.name)
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                "Kestrel-recording-3.webm",
+                "Kestrel-recording-2.webm",
+                "Kestrel-recording-1.webm"
+            ]
+        );
+        fs::remove_file(&copied).expect("remove the copy");
+        service.refresh();
+        let listed: Vec<String> = service
+            .snapshot()
+            .takes
+            .into_iter()
+            .map(|take| take.name)
+            .collect();
+        assert_eq!(
+            listed,
+            ["Kestrel-recording-2.webm", "Kestrel-recording-1.webm"]
+        );
         service
             .delete_take(&folder.path().join("Kestrel-recording-1.webm"))
             .expect("delete listed take");

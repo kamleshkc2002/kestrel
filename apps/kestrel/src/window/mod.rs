@@ -256,7 +256,8 @@ impl WindowView {
         refresh_button.update_property(&[
             Property::Label("Refresh capability status"),
             Property::Description(
-                "Run the registered read-only capability probes and update every feature status.",
+                "Run the registered read-only capability probes, update every feature status, \
+                 and re-list saved screenshots and recordings.",
             ),
         ]);
         header.pack_end(&refresh_button);

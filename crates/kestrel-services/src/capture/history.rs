@@ -111,11 +111,25 @@ impl CaptureHistory {
     pub fn open(dir: PathBuf, policy: CapturePolicy) -> Result<Self, HistoryError> {
         fs::create_dir_all(&dir).map_err(|error| io_error("create capture directory", error))?;
         set_mode(&dir, 0o700).map_err(|error| io_error("secure capture directory", error))?;
+        let mut history = Self {
+            dir,
+            policy,
+            records: Vec::new(),
+            paths: HashMap::new(),
+            next_id: 0,
+        };
+        history.reload()?;
+        Ok(history)
+    }
+
+    /// Re-lists `dir`, picking up captures another program added or removed, and
+    /// applies `policy`.
+    pub fn reload(&mut self) -> Result<(), HistoryError> {
         let mut records = Vec::new();
         let mut paths = HashMap::new();
         let mut next_id = 0;
         let listing =
-            fs::read_dir(&dir).map_err(|error| io_error("scan capture directory", error))?;
+            fs::read_dir(&self.dir).map_err(|error| io_error("scan capture directory", error))?;
         for item in listing {
             let path = item
                 .map_err(|error| io_error("scan capture directory", error))?
@@ -142,15 +156,11 @@ impl CaptureHistory {
             records.push(entry);
         }
         sort_newest_first(&mut records);
-        let mut history = Self {
-            dir,
-            policy,
-            records,
-            paths,
-            next_id,
-        };
-        history.enforce_policy(SystemTime::now());
-        Ok(history)
+        self.records = records;
+        self.paths = paths;
+        self.next_id = next_id;
+        self.enforce_policy(SystemTime::now());
+        Ok(())
     }
 
     /// Stored captures, newest first.

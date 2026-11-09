@@ -7,3 +7,11 @@
 [[change]]
 feature = "clipboard.history"
 text = "In the Flatpak, Keep pinned entries across restarts is unavailable because the sandbox cannot reach the desktop keyring, and the switch says so instead of asking for one."
+
+[[change]]
+feature = "capture.screenshot"
+text = "Recent capture rows put their actions on a second line, so each title and detail stays readable in a narrow window."
+
+[[change]]
+feature = "capture.recording"
+text = "Refresh now re-lists recordings and captures added to their folders outside Kestrel."

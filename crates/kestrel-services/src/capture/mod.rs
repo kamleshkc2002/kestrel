@@ -152,9 +152,31 @@ impl CaptureService {
     /// Opens history and publishes storage failures in `storage_error`.
     pub fn start(&mut self) -> Result<(), HistoryError> {
         self.started = true;
-        if self.history.is_some() {
-            return Ok(());
+        if self.history.is_none() {
+            self.open_history();
         }
+        Ok(())
+    }
+
+    /// Re-lists the capture folder so captures another program added or removed
+    /// appear, retrying a storage open that failed at start.
+    pub fn refresh(&mut self) {
+        self.reap();
+        if !self.started {
+            return;
+        }
+        if self.history.is_none() {
+            self.open_history();
+            return;
+        }
+        match self.relist() {
+            Ok(true) => bump(&self.state),
+            Ok(false) => {}
+            Err(error) => self.fail_storage(error),
+        }
+    }
+
+    fn open_history(&mut self) {
         match CaptureHistory::open(self.directory.clone(), self.policy) {
             Ok(history) => {
                 self.history = Some(Arc::new(Mutex::new(history)));
@@ -164,14 +186,26 @@ impl CaptureService {
                     state.bump();
                 }
             }
-            Err(error) => {
-                if let Ok(mut state) = self.state.lock() {
-                    state.storage_error = Some(error.to_string());
-                    state.bump();
-                }
-            }
+            Err(error) => self.fail_storage(error),
         }
-        Ok(())
+    }
+
+    /// Re-lists storage; `true` when the entries changed.
+    fn relist(&self) -> Result<bool, HistoryError> {
+        let Some(history) = self.history.as_ref() else {
+            return Ok(false);
+        };
+        let mut history = history.lock().map_err(|_| lock_error())?;
+        let before = history.entries().to_vec();
+        history.reload()?;
+        Ok(history.entries() != before)
+    }
+
+    fn fail_storage(&mut self, error: HistoryError) {
+        if let Ok(mut state) = self.state.lock() {
+            state.storage_error = Some(error.to_string());
+            state.bump();
+        }
     }
 
     /// Cancels and joins capture, then releases history.
@@ -827,8 +861,30 @@ mod tests {
         service.prune();
         assert_eq!(service.snapshot().generation, captured);
 
+        let created = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let copied = capture_dir(&root).join(format!("{created}-90-screen.png"));
+        fs::write(&copied, captured_image(3, 2).png).unwrap();
+        service.refresh();
+        let listed = service.snapshot();
+        assert_eq!(listed.generation, captured + 1);
+        assert_eq!((listed.entries[0].width, listed.entries[0].height), (3, 2));
+        service.refresh();
+        assert_eq!(
+            service.snapshot().generation,
+            listed.generation,
+            "an unchanged folder publishes nothing"
+        );
+        fs::remove_file(&copied).unwrap();
+        service.refresh();
+        let listed_after = service.snapshot();
+        assert!(listed_after.generation > listed.generation);
+        assert_eq!(listed_after.entries.len(), 1);
+
         service.delete(id);
-        assert!(service.snapshot().generation > captured);
+        assert!(service.snapshot().generation > listed_after.generation);
         service.stop();
     }
 
