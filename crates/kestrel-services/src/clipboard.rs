@@ -75,6 +75,9 @@ pub struct ClipboardPolicy {
     pub pinned_max_age: Duration,
     /// The encrypted store's file; present while saving pins is enabled.
     pub pin_file: Option<PathBuf>,
+    /// The environment withholds the keyring, so saved pins cannot be
+    /// encrypted and the store never opens.
+    pub pin_keyring_withheld: bool,
 }
 
 impl Default for ClipboardPolicy {
@@ -97,6 +100,7 @@ impl Default for ClipboardPolicy {
             keep_pinned: false,
             pinned_max_age: Duration::from_secs(90 * 24 * 60 * 60),
             pin_file: None,
+            pin_keyring_withheld: false,
         }
     }
 }
@@ -177,6 +181,7 @@ impl ClipboardPolicy {
                 u64::from(configuration.pinned_max_age_days) * 24 * 60 * 60,
             ),
             pin_file: None,
+            pin_keyring_withheld: false,
         }
     }
 }
@@ -730,9 +735,13 @@ struct PinSession {
 
 impl PinSession {
     fn disabled() -> Self {
+        Self::with_state(PinStoreState::Disabled)
+    }
+
+    fn with_state(state: PinStoreState) -> Self {
         Self {
             persistence: Arc::new(Mutex::new(None)),
-            fallback: Arc::new(Mutex::new(PinStoreStatus::new(PinStoreState::Disabled))),
+            fallback: Arc::new(Mutex::new(PinStoreStatus::new(state))),
         }
     }
 
@@ -812,14 +821,22 @@ impl WatchJoin {
 
 impl ClipboardHistoryService {
     pub fn new(policy: ClipboardPolicy) -> Result<Self, ClipboardServiceError> {
+        let policy = policy.validate()?;
+        let pins = if policy.keep_pinned && policy.pin_keyring_withheld {
+            PinSession::with_state(PinStoreState::Sandboxed)
+        } else {
+            PinSession::disabled()
+        };
+        let mut snapshot = ClipboardSnapshot::stopped();
+        snapshot.pin_store = pins.status();
         Ok(Self {
-            policy: Mutex::new(policy.validate()?),
+            policy: Mutex::new(policy),
             sender: None,
             worker: None,
             watches: Vec::new(),
-            snapshot: Arc::new(Mutex::new(ClipboardSnapshot::stopped())),
+            snapshot: Arc::new(Mutex::new(snapshot)),
             pin_key_store: None,
-            pins: PinSession::disabled(),
+            pins,
         })
     }
 
@@ -953,6 +970,15 @@ impl ClipboardHistoryService {
             let previous = self.pins.current();
             self.pins
                 .replace(None, PinStoreStatus::new(PinStoreState::Disabled));
+            if let Some(previous) = previous {
+                previous.shutdown();
+            }
+            return;
+        }
+        if policy.pin_keyring_withheld {
+            let previous = self.pins.current();
+            self.pins
+                .replace(None, PinStoreStatus::new(PinStoreState::Sandboxed));
             if let Some(previous) = previous {
                 previous.shutdown();
             }
@@ -1133,6 +1159,15 @@ impl ClipboardHistoryService {
             .lock()
             .expect("clipboard policy mutex is not poisoned")
             .clone();
+        if policy.pin_keyring_withheld {
+            // Nothing was ever written, and the key store stays untouched.
+            return Ok(PinWipeReport {
+                saved_count: 0,
+                saved_bytes: 0,
+                key_removed: false,
+                key_error: None,
+            });
+        }
         if let Some(path) = policy.pin_file.as_ref() {
             pin_store::delete_pins(path).map_err(ClipboardServiceError::PinStore)?;
         }
@@ -1547,6 +1582,7 @@ impl HistoryStore {
             PinStoreState::Unreadable => PinSaveState::StoreUnreadable,
             PinStoreState::ReadFailed => PinSaveState::StoreReadFailed,
             PinStoreState::Held => PinSaveState::StoreHeld,
+            PinStoreState::Sandboxed => PinSaveState::StoreSandboxed,
             PinStoreState::Failed => PinSaveState::StoreFailed,
             PinStoreState::Disabled => PinSaveState::PersistenceOff,
         }
@@ -3240,6 +3276,7 @@ mod tests {
             keep_pinned: false,
             pinned_max_age: Duration::from_secs(90 * 24 * 60 * 60),
             pin_file: None,
+            pin_keyring_withheld: false,
         }
     }
 
@@ -4751,6 +4788,7 @@ mod tests {
         unavailable: Mutex<bool>,
         deletes: AtomicUsize,
         reads: AtomicUsize,
+        creates: AtomicUsize,
     }
 
     impl FakeKeyStore {
@@ -4785,6 +4823,7 @@ mod tests {
         }
 
         fn create(&self) -> Result<PinKey, PinKeyError> {
+            self.creates.fetch_add(1, Ordering::Relaxed);
             if *self.unavailable.lock().expect("fake key store") {
                 return Err(PinKeyError::Unavailable);
             }
@@ -5058,6 +5097,53 @@ mod tests {
         assert_eq!(report.key_error, None);
         assert!(!path.exists(), "the store file is gone");
         assert_eq!(store.deletes.load(Ordering::Relaxed), 1);
+        service.stop();
+    }
+
+    #[test]
+    fn a_withheld_keyring_never_reaches_the_key_store() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let path = directory.path().join(pin_store::PIN_FILE_NAME);
+        let store = Arc::new(FakeKeyStore::default());
+        let shared: Arc<dyn PinKeyStore> = store.clone();
+        let policy = ClipboardPolicy {
+            pin_keyring_withheld: true,
+            ..pin_policy(path.clone())
+        };
+        let fresh = super::ClipboardHistoryService::new(policy.clone()).expect("valid policy");
+        assert_eq!(fresh.latest().pin_store.state, PinStoreState::Sandboxed);
+        assert_eq!(fresh.latest().pin_store.saved_count, 0);
+        let (mut service, state, _) = start_pin_service(policy, shared);
+
+        state.lock().expect("fake state").current =
+            Some(FakeSelection::Text("kept in memory".to_string()));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        service
+            .execute(ClipboardCommand::SetPinned {
+                item_id,
+                pinned: true,
+            })
+            .expect("pin succeeds");
+
+        wait_until(|| service.latest().pin_store.state == PinStoreState::Sandboxed);
+        thread::sleep(Duration::from_millis(60));
+        assert!(!path.exists(), "no key means no ciphertext file");
+        assert_eq!(
+            service.latest().items[0].pin_save,
+            PinSaveState::StoreSandboxed
+        );
+        assert_eq!(store.reads.load(Ordering::Relaxed), 0);
+        assert_eq!(store.creates.load(Ordering::Relaxed), 0);
+
+        let report = service
+            .wipe_saved_pins(true)
+            .expect("there is nothing to delete");
+        assert_eq!(report.saved_count, 0);
+        assert!(!report.key_removed);
+        assert_eq!(report.key_error, None);
+        assert_eq!(store.deletes.load(Ordering::Relaxed), 0);
+        assert!(!path.exists());
         service.stop();
     }
 
@@ -5512,17 +5598,18 @@ mod tests {
             .send(PrivacyStep::Signal(Some(second)))
             .expect("watch receives");
 
-        wait_until(|| service.latest().items.is_empty());
-        assert!(
-            service.latest().items.is_empty(),
-            "the hold edge must wipe even when the properties read released"
-        );
-        assert!(
-            state.lock().expect("fake state").current.is_none(),
+        // The resume merge can restore the saved pin before this thread next
+        // looks, so the hold's wipe is asserted through its counter.
+        wait_until(|| service.latest().wipe_count > 0);
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            None,
             "the hold edge must release the owned selection"
         );
-        // The release edge reloads saved pins, which reads the key again.
+        // The release edge reloads saved pins, which reads the key again and
+        // restores the pinned entry the hold wiped.
         wait_until(|| store.reads.load(Ordering::Relaxed) > reads);
+        wait_until(|| service.latest().items.iter().any(|item| item.pinned));
         service.stop();
     }
 

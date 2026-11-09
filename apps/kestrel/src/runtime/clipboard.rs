@@ -26,12 +26,18 @@ impl ApplicationRuntime {
             .keep_pinned
             .then(crate::config::clipboard_pins_path)
             .flatten();
+        policy.pin_keyring_withheld = kestrel_platform::sandbox::flatpak();
         policy
     }
 
     /// Connects the Secret Service the first time saved pins are wanted.
     pub(super) fn ensure_clipboard_pin_key_store(&mut self, wanted: bool) {
         if !wanted || self.clipboard_pin_store_ready {
+            return;
+        }
+        if kestrel_platform::sandbox::flatpak() {
+            // The sandbox does not reach the host keyring; the store reports
+            // that instead of asking for one.
             return;
         }
         match SecretServiceKeyStore::connect() {
