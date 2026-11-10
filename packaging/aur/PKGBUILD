@@ -4,7 +4,7 @@
 # named `kestrel-desktop`, keeps the `kestrel` binary, and conflicts with the
 # other name; it does not provide it.
 pkgname=kestrel-desktop
-pkgver=0.7.0.preview.1
+pkgver=0.9.0.preview.1
 pkgrel=1
 pkgdesc='Monitoring, audio, clipboard, capture, and system tools for any Linux desktop'
 arch=('x86_64' 'aarch64')
@@ -30,7 +30,7 @@ optdepends=(
 # Arch rejects the dash in a preview version.
 _upstream_tag="v${pkgver/.preview./-preview.}"
 source=("kestrel-$pkgver.tar.gz::https://github.com/kamleshkc2002/kestrel/archive/refs/tags/$_upstream_tag.tar.gz")
-sha256sums=('be4f51138a28f006fcda13304b82382f38dff3567265b97757b834e9e7f88d77')
+sha256sums=('564c5c1023e453870730744cd212dff8e79b1e70e10ecd3055c473ec41751a1e')
 
 # KESTREL_LOCAL_SOURCE builds a checkout instead of the tag archive. The AUR
 # workflow uses this so a pull request does not need the release tag.
