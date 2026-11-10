@@ -1,6 +1,6 @@
 pkgbase = kestrel-desktop
 	pkgdesc = Monitoring, audio, clipboard, capture, and system tools for any Linux desktop
-	pkgver = 0.7.0.preview.1
+	pkgver = 0.9.0.preview.1
 	pkgrel = 1
 	url = https://github.com/kamleshkc2002/kestrel
 	arch = x86_64
@@ -19,7 +19,7 @@ pkgbase = kestrel-desktop
 	optdepends = gst-plugin-pipewire: Record a PipeWire screen, window, or area
 	optdepends = gtk4-layer-shell: Overlay and floating surfaces; rebuild with it installed
 	conflicts = kestrel
-	source = kestrel-0.7.0.preview.1.tar.gz::https://github.com/kamleshkc2002/kestrel/archive/refs/tags/v0.7.0-preview.1.tar.gz
-	sha256sums = be4f51138a28f006fcda13304b82382f38dff3567265b97757b834e9e7f88d77
+	source = kestrel-0.9.0.preview.1.tar.gz::https://github.com/kamleshkc2002/kestrel/archive/refs/tags/v0.9.0-preview.1.tar.gz
+	sha256sums = 564c5c1023e453870730744cd212dff8e79b1e70e10ecd3055c473ec41751a1e
 
 pkgname = kestrel-desktop
