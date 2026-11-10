@@ -16,8 +16,9 @@ this section is empty. For example:
 ## Screenshots
 
 <!--
-Required when the change touches the window (apps/kestrel/src/window or
-apps/kestrel/src/view_model): drag the images in here, before and after where
-it helps. A maintainer can add the `no-screenshot-needed` label to a change
-nobody can see.
+Required for anything that changes what is on screen: drag the images in
+here, before and after where it helps. The check flags changes to the window
+and view models, main.rs, the tray, floating-surface placement, icons, and
+CSS; a maintainer adds the `no-screenshot-needed` label when nothing visible
+changed.
 -->

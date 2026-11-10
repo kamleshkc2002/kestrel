@@ -52,11 +52,12 @@ only that it compiles. The **PR evidence** check enforces two parts of this.
   commands and their result, and for behaviour you exercised by hand, the steps
   and the outcome ("opened Capture, took an area screenshot, the editor opened
   with the selection"). "CI passes" on its own is not testing.
-- **Screenshots** (required when the change touches
-  `apps/kestrel/src/window/` or `apps/kestrel/src/view_model/`): the window
-  before and after, taken from your own build. Drag the images into the pull
-  request description. A maintainer adds the `no-screenshot-needed` label to a
-  change in those folders that nothing on screen shows.
+- **Screenshots** (required for anything that changes what is on screen): the
+  window, tray menu, or floating surface before and after, taken from your own
+  build. Drag the images into the pull request description. The check flags
+  changes to `apps/kestrel/src/window/`, `apps/kestrel/src/view_model/`,
+  `main.rs`, `status_notifier.rs`, `layer_shell.rs`, `data/icons/`, and CSS; a
+  maintainer adds the `no-screenshot-needed` label when nothing visible changed.
 - **New behaviour comes with a test** that fails without the change, following
   the testing rules above.
 

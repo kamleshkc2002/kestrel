@@ -8,7 +8,17 @@ Exits 1 with a message per missing piece; 0 when the body has what it needs.
 import re
 import sys
 
-UI_PATHS = ("apps/kestrel/src/window/", "apps/kestrel/src/view_model/")
+# Code that shapes what is on screen: the window and its view models, the
+# controller that opens windows and surfaces, the tray, floating-surface
+# placement, and icons. A maintainer waives changes here that show nothing.
+UI_PATHS = (
+    "apps/kestrel/src/window/",
+    "apps/kestrel/src/view_model/",
+    "apps/kestrel/src/main.rs",
+    "apps/kestrel/src/status_notifier.rs",
+    "apps/kestrel/src/layer_shell.rs",
+    "data/icons/",
+)
 WAIVER_LABEL = "no-screenshot-needed"
 # Text shorter than this, once comments are removed, is not a description.
 MIN_TESTING_CHARS = 20
@@ -38,12 +48,14 @@ def problems(body: str, changed: list[str], labels: list[str]) -> list[str]:
         found.append(
             "Describe what you ran and what you saw under a '## Testing' heading."
         )
-    touches_ui = any(path.startswith(UI_PATHS) for path in changed)
+    touches_ui = any(
+        path.startswith(UI_PATHS) or path.endswith(".css") for path in changed
+    )
     if touches_ui and WAIVER_LABEL not in labels:
         if not IMAGE.search(section(body, "Screenshots")):
             found.append(
-                "This change touches the window: add a screenshot under a "
-                "'## Screenshots' heading."
+                "This change can affect what is on screen: add a screenshot "
+                "under a '## Screenshots' heading."
             )
     return found
 
