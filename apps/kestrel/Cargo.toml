@@ -25,9 +25,9 @@ kestrel-platform = { path = "../../crates/kestrel-platform" }
 kestrel-services = { path = "../../crates/kestrel-services" }
 libc = "0.2"
 log = "0.4"
-# Unreleased master: `Tray::provide_xdg_activation_token` lets Wayland hosts
-# such as COSMIC raise the window from a tray click.
-ksni = { git = "https://github.com/iovxw/ksni", rev = "547cc42", features = ["blocking"] }
+# `current_xdg_activation_token` lets a Wayland host raise the window from a
+# tray click.
+ksni = { version = "0.3.7", features = ["blocking"] }
 pangocairo = "0.22"
 semver = "1"
 serde = { version = "1", features = ["derive"] }

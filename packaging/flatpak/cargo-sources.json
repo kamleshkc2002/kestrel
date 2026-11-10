@@ -1,11 +1,5 @@
 [
     {
-        "type": "git",
-        "url": "https://github.com/iovxw/ksni",
-        "commit": "547cc42b9e24ed58c20e7643644184bc2264c9b0",
-        "dest": "flatpak-cargo/git/ksni-547cc42"
-    },
-    {
         "type": "archive",
         "archive-type": "tar-gzip",
         "url": "https://static.crates.io/crates/adler2/adler2-2.0.1.crate",
@@ -42,6 +36,19 @@
         "type": "inline",
         "contents": "{\"package\": \"0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf\", \"files\": {}}",
         "dest": "cargo/vendor/arboard-3.6.1",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/arc-swap/arc-swap-1.9.4.crate",
+        "sha256": "db4c94f57a570fce5d381be3289b3f79aef6332d72948fe82ab5772e423ccf92",
+        "dest": "cargo/vendor/arc-swap-1.9.4"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"db4c94f57a570fce5d381be3289b3f79aef6332d72948fe82ab5772e423ccf92\", \"files\": {}}",
+        "dest": "cargo/vendor/arc-swap-1.9.4",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -471,6 +478,19 @@
         "type": "inline",
         "contents": "{\"package\": \"01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78\", \"files\": {}}",
         "dest": "cargo/vendor/crc32fast-1.5.2",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/crossbeam-queue/crossbeam-queue-0.3.14.crate",
+        "sha256": "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae",
+        "dest": "cargo/vendor/crossbeam-queue-0.3.14"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae\", \"files\": {}}",
+        "dest": "cargo/vendor/crossbeam-queue-0.3.14",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -1423,21 +1443,16 @@
         "dest-filename": ".cargo-checksum.json"
     },
     {
-        "type": "shell",
-        "commands": [
-            "cp -r --reflink=auto \"flatpak-cargo/git/ksni-547cc42/.\" \"cargo/vendor/ksni\""
-        ]
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/ksni/ksni-0.3.7.crate",
+        "sha256": "1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf",
+        "dest": "cargo/vendor/ksni-0.3.7"
     },
     {
         "type": "inline",
-        "contents": "[package]\nname = \"ksni\"\nversion = \"0.3.6\"\nauthors = [\"iovxw <iovxw@outlook.com>\"]\nedition = \"2021\"\nrust-version = \"1.80\"\ndescription = \"A Rust implementation of the KDE/freedesktop StatusNotifierItem specification\\n\"\nrepository = \"https://github.com/iovxw/ksni\"\nkeywords = [\"systray\", \"linux\", \"gui\"]\ncategories = [\"api-bindings\"]\nlicense = \"Unlicense\"\nexclude = [\"reference/\", \"spec/\"]\n\n[package.metadata.docs.rs]\nfeatures = [\"blocking\"]\n\n[features]\ndefault = [\"tokio\"]\nblocking = []\nnode = []\ntokio = [\"dep:tokio\", \"zbus/tokio\"]\nasync-io = [\"dep:async-io\", \"dep:async-lock\", \"dep:async-executor\", \"dep:futures-lite\", \"dep:futures-channel\", \"dep:task-local\", \"zbus/async-io\"]\n\n[dependencies]\npastey = \"0.2\"\nfutures-util = \"0.3\"\n\n[dependencies.zbus]\nversion = \"5\"\ndefault-features = false\n\n[dependencies.serde]\nversion = \"1\"\nfeatures = [\"derive\"]\n\n[dependencies.tokio]\nversion = \"1\"\nfeatures = [\"rt\", \"macros\"]\noptional = true\n\n[dependencies.async-io]\nversion = \"2\"\noptional = true\n\n[dependencies.async-lock]\nversion = \"3\"\noptional = true\n\n[dependencies.async-executor]\nversion = \"1\"\noptional = true\n\n[dependencies.futures-lite]\nversion = \"2\"\noptional = true\n\n[dependencies.futures-channel]\nversion = \"0.3\"\noptional = true\n\n[dependencies.task-local]\nversion = \"0.1\"\noptional = true\n\n[dev-dependencies]\nsmol = \"2\"\nsmol-macros = \"0.1\"\nmacro_rules_attribute = \"0.2\"\nimage = \"0.25\"\nchrono = \"0.4\"\n\n[dev-dependencies.zbus]\nversion = \"5\"\ndefault-features = false\nfeatures = [\"blocking-api\"]\n\n[dev-dependencies.ashpd]\nversion = \"0.13\"\ndefault-features = false\nfeatures = [\"async-io\"]\n\n[[example]]\nname = \"async\"\nrequired-features = [\"tokio\"]\ndoc-scrape-examples = true\n\n[[example]]\nname = \"async_smol\"\nrequired-features = [\"async-io\"]\ndoc-scrape-examples = false\n\n[[example]]\nname = \"blocking\"\nrequired-features = [\"blocking\"]\ndoc-scrape-examples = true\n\n[[example]]\nname = \"custom_icon\"\nrequired-features = [\"tokio\"]\ndoc-scrape-examples = true\n\n[[example]]\nname = \"about_to_show\"\nrequired-features = [\"tokio\"]\ndoc-scrape-examples = true\n\n[[example]]\nname = \"realworld\"\nrequired-features = [\"tokio\"]\ndoc-scrape-examples = true\n\n[[test]]\nname = \"tokio\"\nrequired-features = [\"tokio\"]\n\n[[test]]\nname = \"smol\"\nrequired-features = [\"async-io\"]\n\n[[test]]\nname = \"blocking\"\nrequired-features = [\"blocking\"]\n",
-        "dest": "cargo/vendor/ksni",
-        "dest-filename": "Cargo.toml"
-    },
-    {
-        "type": "inline",
-        "contents": "{\"package\": null, \"files\": {}}",
-        "dest": "cargo/vendor/ksni",
+        "contents": "{\"package\": \"1bcc1cb43797140f74b711f1c4a49f48a7a7429f211c5fb78264e7bcd1e99caf\", \"files\": {}}",
+        "dest": "cargo/vendor/ksni-0.3.7",
         "dest-filename": ".cargo-checksum.json"
     },
     {
@@ -3457,7 +3472,7 @@
     },
     {
         "type": "inline",
-        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n\n[source.\"https://github.com/iovxw/ksni\"]\ngit = \"https://github.com/iovxw/ksni\"\nreplace-with = \"vendored-sources\"\nrev = \"547cc42\"\n",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n",
         "dest": "cargo",
         "dest-filename": "config"
     }

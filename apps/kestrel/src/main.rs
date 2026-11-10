@@ -5616,8 +5616,18 @@ fn dispatch_commands(
                 break;
             };
             match command {
-                ApplicationCommand::PresentWindow => controller.present(&application),
+                ApplicationCommand::PresentWindow => {
+                    log::debug!(
+                        target: kestrel::STATUS_NOTIFIER_ID,
+                        "presenting the window for the application surface"
+                    );
+                    controller.present(&application);
+                }
                 ApplicationCommand::ActivationToken(token) => {
+                    log::debug!(
+                        target: kestrel::STATUS_NOTIFIER_ID,
+                        "an application surface supplied an activation token"
+                    );
                     controller.activation_token.replace(Some(token));
                 }
                 ApplicationCommand::Focus(target) => controller.focus(&application, target),
