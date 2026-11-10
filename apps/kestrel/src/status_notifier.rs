@@ -265,12 +265,30 @@ fn send(sender: &Sender<ApplicationCommand>, command: ApplicationCommand) {
     let _ = sender.try_send(command);
 }
 
+/// Sends the event's activation token, when the host supplied one, before the
+/// command that raises a window or floating surface.
+///
+/// The crate keeps a late token for the next event, so a token that arrives
+/// after this event is not lost here.
+fn send_present(sender: &Sender<ApplicationCommand>, command: ApplicationCommand) {
+    match ksni::current_xdg_activation_token() {
+        Some(token) => {
+            log::debug!(target: FEATURE_ID, "A tray event carried an activation token.");
+            send(sender, ApplicationCommand::ActivationToken(token));
+        }
+        None => log::debug!(target: FEATURE_ID, "A tray event carried no activation token."),
+    }
+    send(sender, command);
+}
+
 fn open_item<T: Tray>(sender: &Sender<ApplicationCommand>) -> MenuItem<T> {
     let sender = sender.clone();
     StandardItem {
         label: "Open Kestrel".to_owned(),
         icon_name: "window-new-symbolic".to_owned(),
-        activate: Box::new(move |_: &mut T| send(&sender, ApplicationCommand::PresentWindow)),
+        activate: Box::new(move |_: &mut T| {
+            send_present(&sender, ApplicationCommand::PresentWindow)
+        }),
         ..StandardItem::default()
     }
     .into()
@@ -492,12 +510,7 @@ impl Tray for KestrelTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        send(&self.sender, ApplicationCommand::PresentWindow);
-    }
-
-    /// Wayland hosts send this before an activation so the window may come forward.
-    fn provide_xdg_activation_token(&mut self, token: String) {
-        send(&self.sender, ApplicationCommand::ActivationToken(token));
+        send_present(&self.sender, ApplicationCommand::PresentWindow);
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -537,7 +550,7 @@ impl Tray for KestrelTray {
                     label: "Shelf".to_owned(),
                     icon_name: "folder-symbolic".to_owned(),
                     activate: Box::new(move |_: &mut Self| {
-                        send(&sender, ApplicationCommand::OpenShelfFloat)
+                        send_present(&sender, ApplicationCommand::OpenShelfFloat)
                     }),
                     ..StandardItem::default()
                 }
@@ -571,11 +584,18 @@ fn update_item<T: Tray>(
     let version = state.version.as_ref()?;
     let sender = sender.clone();
     let command = update_item_command(state);
+    let raises_window = state.can_self_update;
     Some(
         StandardItem {
             label: format!("Update available: {version}"),
             icon_name: "software-update-available-symbolic".to_owned(),
-            activate: Box::new(move |_: &mut T| send(&sender, command.clone())),
+            activate: Box::new(move |_: &mut T| {
+                if raises_window {
+                    send_present(&sender, command.clone());
+                } else {
+                    send(&sender, command.clone());
+                }
+            }),
             ..StandardItem::default()
         }
         .into(),
@@ -686,11 +706,7 @@ impl Tray for ReadoutTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        send(&self.sender, ApplicationCommand::PresentWindow);
-    }
-
-    fn provide_xdg_activation_token(&mut self, token: String) {
-        send(&self.sender, ApplicationCommand::ActivationToken(token));
+        send_present(&self.sender, ApplicationCommand::PresentWindow);
     }
 
     /// Hosts without tooltips still show the full reading here.
@@ -724,8 +740,8 @@ mod tests {
     use kestrel_core::CapabilityStatus;
 
     use super::{
-        FEATURE_ID, Published, TrayKeepAwake, TrayUpdate, accept, unavailable_capability,
-        update_item_command,
+        FEATURE_ID, Published, TrayKeepAwake, TrayUpdate, accept, send_present,
+        unavailable_capability, update_item_command,
     };
     use crate::{ApplicationCommand, FocusTarget, KeepAwakeStamp};
     use std::time::Duration;
@@ -780,6 +796,19 @@ mod tests {
 
         assert!(!published.state.active);
         assert_eq!(published.state.label, "Keep awake");
+    }
+
+    #[test]
+    fn a_tray_present_without_a_host_token_sends_only_the_present() {
+        let (sender, receiver) = async_channel::unbounded();
+
+        send_present(&sender, ApplicationCommand::PresentWindow);
+
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(ApplicationCommand::PresentWindow)
+        ));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
