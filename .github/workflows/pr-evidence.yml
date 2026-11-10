@@ -1,0 +1,34 @@
+name: PR evidence
+
+# Every pull request says how it was tested, and a change to the window shows
+# a screenshot. Editing the description or labels re-runs the check.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  evidence:
+    name: Testing and screenshots
+    # Dependency bumps carry no UI and their own changelog.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Check the description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.pull_request.body }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          printf '%s' "$BODY" > "$RUNNER_TEMP/body.md"
+          gh api --paginate "repos/${{ github.repository }}/pulls/$NUMBER/files" \
+            --jq '.[].filename' > "$RUNNER_TEMP/files.txt"
+          # shellcheck disable=SC2086
+          python3 scripts/check-pr-evidence.py "$RUNNER_TEMP/body.md" "$RUNNER_TEMP/files.txt" $LABELS

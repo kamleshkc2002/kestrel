@@ -122,6 +122,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
 - `.github/workflows/aur.yml`: builds the AUR package in an Arch container, checks the packaged files and generated metadata, and runs namcap.
 - `.github/workflows/flatpak.yml`: checks that `cargo-sources.json` matches `Cargo.lock`, builds the Flatpak bundle in the Flathub builder container, runs the manifest and AppStream lints, and starts the installed bundle headless.
+- `.github/workflows/pr-evidence.yml`, `scripts/check-pr-evidence.py`, `.github/pull_request_template.md`: every pull request description has a `## Testing` section saying what was run and seen, and a `## Screenshots` section with an image when `apps/kestrel/src/window/` or `apps/kestrel/src/view_model/` changes (the `no-screenshot-needed` label waives the image).
 - `scripts/build-appimage.sh`: release artifact construction.
 - `apps/kestrel/build.rs`, `apps/kestrel/src/layer_shell.rs`: optional gtk4-layer-shell link and the FFI shim behind the `kestrel_layer_shell` cfg.
 - `scripts/layer-shell-smoke.sh`: opens the command bar on a private headless Sway and requires a layer-shell surface.
@@ -153,3 +154,4 @@ KESTREL_REQUIRE_CLEAN_SESSION=1 bash scripts/clipboard-clean-session.sh
 This requires Xvfb and Sway. It creates fresh X11 (Xvfb on a free display) and headless Wayland sessions and never touches the user's live clipboard.
 - GUI/package changes require the actual AppImage Xvfb startup scenario from `.github/workflows/appimage.yml`, not only unit tests.
 - Floating-surface placement changes require `bash scripts/layer-shell-smoke.sh <kestrel-binary>` against a build linked with gtk4-layer-shell (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA hosts).
+- Pull request descriptions follow `.github/pull_request_template.md`; the PR evidence check fails without a filled `## Testing` section, or without a screenshot for window changes.
