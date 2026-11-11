@@ -118,10 +118,10 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `crates/kestrel-platform/src/lib.rs`: platform boundary and `CapabilityProbe` seam.
 - `Cargo.toml`: root workspace membership.
 - `rust-toolchain.toml`, `rustfmt.toml`: pinned compiler/components and formatting policy.
-- `.github/workflows/ci.yml`: canonical quality, build, test, and clean-session checks.
-- `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
+- `.github/workflows/ci.yml`: canonical lint, build, test, idle-cost, recovery, and clean-session checks. `Lint`, `Quality and test`, `Idle cost`, and `Recovery checks` run in parallel, each with the dependencies it needs; `Quality and test` is the required build-and-test check.
+- `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test. It also builds on `main` pushes to fill the GTK stack and Rust caches, and only a release tag signs, uploads, and publishes.
 - `.github/workflows/aur.yml`: builds the Arch package that users build with `makepkg` (not published to the AUR) in an Arch container, checks the packaged files and generated metadata, and runs namcap.
-- `.github/workflows/flatpak.yml`: checks that `cargo-sources.json` matches `Cargo.lock`, builds the Flatpak bundle in the Flathub builder container, runs the manifest and AppStream lints, and starts the installed bundle headless.
+- `.github/workflows/flatpak.yml`: checks that `cargo-sources.json` matches `Cargo.lock`, builds the Flatpak bundle in the Flathub builder container, runs the manifest and AppStream lints, and starts the installed bundle headless; a `main` push on the same paths fills the flatpak-builder state cache.
 - `.github/workflows/pr-evidence.yml`, `scripts/check-pr-evidence.py`, `.github/pull_request_template.md`: every pull request description has a `## Testing` section saying what was run and seen, and a `## Screenshots` section with an image for anything visible; the check flags `window/`, `view_model/`, `main.rs`, `status_notifier.rs`, `layer_shell.rs`, `data/icons/`, and CSS changes (the `no-screenshot-needed` label waives the image).
 - `scripts/build-appimage.sh`: release artifact construction.
 - `apps/kestrel/build.rs`, `apps/kestrel/src/layer_shell.rs`: optional gtk4-layer-shell link and the FFI shim behind the `kestrel_layer_shell` cfg.
@@ -131,11 +131,12 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 
 - Required Rust toolchain: **1.98.0**, minimal profile, with `rustfmt` and `clippy`. Use Cargo; there is no Node/Bun package manager.
 - Native compile/link prerequisites include GTK4, libadwaita, and libpulse development packages. CI installs `libadwaita-1-dev libgtk-4-dev libpulse-dev`.
-- gtk4-layer-shell is optional: `build.rs` links it when pkg-config finds `gtk4-layer-shell-0`. CI and the AppImage build it from source (v1.3.0) and set `KESTREL_LAYER_SHELL=required`; `KESTREL_LAYER_SHELL=off` skips it, and the quality job lints both builds. A binary linked against it needs the library at run time.
+- gtk4-layer-shell is optional: `build.rs` links it when pkg-config finds `gtk4-layer-shell-0`. CI and the AppImage build it from source (v1.3.0) and set `KESTREL_LAYER_SHELL=required`; `KESTREL_LAYER_SHELL=off` skips it, and the `Lint` job lints both builds. A binary linked against it needs the library at run time.
 - Prefer standard portals/documented D-Bus APIs, then supported native user-session APIs, then bounded executable adapters with resolved paths, timeouts, bounded output, and structured errors.
 - Never infer support solely from desktop/compositor/session names. Report observed backend evidence and remediation.
 - Prefer event signals for D-Bus/PipeWire services and bounded configurable polling for `/proc`, `/sys`, and hardware.
 - AppImage CI runs in an Ubuntu 22.04 container (glibc 2.35) so the artifact starts on Ubuntu 22.04, Linux Mint 21, and Debian 12; it builds the pinned GTK stack from source, validates `data/io.github.kamleshkc2002.Kestrel.desktop`, inspects bundled libraries/assets (including gtk4-layer-shell) and every ELF's glibc requirement, verifies checksums, checks layer-shell placement under headless Sway, and smoke-starts the artifact under Xvfb.
+- CI caches dependency builds: `Swatinem/rust-cache` per job and the built GTK stack, the flatpak-builder state, all with `save-if: ${{ github.ref == 'refs/heads/main' }}`, so only `main` writes and pull requests restore. A job whose compiler flags differ (layer-shell on or off, debug versus release, container versus host) gets its own `shared-key`. `.github/actions/linux-gtk-deps` installs the shared toolchain and GTK stack for `ci.yml` jobs; a job adds its own packages through its `packages` input.
 
 ## Testing & QA
 

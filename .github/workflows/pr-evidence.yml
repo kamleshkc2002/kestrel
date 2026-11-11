@@ -10,6 +10,11 @@ permissions:
   contents: read
   pull-requests: read
 
+# Editing a description or label supersedes the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   evidence:
     name: Testing and screenshots

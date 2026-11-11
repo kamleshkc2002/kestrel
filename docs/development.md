@@ -40,6 +40,10 @@ them; the matching `.sha256` file verifies downloads. The AppImage does not
 bundle GStreamer: screen recording uses the host's GStreamer 1.x runtime, while
 everything else starts without it and recording reports what to install.
 
+The workflow also builds on `main` pushes. Those runs only fill the GTK stack
+and Rust caches that pull requests restore; a `main` push uploads no release,
+and only a release tag signs, publishes, and creates the release.
+
 ```bash
 bash scripts/build-appimage.sh 0.1.0
 ```
@@ -274,6 +278,31 @@ becomes an overlay (`SWAY_FLAGS=--unsupported-gpu` on NVIDIA drivers):
 ```bash
 bash scripts/layer-shell-smoke.sh target/debug/kestrel
 ```
+
+### Continuous integration
+
+Pull requests run the checks in parallel jobs instead of one serial job:
+
+| Job | What it runs |
+| --- | --- |
+| `Lint` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets`, and the same clippy with `KESTREL_LAYER_SHELL=off` |
+| `Quality and test` | `cargo build --workspace --all-targets` and `cargo test --workspace --all-targets` |
+| `Idle cost` | builds the debug binary and runs `scripts/idle-measure.sh` against `scripts/idle-baseline.json` |
+| `Recovery checks` | builds the debug binary and runs `scripts/recovery-checks.sh` |
+| `Clipboard clean session` | `scripts/clipboard-clean-session.sh` |
+
+`Quality and test` is the required build-and-test check. Each job installs only
+the packages it needs; the shared Rust toolchain, GTK development packages, and
+gtk4-layer-shell build live in `.github/actions/linux-gtk-deps`.
+
+Jobs that compile Rust restore a dependency cache. Only runs on `main` save
+it, so a pull request restores the cache that the merged change left behind
+rather than rebuilding the dependencies; the first pull request after a
+dependency change is still cold. The AppImage workflow also builds on `main`
+pushes and saves its GTK stack and Rust caches there, and the Flatpak workflow
+does the same for its builder state. Every pull-request workflow has a
+concurrency group that cancels a superseded run; `main` and tag runs are never
+cancelled.
 
 ### Recovery checks
 
