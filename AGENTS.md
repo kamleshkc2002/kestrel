@@ -120,7 +120,7 @@ The packaging script performs a locked release build and writes `dist/Kestrel-<v
 - `rust-toolchain.toml`, `rustfmt.toml`: pinned compiler/components and formatting policy.
 - `.github/workflows/ci.yml`: canonical quality, build, test, and clean-session checks.
 - `.github/workflows/appimage.yml`: desktop metadata validation, packaging inspection, and Xvfb startup smoke test.
-- `.github/workflows/aur.yml`: builds the AUR package in an Arch container, checks the packaged files and generated metadata, and runs namcap.
+- `.github/workflows/aur.yml`: builds the Arch package that users build with `makepkg` (not published to the AUR) in an Arch container, checks the packaged files and generated metadata, and runs namcap.
 - `.github/workflows/flatpak.yml`: checks that `cargo-sources.json` matches `Cargo.lock`, builds the Flatpak bundle in the Flathub builder container, runs the manifest and AppStream lints, and starts the installed bundle headless.
 - `.github/workflows/pr-evidence.yml`, `scripts/check-pr-evidence.py`, `.github/pull_request_template.md`: every pull request description has a `## Testing` section saying what was run and seen, and a `## Screenshots` section with an image for anything visible; the check flags `window/`, `view_model/`, `main.rs`, `status_notifier.rs`, `layer_shell.rs`, `data/icons/`, and CSS changes (the `no-screenshot-needed` label waives the image).
 - `scripts/build-appimage.sh`: release artifact construction.

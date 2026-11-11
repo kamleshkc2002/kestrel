@@ -56,9 +56,10 @@ minisign -V -p data/release-signing.pub -m Kestrel-<version>-x86_64.AppImage
 The `.sha256` file only detects a damaged download. The signature shows the
 release was made with the project's key.
 
-## AUR package
+## Arch package
 
-`packaging/aur` holds the `kestrel-desktop` package: a locked release build of
+The project doesn't publish to the AUR; `packaging/aur` is a package that Arch
+users build themselves with `makepkg -si`. It holds the `kestrel-desktop` package: a locked release build of
 the tagged source, installed under `/usr` with the desktop entry, metainfo,
 icon, and the `kestrel-record` helper beside `kestrel`. The AUR name `kestrel`
 is an unrelated file-encryption package, so this one installs as
@@ -99,8 +100,8 @@ For a release:
    bash -n PKGBUILD
    namcap PKGBUILD
    ```
-4. Copy `PKGBUILD` and `.SRCINFO` into the `kestrel-desktop` AUR repository
-   and push with the maintainer's AUR SSH key. Publishing is a maintainer step.
+4. Commit the updated `PKGBUILD` and `.SRCINFO` with the release's follow-up
+   change, so `makepkg` in a fresh checkout builds the new tag.
 
 ## Flatpak package
 
