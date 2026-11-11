@@ -594,6 +594,14 @@ order is the Screenshot portal (modes: the desktop's dialog, whole screen), then
 screen), then core X11 on real X11 sessions (focused window, whole screen).
 Recording stays with the `ScreenCast` portal in a later phase.
 
+Portal dialogs name the app from its identity. On portals with the host
+registry, each portal connection calls `Registry.Register` on
+`org.freedesktop.portal.Desktop` before its first request. On older portals
+the identity comes from the process's systemd unit, so a host build started
+outside an app unit (from a terminal or a file manager) moves itself into an
+`app-<id>-<random>.scope` at startup. Either way the desktop shows a name only
+when it finds a desktop entry for that ID; without one it shows a generic name.
+
 Each backend runs one blocking capture on the `kestrel-capture` worker and
 returns a validated PNG (≤ 64 MiB, ≤ 16384 px per side). A `CaptureCancel`
 handle aborts it by closing the portal connection or killing the `slurp`/`grim`
