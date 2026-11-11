@@ -28,10 +28,6 @@ jobs:
     env:
       KESTREL_LAYER_SHELL: required
       PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
-      # Container jobs start with an empty HOME; keeping CARGO_HOME inside the
-      # checkout gives the registry and the rustup binaries a path the cache
-      # action can find and restore.
-      CARGO_HOME: ${{ github.workspace }}/.cargo
       # Bumping a source in scripts/build-gtk-stack.sh changes this list and
       # the script hash below, so the stack cache misses and rebuilds.
       GTK_STACK_VERSIONS: wayland-1.22.0-wayland-protocols-1.34-glib-2.80.0-gtk-4.14.5-libadwaita-1.5.0-gtk4-layer-shell-1.3.0
@@ -85,7 +81,12 @@ jobs:
           pkg-config --modversion gtk4 libadwaita-1
 
       - name: Install Rust 1.98
+        # CARGO_HOME points inside the mounted workspace so the toolchain, the
+        # registry the cache action stores, and the build all agree on one
+        # path; the container's HOME is thrown away with it.
         run: |
+          export CARGO_HOME="$GITHUB_WORKSPACE/.cargo"
+          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
             sh -s -- -y --profile minimal --default-toolchain 1.98.0 \
               --component rustfmt --component clippy
