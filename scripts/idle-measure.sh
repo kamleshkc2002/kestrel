@@ -12,11 +12,13 @@
 #
 # The measured process is started with fresh XDG directories seeded with one
 # config.toml per preset, so setup never runs and the presets differ only in
-# the features they enable. A private system bus serves the logind fake, so
-# clipboard history (which requires a logind session) runs in the presets that
-# enable it. Sway ignores xdg_toplevel.set_minimized, so the closed state sends
-# the window's close request (Kestrel's minimize path) and then moves it to the
-# scratchpad, which stops compositing it.
+# the features they enable. The command bar's window source is on in every
+# preset that runs the command bar, so the window-list watch thread is sampled.
+# A private system bus serves the logind fake, so clipboard history (which
+# requires a logind session) runs in the presets that enable it. Sway ignores
+# xdg_toplevel.set_minimized, so the closed state sends the window's close
+# request (Kestrel's minimize path) and then moves it to the scratchpad, which
+# stops compositing it.
 #
 # Missing sway, dbus-run-session, or python3-gi skips the run;
 # KESTREL_REQUIRE_IDLE_MEASURE=1 makes it fatal. SWAY_FLAGS adds Sway options
@@ -82,7 +84,8 @@ preset_enables() {
       ;;
     balanced)
       # Clipboard history stays on here so the idle guard measures its event
-      # wait in both feature-rich presets.
+      # wait in both feature-rich presets; the command bar's window source is
+      # enabled by their generated configuration.
       case "$feature" in
         global.shortcuts) return 1 ;;
         *) return 0 ;;
@@ -106,6 +109,9 @@ write_configuration() {
       printf '[ui]\nclose_action = "minimize"\n'
       printf '[startup]\nwhats_new = false\n'
       printf '[updates]\ncheck = "disabled"\n'
+      # The command bar's window source keeps a compositor watch thread, which
+      # the preset must run and the idle guard must sample.
+      printf '[command_bar]\nenable_windows = true\n'
       for feature in "${all_features[@]}"; do
         enabled=false
         preset_enables "$preset" "$feature" && enabled=true
@@ -218,20 +224,35 @@ measure_preset() {
     return 1
   fi
   sleep "$settle"
-  if preset_enables "$preset" clipboard.history; then
+  if preset_enables "$preset" clipboard.history || preset_enables "$preset" commands.bar; then
     local state
     state="$(timeout 15 "$binary" --command diagnostics.dump-state 2>/dev/null || true)"
-    if ! printf '%s\n' "$state" | grep -F $'\tclipboard.history\t' |
-      grep -q 'lifecycle=running'; then
-      printf 'clipboard history did not start in the %s/%s run:\n' \
-        "$preset" "$window" >&2
-      printf '%s\n' "$state" | grep -F clipboard.history >&2 || true
-      tail -n 20 -- "$log" >&2 || true
-      kill "$pid" 2>/dev/null || true
-      return 1
+    if preset_enables "$preset" clipboard.history; then
+      if ! printf '%s\n' "$state" | grep -F $'\tclipboard.history\t' |
+        grep -q 'lifecycle=running'; then
+        printf 'clipboard history did not start in the %s/%s run:\n' \
+          "$preset" "$window" >&2
+        printf '%s\n' "$state" | grep -F clipboard.history >&2 || true
+        tail -n 20 -- "$log" >&2 || true
+        kill "$pid" 2>/dev/null || true
+        return 1
+      fi
+      printf 'clipboard history in %s/%s: %s\n' "$preset" "$window" \
+        "$(printf '%s\n' "$state" | grep -F $'\tclipboard.history\t')"
     fi
-    printf 'clipboard history in %s/%s: %s\n' "$preset" "$window" \
-      "$(printf '%s\n' "$state" | grep -F $'\tclipboard.history\t')"
+    if preset_enables "$preset" commands.bar; then
+      if ! printf '%s\n' "$state" | grep -F $'\tcommands.bar\t' |
+        grep -q $'\twindows=wlr-foreign-toplevel'; then
+        printf 'the window list did not start in the %s/%s run:\n' \
+          "$preset" "$window" >&2
+        printf '%s\n' "$state" | grep -F commands.bar >&2 || true
+        tail -n 20 -- "$log" >&2 || true
+        kill "$pid" 2>/dev/null || true
+        return 1
+      fi
+      printf 'window list in %s/%s: %s\n' "$preset" "$window" \
+        "$(printf '%s\n' "$state" | grep -F $'\tcommands.bar\t')"
+    fi
     sleep 1
   fi
   if [ "$window" = "closed" ] && ! close_window "$pid" "$app_id"; then

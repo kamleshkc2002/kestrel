@@ -327,30 +327,31 @@ bash scripts/launcher-commands.sh --uninstall  # remove them
 
 ## Idle cost
 
-`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% plus 5/s (`margins.wakeups_slack`; low-wakeup rows vary by several per second between CI runs) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the script starts a private system bus with the logind fake so clipboard history actually runs in the presets that enable it. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it.
+`bash scripts/idle-measure.sh <kestrel-executable>` starts a private headless Sway session with fresh XDG directories, seeds one `config.toml` per preset, and samples each preset with the window open and closed for 20 seconds: average CPU from `/proc/<pid>/stat`, wakeups per second from the thread context switches, resident memory, and thread count. `--check scripts/idle-baseline.json` compares a run with the recorded baseline and fails a run whose wakeups exceed it by more than 50% plus 5/s (`margins.wakeups_slack`; low-wakeup rows vary by several per second between CI runs) or whose RSS exceeds it by more than 25%. The baseline is recorded on the CI runner, because thread pools and wakeups depend on the machine's core count and on which session services are present; the script starts a private system bus with the logind fake so clipboard history actually runs in the presets that enable it. Refresh the baseline from a CI run's `idle.json` when a change is meant to move it. The feature-rich presets also enable the command bar's window source, so the window-list watch thread is part of the sample; the script checks `diagnostics.dump-state` for the running provider before it samples and fails the run when it is absent.
 
-Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer, with the same profile before and after the clipboard watch change. Before, on the polling worker:
-
-| Preset | Window | CPU % | Wakeups/s | RSS | Threads |
-|---|---|---|---|---|---|
-| Essentials | open | 2.50 | 19.0 | 408 MiB | 82 |
-| Essentials | closed | 2.80 | 17.2 | 407 MiB | 81 |
-| Balanced | open | 31.40 | 126.2 | 421 MiB | 88 |
-| Balanced | closed | 9.20 | 130.8 | 419 MiB | 85 |
-| Everything | open | 15.10 | 129.1 | 419 MiB | 85 |
-| Everything | closed | 8.65 | 128.0 | 419 MiB | 86 |
-
-After, with selection events and deadline-driven waits:
+Measured on a 12th Gen Intel(R) Core(TM) i9-12900HX (24 threads), debug build, headless Sway 1.9 with the pixman renderer, with the same profile before and after the window-watch change. The feature-rich presets run the command bar's window source in both runs. Before, with the window-list worker polling the compositor every 10 ms:
 
 | Preset | Window | CPU % | Wakeups/s | RSS | Threads |
 |---|---|---|---|---|---|
-| Essentials | open | 10.40 | 16.1 | 409 MiB | 81 |
-| Essentials | closed | 1.00 | 14.3 | 409 MiB | 82 |
-| Balanced | open | 12.25 | 26.6 | 419 MiB | 87 |
-| Balanced | closed | 5.80 | 24.5 | 419 MiB | 88 |
-| Everything | open | 13.05 | 24.0 | 419 MiB | 87 |
-| Everything | closed | 6.80 | 22.8 | 420 MiB | 88 |
+| Essentials | open | 1.75 | 14.9 | 407 MiB | 81 |
+| Essentials | closed | 0.85 | 14.2 | 408 MiB | 82 |
+| Balanced | open | 12.90 | 224.2 | 418 MiB | 89 |
+| Balanced | closed | 6.75 | 221.5 | 418 MiB | 88 |
+| Everything | open | 13.00 | 224.0 | 418 MiB | 88 |
+| Everything | closed | 6.60 | 222.3 | 418 MiB | 89 |
 
-- With the window open, Balanced and Everything fell from about 126–129 to 24–27 wakeups/s, and the gap over Essentials is now the same roughly 10/s of feature overhead the recorded baseline shows for these presets without clipboard history; a controlled run with the same features and only history toggled stays inside run-to-run noise. The Essentials rows include ordinary window and feature noise (the open CPU sample in this run is high).
-- The tick follows what is running: with the window open and no overlay or job needing a live control, one-second pacing outside live feedback keeps Essentials low; clipboard history no longer dominates any preset.
+After, with the worker waiting for compositor events and request wakeups:
+
+| Preset | Window | CPU % | Wakeups/s | RSS | Threads |
+|---|---|---|---|---|---|
+| Essentials | open | 1.85 | 15.7 | 408 MiB | 81 |
+| Essentials | closed | 0.85 | 14.0 | 408 MiB | 81 |
+| Balanced | open | 11.65 | 24.8 | 417 MiB | 88 |
+| Balanced | closed | 5.55 | 21.9 | 417 MiB | 89 |
+| Everything | open | 11.75 | 24.8 | 417 MiB | 89 |
+| Everything | closed | 5.45 | 22.7 | 418 MiB | 89 |
+
+- The window list adds about one to three wakeups per second instead of roughly two hundred: Balanced and Everything fell from about 222–224 to 22–25 wakeups/s, and the gap over Essentials is now ordinary feature overhead.
+- Clipboard history still waits for selection events (`watch=events` in diagnostics), so the earlier drop from about 126–129 to 24–27 wakeups/s in these presets remains in place.
+- The tick follows what is running: with the window open and no overlay or job needing a live control, one-second pacing outside live feedback keeps Essentials low.
 - Turning features off stops their threads and timers: applying `kestrel --command preset.essentials` to a running Everything window drops its threads and wakeups within 25 seconds.

@@ -7,3 +7,7 @@
 [[change]]
 feature = "kestrel"
 text = "Kestrel 1.0 keeps your settings, data files, feature IDs, and kestrel --command IDs working across every 1.x update; anything that must change gets a migration first."
+
+[[change]]
+feature = "kestrel"
+text = "The window list waits for the compositor instead of checking a hundred times a second, so an idle Kestrel wakes far less often."

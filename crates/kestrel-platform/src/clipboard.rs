@@ -8,7 +8,7 @@ use std::{
     error::Error,
     fmt,
     io::Read,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+    os::fd::{AsRawFd, OwnedFd},
     sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -50,6 +50,7 @@ use crate::{
     logind_session::{
         LOGIN_DESTINATION, LOGIN_PATH, MANAGER_INTERFACE, SESSION_INTERFACE, current_session_path,
     },
+    wake::{drain_event_fd, event_fd, signal_event_fd, wait as wait_for_descriptors},
 };
 
 pub const FEATURE_ID: &str = "clipboard.history";
@@ -1005,7 +1006,11 @@ impl X11ChangeWatch {
             connection,
             clipboard,
             initial: true,
-            cancel: event_fd()?,
+            cancel: event_fd().map_err(|error| {
+                watch_error(format!(
+                    "the clipboard watch wake descriptor could not be created: {error}"
+                ))
+            })?,
         })
     }
 
@@ -1041,15 +1046,7 @@ impl ClipboardChangeWatch for X11ChangeWatch {
                     revents: 0,
                 },
             ];
-            // SAFETY: `descriptors` points at two initialised `pollfd` values.
-            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
-            if ready < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(x11_watch_error(error));
-            }
+            wait_for_descriptors(&mut descriptors).map_err(x11_watch_error)?;
             if descriptors[1].revents != 0 {
                 drain_event_fd(self.cancel.as_raw_fd());
                 return Ok(false);
@@ -1063,43 +1060,6 @@ impl ClipboardChangeWatch for X11ChangeWatch {
     fn cancel_handle(&self) -> ChangeWatchCancel {
         let cancel = Arc::clone(&self.cancel);
         ChangeWatchCancel::new(move || signal_event_fd(cancel.as_raw_fd()))
-    }
-}
-
-fn event_fd() -> Result<Arc<OwnedFd>, ClipboardError> {
-    // SAFETY: `eventfd` has no preconditions; the returned descriptor is owned here.
-    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-    if fd < 0 {
-        return Err(watch_error(format!(
-            "the clipboard watch wake descriptor could not be created: {}",
-            std::io::Error::last_os_error()
-        )));
-    }
-    // SAFETY: `fd` is a freshly created descriptor that nothing else owns.
-    Ok(Arc::new(unsafe { OwnedFd::from_raw_fd(fd) }))
-}
-
-fn signal_event_fd(fd: RawFd) {
-    let value: u64 = 1;
-    // SAFETY: `fd` is an eventfd and `value` is an eight-byte integer.
-    unsafe {
-        libc::write(
-            fd,
-            std::ptr::addr_of!(value).cast(),
-            std::mem::size_of::<u64>(),
-        );
-    }
-}
-
-fn drain_event_fd(fd: RawFd) {
-    let mut value: u64 = 0;
-    // SAFETY: `fd` is an eventfd and `value` is an eight-byte integer.
-    unsafe {
-        libc::read(
-            fd,
-            std::ptr::addr_of_mut!(value).cast(),
-            std::mem::size_of::<u64>(),
-        );
     }
 }
 

@@ -37,6 +37,7 @@ pub mod uninstall;
 pub mod update_install;
 pub mod updates;
 pub mod upower;
+mod wake;
 pub mod windows;
 pub mod xdg;
 
