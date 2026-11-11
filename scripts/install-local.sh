@@ -93,15 +93,9 @@ printf 'Installed %s (%s).\n' "$binary" "$("$binary" --version)"
 
 launch() {
   # Kestrel keeps its own bounded logs; stdout and stderr carry nothing extra.
-  # A scope named app-<id>-<random> lets portals identify Kestrel instead of
-  # the terminal that ran this script; <random> must not contain a dash.
-  if command -v systemd-run >/dev/null &&
-    systemd-run --user --quiet --scope --collect true >/dev/null 2>&1; then
-    systemd-run --user --quiet --scope --collect --unit="app-$app_id-$$$RANDOM" \
-      setsid "$binary" >/dev/null 2>&1 </dev/null &
-  else
-    setsid "$binary" >/dev/null 2>&1 </dev/null &
-  fi
+  # Kestrel moves itself into its own systemd scope at startup, so portals
+  # identify it rather than this terminal.
+  setsid "$binary" >/dev/null 2>&1 </dev/null &
   for _ in $(seq 1 50); do
     running && return 0
     sleep 0.1

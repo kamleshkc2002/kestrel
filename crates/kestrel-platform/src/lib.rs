@@ -20,6 +20,7 @@ pub mod network_addresses;
 pub mod notifications;
 pub mod nvml;
 pub mod pin_store;
+pub mod portal_identity;
 pub mod process_exit;
 pub mod processes;
 pub mod quick_toggles;

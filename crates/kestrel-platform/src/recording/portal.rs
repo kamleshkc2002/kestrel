@@ -20,9 +20,11 @@ use super::{
 };
 use crate::capture::CaptureCancel;
 use crate::capture::portal::{
-    Failure, INTERACTIVE_TIMEOUT, PORTAL_BUS, PORTAL_PATH, Response, close_request, connect,
-    register_application, request_path, send_request, token_suffix,
+    Failure, INTERACTIVE_TIMEOUT, Response, close_request, connect, request_path, send_request,
+    token_suffix,
 };
+use crate::global_shortcuts::APPLICATION_ID;
+use crate::portal_identity::{PORTAL_BUS, PORTAL_PATH, register_application};
 
 const SCREENCAST_INTERFACE: &str = "org.freedesktop.portal.ScreenCast";
 const SESSION_INTERFACE: &str = "org.freedesktop.portal.Session";
@@ -122,7 +124,7 @@ fn negotiate(
         .unique_name()
         .map(ToString::to_string)
         .ok_or_else(|| failed("The session bus assigned no unique name."))?;
-    register_application(connection);
+    register_application(connection, APPLICATION_ID);
     let portal = Proxy::new(connection, PORTAL_BUS, PORTAL_PATH, SCREENCAST_INTERFACE)
         .map_err(|error| failed(format!("Creating the ScreenCast proxy failed: {error}")))?;
     let deadline = Instant::now() + INTERACTIVE_TIMEOUT;
