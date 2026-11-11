@@ -1,6 +1,7 @@
 use super::{
     WindowBackend, WindowError, WindowErrorKind, WindowHandle, WindowInfo, WindowProvider,
     bounded_text,
+    event_loop::{self, RequestSender},
 };
 use std::{
     sync::mpsc,
@@ -12,7 +13,6 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
 };
 
-const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct Entry {
@@ -46,7 +46,7 @@ enum Request {
 
 /// Wayland read-only foreign-toplevel-list provider.
 pub struct ExtProvider {
-    requests: mpsc::Sender<Request>,
+    requests: RequestSender<Request>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -59,7 +59,12 @@ impl ExtProvider {
                 format!("Wayland connection failed: {error}"),
             )
         })?;
-        let (requests, receiver) = mpsc::channel();
+        let (requests, receiver, wake) = RequestSender::channel().map_err(|error| {
+            WindowError::new(
+                WindowErrorKind::Disconnected,
+                format!("the window wake descriptor could not be created: {error}"),
+            )
+        })?;
         let (ready_sender, ready_receiver) = mpsc::channel();
         let worker_thread = thread::Builder::new()
             .name("kestrel-windows".into())
@@ -74,16 +79,21 @@ impl ExtProvider {
                 if !ready {
                     return;
                 }
-                loop {
-                    let _ = queue.roundtrip(&mut data);
-                    match receiver.recv_timeout(WORKER_POLL_INTERVAL) {
-                        Ok(Request::Snapshot(reply)) => {
-                            let _ = reply.send(Ok(snapshot(&data)));
+                let _ = event_loop::run(
+                    &mut queue,
+                    &mut data,
+                    &receiver,
+                    &wake,
+                    |_, data, request| {
+                        match request {
+                            Request::Snapshot(reply) => {
+                                let _ = reply.send(Ok(snapshot(data)));
+                            }
+                            Request::Stop => return false,
                         }
-                        Ok(Request::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    }
-                }
+                        true
+                    },
+                );
             })
             .map_err(|error| WindowError::new(WindowErrorKind::Disconnected, error.to_string()))?;
         if !ready_receiver

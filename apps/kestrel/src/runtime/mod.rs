@@ -982,6 +982,14 @@ impl ApplicationRuntime {
                     pin_store_label(clipboard.pin_store.state)
                 ));
             }
+            if feature.id == COMMAND_BAR_ID {
+                let windows = match &self.window_provider {
+                    Some(provider) => provider.backend().evidence_value(),
+                    None if self.window_provider_unavailable.is_some() => "unavailable",
+                    None => "inactive",
+                };
+                line.push_str(&format!("\twindows={windows}"));
+            }
             if feature.id == AUDIO_MIXER_ID {
                 line.push_str(&format!("\toutputs={}", audio.outputs.len()));
             }
@@ -1436,6 +1444,12 @@ mod tests {
                     && line.contains("\titems=0\t")
                     && line.contains("\tpin=")),
             "clipboard state is a counter and a pin-store state, not content"
+        );
+        assert!(
+            state.lines().any(
+                |line| line.contains("\tcommands.bar\t") && line.contains("\twindows=inactive")
+            ),
+            "the command bar reports whether a window provider is live"
         );
         assert!(
             state

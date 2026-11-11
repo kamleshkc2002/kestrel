@@ -1,6 +1,7 @@
 use super::{
     WindowBackend, WindowError, WindowErrorKind, WindowHandle, WindowInfo, WindowProvider,
     bounded_text,
+    event_loop::{self, RequestSender},
 };
 use std::{
     sync::mpsc,
@@ -16,7 +17,6 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
 };
 
 const WLR_BACKEND_LABEL: &str = "wlroots foreign toplevel";
-const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_PROTOCOL_STATE_BYTES: usize = 4;
 const ACTIVE_STATE: u32 = 2;
@@ -59,7 +59,7 @@ enum Request {
 
 /// Wayland foreign-toplevel provider for wlroots compositors.
 pub struct WlrProvider {
-    requests: mpsc::Sender<Request>,
+    requests: RequestSender<Request>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -72,7 +72,12 @@ impl WlrProvider {
                 format!("Wayland connection failed: {error}"),
             )
         })?;
-        let (requests, receiver) = mpsc::channel();
+        let (requests, receiver, wake) = RequestSender::channel().map_err(|error| {
+            WindowError::new(
+                WindowErrorKind::Disconnected,
+                format!("the window wake descriptor could not be created: {error}"),
+            )
+        })?;
         let (ready_sender, ready_receiver) = mpsc::channel();
         let worker_thread = thread::Builder::new()
             .name("kestrel-windows".into())
@@ -87,41 +92,45 @@ impl WlrProvider {
                 if !ready {
                     return;
                 }
-                loop {
-                    let _ = queue.roundtrip(&mut data);
-                    match receiver.recv_timeout(WORKER_POLL_INTERVAL) {
-                        Ok(Request::Snapshot(reply)) => {
-                            let _ = reply.send(Ok(snapshot(&data)));
-                        }
-                        Ok(Request::Activate(handle, reply)) => {
-                            let result = request_action(&data, handle, true);
-                            let _ = reply.send(result);
-                        }
-                        Ok(Request::Minimize(handle, reply)) => {
-                            let mut result = request_action(&data, handle, false);
-                            if result.is_ok() {
-                                result = queue
-                                    .roundtrip(&mut data)
-                                    .map_err(|error| {
-                                        WindowError::new(
-                                            WindowErrorKind::Disconnected,
-                                            format!("Wayland roundtrip failed: {error}"),
-                                        )
-                                    })
-                                    .and_then(|_| {
-                                        minimize_outcome(
-                                            data.entries
-                                                .iter()
-                                                .find(|entry| entry.handle == handle),
-                                        )
-                                    });
+                let _ = event_loop::run(
+                    &mut queue,
+                    &mut data,
+                    &receiver,
+                    &wake,
+                    |queue, data, request| {
+                        match request {
+                            Request::Snapshot(reply) => {
+                                let _ = reply.send(Ok(snapshot(data)));
                             }
-                            let _ = reply.send(result);
+                            Request::Activate(handle, reply) => {
+                                let _ = reply.send(request_action(data, handle, true));
+                            }
+                            Request::Minimize(handle, reply) => {
+                                let mut result = request_action(data, handle, false);
+                                if result.is_ok() {
+                                    result = queue
+                                        .roundtrip(data)
+                                        .map_err(|error| {
+                                            WindowError::new(
+                                                WindowErrorKind::Disconnected,
+                                                format!("Wayland roundtrip failed: {error}"),
+                                            )
+                                        })
+                                        .and_then(|_| {
+                                            minimize_outcome(
+                                                data.entries
+                                                    .iter()
+                                                    .find(|entry| entry.handle == handle),
+                                            )
+                                        });
+                                }
+                                let _ = reply.send(result);
+                            }
+                            Request::Stop => return false,
                         }
-                        Ok(Request::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    }
-                }
+                        true
+                    },
+                );
             })
             .map_err(|error| WindowError::new(WindowErrorKind::Disconnected, error.to_string()))?;
         if !ready_receiver

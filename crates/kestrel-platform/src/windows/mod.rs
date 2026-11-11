@@ -1,6 +1,7 @@
 //! Window discovery and bounded activation/minimization adapters.
 
 mod cosmic;
+mod event_loop;
 mod ext;
 mod wlr;
 
@@ -38,6 +39,16 @@ impl WindowBackend {
             Self::WlrForeignToplevel => "wlroots foreign toplevel",
             Self::CosmicToplevel => "COSMIC toplevel",
             Self::ExtForeignToplevelList => "ext foreign toplevel list",
+        }
+    }
+
+    /// Returns the value diagnostics report for this backend.
+    pub fn evidence_value(self) -> &'static str {
+        match self {
+            Self::X11Ewmh => "x11-ewmh",
+            Self::WlrForeignToplevel => "wlr-foreign-toplevel",
+            Self::CosmicToplevel => "cosmic-toplevel",
+            Self::ExtForeignToplevelList => "ext-foreign-toplevel-list",
         }
     }
 
