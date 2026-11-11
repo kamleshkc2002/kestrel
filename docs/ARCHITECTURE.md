@@ -802,6 +802,11 @@ feature-specific ordered policy:
 Kestrel never treats Wayland, X11, GNOME, KDE, or a compositor name as proof
 that a capability exists.
 
+Before its first portal request, Kestrel registers its application ID with the
+host portal registry when the desktop exports it; on older portals the process
+joins an `app-<id>-<random>` systemd scope at startup instead, so dialogs name
+Kestrel rather than the terminal or file manager that launched it.
+
 ### 7.2 Probe and mutation separation
 
 Each adapter has distinct read-only probe and action interfaces. For example,

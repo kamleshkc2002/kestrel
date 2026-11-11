@@ -18,14 +18,11 @@ use super::{
     ActivationSink, BindingState, SharedShortcutStatus, ShortcutBackend, ShortcutError,
     ShortcutErrorKind, ShortcutPhase, ShortcutProvider, ShortcutRequest, update_status,
 };
+use crate::portal_identity::{PORTAL_BUS, PORTAL_PATH, register_application};
 
-const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
-const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 const GLOBAL_INTERFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
 const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const SESSION_INTERFACE: &str = "org.freedesktop.portal.Session";
-const REGISTRY_BUS: &str = "org.freedesktop.host.portal.Registry";
-const REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";
 const RESPONSE_MEMBER: &str = "Response";
 const ACTIVATED_MEMBER: &str = "Activated";
 const CLOSED_MEMBER: &str = "Closed";
@@ -279,10 +276,7 @@ fn run_worker(
         *slot = Some(connection.clone());
     }
 
-    if let Ok(registry) = Proxy::new(&connection, REGISTRY_BUS, PORTAL_PATH, REGISTRY_INTERFACE) {
-        let empty: HashMap<String, OwnedValue> = HashMap::new();
-        let _: Result<(), _> = registry.call("Register", &(app_id.as_str(), empty));
-    }
+    register_application(&connection, &app_id);
 
     let Some(sender) = connection.unique_name().map(ToString::to_string) else {
         fail(

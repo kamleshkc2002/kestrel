@@ -23,9 +23,7 @@ use super::{
     CapturedImage, MAX_CAPTURE_PNG_BYTES, cancelled, too_large, validate_png,
 };
 use crate::global_shortcuts::APPLICATION_ID;
-
-pub(crate) const PORTAL_BUS: &str = "org.freedesktop.portal.Desktop";
-pub(crate) const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+use crate::portal_identity::{PORTAL_BUS, PORTAL_PATH, register_application};
 
 pub(crate) fn portal_property(bus: &Connection, interface: &str, name: &str) -> Option<u32> {
     let reply = bus
@@ -43,8 +41,6 @@ pub(crate) fn portal_property(bus: &Connection, interface: &str, name: &str) -> 
 const SCREENSHOT_INTERFACE: &str = "org.freedesktop.portal.Screenshot";
 const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const RESPONSE_MEMBER: &str = "Response";
-const REGISTRY_BUS: &str = "org.freedesktop.host.portal.Registry";
-const REGISTRY_INTERFACE: &str = "org.freedesktop.host.portal.Registry";
 pub(crate) const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SCREEN_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a late response is awaited after a timeout or cancel, so its file is removed.
@@ -115,14 +111,6 @@ pub(crate) fn connect(address: Option<&str>, timeout: Duration) -> Result<Connec
         None => Builder::session()?,
     };
     builder.method_timeout(timeout).build()
-}
-
-/// Tells the host portal registry which app is asking; absent registries are fine.
-pub(crate) fn register_application(connection: &Connection) {
-    if let Ok(registry) = Proxy::new(connection, REGISTRY_BUS, PORTAL_PATH, REGISTRY_INTERFACE) {
-        let empty: HashMap<String, OwnedValue> = HashMap::new();
-        let _: Result<(), _> = registry.call("Register", &(APPLICATION_ID, empty));
-    }
 }
 
 impl Default for PortalCaptureBackend {
@@ -219,7 +207,7 @@ fn call_portal(
         close_request(&abort_connection, &abort_request);
         let _ = abort_connection.close();
     }));
-    register_application(&connection);
+    register_application(&connection, APPLICATION_ID);
     let response = send_request(&connection, &request, deadline, discard, || {
         Proxy::new(&connection, PORTAL_BUS, PORTAL_PATH, SCREENSHOT_INTERFACE)?
             .call(method, &("", options))
@@ -501,6 +489,8 @@ mod tests {
     struct Observed {
         interactive: Option<bool>,
         written: Option<PathBuf>,
+        calls: Vec<&'static str>,
+        registered_app: Option<String>,
     }
 
     struct FakePortal {
@@ -508,8 +498,26 @@ mod tests {
         observed: Arc<Mutex<Observed>>,
     }
 
+    struct FakeRegistry {
+        observed: Arc<Mutex<Observed>>,
+    }
+
     fn fdo(error: impl std::fmt::Display) -> zbus::fdo::Error {
         zbus::fdo::Error::Failed(error.to_string())
+    }
+
+    #[zbus::interface(name = "org.freedesktop.host.portal.Registry")]
+    impl FakeRegistry {
+        fn register(
+            &self,
+            app_id: String,
+            _options: HashMap<String, OwnedValue>,
+        ) -> zbus::fdo::Result<()> {
+            let mut observed = self.observed.lock().map_err(fdo)?;
+            observed.calls.push("registry");
+            observed.registered_app = Some(app_id);
+            Ok(())
+        }
     }
 
     #[zbus::interface(name = "org.freedesktop.portal.Screenshot")]
@@ -535,6 +543,7 @@ mod tests {
             let handle = OwnedObjectPath::try_from(path.as_str()).map_err(fdo)?;
             let (code, uri) = {
                 let mut observed = self.observed.lock().map_err(fdo)?;
+                observed.calls.push("screenshot");
                 observed.interactive = interactive;
                 match self.reply {
                     Reply::Never => return Ok(handle),
@@ -610,13 +619,30 @@ mod tests {
 
     impl FakeBus {
         fn start(reply: Reply) -> Option<Self> {
+            Self::start_with(reply, true)
+        }
+
+        /// A portal from before the host registry interface existed.
+        fn start_without_registry(reply: Reply) -> Option<Self> {
+            Self::start_with(reply, false)
+        }
+
+        fn start_with(reply: Reply, with_registry: bool) -> Option<Self> {
             let observed = Arc::new(Mutex::new(Observed::default()));
             let portal = FakePortal {
                 reply,
                 observed: Arc::clone(&observed),
             };
+            let registry = FakeRegistry {
+                observed: Arc::clone(&observed),
+            };
             let bus = crate::test_bus::PrivateBus::start(PORTAL_BUS, move |builder| {
-                builder.serve_at(PORTAL_PATH, portal)
+                let builder = builder.serve_at(PORTAL_PATH, portal)?;
+                if with_registry {
+                    builder.serve_at(PORTAL_PATH, registry)
+                } else {
+                    Ok(builder)
+                }
             })?;
             Some(Self {
                 address: bus.address.clone(),
@@ -643,9 +669,26 @@ mod tests {
         let (_, _, pixels) = decode_rgba(&image.png);
         assert_eq!(&pixels[..4], &[10, 200, 30, 255]);
         let observed = bus.observed();
+        assert_eq!(observed.registered_app.as_deref(), Some(APPLICATION_ID));
+        assert_eq!(observed.calls, ["registry", "screenshot"]);
         assert_eq!(observed.interactive, Some(false));
         let written = observed.written.as_ref().expect("fake wrote an image");
         assert!(!written.exists(), "temporary portal file is removed");
+    }
+
+    #[test]
+    fn a_portal_without_the_registry_interface_still_answers_the_request() {
+        let Some(bus) = FakeBus::start_without_registry(Reply::Image) else {
+            return;
+        };
+        let backend = PortalCaptureBackend::with_bus_address(&bus.address);
+        let image = backend
+            .capture(CaptureMode::Screen, &CaptureCancel::new())
+            .expect("portal capture succeeds without the registry");
+        assert_eq!((image.width, image.height), (4, 3));
+        let observed = bus.observed();
+        assert!(observed.registered_app.is_none());
+        assert_eq!(observed.calls, ["screenshot"]);
     }
 
     #[test]

@@ -13,10 +13,9 @@ use std::{
 use kestrel_core::{CapabilityEvidence, CapabilityReport, CapabilityStatus};
 use zbus::zvariant::OwnedValue;
 
-use crate::capture::portal::{
-    PORTAL_BUS, PORTAL_PATH, Response, register_application, request_path, send_request,
-    token_suffix,
-};
+use crate::capture::portal::{Response, request_path, send_request, token_suffix};
+use crate::global_shortcuts::APPLICATION_ID;
+use crate::portal_identity::{PORTAL_BUS, PORTAL_PATH, register_application};
 
 /// Whether this process runs inside a Flatpak sandbox.
 pub fn flatpak() -> bool {
@@ -230,7 +229,7 @@ pub fn request_autostart(enable: bool) -> Result<(), String> {
             )),
         ),
     ]);
-    register_application(&connection);
+    register_application(&connection, APPLICATION_ID);
     let deadline = Instant::now() + AUTOSTART_TIMEOUT;
     let response = send_request(
         &connection,

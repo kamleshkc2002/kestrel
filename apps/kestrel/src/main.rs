@@ -5343,6 +5343,10 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
 
+    // Portals name the calling unit; a terminal or file manager would otherwise
+    // be reported. Runs before the runtime and its workers start.
+    kestrel_platform::portal_identity::adopt_app_scope(kestrel_core::APPLICATION_ID);
+
     log::info!("Kestrel {} started", env!("CARGO_PKG_VERSION"));
     for warning in &loaded.warnings {
         if logger.is_some() {
