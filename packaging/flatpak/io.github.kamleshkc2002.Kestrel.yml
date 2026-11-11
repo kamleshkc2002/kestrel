@@ -83,4 +83,4 @@ modules:
       # The tag is the release being cut.
       - type: git
         url: https://github.com/kamleshkc2002/kestrel.git
-        tag: v1.0.0-rc.1
+        tag: v1.0.0-rc.2
