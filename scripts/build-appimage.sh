@@ -10,14 +10,25 @@ appdir="$build_dir/AppDir"
 tools_dir="$build_dir/tools"
 dist_dir="$root_dir/dist"
 linuxdeploy="$tools_dir/linuxdeploy-${architecture}.AppImage"
+# The release that assembles the AppImage is fixed; each architecture is
+# checked against the SHA-256 recorded here before it runs.
+linuxdeploy_version="1-alpha-20251107-1"
+linuxdeploy_x86_64_sha256="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+linuxdeploy_aarch64_sha256="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
+# The GTK plugin is vendored, so the build downloads no plugin.
 gtk_plugin="$tools_dir/linuxdeploy-plugin-gtk.sh"
-plugin_revision="3b67a1d1c1b0c8268f57f2bce40fe2d33d409cea"
+vendor_dir="$root_dir/scripts/vendor"
 desktop_file="$root_dir/data/io.github.kamleshkc2002.Kestrel.desktop"
 icon_file="$root_dir/data/icons/io.github.kamleshkc2002.Kestrel.svg"
 artifact="$dist_dir/Kestrel-${version}-${architecture}.AppImage"
 
 case "$architecture" in
-  x86_64|aarch64) ;;
+  x86_64)
+    linuxdeploy_sha256="$linuxdeploy_x86_64_sha256"
+    ;;
+  aarch64)
+    linuxdeploy_sha256="$linuxdeploy_aarch64_sha256"
+    ;;
   *)
     printf 'unsupported AppImage architecture: %s\n' "$architecture" >&2
     exit 1
@@ -32,11 +43,16 @@ KESTREL_LAYER_SHELL=required cargo build --locked --release --package kestrel --
 
 curl --fail --location --retry 3 \
   --output "$linuxdeploy" \
-  "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${architecture}.AppImage"
-curl --fail --location --retry 3 \
-  --output "$gtk_plugin" \
-  "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/${plugin_revision}/linuxdeploy-plugin-gtk.sh"
-chmod +x "$linuxdeploy" "$gtk_plugin"
+  "https://github.com/linuxdeploy/linuxdeploy/releases/download/${linuxdeploy_version}/linuxdeploy-${architecture}.AppImage"
+if ! printf '%s  %s\n' "$linuxdeploy_sha256" "$linuxdeploy" |
+  sha256sum --check --status; then
+  printf 'linuxdeploy-%s.AppImage does not match its recorded SHA-256 %s\n' \
+    "$architecture" "$linuxdeploy_sha256" >&2
+  rm -f "$linuxdeploy"
+  exit 1
+fi
+install -Dm755 "$vendor_dir/linuxdeploy-plugin-gtk.sh" "$gtk_plugin"
+chmod +x "$linuxdeploy"
 
 # Keep GStreamer host plugins matched to the core library; report missing plugins from the host registry.
 # linuxdeploy inspects only kestrel first; the helper joins the AppDir
