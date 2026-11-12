@@ -81,22 +81,21 @@ jobs:
           pkg-config --modversion gtk4 libadwaita-1
 
       - name: Install Rust 1.98
-        # CARGO_HOME points inside the mounted workspace so the toolchain, the
-        # registry the cache action stores, and the build all agree on one
-        # path; the container's HOME is thrown away with it.
+        # CARGO_HOME stays at the container's $HOME/.cargo, outside the
+        # checkout. The cache action keeps only packages whose manifest path
+        # is outside the workspace root, so a registry inside the checkout
+        # would make every dependency look like a workspace crate and the save
+        # would strip it.
         run: |
-          export CARGO_HOME="$GITHUB_WORKSPACE/.cargo"
-          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
             sh -s -- -y --profile minimal --default-toolchain 1.98.0 \
               --component rustfmt --component clippy
-          printf '%s\n' "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Restore the Rust build cache
-        # The action reads CARGO_HOME and caches its registry and git
-        # directories; the workspace target/ directory is the release build's
-        # output. Rustup's binaries are installed in the step above and are
-        # deliberately not cached.
+        # Caches $HOME/.cargo's registry and git directories and the release
+        # build's target/ directory. Rustup's binaries are installed in the
+        # step above and are deliberately not cached.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
