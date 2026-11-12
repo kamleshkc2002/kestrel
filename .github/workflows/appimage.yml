@@ -6,11 +6,21 @@ on:
     branches:
       - main
   push:
+    # A main push builds the artifact only to fill the GTK stack and Rust
+    # caches that pull requests restore; it publishes nothing.
+    branches:
+      - main
     tags:
       - "v*"
 
 permissions:
   contents: write
+
+# A superseded pull request run stops. Main and tag runs always finish: main
+# fills the caches, and a tag must not be cancelled midway through a release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -47,7 +57,7 @@ jobs:
 
       - name: Restore the GTK stack
         id: gtk-stack
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: /usr/local
           key: gtk-stack-${{ env.GTK_STACK_VERSIONS }}-${{ hashFiles('scripts/build-gtk-stack.sh') }}
@@ -56,17 +66,43 @@ jobs:
         if: steps.gtk-stack.outputs.cache-hit != 'true'
         run: bash scripts/build-gtk-stack.sh
 
+      - name: Save the GTK stack cache
+        # Only main writes, so a pull request restores the built stack instead
+        # of spending its run on it.
+        if: github.ref == 'refs/heads/main' && steps.gtk-stack.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: /usr/local
+          key: ${{ steps.gtk-stack.outputs.cache-primary-key }}
+
       - name: Refresh the linker cache
         run: |
           ldconfig
           pkg-config --modversion gtk4 libadwaita-1
 
       - name: Install Rust 1.98
+        # CARGO_HOME points inside the mounted workspace so the toolchain, the
+        # registry the cache action stores, and the build all agree on one
+        # path; the container's HOME is thrown away with it.
         run: |
+          export CARGO_HOME="$GITHUB_WORKSPACE/.cargo"
+          echo "CARGO_HOME=$CARGO_HOME" >> "$GITHUB_ENV"
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
             sh -s -- -y --profile minimal --default-toolchain 1.98.0 \
               --component rustfmt --component clippy
-          printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          printf '%s\n' "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Restore the Rust build cache
+        # The action reads CARGO_HOME and caches its registry and git
+        # directories; the workspace target/ directory is the release build's
+        # output. Rustup's binaries are installed in the step above and are
+        # deliberately not cached.
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-bin: false
+          shared-key: appimage-release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Validate desktop metadata
         run: desktop-file-validate data/io.github.kamleshkc2002.Kestrel.desktop
@@ -161,6 +197,9 @@ jobs:
         run: bash scripts/no-gstreamer-smoke.sh squashfs-root
 
       - name: Upload workflow artifact
+        # A main push builds to fill the caches and uploads nothing; pull
+        # requests, dispatch runs, and tags keep the artifact.
+        if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v7
         with:
           name: Kestrel-x86_64-AppImage
@@ -173,6 +212,9 @@ jobs:
   sign:
     name: Sign and publish
     needs: build
+    # Signing and publishing run on release tags only; a pull request or a main
+    # push never signs, uploads, or creates a release.
+    if: startsWith(github.ref, 'refs/tags/v')
     # minisign is not packaged in jammy; signing runs on the host instead.
     runs-on: ubuntu-24.04
     steps:
@@ -191,31 +233,23 @@ jobs:
           sudo apt-get install --no-install-recommends -y minisign
 
       - name: Sign AppImage
-        # Releases must carry a signature; builds without the secret (forks) skip it.
-        id: sign
+        # A release must carry a signature, so a missing secret fails the run.
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           appimage="$(find dist -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
           if [ -z "$MINISIGN_SECRET_KEY" ]; then
-            if [ "$IS_RELEASE" = "true" ]; then
-              echo "MINISIGN_SECRET_KEY is required to publish a release" >&2
-              exit 1
-            fi
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "No signing key in this build; the AppImage stays unsigned."
-            exit 0
+            echo "MINISIGN_SECRET_KEY is required to publish a release" >&2
+            exit 1
           fi
           key="$RUNNER_TEMP/release-signing.key"
           (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
           minisign -S -s "$key" -m "$appimage" -t "$(basename "$appimage")"
           rm -f "$key"
           minisign -V -p data/release-signing.pub -m "$appimage"
-          echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload signed artifact
-        if: steps.sign.outputs.signed == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: Kestrel-x86_64-AppImage
@@ -227,7 +261,6 @@ jobs:
           retention-days: 30
 
       - name: Publish GitHub prerelease
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

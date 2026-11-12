@@ -10,9 +10,15 @@ on:
 permissions:
   contents: read
 
+# A superseded pull request run stops. Main runs always finish, because only
+# they save the dependency caches that pull requests restore.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  quality-and-test:
-    name: Quality and test
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     env:
       KESTREL_LAYER_SHELL: required
@@ -20,30 +26,16 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
-      - name: Install pinned Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.98.0
-          components: rustfmt, clippy
+      - name: Install build dependencies
+        uses: ./.github/actions/linux-gtk-deps
 
-      - name: Install native development packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libadwaita-1-dev libgtk-4-dev libpulse-dev xvfb dbus sway \
-            python3-gi \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            meson ninja-build libwayland-dev wayland-protocols
-      - name: Build gtk4-layer-shell
-        run: |
-          git clone --depth 1 --branch v1.3.0 https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
-          meson setup /tmp/gtk4-layer-shell-build /tmp/gtk4-layer-shell \
-            --prefix=/usr/local -Dintrospection=false -Dvapi=false -Ddocs=false \
-            -Dexamples=false -Dtests=false -Dsmoke-tests=false
-          meson compile -C /tmp/gtk4-layer-shell-build
-          sudo meson install -C /tmp/gtk4-layer-shell-build
-          sudo ldconfig
+      - name: Restore dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The layer-shell-off lint rebuilds the kestrel crate in the same
+          # target/, so one key covers both lints.
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -57,8 +49,56 @@ jobs:
           KESTREL_LAYER_SHELL: "off"
         run: cargo clippy --package kestrel --all-targets -- -D warnings
 
+  quality-and-test:
+    # The required status check; it builds and tests the whole workspace.
+    name: Quality and test
+    runs-on: ubuntu-latest
+    env:
+      KESTREL_LAYER_SHELL: required
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        uses: ./.github/actions/linux-gtk-deps
+
+      - name: Restore dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Build
         run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace --all-targets
+
+  idle-cost:
+    name: Idle cost
+    runs-on: ubuntu-latest
+    env:
+      KESTREL_LAYER_SHELL: required
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        uses: ./.github/actions/linux-gtk-deps
+        with:
+          packages: dbus sway python3-gi
+
+      - name: Restore dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: idle
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build the measured binary
+        # The baseline in scripts/idle-baseline.json was recorded from a debug
+        # binary linked against gtk4-layer-shell, the same profile built here,
+        # with the recorder helper beside it.
+        run: cargo build --workspace
 
       - name: Measure idle cost
         # Runs the preset matrix in headless Sway and fails past the checked-in
@@ -67,15 +107,28 @@ jobs:
           bash scripts/idle-measure.sh target/debug/kestrel \
             --check scripts/idle-baseline.json --out target/idle
 
-      - name: Test
-        run: cargo test --workspace --all-targets
+  recovery-checks:
+    name: Recovery checks
+    runs-on: ubuntu-latest
+    env:
+      KESTREL_LAYER_SHELL: required
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
 
-      - name: Install recovery-check packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            sway wl-clipboard pulseaudio pulseaudio-utils python3-gi \
-            libglib2.0-bin
+      - name: Install build and recovery-check dependencies
+        uses: ./.github/actions/linux-gtk-deps
+        with:
+          packages: dbus sway wl-clipboard pulseaudio pulseaudio-utils python3-gi libglib2.0-bin
+
+      - name: Restore dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: recovery
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build the checked binary
+        run: cargo build --workspace
 
       - name: Validate recovery from device, session, and permission changes
         run: |
@@ -100,6 +153,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libpulse-dev sway xvfb \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+
+      - name: Restore dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # This job links without gtk4-layer-shell, so it gets its own key.
+          shared-key: clipboard
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Validate clipboard lifecycle in clean sessions
         run: KESTREL_REQUIRE_CLEAN_SESSION=1 bash scripts/clipboard-clean-session.sh

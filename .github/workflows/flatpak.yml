@@ -13,12 +13,30 @@ on:
       - "packaging/flatpak/**"
       - "scripts/flatpak-*.sh"
   push:
+    # A main push runs the same filtered build to fill the builder cache that
+    # pull requests restore; it uploads nothing else.
+    branches:
+      - main
     tags:
       - "v*"
+    paths:
+      - ".github/workflows/flatpak.yml"
+      - "Cargo.lock"
+      - "apps/**/Cargo.toml"
+      - "crates/**/Cargo.toml"
+      - "data/**"
+      - "packaging/flatpak/**"
+      - "scripts/flatpak-*.sh"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A superseded pull request run stops. Main and tag runs always finish: main
+# fills the builder cache, and a tag must not be cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   sources:
@@ -44,6 +62,20 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7
 
+      - name: Prepare the builder state directory
+        # The cache action only restores a path that already exists, and the
+        # build script creates this directory when it rewrites the manifest.
+        run: mkdir -p build/flatpak/state
+
+      - name: Restore the builder cache
+        id: builder-cache
+        uses: actions/cache/restore@v6
+        with:
+          # flatpak-builder keeps its downloaded sources and ccache here; the
+          # build force-cleans only the app directory.
+          path: build/flatpak/state
+          key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.kamleshkc2002.Kestrel.yml', 'packaging/flatpak/cargo-sources.json') }}
+
       - name: Install the Rust SDK extension
         # The image carries the GNOME runtime and SDK; the extension is not.
         run: |
@@ -63,6 +95,15 @@ jobs:
 
       - name: Build the bundle
         run: bash scripts/flatpak-build.sh
+
+      - name: Save the builder cache
+        # Only main writes, so the next pull request restores the downloads
+        # instead of fetching them again.
+        if: github.ref == 'refs/heads/main' && steps.builder-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: build/flatpak/state
+          key: ${{ steps.builder-cache.outputs.cache-primary-key }}
 
       - name: Lint the build
         run: |
