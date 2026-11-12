@@ -40,6 +40,12 @@ them; the matching `.sha256` file verifies downloads. The AppImage does not
 bundle GStreamer: screen recording uses the host's GStreamer 1.x runtime, while
 everything else starts without it and recording reports what to install.
 
+The build downloads linuxdeploy from a fixed release tag and checks each
+architecture against the SHA-256 recorded in `scripts/build-appimage.sh` before
+running it, so the tools that assemble an AppImage are always the same binaries.
+linuxdeploy's GTK plugin is vendored under `scripts/vendor/` with its license
+and copied into the build, so the build fetches no plugin.
+
 The workflow also builds on `main` pushes. Those runs only fill the GTK stack
 and Rust caches that pull requests restore; a `main` push uploads no release,
 and only a release tag signs, publishes, and creates the release.
