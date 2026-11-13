@@ -5607,7 +5607,8 @@ fn print_command_line(command_line: &adw::gio::ApplicationCommandLine, text: &st
     }
 }
 
-/// Opens a link in the desktop's handler; a failure shows a copyable link.
+/// Opens a link or a local file in the desktop's handler; a failure shows a
+/// copyable link.
 fn launch_uri(controller: &Rc<ApplicationController>, uri: &str) {
     let parent = controller
         .window
@@ -5615,17 +5616,35 @@ fn launch_uri(controller: &Rc<ApplicationController>, uri: &str) {
         .as_ref()
         .map(|view| view.window.clone());
     let controller = Rc::clone(controller);
-    let uri = uri.to_owned();
-    gtk::UriLauncher::new(&uri).launch(
-        parent.as_ref(),
-        gtk::gio::Cancellable::NONE,
-        move |result| {
-            if result.is_err() {
-                log::warn!("kestrel-open-link failed");
-                controller.show_link(&uri);
-            }
-        },
-    );
+    let shown = uri.to_owned();
+    let finished = move |result: Result<(), glib::Error>| {
+        if let Err(error) = result {
+            // The message can name the file, so only its kind is logged.
+            log::warn!(
+                "kestrel-open-link failed: {} {}",
+                error.domain().as_str(),
+                error.code()
+            );
+            controller.show_link(&shown);
+        }
+    };
+    // The open-URI portal refuses file URIs, and the link launcher sends
+    // them there; the file launcher passes the file itself.
+    if is_local_file_uri(uri) {
+        let file = gtk::gio::File::for_uri(uri);
+        gtk::FileLauncher::new(Some(&file)).launch(
+            parent.as_ref(),
+            gtk::gio::Cancellable::NONE,
+            finished,
+        );
+    } else {
+        gtk::UriLauncher::new(uri).launch(parent.as_ref(), gtk::gio::Cancellable::NONE, finished);
+    }
+}
+
+fn is_local_file_uri(uri: &str) -> bool {
+    uri.get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("file://"))
 }
 
 fn dispatch_commands(
@@ -6399,6 +6418,20 @@ mod tests {
         assert_eq!(shelf_capture_add(&shelf, false, Some(7)), None);
         assert_eq!(shelf_capture_add(&shelf, true, Some(7)), Some(7));
         assert_eq!(shelf_capture_add::<u64>(&shelf, true, None), None);
+    }
+
+    #[test]
+    fn local_files_go_to_the_file_launcher_and_links_to_the_uri_launcher() {
+        for (uri, local) in [
+            ("file:///home/user/Videos/Kestrel", true),
+            ("FILE:///tmp/take.webm", true),
+            ("https://github.com/kamleshkc2002/kestrel/releases", false),
+            ("mailto:someone@example.org", false),
+            ("file:", false),
+            ("", false),
+        ] {
+            assert_eq!(super::is_local_file_uri(uri), local, "{uri}");
+        }
     }
 
     #[test]
