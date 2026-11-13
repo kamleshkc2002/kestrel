@@ -6,6 +6,7 @@ pub mod bug_report;
 mod command_bar;
 pub mod command_line;
 mod config;
+pub mod desktop_entry;
 pub mod logging;
 mod private_file;
 mod runtime;
@@ -558,6 +559,12 @@ pub enum ApplicationCommand {
     CheckForUpdates,
     /// Hides the update banner for the offered version.
     DismissUpdate,
+    /// Writes the applications-menu entry for this AppImage.
+    AddDesktopEntry,
+    /// Hides the applications-menu offer for good.
+    DismissDesktopEntry,
+    /// Removes the applications-menu entry Kestrel wrote.
+    RemoveDesktopEntry,
     /// Downloads the offered AppImage and checks its signature.
     DownloadUpdate,
     /// Stops a running update download and removes its temporary files.

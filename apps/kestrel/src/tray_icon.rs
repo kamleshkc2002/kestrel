@@ -1,9 +1,35 @@
-//! Square tray icons that show a readout's label above its value.
+//! Square tray icons that show a readout's label above its value, and the
+//! application's own icon for a panel that cannot see inside an AppImage.
 
 use pangocairo::{cairo, pango};
 
 /// Pixel size of the rendered icon; hosts scale it to their panel size.
 pub const READOUT_ICON_SIZE: i32 = 64;
+
+/// The bundled logo, rendered once per size; a host without a theme path
+/// still shows the application's own icon from these pixmaps.
+const APPLICATION_ICONS: [(i32, &[u8]); 5] = [
+    (
+        16,
+        include_bytes!("../../../data/icons/tray/kestrel-16.png"),
+    ),
+    (
+        22,
+        include_bytes!("../../../data/icons/tray/kestrel-22.png"),
+    ),
+    (
+        24,
+        include_bytes!("../../../data/icons/tray/kestrel-24.png"),
+    ),
+    (
+        32,
+        include_bytes!("../../../data/icons/tray/kestrel-32.png"),
+    ),
+    (
+        48,
+        include_bytes!("../../../data/icons/tray/kestrel-48.png"),
+    ),
+];
 
 /// SNI pixmap: width, height, and ARGB32 bytes in network order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +37,39 @@ pub struct IconPixels {
     pub width: i32,
     pub height: i32,
     pub argb: Vec<u8>,
+}
+
+/// The application icon at the sizes a panel asks for.
+pub fn application_icons() -> Vec<IconPixels> {
+    APPLICATION_ICONS
+        .into_iter()
+        .map(|(size, png)| {
+            let image = kestrel_services::capture::image::decode_png(png)
+                .expect("the bundled application icon decodes");
+            IconPixels {
+                width: size,
+                height: size,
+                argb: premultiplied_argb(&image.pixels),
+            }
+        })
+        .collect()
+}
+
+/// SNI carries straight ARGB32; compositing premultiplied colour avoids
+/// bright fringes where the rounded plate meets the panel.
+fn premultiplied_argb(rgba: &[u8]) -> Vec<u8> {
+    let mut argb = Vec::with_capacity(rgba.len());
+    for pixel in rgba.as_chunks::<4>().0 {
+        let alpha = u32::from(pixel[3]);
+        let channel = |value: u8| ((u32::from(value) * alpha + 127) / 255) as u8;
+        argb.extend_from_slice(&[
+            pixel[3],
+            channel(pixel[0]),
+            channel(pixel[1]),
+            channel(pixel[2]),
+        ]);
+    }
+    argb
 }
 
 /// Light text on a dark rounded plate stays legible on light and dark panels.
@@ -91,7 +150,7 @@ fn draw_line(
 
 #[cfg(test)]
 mod tests {
-    use super::{READOUT_ICON_SIZE, readout_icon};
+    use super::{APPLICATION_ICONS, READOUT_ICON_SIZE, application_icons, readout_icon};
 
     /// Pixels brighter than the plate: the rendered text.
     fn text_pixels(label: &str, value: &str) -> usize {
@@ -114,5 +173,33 @@ mod tests {
             both > label_only + 100,
             "the value is drawn below it: {both}"
         );
+    }
+
+    #[test]
+    fn the_application_icon_is_available_at_every_panel_size() {
+        let icons = application_icons();
+        assert_eq!(
+            icons.iter().map(|icon| icon.width).collect::<Vec<_>>(),
+            APPLICATION_ICONS
+                .iter()
+                .map(|(size, _)| *size)
+                .collect::<Vec<_>>()
+        );
+        for icon in icons {
+            assert_eq!(icon.width, icon.height);
+            assert_eq!(icon.argb.len(), (icon.width * icon.height * 4) as usize);
+            assert!(
+                icon.argb
+                    .chunks(4)
+                    .any(|pixel| pixel[0] != 0 && pixel[1..].iter().any(|&value| value != 0)),
+                "{}px carries the logo",
+                icon.width
+            );
+            assert!(
+                icon.argb.chunks(4).any(|pixel| pixel[0] == 0),
+                "{}px keeps transparent corners",
+                icon.width
+            );
+        }
     }
 }

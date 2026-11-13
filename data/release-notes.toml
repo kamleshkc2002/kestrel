@@ -18,4 +18,8 @@ text = "Screen-sharing and screenshot dialogs no longer name the terminal or fil
 
 [[change]]
 feature = "kestrel"
+text = "A downloaded AppImage shows Kestrel's logo in the tray, and can add itself to the applications menu so the dock and screen-sharing dialogs show its icon and name."
+
+[[change]]
+feature = "kestrel"
 text = "Open folder, Play, and the other buttons that open a file or folder work again on desktops whose portal refuses file links."

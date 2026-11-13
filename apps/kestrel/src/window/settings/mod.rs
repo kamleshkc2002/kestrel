@@ -108,6 +108,9 @@ pub(super) fn build_settings_group(
             extra_groups.push(updates_group);
             update_status_row = Some(status_row);
             update_actions_row = Some(actions_row);
+            if let Some(group) = add_desktop_entry_group(view_model, commands, &mut filter_rows) {
+                extra_groups.push(group);
+            }
             let (overlay, row) = add_overlay_group(view_model, commands, &mut filter_rows);
             extra_groups.push(overlay);
             accessory_row = row;
@@ -597,6 +600,55 @@ fn add_quick_panel_group(
         panel_group.add(&row);
     }
     group.add(&panel_group);
+}
+
+/// Settings' applications-menu row, for an AppImage with or without its entry.
+fn add_desktop_entry_group(
+    view_model: &ApplicationViewModel,
+    commands: &Sender<ApplicationCommand>,
+    filter_rows: &mut Vec<(gtk::Widget, String)>,
+) -> Option<adw::PreferencesGroup> {
+    let entry = &view_model.desktop_entry;
+    let (title, subtitle, label, command) = if entry.can_remove {
+        (
+            "Remove Kestrel from the applications menu",
+            "Removes the entry and icon Kestrel added for this AppImage.",
+            "Remove",
+            ApplicationCommand::RemoveDesktopEntry,
+        )
+    } else if entry.can_add {
+        (
+            "Add Kestrel to the applications menu",
+            "Writes an entry for this AppImage so the dock and screen-sharing dialogs show its icon and name.",
+            "Add",
+            ApplicationCommand::AddDesktopEntry,
+        )
+    } else {
+        return None;
+    };
+    let group = adw::PreferencesGroup::builder()
+        .title("Applications menu")
+        .description("A desktop entry names Kestrel and gives it its icon outside the window.")
+        .build();
+    let row = plain_row().title(title).subtitle(subtitle).build();
+    // Keep the wording readable while this row is the widest on an otherwise
+    // quiet Settings page.
+    row.set_size_request(560, -1);
+    row.set_hexpand(true);
+    let button = gtk::Button::with_label(label);
+    button.set_valign(Align::Center);
+    let sender = commands.clone();
+    button.connect_clicked(move |_| {
+        let _ = sender.try_send(command.clone());
+    });
+    row.add_suffix(&button);
+    row.set_activatable_widget(Some(&button));
+    filter_rows.push((
+        row.clone().upcast(),
+        "applications menu desktop entry launcher dock icon screen sharing".to_owned(),
+    ));
+    group.add(&row);
+    Some(group)
 }
 
 fn add_uninstall_group(

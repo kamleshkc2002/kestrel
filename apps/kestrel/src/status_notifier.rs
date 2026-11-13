@@ -1,6 +1,7 @@
 use crate::{
     ApplicationCommand, ApplicationViewModel, FocusTarget, KeepAwakeStamp, QuickToggleId,
-    QuickToggleViewModel, tray_icon::readout_icon,
+    QuickToggleViewModel,
+    tray_icon::{application_icons as application_icon_pixmaps, readout_icon},
 };
 use async_channel::Sender;
 use kestrel_core::{CapabilityReport, CapabilityStatus, KEEP_AWAKE_PRESETS};
@@ -11,6 +12,8 @@ use ksni::{
 };
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -30,6 +33,15 @@ impl StatusNotifierIntegration {
             keep_awake: TrayKeepAwake::default(),
             update: TrayUpdate::default(),
             shelf: TrayShelf::default(),
+            icons: application_icon_pixmaps()
+                .into_iter()
+                .map(|pixels| Icon {
+                    width: pixels.width,
+                    height: pixels.height,
+                    data: pixels.argb,
+                })
+                .collect(),
+            icon_theme_path: application_icon_theme_path(std::env::var_os("APPDIR").as_deref()),
         };
         // A sandbox cannot own the item's well-known name, so it registers the
         // connection's unique name, which watchers accept the same way.
@@ -477,6 +489,23 @@ struct KestrelTray {
     keep_awake: TrayKeepAwake,
     update: TrayUpdate,
     shelf: TrayShelf,
+    /// The application logo at several panel sizes.
+    icons: Vec<Icon>,
+    /// The bundled icon theme inside an AppImage mount.
+    icon_theme_path: String,
+}
+
+/// The icon theme inside an AppImage, when the runtime mounted one.
+fn application_icon_theme_path(appdir: Option<&OsStr>) -> String {
+    let Some(appdir) = appdir.filter(|value| !value.is_empty()) else {
+        return String::new();
+    };
+    let icons = Path::new(appdir).join("usr/share/icons");
+    if icons.is_dir() {
+        icons.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    }
 }
 
 impl Tray for KestrelTray {
@@ -498,6 +527,14 @@ impl Tray for KestrelTray {
 
     fn icon_name(&self) -> String {
         APPLICATION_ICON.to_owned()
+    }
+
+    fn icon_theme_path(&self) -> String {
+        self.icon_theme_path.clone()
+    }
+
+    fn icon_pixmap(&self) -> Vec<Icon> {
+        self.icons.clone()
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -740,11 +777,11 @@ mod tests {
     use kestrel_core::CapabilityStatus;
 
     use super::{
-        FEATURE_ID, Published, TrayKeepAwake, TrayUpdate, accept, send_present,
-        unavailable_capability, update_item_command,
+        FEATURE_ID, Published, TrayKeepAwake, TrayUpdate, accept, application_icon_theme_path,
+        send_present, unavailable_capability, update_item_command,
     };
     use crate::{ApplicationCommand, FocusTarget, KeepAwakeStamp};
-    use std::time::Duration;
+    use std::{ffi::OsStr, time::Duration};
 
     fn stamp(revision: u64, observed_at: u64) -> Option<KeepAwakeStamp> {
         Some(KeepAwakeStamp {
@@ -764,6 +801,23 @@ mod tests {
             },
             stamp: stamp(revision, observed_at),
         }
+    }
+
+    #[test]
+    fn the_tray_only_adds_an_icon_theme_when_the_appimage_has_one() {
+        assert_eq!(application_icon_theme_path(None), "");
+        assert_eq!(application_icon_theme_path(Some(OsStr::new(""))), "");
+        assert_eq!(
+            application_icon_theme_path(Some(OsStr::new("/does/not/exist"))),
+            ""
+        );
+        let appdir = tempfile::TempDir::new().expect("temporary appdir");
+        let icons = appdir.path().join("usr/share/icons");
+        std::fs::create_dir_all(icons.join("hicolor/scalable/apps")).expect("icon theme");
+        assert_eq!(
+            application_icon_theme_path(Some(appdir.path().as_os_str())),
+            icons.display().to_string()
+        );
     }
 
     #[test]

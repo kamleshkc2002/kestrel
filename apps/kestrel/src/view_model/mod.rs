@@ -47,6 +47,7 @@ mod camera;
 mod capture;
 mod clipboard;
 mod command_bar;
+mod desktop_entry;
 mod features;
 mod microphone;
 mod monitor;
@@ -87,6 +88,7 @@ pub use command_bar::{
     CommandBarQuery, CommandBarViewModel, CommandProvider, CommandProviderViewModel,
     CommandRankingViewModel, CommandResultViewModel,
 };
+pub use desktop_entry::DesktopEntryViewModel;
 pub use features::{
     CapabilityKind, CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
     ConfirmationViewModel, FeatureHubSection, FeatureIndicator, FeatureLifecycleViewModel,
@@ -185,6 +187,7 @@ pub struct ApplicationViewModel {
     pub overview_tools: OverviewToolsViewModel,
     pub whats_new: WhatsNewViewModel,
     pub updates: UpdatesViewModel,
+    pub desktop_entry: DesktopEntryViewModel,
 }
 
 /// Logging settings and the log folder for the Settings page.
@@ -295,6 +298,7 @@ impl ApplicationViewModel {
             overview_tools: OverviewToolsViewModel::default(),
             whats_new: WhatsNewViewModel::default(),
             updates: UpdatesViewModel::default(),
+            desktop_entry: DesktopEntryViewModel::default(),
         }
     }
 
