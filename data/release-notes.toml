@@ -15,3 +15,7 @@ text = "The window list waits for the compositor instead of checking a hundred t
 [[change]]
 feature = "kestrel"
 text = "Screen-sharing and screenshot dialogs no longer name the terminal or file manager that started Kestrel, and show Kestrel when its desktop entry is installed."
+
+[[change]]
+feature = "kestrel"
+text = "Open folder, Play, and the other buttons that open a file or folder work again on desktops whose portal refuses file links."
