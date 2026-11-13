@@ -8,8 +8,10 @@
 use std::{
     env,
     ffi::OsStr,
-    fmt, fs, io,
-    os::unix::fs::PermissionsExt,
+    fmt,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
@@ -24,6 +26,8 @@ const MANAGED_MARKER: &str = "X-Kestrel-AppImage=true";
 const ENTRY_MODE: u32 = 0o644;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Names tried before giving up when another file already holds one.
+const TEMP_ATTEMPTS: u32 = 16;
 
 /// Failure rendering or writing the applications-menu entry.
 #[derive(Debug)]
@@ -408,19 +412,21 @@ fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<(), DesktopEn
         path: parent.to_path_buf(),
         source,
     })?;
-    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let name = path.file_name().and_then(OsStr::to_str).unwrap_or("entry");
-    let temporary = parent.join(format!(".{name}.{}.{sequence}.tmp", std::process::id()));
-    let result = (|| {
-        fs::write(&temporary, contents).map_err(|source| DesktopEntryError::Write {
-            path: temporary.clone(),
+    let (temporary, mut file) =
+        create_temporary(parent, name, mode).map_err(|source| DesktopEntryError::Write {
+            path: parent.to_path_buf(),
             source,
         })?;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(mode)).map_err(|source| {
-            DesktopEntryError::Write {
-                path: temporary.clone(),
-                source,
-            }
+    let result = (|| {
+        let written = file
+            .write_all(contents)
+            // The umask may narrow the creation mode; the handle sets it exactly.
+            .and_then(|()| file.set_permissions(fs::Permissions::from_mode(mode)))
+            .and_then(|()| file.sync_all());
+        written.map_err(|source| DesktopEntryError::Write {
+            path: temporary.clone(),
+            source,
         })?;
         fs::rename(&temporary, path).map_err(|source| DesktopEntryError::Install {
             from: temporary.clone(),
@@ -432,6 +438,30 @@ fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<(), DesktopEn
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Creates a new temporary beside the target. `create_new` refuses any
+/// existing path, so a file or symlink planted at a guessed name is never
+/// written through.
+fn create_temporary(parent: &Path, name: &str, mode: u32) -> io::Result<(PathBuf, File)> {
+    for _ in 0..TEMP_ATTEMPTS {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(".{name}.{}.{sequence}.tmp", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no temporary name was available",
+    ))
 }
 
 fn remove_if_present(path: &Path) -> Result<(), DesktopEntryError> {
@@ -595,8 +625,24 @@ mod tests {
         let data = TempDir::new().expect("data home");
         let app_id = "io.example.App";
         let executable = data.path().join("Kestrel.AppImage");
+        // Symlinks planted at the next temporary names must not be written
+        // through; the write moves past them to a fresh name.
+        let outside = TempDir::new().expect("outside directory");
+        let target = outside.path().join("victim");
+        fs::write(&target, b"untouched").expect("target");
+        let applications = data.path().join("applications");
+        fs::create_dir_all(&applications).expect("applications directory");
+        let next = super::TEMP_SEQUENCE.load(std::sync::atomic::Ordering::Relaxed);
+        for sequence in next..next + 8 {
+            let planted = applications.join(format!(
+                ".{app_id}.desktop.{}.{sequence}.tmp",
+                std::process::id()
+            ));
+            std::os::unix::fs::symlink(&target, planted).expect("planted symlink");
+        }
         let entry_path =
             install(data.path(), app_id, "Kestrel", &executable).expect("entry installs");
+        assert_eq!(fs::read(&target).expect("target"), b"untouched");
         assert_eq!(
             entry_path,
             data.path().join(format!("applications/{app_id}.desktop"))
