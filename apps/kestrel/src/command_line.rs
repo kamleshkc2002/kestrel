@@ -64,6 +64,8 @@ pub enum CommandLineAction {
     RecordingStop,
     WipeClipboard,
     ClearClipboardSelection,
+    AddDesktopEntry,
+    RemoveDesktopEntry,
     ApplyPreset(FeaturePreset),
     UndoPreset,
     QuickToggle(QuickToggleId),
@@ -71,7 +73,7 @@ pub enum CommandLineAction {
     StopKeepAwake,
 }
 
-const FIXED_ACTIONS: [CommandLineAction; 42] = [
+const FIXED_ACTIONS: [CommandLineAction; 44] = [
     CommandLineAction::ShowWindow,
     CommandLineAction::OpenCommandBar,
     CommandLineAction::OpenQuickPanel,
@@ -102,6 +104,8 @@ const FIXED_ACTIONS: [CommandLineAction; 42] = [
     CommandLineAction::RecordingStop,
     CommandLineAction::WipeClipboard,
     CommandLineAction::ClearClipboardSelection,
+    CommandLineAction::AddDesktopEntry,
+    CommandLineAction::RemoveDesktopEntry,
     CommandLineAction::ApplyPreset(FeaturePreset::Essentials),
     CommandLineAction::ApplyPreset(FeaturePreset::Balanced),
     CommandLineAction::ApplyPreset(FeaturePreset::Everything),
@@ -168,6 +172,8 @@ impl CommandLineAction {
             Self::RecordingStop => "recording.stop",
             Self::WipeClipboard => "clipboard.wipe",
             Self::ClearClipboardSelection => "clipboard.clear-selection",
+            Self::AddDesktopEntry => "desktop-entry.add",
+            Self::RemoveDesktopEntry => "desktop-entry.remove",
             Self::ApplyPreset(FeaturePreset::Essentials) => "preset.essentials",
             Self::ApplyPreset(FeaturePreset::Balanced) => "preset.balanced",
             Self::ApplyPreset(FeaturePreset::Everything) => "preset.everything",
@@ -215,6 +221,8 @@ impl CommandLineAction {
             Self::RecordingStop => "Stop the current screen recording".to_owned(),
             Self::WipeClipboard => "Wipe clipboard history".to_owned(),
             Self::ClearClipboardSelection => "Clear the live clipboard selection".to_owned(),
+            Self::AddDesktopEntry => "Add Kestrel to the applications menu".to_owned(),
+            Self::RemoveDesktopEntry => "Remove Kestrel from the applications menu".to_owned(),
             Self::ApplyPreset(preset) => format!("Apply the {} preset", preset.label()),
             Self::UndoPreset => "Undo the last preset".to_owned(),
             Self::StartKeepAwake(KeepAwakeDuration::UntilStopped) => {
@@ -269,6 +277,8 @@ impl CommandLineAction {
             Self::ShowWindow
             | Self::RefreshCapabilities
             | Self::Quit
+            | Self::AddDesktopEntry
+            | Self::RemoveDesktopEntry
             | Self::ApplyPreset(_)
             | Self::UndoPreset => None,
             Self::OpenQuickPanel => None,
@@ -347,6 +357,8 @@ impl CommandLineAction {
             Self::ClearClipboardSelection => {
                 ApplicationCommand::Clipboard(ClipboardCommand::ClearSelection)
             }
+            Self::AddDesktopEntry => ApplicationCommand::AddDesktopEntry,
+            Self::RemoveDesktopEntry => ApplicationCommand::RemoveDesktopEntry,
             Self::ApplyPreset(preset) => ApplicationCommand::ApplyPreset(preset),
             Self::UndoPreset => ApplicationCommand::UndoPreset,
             Self::StartKeepAwake(duration) => ApplicationCommand::StartKeepAwake(duration),

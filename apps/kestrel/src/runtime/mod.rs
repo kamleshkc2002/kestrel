@@ -291,6 +291,8 @@ pub struct ApplicationRuntime {
     update_state_path: Option<PathBuf>,
     /// Setup was finished or skipped, so the consent card may show.
     setup_done: bool,
+    /// The applications-menu entry this AppImage can add for itself.
+    desktop_entry: crate::desktop_entry::DesktopEntry,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorTick {
@@ -717,8 +719,10 @@ impl ApplicationRuntime {
             update_service,
             update_state_path,
             setup_done,
+            desktop_entry: crate::desktop_entry::DesktopEntry::from_environment(),
         };
         runtime.configure_audio_preferences(&configuration.audio);
+        runtime.refresh_desktop_entry();
         Ok(runtime)
     }
 
@@ -1161,6 +1165,7 @@ impl ApplicationRuntime {
             self.previous_update_available(),
             SystemTime::now(),
         );
+        model.desktop_entry = self.desktop_entry_view_model();
         model
     }
 
@@ -1378,6 +1383,7 @@ mod audio;
 mod capture;
 mod clipboard;
 mod command_bar;
+mod desktop_entry;
 mod lifecycle;
 mod probes;
 mod processes;

@@ -1116,6 +1116,36 @@ fn build_overview_tools_group(
     group
 }
 
+/// The one-time offer to name Kestrel in launchers and screen-sharing dialogs.
+fn build_desktop_entry_banner(commands: &Sender<ApplicationCommand>) -> adw::PreferencesGroup {
+    let row = plain_row()
+        .title("Add Kestrel to the applications menu")
+        .subtitle("Gives Kestrel its icon in the dock and its name in screen-sharing dialogs.")
+        .build();
+    // A fresh Overview has no wider group, so the offer sets the column width
+    // that keeps its wording readable instead of wrapping one word per line.
+    row.set_size_request(560, -1);
+    row.set_hexpand(true);
+    let not_now = gtk::Button::with_label("Not now");
+    not_now.set_valign(Align::Center);
+    let sender = commands.clone();
+    not_now.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::DismissDesktopEntry);
+    });
+    row.add_suffix(&not_now);
+    let add = gtk::Button::with_label("Add");
+    add.set_valign(Align::Center);
+    add.add_css_class("suggested-action");
+    let sender = commands.clone();
+    add.connect_clicked(move |_| {
+        let _ = sender.try_send(ApplicationCommand::AddDesktopEntry);
+    });
+    row.add_suffix(&add);
+    let group = adw::PreferencesGroup::new();
+    group.add(&row);
+    group
+}
+
 /// A phase-dependent row: the Overview banner and the Settings install row.
 fn build_update_banner(
     phase: &UpdatePhaseViewModel,
@@ -1309,6 +1339,9 @@ fn build_page(
         fill_update_banner(&update_banner, view_model.updates.banner.as_ref(), commands);
         body.append(&update_banner);
         build.update_banner_container = Some(update_banner);
+        if view_model.desktop_entry.banner {
+            body.append(&build_desktop_entry_banner(commands));
+        }
         let heading = gtk::Label::new(Some(kestrel_core::APPLICATION_NAME));
         heading.add_css_class("title-1");
         heading.set_halign(Align::Start);

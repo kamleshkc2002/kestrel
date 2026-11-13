@@ -35,6 +35,14 @@ The Flatpak build runs in a sandbox with a small set of permissions. Those permi
 
 Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kestrel --command <id>`; see [Configuration](configuration.md#flatpak).
 
+## AppImage integration
+
+- A downloaded AppImage runs without an installation. Its tray entry carries the logo at 16, 22, 24, 32, and 48 pixels, so the panel shows Kestrel even though the icon lives inside the mount, and adds the bundled icon theme when the runtime provides `APPDIR`.
+- When no desktop entry for Kestrel's application ID exists, Overview offers once: **Add Kestrel to the applications menu** writes `$XDG_DATA_HOME/applications/<app-id>.desktop` with `Exec` and `TryExec` pointing at the AppImage, and its icon under `$XDG_DATA_HOME/icons/hicolor/scalable/apps/`. The docks and screen-sharing dialogs then show Kestrel's icon and name. **Not now** remembers the answer and does not ask again.
+- Settings → Applications menu adds or removes the entry later. Removing it removes the entry and icon Kestrel wrote for the AppImage, and only those.
+- A self-update replaces the AppImage at the same path, so the entry keeps working. If the AppImage moves, Kestrel rewrites its own entry at the next start; an entry another installation wrote is never changed.
+- A Flatpak or an installed copy never offers or writes this entry.
+
 ## Monitoring — `system.monitor`
 
 - **Default:** disabled; Essentials enables it.

@@ -952,6 +952,9 @@ enum ControllerOperation {
     MarkWhatsNewRead,
     SetUpdateCheck(kestrel_core::UpdateCheck),
     DismissUpdate,
+    AddDesktopEntry,
+    DismissDesktopEntry,
+    RemoveDesktopEntry,
     SetMonitorReadoutVisible {
         readout: MonitorReadout,
         visible: bool,
@@ -3894,6 +3897,24 @@ impl ControllerState {
                     return Err("There is no update to dismiss".to_owned());
                 }
             }
+            ControllerOperation::AddDesktopEntry => {
+                self.runtime.add_desktop_entry().map_err(|error| {
+                    format!("Could not add Kestrel to the applications menu: {error}")
+                })?;
+                "Kestrel is now in the applications menu".to_owned()
+            }
+            ControllerOperation::DismissDesktopEntry => {
+                self.runtime.dismiss_desktop_entry().map_err(|error| {
+                    format!("Could not hide the applications-menu offer: {error}")
+                })?;
+                "Kestrel will not be added to the applications menu".to_owned()
+            }
+            ControllerOperation::RemoveDesktopEntry => {
+                self.runtime.remove_desktop_entry().map_err(|error| {
+                    format!("Could not remove Kestrel from the applications menu: {error}")
+                })?;
+                "Kestrel was removed from the applications menu".to_owned()
+            }
             ControllerOperation::SetMonitorReadoutVisible { readout, visible } => {
                 let mut candidate = self.configuration.clone();
                 if visible {
@@ -5713,6 +5734,18 @@ fn dispatch_commands(
                 ApplicationCommand::DismissUpdate => controller.request_operation(
                     ControllerOperation::DismissUpdate,
                     "kestrel-update-dismiss",
+                ),
+                ApplicationCommand::AddDesktopEntry => controller.request_operation(
+                    ControllerOperation::AddDesktopEntry,
+                    "kestrel-desktop-entry-add",
+                ),
+                ApplicationCommand::DismissDesktopEntry => controller.request_operation(
+                    ControllerOperation::DismissDesktopEntry,
+                    "kestrel-desktop-entry-dismiss",
+                ),
+                ApplicationCommand::RemoveDesktopEntry => controller.request_operation(
+                    ControllerOperation::RemoveDesktopEntry,
+                    "kestrel-desktop-entry-remove",
                 ),
                 ApplicationCommand::DownloadUpdate => controller.request_update_download(),
                 ApplicationCommand::CancelUpdateDownload => controller.cancel_update_download(),
