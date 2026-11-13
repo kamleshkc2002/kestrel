@@ -366,6 +366,8 @@ fn quote_exec_argument(value: &str) -> String {
     quoted.push('"');
     for character in value.chars() {
         match character {
+            // A lone `%` starts a field code; `%%` is a literal percent sign.
+            '%' => quoted.push_str("%%"),
             '"' | '`' | '$' | '\\' => {
                 quoted.push('\\');
                 quoted.push(character);
@@ -379,9 +381,10 @@ fn quote_exec_argument(value: &str) -> String {
 
 fn parse_exec_argument(value: &str) -> Option<String> {
     let value = value.trim_start();
-    if let Some(rest) = value.strip_prefix('"') {
+    let raw = if let Some(rest) = value.strip_prefix('"') {
         let mut parsed = String::new();
         let mut escaped = false;
+        let mut closed = false;
         for character in rest.chars() {
             if escaped {
                 parsed.push(character);
@@ -389,17 +392,20 @@ fn parse_exec_argument(value: &str) -> Option<String> {
             } else if character == '\\' {
                 escaped = true;
             } else if character == '"' {
-                return Some(parsed);
+                closed = true;
+                break;
             } else {
                 parsed.push(character);
             }
         }
-        return None;
-    }
-    value
-        .split_whitespace()
-        .next()
-        .map(|argument| argument.to_owned())
+        if !closed {
+            return None;
+        }
+        parsed
+    } else {
+        value.split_whitespace().next()?.to_owned()
+    };
+    Some(raw.replace("%%", "%"))
 }
 
 fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> Result<(), DesktopEntryError> {
@@ -575,21 +581,22 @@ mod tests {
     #[test]
     fn a_rendered_entry_quotes_the_appimage_and_names_it_for_launchers() {
         let app_id = "io.example.App";
-        let executable = Path::new("/home/user/Apps/Kestrel build \"stable\"/Kestrel.AppImage");
+        let executable =
+            Path::new("/home/user/Apps/Kestrel 100% build \"stable\"/Kestrel.AppImage");
         let entry = render_entry(app_id, "Kestrel", executable).expect("entry renders");
         assert!(entry.contains("Type=Application"));
         assert!(entry.contains("Icon=io.example.App"));
         assert!(entry.contains("StartupWMClass=io.example.App"));
         assert!(entry.contains("X-Kestrel-AppImage=true"));
-        assert!(
-            entry
-                .contains("Exec=\"/home/user/Apps/Kestrel build \\\"stable\\\"/Kestrel.AppImage\"")
-        );
         assert!(entry.contains(
-            "Exec=\"/home/user/Apps/Kestrel build \\\"stable\\\"/Kestrel.AppImage\" --command app.quit"
+            "Exec=\"/home/user/Apps/Kestrel 100%% build \\\"stable\\\"/Kestrel.AppImage\""
+        ));
+        assert!(entry.contains(
+            "Exec=\"/home/user/Apps/Kestrel 100%% build \\\"stable\\\"/Kestrel.AppImage\" --command app.quit"
         ));
         assert!(
-            entry.contains("TryExec=/home/user/Apps/Kestrel build \"stable\"/Kestrel.AppImage")
+            entry
+                .contains("TryExec=/home/user/Apps/Kestrel 100% build \"stable\"/Kestrel.AppImage")
         );
         assert_eq!(managed_executable(&entry), Some(executable.to_path_buf()));
         assert!(is_managed(&entry));
