@@ -15,6 +15,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
 
 /// The search path and entry layout are part of the freedesktop desktop-entry
@@ -28,6 +30,9 @@ const ENTRY_MODE: u32 = 0o644;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Names tried before giving up when another file already holds one.
 const TEMP_ATTEMPTS: u32 = 16;
+/// How long a cache refresh tool may run before it is stopped.
+const CACHE_TOOL_TIMEOUT: Duration = Duration::from_secs(5);
+const CACHE_TOOL_POLL: Duration = Duration::from_millis(25);
 
 /// Failure rendering or writing the applications-menu entry.
 #[derive(Debug)]
@@ -481,8 +486,9 @@ fn remove_if_present(path: &Path) -> Result<(), DesktopEntryError> {
     }
 }
 
-/// Rebuilds the launcher and icon caches when those tools exist; an absent
-/// tool only means the desktop refreshes the entry on its own schedule.
+/// Rebuilds the launcher and icon caches when those tools exist; an absent,
+/// failing, or slow tool only means the desktop refreshes the entry on its
+/// own schedule, so none of them fails the write.
 fn refresh_caches(applications: &Path, icon_theme: &Path) {
     for (tool, arguments) in [
         (
@@ -494,12 +500,32 @@ fn refresh_caches(applications: &Path, icon_theme: &Path) {
             vec![OsStr::new("-q"), OsStr::new("-t"), icon_theme.as_os_str()],
         ),
     ] {
-        let _ = Command::new(tool)
+        let spawned = Command::new(tool)
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .spawn();
+        if let Ok(child) = spawned {
+            wait_bounded(child, CACHE_TOOL_TIMEOUT);
+        }
+    }
+}
+
+/// Waits for `child` until `timeout`, then kills and reaps it. Returns whether
+/// it exited on its own.
+fn wait_bounded(mut child: std::process::Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) if Instant::now() < deadline => thread::sleep(CACHE_TOOL_POLL),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
     }
 }
 
@@ -680,5 +706,29 @@ mod tests {
         fs::write(&entry, "[Desktop Entry]\nName=Other\n").expect("other entry");
         assert!(!remove_managed(data.path(), "io.example.App").expect("removal checks"));
         assert!(entry.exists());
+    }
+
+    #[test]
+    fn a_stuck_cache_tool_is_stopped_at_its_bound_and_reaped() {
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let quick = Command::new("true")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("true runs");
+        assert!(super::wait_bounded(quick, Duration::from_secs(5)));
+
+        let stuck = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("sleep runs");
+        let pid = stuck.id();
+        let started = Instant::now();
+        assert!(!super::wait_bounded(stuck, Duration::from_millis(100)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Reaped: no zombie remains under this process.
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
     }
 }
