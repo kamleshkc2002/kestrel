@@ -606,41 +606,11 @@ pub(super) fn add_snippet_limits_group(
     });
     snippet_group.add(&provider);
 
-    let timing_labels = kestrel::SnippetExpansionTiming::ALL
-        .iter()
-        .map(|timing| timing.label())
-        .collect::<Vec<_>>();
-    let timing = adw::ComboRow::builder()
-        .title("Expansion timing")
-        .subtitle(
-            "Delimiter expansion needs a key-capture provider, which is not available yet; \
-             manual insertion always works when a provider exists.",
-        )
-        .subtitle_lines(0)
-        .model(&gtk::StringList::new(&timing_labels))
-        .selected(
-            kestrel::SnippetExpansionTiming::ALL
-                .iter()
-                .position(|candidate| *candidate == snippets.policy.expansion_timing)
-                .unwrap_or(0) as u32,
-        )
-        .build();
-    let sender = commands.clone();
-    timing.connect_selected_notify(move |row| {
-        let timing = kestrel::SnippetExpansionTiming::ALL
-            .get(row.selected() as usize)
-            .copied()
-            .unwrap_or(kestrel::SnippetExpansionTiming::Manual);
-        let _ = sender.try_send(ApplicationCommand::SetSnippetExpansionTiming(timing));
-    });
-    snippet_group.add(&timing);
-
     for row in [
         content.upcast_ref::<gtk::Widget>().clone(),
         clipboard_variable.upcast_ref::<gtk::Widget>().clone(),
         timeout.upcast_ref::<gtk::Widget>().clone(),
         provider.clone().upcast(),
-        timing.clone().upcast(),
     ] {
         filter_rows.push((
             row,

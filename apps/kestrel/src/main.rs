@@ -191,6 +191,7 @@ struct ControllerState {
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
+    snippet_draft_error: Option<kestrel::SnippetDraftError>,
     command_query: String,
     command_results: Vec<kestrel_services::command_bar::CommandResult>,
 }
@@ -210,6 +211,7 @@ impl ControllerState {
                 query: &self.snippet_query,
                 matches: &self.snippet_matches,
                 draft: self.snippet_draft.as_ref(),
+                error: self.snippet_draft_error.as_ref(),
             },
             CommandBarQuery {
                 query: &self.command_query,
@@ -1042,7 +1044,6 @@ enum ControllerOperation {
     SnippetNew,
     SetSnippetLimit(SnippetLimit),
     SetSnippetProvider(SnippetProviderPreference),
-    SetSnippetExpansionTiming(kestrel::SnippetExpansionTiming),
     CommandQuery(String),
     CommandBar(CommandBarCommand),
     ResetCommandRanking,
@@ -1331,6 +1332,7 @@ impl ApplicationController {
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
+                snippet_draft_error: None,
                 command_query: String::new(),
                 command_results: Vec::new(),
             })),
@@ -4706,10 +4708,19 @@ impl ControllerState {
                     let label = snippet.name.clone();
                     match self.runtime.save_snippet(snippet) {
                         Ok(()) => {
+                            self.snippet_draft_error = None;
                             self.refresh_snippet_matches();
                             format!("Snippet \"{label}\" saved")
                         }
-                        Err(error) => format!("Snippet was not saved: {error}"),
+                        Err(kestrel::SnippetSaveError::Invalid(error)) => {
+                            self.snippet_draft_error =
+                                Some(kestrel::SnippetDraftError::from_error(&error));
+                            format!("Snippet was not saved: {error}")
+                        }
+                        Err(error @ kestrel::SnippetSaveError::Storage(_)) => {
+                            self.snippet_draft_error = None;
+                            format!("Snippet was not saved: {}", error.message())
+                        }
                     }
                 }
                 SnippetCommand::Delete(name) => match self.runtime.delete_snippet(&name) {
@@ -4721,6 +4732,7 @@ impl ControllerState {
                             .is_some_and(|draft| draft.name == name)
                         {
                             self.snippet_draft = None;
+                            self.snippet_draft_error = None;
                         }
                         format!("Snippet \"{name}\" deleted")
                     }
@@ -4745,6 +4757,7 @@ impl ControllerState {
                             trigger: snippet.trigger.clone().unwrap_or_default(),
                             content: snippet.content.clone(),
                         });
+                        self.snippet_draft_error = None;
                         format!("Editing \"{name}\"")
                     }
                     None => format!("No snippet named \"{name}\" is stored"),
@@ -4752,6 +4765,7 @@ impl ControllerState {
             }
             ControllerOperation::SnippetNew => {
                 self.snippet_draft = Some(SnippetDraft::default());
+                self.snippet_draft_error = None;
                 "New snippet editor opened".to_owned()
             }
             ControllerOperation::SetSnippetLimit(limit) => {
@@ -4779,15 +4793,6 @@ impl ControllerState {
                     candidate,
                     config_path,
                     format!("Insertion provider preference: {}", preference.label()),
-                )?
-            }
-            ControllerOperation::SetSnippetExpansionTiming(timing) => {
-                let mut candidate = self.configuration.clone();
-                candidate.snippets.expansion_timing = timing;
-                self.commit_configuration(
-                    candidate,
-                    config_path,
-                    format!("Expansion timing: {}", timing.label()),
                 )?
             }
             ControllerOperation::CommandQuery(query) => {
@@ -6109,11 +6114,6 @@ fn dispatch_commands(
                     ControllerOperation::SetSnippetProvider(preference),
                     "kestrel-snippet-provider",
                 ),
-                ApplicationCommand::SetSnippetExpansionTiming(timing) => controller
-                    .request_operation(
-                        ControllerOperation::SetSnippetExpansionTiming(timing),
-                        "kestrel-snippet-expansion",
-                    ),
                 ApplicationCommand::CommandQuery(query) => controller.request_command_operation(
                     ControllerOperation::CommandQuery(query),
                     "kestrel-command-query",

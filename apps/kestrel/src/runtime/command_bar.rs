@@ -465,6 +465,7 @@ impl ApplicationRuntime {
                     )),
                 )
                 .with_keywords(["snippet", "text"])
+                .with_trigger(snippet.trigger.clone())
             })
             .collect()
     }

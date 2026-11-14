@@ -95,7 +95,7 @@ impl CapabilityEvidence {
 }
 
 /// The current version of Kestrel's non-sensitive configuration schema.
-pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_CONFIGURATION_SCHEMA_VERSION: u32 = 5;
 
 pub const MIN_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 250;
 pub const MAX_MONITOR_REFRESH_INTERVAL_MILLIS: u64 = 60_000;
@@ -2249,33 +2249,6 @@ pub struct SnippetConfiguration {
     pub insert_timeout_millis: u64,
     #[serde(default)]
     pub preferred_provider: SnippetProviderPreference,
-    #[serde(default)]
-    pub expansion_timing: SnippetExpansionTiming,
-}
-
-/// Trigger expansion needs a key-capture provider; manual insertion remains available.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SnippetExpansionTiming {
-    /// Insert only when the user asks.
-    #[default]
-    Manual,
-    /// Expand when a trigger is followed by a delimiter in the focused window.
-    Delimiter,
-}
-
-impl SnippetExpansionTiming {
-    pub const ALL: [SnippetExpansionTiming; 2] = [
-        SnippetExpansionTiming::Manual,
-        SnippetExpansionTiming::Delimiter,
-    ];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Manual => "Manual insertion only",
-            Self::Delimiter => "Expand on a delimiter (needs key capture)",
-        }
-    }
 }
 
 /// `Auto` selects input-device providers through an explicit preference.
@@ -2335,7 +2308,6 @@ impl Default for SnippetConfiguration {
             clipboard_variable_bytes: DEFAULT_SNIPPET_CLIPBOARD_BYTES,
             insert_timeout_millis: DEFAULT_SNIPPET_INSERT_TIMEOUT_MILLIS,
             preferred_provider: SnippetProviderPreference::default(),
-            expansion_timing: SnippetExpansionTiming::default(),
         }
     }
 }
@@ -2558,8 +2530,8 @@ mod tests {
         MAX_TEMPERATURE_ALERT_THRESHOLD_CELSIUS, MIN_ALERT_SUSTAIN_SAMPLES,
         MIN_CLIPBOARD_ITEM_BYTES, MIN_CLIPBOARD_PINNED_MAX_AGE_DAYS,
         MIN_MONITOR_REFRESH_INTERVAL_MILLIS, MIN_SNIPPET_CLIPBOARD_BYTES, MonitorReadout, Snippet,
-        SnippetConfiguration, SnippetError, SnippetExpansionTiming, SnippetProviderPreference,
-        SnippetVariable, UNAMPLIFIED_AUDIO_VOLUME_PERCENT, variable_tokens,
+        SnippetConfiguration, SnippetError, SnippetProviderPreference, SnippetVariable,
+        UNAMPLIFIED_AUDIO_VOLUME_PERCENT, variable_tokens,
     };
 
     #[test]
@@ -3061,12 +3033,6 @@ mod tests {
             SnippetProviderPreference::Ydotool.executable(),
             Some("ydotool")
         );
-        assert_eq!(
-            SnippetConfiguration::default().expansion_timing,
-            SnippetExpansionTiming::Manual,
-            "trigger expansion is opt-in because it needs key capture"
-        );
-        assert_eq!(SnippetExpansionTiming::ALL.len(), 2);
     }
 
     #[test]

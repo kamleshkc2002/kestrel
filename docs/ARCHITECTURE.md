@@ -445,11 +445,9 @@ only used when the configuration names it. With no verified provider the
 capability report is Limited with the remediation: the library and editor run,
 and the service refuses to insert, so the feature cannot type text through an
 unvalidated mechanism. A provider run is bounded by a timeout, receives its
-payload as one argument, and reports only a structured outcome.
-
-Trigger expansion timing is stored as user intent and currently reported as
-inactive: delimiter expansion requires a key-capture provider, which the current
-feature set does not include, so only manual insertion inserts text.
+payload as one argument, and reports only a structured outcome. Only a request
+from the window or the command bar inserts text; triggers never expand while the
+user types in another application.
 
 ### 5.9 Command ranking, providers, and bounded actions
 

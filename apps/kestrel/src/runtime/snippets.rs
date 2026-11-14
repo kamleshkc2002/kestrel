@@ -2,6 +2,23 @@
 
 use super::*;
 
+/// Why a snippet was not stored: the definition was rejected, or the private
+/// file could not be written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnippetSaveError {
+    Invalid(kestrel_core::SnippetError),
+    Storage(String),
+}
+
+impl SnippetSaveError {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Invalid(error) => error.to_string(),
+            Self::Storage(reason) => reason.clone(),
+        }
+    }
+}
+
 impl ApplicationRuntime {
     pub(super) fn build_snippet_service(
         configuration: &ApplicationConfiguration,
@@ -75,12 +92,13 @@ impl ApplicationRuntime {
     }
 
     /// Writes a candidate before replacing live state, so failed saves stay inert.
-    pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), String> {
+    pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), SnippetSaveError> {
         let mut candidate = self.snippet_library.clone();
         candidate
             .upsert(snippet, self.snippet_policy)
-            .map_err(|error| error.to_string())?;
-        self.persist_snippets(&candidate)?;
+            .map_err(SnippetSaveError::Invalid)?;
+        self.persist_snippets(&candidate)
+            .map_err(SnippetSaveError::Storage)?;
         self.snippet_library = candidate;
         self.rebuild_command_index();
         Ok(())

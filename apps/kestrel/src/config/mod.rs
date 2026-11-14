@@ -156,6 +156,7 @@ fn parse(contents: &str) -> Result<LoadedConfiguration, ConfigurationLoadError> 
         0 => migrate::migrate_v0(document),
         1 | 2 => migrate::parse_v2(document),
         3 => migrate::parse_v3(document),
+        4 => migrate::parse_v4(document),
         CURRENT_CONFIGURATION_SCHEMA_VERSION => migrate::parse_current(document),
         version => Err(ConfigurationLoadError::UnsupportedSchemaVersion(version)),
     }
@@ -218,7 +219,7 @@ mod tests {
             .expect("valid feature ID");
         configuration.ui.appearance = AppearancePreference::Light;
         let exported = export_string(&configuration).expect("configuration exports");
-        assert!(exported.contains("schema_version = 4"));
+        assert!(exported.contains("schema_version = 5"));
         assert!(exported.contains("[features.\"audio.mixer\"]"));
         assert!(exported.contains("[ui]"));
         assert!(exported.contains("[startup]"));
@@ -243,7 +244,7 @@ mod tests {
         save(&path, &configuration).expect("configuration saves");
         let saved = std::fs::read_to_string(&path).expect("configuration is readable");
         std::fs::remove_dir_all(directory).expect("temporary directory is removable");
-        assert!(saved.contains("schema_version = 4"));
+        assert!(saved.contains("schema_version = 5"));
         assert!(saved.contains("[features.\"audio.mixer\"]"));
         assert!(!saved.contains("token"));
     }

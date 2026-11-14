@@ -128,6 +128,20 @@ pub(super) fn parse_v3(
     Ok(loaded)
 }
 
+/// Expansion timing needed key capture that Kestrel never uses, so schema 5
+/// drops it; old files keep every other snippet setting.
+pub(super) fn parse_v4(
+    mut document: toml::Table,
+) -> Result<LoadedConfiguration, ConfigurationLoadError> {
+    if let Some(snippets) = document
+        .get_mut("snippets")
+        .and_then(toml::Value::as_table_mut)
+    {
+        snippets.remove("expansion_timing");
+    }
+    parse_current(document)
+}
+
 /// Older builds wrote the default `minimize` to every file, so it cannot be
 /// told apart from a deliberate choice; those files ask once instead.
 fn ask_for_legacy_minimize(loaded: &mut LoadedConfiguration) {
@@ -141,11 +155,10 @@ mod tests {
     use kestrel_core::{
         AppearancePreference, AudioDisconnectPolicy, AudioOutputSwitch,
         CURRENT_CONFIGURATION_SCHEMA_VERSION, CaptureAfterScreenshot, ClipboardLayout, CloseAction,
-        MonitorReadout, NetworkRateUnit, SnippetExpansionTiming, SnippetProviderPreference,
-        UpdateCheck,
+        MonitorReadout, NetworkRateUnit, SnippetProviderPreference, UpdateCheck,
     };
 
-    use crate::config::parse;
+    use crate::config::{parse, save};
 
     #[test]
     fn migrates_legacy_enabled_features() {
@@ -406,10 +419,6 @@ autostart = "yes"
             SnippetProviderPreference::Wtype
         );
         assert_eq!(
-            v3.snippets.expansion_timing,
-            SnippetExpansionTiming::Delimiter
-        );
-        assert_eq!(
             v3.quick_panel.favorites,
             ["window.show", "clipboard.quick-paste"]
         );
@@ -486,5 +495,26 @@ autostart = "yes"
         assert_eq!(v4.shelf.max_text_megabytes, 2);
         assert_eq!(v4.shelf.max_image_megabytes, 32);
         assert_eq!(v4.shelf.max_age_hours, 48);
+        assert_eq!(v4.snippets.max_content_bytes, 131_072);
+        assert_eq!(v4.snippets.clipboard_variable_bytes, 8_192);
+        assert_eq!(v4.snippets.insert_timeout_millis, 5_000);
+        assert_eq!(
+            v4.snippets.preferred_provider,
+            SnippetProviderPreference::Wtype
+        );
+
+        // Schema 4 still wrote expansion_timing; the migrated file drops it.
+        let path = std::env::temp_dir().join(format!(
+            "kestrel-migrated-snippets-{}.toml",
+            std::process::id()
+        ));
+        save(&path, &v4).expect("the migrated configuration saves");
+        let saved = std::fs::read_to_string(&path).expect("the saved configuration is readable");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            !saved.contains("expansion_timing"),
+            "the retired snippet key is not written again"
+        );
+        assert!(saved.contains("max_content_bytes = 131072"));
     }
 }

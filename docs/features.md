@@ -81,7 +81,8 @@ Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kest
 ## Snippets — `snippets.text`
 
 - **Default:** disabled.
-- **Configuration:** `[snippets] max_content_bytes` (1 B–1 MiB; default 64 KiB), `clipboard_variable_bytes` (64 B–64 KiB; default 4 KiB), `insert_timeout_millis` (250–10,000; default 2,000), `preferred_provider` (`auto`, `wtype`, `ydotool`, or `xdotool`; default `auto`), and `expansion_timing` (`manual` or `delimiter`; default `manual`).
+- **Configuration:** `[snippets] max_content_bytes` (1 B–1 MiB; default 64 KiB), `clipboard_variable_bytes` (64 B–64 KiB; default 4 KiB), `insert_timeout_millis` (250–10,000; default 2,000), and `preferred_provider` (`auto`, `wtype`, `ydotool`, or `xdotool`; default `auto`).
+- A trigger is an optional unique code that starts with a symbol, such as `;addr`. Typing it in the command bar finds the snippet, and Enter inserts it. A trigger never expands while you type in another app.
 - Snippets are stored atomically in a mode-0600 file in a mode-0700 directory; files keep the literal `{{...}}` variables.
 - The library and editor work without an insertion provider. Insert needs `wtype` (Wayland) or `xdotool` (X11); until one is found, the feature shows as limited and Insert stays greyed out with the reason.
 - Alt+Up and Alt+Down move the current line or selected lines in the snippet editor; Ctrl+Z undoes a move.

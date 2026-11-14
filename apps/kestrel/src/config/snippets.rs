@@ -8,7 +8,6 @@ use kestrel_core::{
 use super::{LoadedConfiguration, fields::Section};
 
 const PROVIDER_MESSAGE: &str = "The insertion provider preference is invalid and was ignored";
-const TIMING_MESSAGE: &str = "The expansion timing value is invalid and was ignored";
 const BOUND_PREFIX: &str = "The value must be";
 
 pub(super) fn parse_snippets(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -42,11 +41,6 @@ pub(super) fn parse_snippets(loaded: &mut LoadedConfiguration, value: Option<&to
         PROVIDER_MESSAGE,
         &mut snippets.preferred_provider,
     );
-    section.read_detailed(
-        "expansion_timing",
-        TIMING_MESSAGE,
-        &mut snippets.expansion_timing,
-    );
     section.finish(loaded);
 }
 
@@ -57,7 +51,7 @@ mod tests {
     use crate::config::{export_string, parse};
 
     #[test]
-    fn snippets_table_parses_bounds_provider_and_timing() {
+    fn snippets_table_parses_bounds_and_provider() {
         let loaded = parse(
             r#"
 schema_version = 3
@@ -66,7 +60,6 @@ max_content_bytes = 4096
 clipboard_variable_bytes = 128
 insert_timeout_millis = 750
 preferred_provider = "xdotool"
-expansion_timing = "delimiter"
 "#,
         )
         .expect("document itself is valid TOML");
@@ -78,10 +71,6 @@ expansion_timing = "delimiter"
         assert_eq!(
             snippets.preferred_provider,
             kestrel_core::SnippetProviderPreference::Xdotool
-        );
-        assert_eq!(
-            snippets.expansion_timing,
-            kestrel_core::SnippetExpansionTiming::Delimiter
         );
         assert!(loaded.warnings.is_empty());
         assert_eq!(loaded.configuration.validate(), Ok(()));
@@ -97,7 +86,6 @@ max_content_bytes = 0
 clipboard_variable_bytes = 0
 insert_timeout_millis = 1
 preferred_provider = "telepathy"
-expansion_timing = "vibes"
 "#,
         )
         .expect("document itself is valid TOML");
@@ -111,7 +99,6 @@ expansion_timing = "vibes"
             "snippets.clipboard_variable_bytes",
             "snippets.insert_timeout_millis",
             "snippets.preferred_provider",
-            "snippets.expansion_timing",
         ] {
             assert!(
                 loaded

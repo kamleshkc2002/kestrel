@@ -11,11 +11,55 @@ pub struct SnippetDraft {
     pub content: String,
 }
 
+/// Editor field a rejected save points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnippetDraftField {
+    Name,
+    Folder,
+    Trigger,
+    Content,
+}
+
+/// A rejected save shown beside the field that caused it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnippetDraftError {
+    pub field: SnippetDraftField,
+    pub message: String,
+}
+
+impl SnippetDraftError {
+    pub fn from_error(error: &kestrel_core::SnippetError) -> Self {
+        use kestrel_core::SnippetError;
+        let field = match error {
+            SnippetError::EmptyName
+            | SnippetError::NameTooLong { .. }
+            | SnippetError::DuplicateName { .. } => SnippetDraftField::Name,
+            SnippetError::EmptyFolder | SnippetError::FolderTooLong { .. } => {
+                SnippetDraftField::Folder
+            }
+            SnippetError::EmptyTrigger
+            | SnippetError::TriggerTooLong { .. }
+            | SnippetError::TriggerContainsWhitespace { .. }
+            | SnippetError::DuplicateTrigger { .. }
+            | SnippetError::TriggerNotDelimited { .. } => SnippetDraftField::Trigger,
+            SnippetError::ContentTooLong { .. }
+            | SnippetError::TooManyVariables { .. }
+            | SnippetError::UnknownVariable { .. }
+            | SnippetError::UnknownSnippet { .. } => SnippetDraftField::Content,
+        };
+        Self {
+            field,
+            message: error.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SnippetQuery<'a> {
     pub query: &'a str,
     pub matches: &'a [SnippetMatch],
     pub draft: Option<&'a SnippetDraft>,
+    pub error: Option<&'a SnippetDraftError>,
 }
 
 pub(crate) const SNIPPETS_OFF: &str = "Snippets are off. Enable snippets.text in the Feature Hub.";
@@ -30,12 +74,12 @@ pub(crate) struct SnippetsPresentation<'a> {
     /// Why the feature is not running, when it is not.
     pub stopped_reason: Option<String>,
     pub directory: Option<String>,
-    pub expansion_timing: SnippetExpansionTiming,
     /// Configured preference, which may differ from discovery.
     pub provider_preference: SnippetProviderPreference,
     pub search_query: &'a str,
     pub matches: &'a [SnippetMatch],
     pub draft: Option<&'a SnippetDraft>,
+    pub draft_error: Option<&'a SnippetDraftError>,
     pub warnings: &'a [ConfigurationWarning],
 }
 
@@ -46,11 +90,11 @@ pub struct SnippetsViewModel {
     pub insertion_status: String,
     pub insertion_available: bool,
     pub directory: Option<String>,
-    pub expansion_label: &'static str,
     pub search_query: String,
     pub items: Vec<SnippetItemViewModel>,
     pub total: usize,
     pub draft: Option<SnippetDraftViewModel>,
+    pub draft_error: Option<SnippetDraftError>,
     pub warnings: Vec<ConfigurationWarningViewModel>,
     pub policy: SnippetPolicyViewModel,
     pub turn_on: Option<TurnOnViewModel>,
@@ -80,7 +124,6 @@ pub struct SnippetPolicyViewModel {
     pub clipboard_variable_bytes: u32,
     pub insert_timeout_millis: u64,
     pub preferred_provider: SnippetProviderPreference,
-    pub expansion_timing: SnippetExpansionTiming,
     pub bounds: SnippetBoundsViewModel,
 }
 
@@ -101,7 +144,6 @@ impl SnippetsViewModel {
             clipboard_variable_bytes: presentation.policy.clipboard_variable_bytes,
             insert_timeout_millis: presentation.policy.insert_timeout.as_millis() as u64,
             preferred_provider: presentation.provider_preference,
-            expansion_timing: presentation.expansion_timing,
             bounds: SnippetBoundsViewModel {
                 min_content_bytes: kestrel_core::MIN_SNIPPET_CONTENT_BYTES,
                 max_content_bytes: kestrel_core::MAX_SNIPPET_CONTENT_BYTES,
@@ -160,7 +202,6 @@ impl SnippetsViewModel {
             insertion_status,
             insertion_available,
             directory: presentation.directory,
-            expansion_label: presentation.expansion_timing.label(),
             search_query: presentation.search_query.to_owned(),
             items,
             total,
@@ -171,6 +212,7 @@ impl SnippetsViewModel {
                 content: draft.content.clone(),
                 is_new: draft.name.trim().is_empty(),
             }),
+            draft_error: presentation.draft_error.cloned(),
             warnings: presentation
                 .warnings
                 .iter()

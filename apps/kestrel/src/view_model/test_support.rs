@@ -207,11 +207,11 @@ pub(crate) fn snippet_presentation<'a>(
         unavailable_reason: None,
         stopped_reason: None,
         directory: Some("/tmp/example/kestrel".to_string()),
-        expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
         provider_preference: kestrel_core::SnippetProviderPreference::Auto,
         search_query: "",
         matches,
         draft: None,
+        draft_error: None,
         warnings: &[],
     }
 }
