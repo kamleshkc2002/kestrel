@@ -305,9 +305,10 @@ impl RecordingViewModel {
             RecordingPhase::Completed { take, note } => {
                 model.dismissable = true;
                 model.warning = note.is_some();
+                let saved = format!("Saved {} in {}.", take.name, model.folder.display());
                 model.status = match note {
-                    Some(note) => format!("Saved {}. {}", take.name, note.message),
-                    None => format!("Saved {}.", take.name),
+                    Some(note) => format!("{saved} {}", note.message),
+                    None => saved,
                 };
             }
             RecordingPhase::Failed { error } => {

@@ -23,3 +23,7 @@ text = "A downloaded AppImage shows Kestrel's logo in the tray, and can add itse
 [[change]]
 feature = "kestrel"
 text = "Open folder, Play, and the other buttons that open a file or folder work again on desktops whose portal refuses file links."
+
+[[change]]
+feature = "capture.recording"
+text = "A finished recording says which folder it was saved in."
