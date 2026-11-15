@@ -225,7 +225,19 @@ impl ApplicationRuntime {
             clipboard: clipboard.as_deref(),
             clipboard_available,
         };
-        let backend = self.snippet_service.backend_mut()?;
+        // A configuration change can drop the provider while the handoff waits.
+        let Some(backend) = self.snippet_service.backend_mut() else {
+            let reason = self
+                .snippet_service
+                .unavailable_reason()
+                .unwrap_or("no verified insertion provider")
+                .to_owned();
+            operation.fail(kestrel_services::paste::PasteFailure::new(
+                None,
+                reason.clone(),
+            ));
+            return Some(Err(SnippetServiceError::ExpansionUnavailable { reason }));
+        };
         Some(
             operation
                 .send(&context, backend)
@@ -265,7 +277,7 @@ mod tests {
         ));
     }
     #[test]
-    fn turning_snippets_off_cancels_a_pending_insertion_without_typing() {
+    fn a_pending_insertion_ends_without_typing_when_snippets_stop_or_lose_their_provider() {
         use kestrel_core::SnippetProviderPreference;
         use kestrel_platform::snippets::{
             ExecutableInsertionBackend, GraphicalSession, discover_insertion_provider_with,
@@ -299,7 +311,7 @@ mod tests {
         runtime.start();
         assert!(runtime.snippets_running());
         runtime.snippet_service =
-            SnippetInsertionService::new(ExecutableInsertionBackend::new(path, 2_000));
+            SnippetInsertionService::new(ExecutableInsertionBackend::new(path.clone(), 2_000));
         runtime
             .snippet_library
             .upsert(
@@ -326,6 +338,41 @@ mod tests {
             Some(SnippetInsertionStage::Cancelled)
         );
         assert!(runtime.send_snippet_insert().is_none());
+        assert!(!runtime.snippet_insertion_active());
+        assert!(!typed.exists(), "the provider was never run");
+
+        // A configuration change drops the provider after the handoff is ready.
+        runtime
+            .apply_configuration(&configuration)
+            .expect("snippets turn back on");
+        runtime.snippet_service =
+            SnippetInsertionService::new(ExecutableInsertionBackend::new(path, 2_000));
+        runtime
+            .begin_snippet_insert("Greeting")
+            .expect("the insertion starts");
+        let mut stage = None;
+        for _ in 0..3 {
+            stage = runtime.observe_snippet_insert(released);
+        }
+        assert_eq!(stage, Some(SnippetInsertionStage::Ready));
+        let empty = TempDir::new().expect("empty PATH dir");
+        runtime.snippet_service = SnippetInsertionService::new(
+            discover_insertion_provider_with(
+                SnippetProviderPreference::Auto,
+                Some(empty.path().as_os_str()),
+                Some(GraphicalSession::Wayland),
+            )
+            .and_then(|path| ExecutableInsertionBackend::new(path, 2_000)),
+        );
+
+        assert!(matches!(
+            runtime.send_snippet_insert(),
+            Some(Err(SnippetServiceError::ExpansionUnavailable { .. }))
+        ));
+        assert!(matches!(
+            runtime.snippet_insertion_stage(),
+            Some(SnippetInsertionStage::Failed(_))
+        ));
         assert!(!runtime.snippet_insertion_active());
         assert!(!typed.exists(), "the provider was never run");
     }
