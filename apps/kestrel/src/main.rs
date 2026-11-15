@@ -4759,6 +4759,12 @@ impl ControllerState {
                     trigger,
                     content,
                 } => {
+                    let submitted = SnippetDraft {
+                        name: name.clone(),
+                        folder: folder.clone(),
+                        trigger: trigger.clone(),
+                        content: content.clone(),
+                    };
                     let snippet = kestrel_core::Snippet::new(
                         name.trim().to_string(),
                         optional_field(folder),
@@ -4773,11 +4779,13 @@ impl ControllerState {
                             format!("Snippet \"{label}\" saved")
                         }
                         Err(kestrel::SnippetSaveError::Invalid(error)) => {
+                            self.snippet_draft = Some(submitted);
                             self.snippet_draft_error =
                                 Some(kestrel::SnippetDraftError::from_error(&error));
                             format!("Snippet was not saved: {error}")
                         }
                         Err(error @ kestrel::SnippetSaveError::Storage(_)) => {
+                            self.snippet_draft = Some(submitted);
                             self.snippet_draft_error = None;
                             format!("Snippet was not saved: {}", error.message())
                         }

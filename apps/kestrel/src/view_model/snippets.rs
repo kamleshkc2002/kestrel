@@ -274,6 +274,56 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_save_keeps_the_draft_and_targets_its_field() {
+        let library = snippet_library();
+        let matches = library.search("", 10, SnippetPolicy::default());
+        let draft = SnippetDraft {
+            name: "Home".to_owned(),
+            folder: String::new(),
+            trigger: "addr".to_owned(),
+            content: "Home address".to_owned(),
+        };
+        for (error, field, message) in [
+            (
+                kestrel_core::SnippetError::TriggerNotDelimited {
+                    trigger: "addr".to_owned(),
+                },
+                SnippetDraftField::Trigger,
+                "A trigger must start with a symbol, such as ;addr.",
+            ),
+            (
+                kestrel_core::SnippetError::DuplicateTrigger {
+                    trigger: ";addr".to_owned(),
+                },
+                SnippetDraftField::Trigger,
+                "Another snippet already uses the trigger ;addr.",
+            ),
+            (
+                kestrel_core::SnippetError::DuplicateName {
+                    name: "Home".to_owned(),
+                },
+                SnippetDraftField::Name,
+                "Another snippet is already called Home.",
+            ),
+        ] {
+            let error = SnippetDraftError::from_error(&error);
+            let mut presentation = snippet_presentation(&library, &matches);
+            presentation.draft = Some(&draft);
+            presentation.draft_error = Some(&error);
+
+            let snippets = SnippetsViewModel::from_presentation(presentation);
+            let kept = snippets.draft.as_ref().expect("the draft is kept");
+            assert_eq!(kept.name, "Home");
+            assert_eq!(kept.folder, "");
+            assert_eq!(kept.trigger, "addr");
+            assert_eq!(kept.content, "Home address");
+            let shown = snippets.draft_error.as_ref().expect("the error is shown");
+            assert_eq!(shown.field, field);
+            assert_eq!(shown.message, message);
+        }
+    }
+
+    #[test]
     fn snippets_presentation_disables_insertion_without_a_provider() {
         let library = snippet_library();
         let matches = library.search("", 10, SnippetPolicy::default());

@@ -2192,7 +2192,7 @@ impl std::fmt::Display for SnippetError {
                 "snippet name \"{name}\" is longer than {MAX_SNIPPET_NAME_CHARS} characters"
             ),
             Self::DuplicateName { name } => {
-                write!(formatter, "a snippet named \"{name}\" already exists")
+                write!(formatter, "Another snippet is already called {name}.")
             }
             Self::EmptyFolder => formatter.write_str("a snippet folder needs a name"),
             Self::FolderTooLong { folder } => write!(
@@ -2210,12 +2210,11 @@ impl std::fmt::Display for SnippetError {
             ),
             Self::DuplicateTrigger { trigger } => write!(
                 formatter,
-                "trigger \"{trigger}\" is already used by another snippet"
+                "Another snippet already uses the trigger {trigger}."
             ),
-            Self::TriggerNotDelimited { trigger } => write!(
-                formatter,
-                "trigger \"{trigger}\" must start with a non-alphanumeric delimiter"
-            ),
+            Self::TriggerNotDelimited { trigger: _ } => {
+                formatter.write_str("A trigger must start with a symbol, such as ;addr.")
+            }
             Self::ContentTooLong { bytes, maximum } => write!(
                 formatter,
                 "snippet content is {bytes} bytes, above the {maximum} byte bound"
