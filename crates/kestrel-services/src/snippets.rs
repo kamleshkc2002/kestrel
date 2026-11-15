@@ -416,12 +416,17 @@ pub enum SnippetInsertionStage {
     Sending,
     Done,
     Abandoned(HandoffAbandonReason),
+    /// Snippets stopped before the text was sent.
+    Cancelled,
     Failed(PasteFailure),
 }
 
 impl SnippetInsertionStage {
     pub const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Done | Self::Abandoned(_) | Self::Failed(_))
+        matches!(
+            self,
+            Self::Done | Self::Abandoned(_) | Self::Cancelled | Self::Failed(_)
+        )
     }
 
     pub const fn is_ready(&self) -> bool {
@@ -443,6 +448,9 @@ impl SnippetInsertionStage {
             }
             Self::Abandoned(HandoffAbandonReason::ModifiersHeld) => {
                 Some("Modifier keys were still held, so nothing was inserted.".to_owned())
+            }
+            Self::Cancelled => {
+                Some("Snippets were turned off, so nothing was inserted.".to_owned())
             }
             Self::Failed(failure) => Some(format!("Insertion failed: {}", failure.message)),
         }
@@ -483,6 +491,13 @@ impl SnippetInsertionOperation {
 
     pub fn is_terminal(&self) -> bool {
         self.stage.is_terminal()
+    }
+
+    /// Ends a pending insertion without typing; a finished one is unchanged.
+    pub fn cancel(&mut self) {
+        if !self.is_terminal() {
+            self.stage = SnippetInsertionStage::Cancelled;
+        }
     }
 
     /// Advances the shared wait without sending anything.

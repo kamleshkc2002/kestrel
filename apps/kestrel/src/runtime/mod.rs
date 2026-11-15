@@ -1251,6 +1251,9 @@ impl ApplicationRuntime {
         } else {
             self.clipboard_history.stop();
         }
+        if !self.snippets_running() {
+            self.cancel_snippet_insert();
+        }
 
         if self.scratchpad_is_running() {
             if self.scratchpad.is_none() {
