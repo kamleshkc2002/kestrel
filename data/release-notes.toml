@@ -27,3 +27,11 @@ text = "Open folder, Play, and the other buttons that open a file or folder work
 [[change]]
 feature = "capture.recording"
 text = "A finished recording says which folder it was saved in."
+
+[[change]]
+feature = "snippets.text"
+text = "Typing a snippet's trigger, such as ;addr, in the command bar finds and inserts it, and the snippet editor explains each field."
+
+[[change]]
+feature = "snippets.text"
+text = "With both wtype and xdotool installed, Kestrel picks the one that works in your session."

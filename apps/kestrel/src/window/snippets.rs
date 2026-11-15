@@ -1,6 +1,8 @@
 //! Snippet library panel and editor.
 
-use super::widgets::{SearchGuard, connect_line_movement, plain_row, turn_on_row};
+use super::widgets::{
+    SearchGuard, connect_line_movement, plain_row, stacked_row, stacked_row_error, turn_on_row,
+};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Orientation, PolicyType, accessible::Property};
@@ -46,7 +48,7 @@ pub(super) fn build_snippet_panel(
     insertion.add_css_class("dim-label");
     let insertion_row = plain_row()
         .title("Insertion")
-        .subtitle(snippets.expansion_label)
+        .subtitle("Insertion only happens when you ask for it.")
         .subtitle_lines(0)
         .build();
     insertion_row.add_suffix(&insertion);
@@ -163,10 +165,43 @@ pub(super) fn fill_snippet_panel(
     });
 
     let editable = snippets.running;
-    let name = entry_row(panel, "Name", &draft.name, editable);
-    let folder = entry_row(panel, "Folder", &draft.folder, editable);
-    let trigger = entry_row(panel, "Trigger", &draft.trigger, editable);
-    let content = text_view_row(panel, &draft.content, editable);
+    let draft_error = snippets.draft_error.as_ref();
+    let error_for = |field| {
+        draft_error
+            .filter(|error| error.field == field)
+            .map(|error| error.message.as_str())
+    };
+    let name = entry_row(
+        panel,
+        "Name",
+        "Shown in the list and the command bar; must be unique.",
+        &draft.name,
+        editable,
+        error_for(kestrel::SnippetDraftField::Name),
+    );
+    let folder = entry_row(
+        panel,
+        "Folder",
+        "Optional group, such as Work or Email.",
+        &draft.folder,
+        editable,
+        error_for(kestrel::SnippetDraftField::Folder),
+    );
+    let trigger = entry_row(
+        panel,
+        "Trigger",
+        "Optional code that starts with a symbol, like ;addr. Type it in the command bar to \
+         insert this snippet.",
+        &draft.trigger,
+        editable,
+        error_for(kestrel::SnippetDraftField::Trigger),
+    );
+    let content = text_view_row(
+        panel,
+        &draft.content,
+        editable,
+        error_for(kestrel::SnippetDraftField::Content),
+    );
 
     let actions = gtk::Box::new(Orientation::Horizontal, 6);
     let new_button = gtk::Button::with_label("New");
@@ -283,21 +318,41 @@ pub(super) fn fill_snippet_panel(
     }
 }
 
-fn entry_row(panel: &SnippetPanel, title: &str, value: &str, sensitive: bool) -> gtk::Entry {
+fn entry_row(
+    panel: &SnippetPanel,
+    title: &str,
+    hint: &str,
+    value: &str,
+    sensitive: bool,
+    error: Option<&str>,
+) -> gtk::Entry {
     let entry = gtk::Entry::builder()
         .text(value)
         .hexpand(true)
         .sensitive(sensitive)
         .build();
-    entry.update_property(&[Property::Label(&format!("Snippet {title}"))]);
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-    row.add_suffix(&entry);
+    let description = error.unwrap_or(hint);
+    entry.update_property(&[
+        Property::Label(&format!("Snippet {title}")),
+        Property::Description(description),
+    ]);
+    if error.is_some() {
+        entry.add_css_class("error");
+    }
+    let row = match error {
+        Some(error) => stacked_row_error(title, error, &entry),
+        None => stacked_row(title, hint, &entry),
+    };
     panel.editor.append(&row);
     entry
 }
 
-fn text_view_row(panel: &SnippetPanel, value: &str, editable: bool) -> gtk::TextView {
+fn text_view_row(
+    panel: &SnippetPanel,
+    value: &str,
+    editable: bool,
+    error: Option<&str>,
+) -> gtk::TextView {
     let view = gtk::TextView::builder()
         .wrap_mode(gtk::WrapMode::WordChar)
         .accepts_tab(false)
@@ -305,16 +360,24 @@ fn text_view_row(panel: &SnippetPanel, value: &str, editable: bool) -> gtk::Text
         .build();
     view.buffer().set_text(value);
     connect_line_movement(&view);
-    view.update_property(&[Property::Label("Snippet content")]);
+    let description = error.unwrap_or("");
+    view.update_property(&[
+        Property::Label("Snippet content"),
+        Property::Description(description),
+    ]);
+    if error.is_some() {
+        view.add_css_class("error");
+    }
     let scroller = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
         .min_content_height(96)
         .child(&view)
         .build();
-    let row = adw::ActionRow::new();
-    row.set_title("Content");
-    row.add_suffix(&scroller);
+    let row = match error {
+        Some(error) => stacked_row_error("Content", error, &scroller),
+        None => stacked_row("Content", "", &scroller),
+    };
     panel.editor.append(&row);
     view
 }

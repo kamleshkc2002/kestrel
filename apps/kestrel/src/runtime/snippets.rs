@@ -2,6 +2,23 @@
 
 use super::*;
 
+/// Why a snippet was not stored: the definition was rejected, or the private
+/// file could not be written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnippetSaveError {
+    Invalid(kestrel_core::SnippetError),
+    Storage(String),
+}
+
+impl SnippetSaveError {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Invalid(error) => error.to_string(),
+            Self::Storage(reason) => reason.clone(),
+        }
+    }
+}
+
 impl ApplicationRuntime {
     pub(super) fn build_snippet_service(
         configuration: &ApplicationConfiguration,
@@ -75,12 +92,13 @@ impl ApplicationRuntime {
     }
 
     /// Writes a candidate before replacing live state, so failed saves stay inert.
-    pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), String> {
+    pub fn save_snippet(&mut self, snippet: kestrel_core::Snippet) -> Result<(), SnippetSaveError> {
         let mut candidate = self.snippet_library.clone();
         candidate
             .upsert(snippet, self.snippet_policy)
-            .map_err(|error| error.to_string())?;
-        self.persist_snippets(&candidate)?;
+            .map_err(SnippetSaveError::Invalid)?;
+        self.persist_snippets(&candidate)
+            .map_err(SnippetSaveError::Storage)?;
         self.snippet_library = candidate;
         self.rebuild_command_index();
         Ok(())
@@ -105,9 +123,9 @@ impl ApplicationRuntime {
         save_snippets(path, library, self.snippet_policy).map_err(|error| error.to_string())
     }
 
-    /// Reads the clipboard once, clips it to the configured bound, and requires
-    /// the snippet feature to be running before typing into another application.
-    pub fn insert_snippet(&mut self, name: &str) -> Result<InsertionReport, SnippetServiceError> {
+    /// Starts one insertion after the shared modifier and focus wait; nothing is
+    /// typed until the caller observes the focus leave.
+    pub fn begin_snippet_insert(&mut self, name: &str) -> Result<(), SnippetServiceError> {
         if !self.snippets_running() {
             return Err(SnippetServiceError::ExpansionUnavailable {
                 reason: self
@@ -115,11 +133,84 @@ impl ApplicationRuntime {
                     .unwrap_or_else(|| crate::view_model::SNIPPETS_OFF.to_owned()),
             });
         }
+        if self.snippet_service.provider().is_none() {
+            return Err(SnippetServiceError::ExpansionUnavailable {
+                reason: self
+                    .snippet_service
+                    .unavailable_reason()
+                    .unwrap_or("no verified insertion provider")
+                    .to_owned(),
+            });
+        }
+        if self.snippet_insertion_active() {
+            return Err(SnippetServiceError::ExpansionUnavailable {
+                reason: "another insertion is still running".to_owned(),
+            });
+        }
         let snippet = self.snippet_library.get(name).cloned().ok_or_else(|| {
             SnippetServiceError::ExpansionUnavailable {
                 reason: format!("no snippet named \"{name}\" is stored"),
             }
         })?;
+        self.snippet_insertion = Some(SnippetInsertionOperation::new(
+            snippet,
+            self.snippet_policy,
+            std::time::Instant::now(),
+        ));
+        Ok(())
+    }
+
+    pub fn snippet_insertion_active(&self) -> bool {
+        self.snippet_insertion
+            .as_ref()
+            .is_some_and(|operation| !operation.is_terminal())
+    }
+
+    pub fn snippet_insertion_stage(&self) -> Option<SnippetInsertionStage> {
+        self.snippet_insertion
+            .as_ref()
+            .map(|operation| operation.stage().clone())
+    }
+
+    /// Advances the wait; returns the new stage and keeps `Ready` stable until
+    /// the sender runs.
+    pub fn observe_snippet_insert(
+        &mut self,
+        observation: kestrel_services::paste::PasteObservation,
+    ) -> Option<SnippetInsertionStage> {
+        let operation = self.snippet_insertion.as_mut()?;
+        if operation.is_terminal() {
+            return Some(operation.stage().clone());
+        }
+        Some(
+            operation
+                .advance(std::time::Instant::now(), observation)
+                .clone(),
+        )
+    }
+
+    /// Ends a pending insertion when snippets stop; the observer then brings
+    /// Kestrel back with the reason.
+    pub(super) fn cancel_snippet_insert(&mut self) {
+        if let Some(operation) = self.snippet_insertion.as_mut() {
+            operation.cancel();
+        }
+    }
+
+    /// Renders against the live context and types once, only in `Ready` and
+    /// only while snippets still run.
+    pub fn send_snippet_insert(
+        &mut self,
+    ) -> Option<Result<(String, InsertionReport), SnippetServiceError>> {
+        if !self.snippets_running() {
+            self.cancel_snippet_insert();
+            return None;
+        }
+        let operation = self.snippet_insertion.as_mut()?;
+        if !operation.stage().is_ready() {
+            return None;
+        }
+        let name = operation.snippet().name.clone();
         let clipboard_available = self.session_clipboard.is_some();
         let clipboard = self
             .session_clipboard
@@ -134,8 +225,13 @@ impl ApplicationRuntime {
             clipboard: clipboard.as_deref(),
             clipboard_available,
         };
-        self.snippet_service
-            .insert(&snippet, self.snippet_policy, &context)
+        let backend = self.snippet_service.backend_mut()?;
+        Some(
+            operation
+                .send(&context, backend)
+                .expect("the caller checked the ready stage")
+                .map(|report| (name, report)),
+        )
     }
 }
 
@@ -159,14 +255,79 @@ mod tests {
             .expect("snippet is valid");
 
         let error = runtime
-            .insert_snippet("Greeting")
-            .expect_err("a stopped feature must not type text");
+            .begin_snippet_insert("Greeting")
+            .expect_err("a stopped feature must not start an insertion");
 
         assert!(matches!(
             &error,
             SnippetServiceError::ExpansionUnavailable { reason }
                 if reason.contains("Enable snippets.text")
         ));
+    }
+    #[test]
+    fn turning_snippets_off_cancels_a_pending_insertion_without_typing() {
+        use kestrel_core::SnippetProviderPreference;
+        use kestrel_platform::snippets::{
+            ExecutableInsertionBackend, GraphicalSession, discover_insertion_provider_with,
+        };
+        use kestrel_services::paste::PasteObservation;
+        use kestrel_services::snippets::{SnippetInsertionService, SnippetInsertionStage};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().expect("temp dir");
+        let typed = dir.path().join("typed");
+        let provider = dir.path().join("wtype");
+        std::fs::write(
+            &provider,
+            format!("#!/bin/sh\ncat > '{}'\n", typed.display()),
+        )
+        .expect("fake provider is written");
+        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o755))
+            .expect("fake provider is executable");
+        let path = discover_insertion_provider_with(
+            SnippetProviderPreference::Wtype,
+            Some(dir.path().as_os_str()),
+            Some(GraphicalSession::Wayland),
+        )
+        .expect("the fake provider is found");
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(SNIPPETS_ID, true)
+            .expect("feature ID is valid");
+        let mut runtime = ApplicationRuntime::new(&configuration).expect("runtime builds");
+        runtime.start();
+        assert!(runtime.snippets_running());
+        runtime.snippet_service =
+            SnippetInsertionService::new(ExecutableInsertionBackend::new(path, 2_000));
+        runtime
+            .snippet_library
+            .upsert(
+                Snippet::new("Greeting", None, None, "hello"),
+                runtime.snippet_policy,
+            )
+            .expect("snippet is valid");
+
+        // Modifiers are still held when the feature is switched off.
+        runtime
+            .begin_snippet_insert("Greeting")
+            .expect("the insertion starts");
+        runtime
+            .apply_configuration(&ApplicationConfiguration::default())
+            .expect("snippets turn off");
+        assert!(!runtime.snippets_running());
+
+        let released = PasteObservation {
+            focus_released: true,
+            modifiers_released: true,
+        };
+        assert_eq!(
+            runtime.observe_snippet_insert(released),
+            Some(SnippetInsertionStage::Cancelled)
+        );
+        assert!(runtime.send_snippet_insert().is_none());
+        assert!(!runtime.snippet_insertion_active());
+        assert!(!typed.exists(), "the provider was never run");
     }
     #[test]
     fn a_failed_snippet_write_leaves_the_library_unchanged() {

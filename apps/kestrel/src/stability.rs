@@ -208,7 +208,6 @@ mod tests {
         "shortcuts.bindings[].command",
         "shortcuts.bindings[].trigger",
         "snippets.clipboard_variable_bytes",
-        "snippets.expansion_timing",
         "snippets.insert_timeout_millis",
         "snippets.max_content_bytes",
         "snippets.preferred_provider",
@@ -266,7 +265,7 @@ mod tests {
     /// feature IDs checked above.
     fn live_configuration_keys() -> BTreeSet<String> {
         let sample = r#"
-schema_version = 4
+schema_version = 5
 
 [recording]
 system_audio_app = "sample"

@@ -204,7 +204,7 @@ content = "b"
         assert_eq!(loaded.warnings[0].feature_id, "snippets[1]");
         assert!(loaded.warnings[0].reason.contains("needs a name"));
         assert_eq!(loaded.warnings[1].feature_id, "snippets[3]");
-        assert!(loaded.warnings[1].reason.contains("already used"));
+        assert!(loaded.warnings[1].reason.contains("already uses"));
     }
 
     #[test]

@@ -265,6 +265,14 @@ impl ApplicationRuntime {
         self.clipboard_paste_unavailable.clone()
     }
 
+    /// Whether a paste is still waiting or sending.
+    pub fn clipboard_paste_in_progress(&self) -> bool {
+        self.clipboard_history
+            .latest()
+            .paste
+            .is_some_and(|stage| !stage.is_terminal())
+    }
+
     /// Reports whether Kestrel still holds the focus and which modifiers are held.
     pub fn observe_clipboard_paste(&self, observation: PasteObservation) {
         self.clipboard_history.observe_paste(observation);

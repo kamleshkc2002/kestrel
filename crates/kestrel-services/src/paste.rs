@@ -47,6 +47,77 @@ pub struct PasteObservation {
     pub modifiers_released: bool,
 }
 
+/// Why the shared handoff stopped before the caller could act.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffAbandonReason {
+    FocusTimeout,
+    ModifiersHeld,
+}
+
+/// The modifier and focus wait shared by paste and snippet insertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandoffStage {
+    WaitingForModifiers,
+    WaitingForFocus,
+    Ready,
+    Abandoned(HandoffAbandonReason),
+}
+
+impl HandoffStage {
+    pub const fn is_ready(self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Abandoned(_))
+    }
+}
+
+/// Bounded wait: modifiers clear while Kestrel keeps the focus, then the focus
+/// must leave before the caller sends anything.
+#[derive(Debug, Clone, Copy)]
+pub struct FocusHandoff {
+    stage: HandoffStage,
+    focus_timeout: Duration,
+    deadline: Instant,
+}
+
+impl FocusHandoff {
+    pub fn new(now: Instant, modifier_timeout: Duration, focus_timeout: Duration) -> Self {
+        Self {
+            stage: HandoffStage::WaitingForModifiers,
+            focus_timeout,
+            deadline: now + modifier_timeout,
+        }
+    }
+
+    pub const fn stage(&self) -> HandoffStage {
+        self.stage
+    }
+
+    pub fn advance(&mut self, now: Instant, observation: PasteObservation) -> HandoffStage {
+        match self.stage {
+            HandoffStage::WaitingForModifiers => {
+                if now >= self.deadline {
+                    self.stage = HandoffStage::Abandoned(HandoffAbandonReason::ModifiersHeld);
+                } else if observation.modifiers_released {
+                    self.stage = HandoffStage::WaitingForFocus;
+                    self.deadline = now + self.focus_timeout;
+                }
+            }
+            HandoffStage::WaitingForFocus => {
+                if now >= self.deadline {
+                    self.stage = HandoffStage::Abandoned(HandoffAbandonReason::FocusTimeout);
+                } else if observation.focus_released {
+                    self.stage = HandoffStage::Ready;
+                }
+            }
+            HandoffStage::Ready | HandoffStage::Abandoned(_) => {}
+        }
+        self.stage
+    }
+}
+
 /// Why the operation stopped without a keystroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasteAbandonReason {
@@ -158,7 +229,7 @@ pub struct PasteOperation {
     staged: OwnedSelection,
     stage: PasteStage,
     settings: PasteSettings,
-    deadline: Instant,
+    handoff: FocusHandoff,
 }
 
 impl PasteOperation {
@@ -175,7 +246,7 @@ impl PasteOperation {
             staged,
             stage: PasteStage::Staged,
             settings,
-            deadline: now + settings.focus_timeout,
+            handoff: FocusHandoff::new(now, settings.modifier_timeout, settings.focus_timeout),
         }
     }
 
@@ -219,30 +290,31 @@ impl PasteOperation {
         backend: &mut B,
         provider: &mut I,
     ) -> &PasteStage {
-        loop {
-            match self.stage {
-                PasteStage::Staged => self.stage = PasteStage::WaitingForModifiers,
-                PasteStage::WaitingForModifiers => {
-                    if now >= self.deadline {
-                        self.stage = PasteStage::Abandoned(PasteAbandonReason::ModifiersHeld);
-                    } else if observation.modifiers_released {
-                        self.stage = PasteStage::WaitingForFocus;
-                        self.deadline = now + self.settings.focus_timeout;
-                    } else {
-                        break;
-                    }
-                }
-                PasteStage::WaitingForFocus => {
-                    if now >= self.deadline {
-                        self.stage = PasteStage::Abandoned(PasteAbandonReason::FocusTimeout);
-                    } else if observation.focus_released {
-                        self.send(still_owned, backend, provider);
-                    } else {
-                        break;
-                    }
-                }
-                _ => break,
+        if self.stage.is_terminal() {
+            return &self.stage;
+        }
+        if matches!(self.stage, PasteStage::Staged) {
+            self.stage = PasteStage::WaitingForModifiers;
+        }
+        match self.handoff.advance(now, observation) {
+            HandoffStage::WaitingForModifiers => {
+                self.stage = PasteStage::WaitingForModifiers;
             }
+            HandoffStage::WaitingForFocus => {
+                self.stage = PasteStage::WaitingForFocus;
+                // The observation may already report a released focus, so take
+                // it in the same tick.
+                if self.handoff.advance(now, observation).is_ready() {
+                    self.send(still_owned, backend, provider);
+                }
+            }
+            HandoffStage::Abandoned(reason) => {
+                self.stage = PasteStage::Abandoned(match reason {
+                    HandoffAbandonReason::FocusTimeout => PasteAbandonReason::FocusTimeout,
+                    HandoffAbandonReason::ModifiersHeld => PasteAbandonReason::ModifiersHeld,
+                });
+            }
+            HandoffStage::Ready => self.send(still_owned, backend, provider),
         }
         &self.stage
     }

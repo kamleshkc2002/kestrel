@@ -115,8 +115,8 @@ use kestrel_services::{
     },
     shelf::ShelfService,
     snippets::{
-        InsertionReport, RenderContext, SnippetInsertionService, SnippetLibrary, SnippetMatch,
-        SnippetPolicy, SnippetServiceError,
+        InsertionReport, RenderContext, SnippetInsertionOperation, SnippetInsertionService,
+        SnippetInsertionStage, SnippetLibrary, SnippetMatch, SnippetPolicy, SnippetServiceError,
     },
     speed_test::{SpeedTestPolicy, SpeedTestService, SpeedTestSnapshot},
     system_monitor::{RefreshOutcome, SystemMonitorService, SystemSnapshot},
@@ -229,7 +229,7 @@ pub struct ApplicationRuntime {
     snippet_library: SnippetLibrary,
     snippet_service: SnippetInsertionService<ExecutableInsertionBackend>,
     snippet_policy: SnippetPolicy,
-    snippet_expansion_timing: kestrel_core::SnippetExpansionTiming,
+    snippet_insertion: Option<SnippetInsertionOperation>,
     snippet_provider_preference: kestrel_core::SnippetProviderPreference,
     snippet_path: Option<std::path::PathBuf>,
     snippet_warnings: Vec<ConfigurationWarning>,
@@ -664,7 +664,7 @@ impl ApplicationRuntime {
             snippet_library: loaded_snippets.library,
             snippet_service,
             snippet_policy,
-            snippet_expansion_timing: configuration.snippets.expansion_timing,
+            snippet_insertion: None,
             snippet_provider_preference: configuration.snippets.preferred_provider,
             snippet_path,
             snippet_warnings,
@@ -848,7 +848,6 @@ impl ApplicationRuntime {
                 .set_policy(Self::clipboard_policy(configuration));
         }
         self.snippet_policy = SnippetPolicy::from_configuration(&configuration.snippets);
-        self.snippet_expansion_timing = configuration.snippets.expansion_timing;
         self.snippet_provider_preference = configuration.snippets.preferred_provider;
         self.snippet_service = Self::build_snippet_service(configuration);
         if self.clipboard_history_is_running() {
@@ -1077,11 +1076,11 @@ impl ApplicationRuntime {
                 unavailable_reason: self.snippet_unavailable_reason(),
                 stopped_reason: self.snippets_stopped_reason(),
                 directory: self.snippet_directory(),
-                expansion_timing: self.snippet_expansion_timing,
                 provider_preference: self.snippet_provider_preference,
                 search_query: snippets.query,
                 matches: snippets.matches,
                 draft: snippets.draft,
+                draft_error: snippets.error,
                 warnings: &self.snippet_warnings,
             },
             CommandBarPresentation {
@@ -1252,6 +1251,9 @@ impl ApplicationRuntime {
         } else {
             self.clipboard_history.stop();
         }
+        if !self.snippets_running() {
+            self.cancel_snippet_insert();
+        }
 
         if self.scratchpad_is_running() {
             if self.scratchpad.is_none() {
@@ -1407,6 +1409,7 @@ use probes::{
     clipboard_ocr_unavailable, ocr_recognizer,
 };
 pub use processes::run_process_action;
+pub use snippets::SnippetSaveError;
 pub use window_decision::ApplicationWindowDecision;
 use window_decision::{decide_application_window_action, is_kestrel_window};
 

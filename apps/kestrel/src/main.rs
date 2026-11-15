@@ -191,6 +191,7 @@ struct ControllerState {
     snippet_query: String,
     snippet_matches: Vec<SnippetMatch>,
     snippet_draft: Option<SnippetDraft>,
+    snippet_draft_error: Option<kestrel::SnippetDraftError>,
     command_query: String,
     command_results: Vec<kestrel_services::command_bar::CommandResult>,
 }
@@ -210,6 +211,7 @@ impl ControllerState {
                 query: &self.snippet_query,
                 matches: &self.snippet_matches,
                 draft: self.snippet_draft.as_ref(),
+                error: self.snippet_draft_error.as_ref(),
             },
             CommandBarQuery {
                 query: &self.command_query,
@@ -411,14 +413,7 @@ impl ControllerState {
 
     fn run_kestrel_command(&mut self, action: &str) -> Option<String> {
         if let Some(name) = action.strip_prefix("insert_snippet:") {
-            return Some(match self.runtime.insert_snippet(name) {
-                Ok(report) => format!(
-                    "Inserted \"{name}\" ({} bytes via {})",
-                    report.bytes,
-                    report.provider.label()
-                ),
-                Err(error) => format!("Insert failed: {error}"),
-            });
+            return Some(self.start_snippet_insert(name));
         }
 
         if let Ok(command) = CommandLineAction::parse(action) {
@@ -843,6 +838,13 @@ fn clipboard_tick_update(
     (Some(clipboard), command_bar)
 }
 
+/// The two text-entry handoffs that hide Kestrel before typing elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoffKind {
+    ClipboardPaste,
+    SnippetInsert,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum TargetedPanel {
     #[default]
@@ -1037,12 +1039,12 @@ enum ControllerOperation {
     },
     CleanClipboardLink,
     Snippet(SnippetCommand),
+    SnippetInsertSend,
     SnippetSearch(String),
     SnippetEdit(String),
     SnippetNew,
     SetSnippetLimit(SnippetLimit),
     SetSnippetProvider(SnippetProviderPreference),
-    SetSnippetExpansionTiming(kestrel::SnippetExpansionTiming),
     CommandQuery(String),
     CommandBar(CommandBarCommand),
     ResetCommandRanking,
@@ -1171,6 +1173,8 @@ struct ApplicationController {
     targeted: Cell<TargetedPanel>,
     /// A paste waits for the window to hide and the modifiers to clear.
     paste_pending: Cell<bool>,
+    /// One insertion observer runs at a time.
+    snippet_insert_observing: Cell<bool>,
     /// Set after construction so paste polling can keep the controller alive.
     self_ref: RefCell<Weak<ApplicationController>>,
     monitoring: Cell<bool>,
@@ -1331,6 +1335,7 @@ impl ApplicationController {
                 snippet_query: String::new(),
                 snippet_matches: Vec::new(),
                 snippet_draft: None,
+                snippet_draft_error: None,
                 command_query: String::new(),
                 command_results: Vec::new(),
             })),
@@ -1346,6 +1351,7 @@ impl ApplicationController {
             refreshing: Cell::new(false),
             targeted: Cell::new(TargetedPanel::Full),
             paste_pending: Cell::new(false),
+            snippet_insert_observing: Cell::new(false),
             self_ref: RefCell::new(Weak::new()),
             monitoring: Cell::new(false),
             monitor_running: Cell::new(monitor_running),
@@ -1941,71 +1947,142 @@ impl ApplicationController {
         );
     }
 
+    /// Starts the observer when a snippet insertion has begun.
+    fn begin_pending_snippet_observation(&self) {
+        if self.snippet_insert_observing.get() {
+            return;
+        }
+        let active = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime
+            .snippet_insertion_active();
+        if active {
+            self.snippet_insert_observing.set(true);
+            self.begin_handoff_observation(HandoffKind::SnippetInsert);
+        }
+    }
+
     /// Waits for held modifiers to clear while the window keeps the focus, hides
-    /// every Kestrel window, then reports the focus until the paste ends.
-    fn begin_paste_observation(&self) {
-        use kestrel_services::paste::PasteStage;
+    /// every Kestrel window, then reports the focus until the operation ends.
+    fn begin_handoff_observation(&self, kind: HandoffKind) {
+        use kestrel_services::{paste::PasteStage, snippets::SnippetInsertionStage};
 
         let Some(application) = gtk::gio::Application::default()
             .and_then(|application| application.downcast::<gtk::Application>().ok())
         else {
+            self.end_handoff(kind);
             return;
         };
         let Some(controller) = self.self_ref.borrow().upgrade() else {
+            self.end_handoff(kind);
             return;
         };
         let state = Arc::clone(&self.state);
         let mut hidden = false;
+        let mut sent = false;
         glib::timeout_add_local(Duration::from_millis(40), move || {
             let observation = paste_observation(&application);
-            let stage = {
-                let guard = state
+            let tick = {
+                let mut guard = state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                guard.runtime.observe_clipboard_paste(observation);
-                guard.runtime.clipboard_snapshot().paste
+                match kind {
+                    HandoffKind::ClipboardPaste => {
+                        guard.runtime.observe_clipboard_paste(observation);
+                        guard.runtime.clipboard_snapshot().paste.map(|stage| {
+                            (
+                                matches!(
+                                    stage,
+                                    PasteStage::WaitingForFocus
+                                        | PasteStage::Sending
+                                        | PasteStage::Done
+                                ),
+                                false,
+                                stage.is_terminal(),
+                                matches!(stage, PasteStage::Done),
+                                stage.message(),
+                            )
+                        })
+                    }
+                    HandoffKind::SnippetInsert => guard
+                        .runtime
+                        .observe_snippet_insert(observation)
+                        .map(|stage| {
+                            (
+                                matches!(
+                                    stage,
+                                    SnippetInsertionStage::WaitingForFocus
+                                        | SnippetInsertionStage::Ready
+                                        | SnippetInsertionStage::Sending
+                                        | SnippetInsertionStage::Done
+                                ),
+                                stage.is_ready(),
+                                stage.is_terminal(),
+                                matches!(stage, SnippetInsertionStage::Done),
+                                stage.message(),
+                            )
+                        }),
+                }
             };
-            let Some(stage) = stage else {
+            let Some((hides, ready, terminal, done, message)) = tick else {
+                controller.end_handoff(kind);
                 return glib::ControlFlow::Break;
             };
-            let hides = matches!(
-                stage,
-                PasteStage::WaitingForFocus | PasteStage::Sending | PasteStage::Done
-            );
             if hides && !hidden {
                 hidden = true;
                 // The floating surfaces are destroyed; the main window is hidden
                 // so the compositor returns focus to the previous application.
-                if let Some(surface) = controller.floating.borrow_mut().take() {
+                let surface = controller.floating.borrow_mut().take();
+                if let Some(surface) = surface {
                     surface.window.close();
                 }
                 for window in application.windows() {
                     window.set_visible(false);
                 }
             }
-            if !stage.is_terminal() {
+            if ready && !sent && !controller.refreshing.get() {
+                sent = true;
+                controller.request_operation(
+                    ControllerOperation::SnippetInsertSend,
+                    "kestrel-snippet-insert",
+                );
+            }
+            if !terminal {
                 return glib::ControlFlow::Continue;
             }
-            controller.finish_paste(&stage);
+            controller.finish_handoff(kind, done, message);
             glib::ControlFlow::Break
         });
     }
 
-    /// Reports the outcome; a failed or abandoned paste brings the window back.
-    fn finish_paste(self: &Rc<Self>, stage: &kestrel_services::paste::PasteStage) {
-        if !matches!(stage, kestrel_services::paste::PasteStage::Done) {
+    fn end_handoff(&self, kind: HandoffKind) {
+        if kind == HandoffKind::SnippetInsert {
+            self.snippet_insert_observing.set(false);
+        }
+    }
+
+    /// Reports the outcome; a failed or abandoned operation brings the window back.
+    fn finish_handoff(self: &Rc<Self>, kind: HandoffKind, done: bool, message: Option<String>) {
+        self.end_handoff(kind);
+        if !done {
             if let Some(application) = gtk::gio::Application::default()
                 .and_then(|application| application.downcast::<adw::Application>().ok())
             {
                 self.present(&application);
             }
-            if let Some(message) = stage.message() {
+            if let Some(message) = message {
                 self.show_message(&message);
             }
         }
         let view_model = self.current_view_model();
         if let Some(view) = self.window.borrow().as_ref() {
-            apply_targeted_panel(view, &view_model, TargetedPanel::Clipboard);
+            let panel = match kind {
+                HandoffKind::ClipboardPaste => TargetedPanel::Clipboard,
+                HandoffKind::SnippetInsert => TargetedPanel::Snippets,
+            };
+            apply_targeted_panel(view, &view_model, panel);
         }
     }
 
@@ -2060,8 +2137,9 @@ impl ApplicationController {
         let paste_staged = self.paste_pending.replace(false) && result.is_ok();
         self.apply_refresh_result(result, targeted);
         if paste_staged {
-            self.begin_paste_observation();
+            self.begin_handoff_observation(HandoffKind::ClipboardPaste);
         }
+        self.begin_pending_snippet_observation();
         // The close dialog's save may have failed; the choice to quit stands.
         if self.pending_after_close_save.take() == Some(AfterCloseSave::Quit) {
             let _ = self.commands.try_send(ApplicationCommand::Quit);
@@ -4674,29 +4752,19 @@ impl ControllerState {
                 }
             }
             ControllerOperation::Snippet(command) => match command {
-                SnippetCommand::Insert(name) => match self.runtime.insert_snippet(&name) {
-                    Ok(report) => {
-                        let mut message = format!(
-                            "Inserted \"{name}\" ({} bytes via {})",
-                            report.bytes,
-                            report.provider.label()
-                        );
-                        if report.clipboard_truncated {
-                            message.push_str(" · clipboard variable clipped to the bound");
-                        }
-                        if report.clipboard_empty {
-                            message.push_str(" · the live selection was empty");
-                        }
-                        message
-                    }
-                    Err(error) => format!("Insert failed: {error}"),
-                },
+                SnippetCommand::Insert(name) => self.start_snippet_insert(&name),
                 SnippetCommand::Save {
                     name,
                     folder,
                     trigger,
                     content,
                 } => {
+                    let submitted = SnippetDraft {
+                        name: name.clone(),
+                        folder: folder.clone(),
+                        trigger: trigger.clone(),
+                        content: content.clone(),
+                    };
                     let snippet = kestrel_core::Snippet::new(
                         name.trim().to_string(),
                         optional_field(folder),
@@ -4706,10 +4774,21 @@ impl ControllerState {
                     let label = snippet.name.clone();
                     match self.runtime.save_snippet(snippet) {
                         Ok(()) => {
+                            self.snippet_draft_error = None;
                             self.refresh_snippet_matches();
                             format!("Snippet \"{label}\" saved")
                         }
-                        Err(error) => format!("Snippet was not saved: {error}"),
+                        Err(kestrel::SnippetSaveError::Invalid(error)) => {
+                            self.snippet_draft = Some(submitted);
+                            self.snippet_draft_error =
+                                Some(kestrel::SnippetDraftError::from_error(&error));
+                            format!("Snippet was not saved: {error}")
+                        }
+                        Err(error @ kestrel::SnippetSaveError::Storage(_)) => {
+                            self.snippet_draft = Some(submitted);
+                            self.snippet_draft_error = None;
+                            format!("Snippet was not saved: {}", error.message())
+                        }
                     }
                 }
                 SnippetCommand::Delete(name) => match self.runtime.delete_snippet(&name) {
@@ -4721,11 +4800,30 @@ impl ControllerState {
                             .is_some_and(|draft| draft.name == name)
                         {
                             self.snippet_draft = None;
+                            self.snippet_draft_error = None;
                         }
                         format!("Snippet \"{name}\" deleted")
                     }
                     Err(error) => format!("Snippet was not deleted: {error}"),
                 },
+            },
+            ControllerOperation::SnippetInsertSend => match self.runtime.send_snippet_insert() {
+                Some(Ok((name, report))) => {
+                    let mut message = format!(
+                        "Inserted \"{name}\" ({} bytes via {})",
+                        report.bytes,
+                        report.provider.label()
+                    );
+                    if report.clipboard_truncated {
+                        message.push_str(" · clipboard variable clipped to the bound");
+                    }
+                    if report.clipboard_empty {
+                        message.push_str(" · the live selection was empty");
+                    }
+                    message
+                }
+                Some(Err(error)) => format!("Insert failed: {error}"),
+                None => String::new(),
             },
             ControllerOperation::SnippetSearch(query) => {
                 self.snippet_query = query.clone();
@@ -4745,6 +4843,7 @@ impl ControllerState {
                             trigger: snippet.trigger.clone().unwrap_or_default(),
                             content: snippet.content.clone(),
                         });
+                        self.snippet_draft_error = None;
                         format!("Editing \"{name}\"")
                     }
                     None => format!("No snippet named \"{name}\" is stored"),
@@ -4752,6 +4851,7 @@ impl ControllerState {
             }
             ControllerOperation::SnippetNew => {
                 self.snippet_draft = Some(SnippetDraft::default());
+                self.snippet_draft_error = None;
                 "New snippet editor opened".to_owned()
             }
             ControllerOperation::SetSnippetLimit(limit) => {
@@ -4779,15 +4879,6 @@ impl ControllerState {
                     candidate,
                     config_path,
                     format!("Insertion provider preference: {}", preference.label()),
-                )?
-            }
-            ControllerOperation::SetSnippetExpansionTiming(timing) => {
-                let mut candidate = self.configuration.clone();
-                candidate.snippets.expansion_timing = timing;
-                self.commit_configuration(
-                    candidate,
-                    config_path,
-                    format!("Expansion timing: {}", timing.label()),
                 )?
             }
             ControllerOperation::CommandQuery(query) => {
@@ -4964,6 +5055,17 @@ impl ControllerState {
         }
         Ok((self.view_model(), message))
     }
+    /// Starts one snippet insertion; the window hides once modifiers clear.
+    fn start_snippet_insert(&mut self, name: &str) -> String {
+        if self.runtime.clipboard_paste_in_progress() || self.runtime.snippet_insertion_active() {
+            return "Another paste or insertion is still running".to_owned();
+        }
+        match self.runtime.begin_snippet_insert(name) {
+            Ok(()) => String::new(),
+            Err(error) => format!("Insert failed: {error}"),
+        }
+    }
+
     fn run_shelf_operation(
         &mut self,
         operation: ShelfOperation,
@@ -6109,11 +6211,6 @@ fn dispatch_commands(
                     ControllerOperation::SetSnippetProvider(preference),
                     "kestrel-snippet-provider",
                 ),
-                ApplicationCommand::SetSnippetExpansionTiming(timing) => controller
-                    .request_operation(
-                        ControllerOperation::SetSnippetExpansionTiming(timing),
-                        "kestrel-snippet-expansion",
-                    ),
                 ApplicationCommand::CommandQuery(query) => controller.request_command_operation(
                     ControllerOperation::CommandQuery(query),
                     "kestrel-command-query",

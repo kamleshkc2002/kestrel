@@ -255,7 +255,16 @@ pub(super) fn stacked_row(
     subtitle: &str,
     controls: &impl IsA<gtk::Widget>,
 ) -> adw::PreferencesRow {
-    stacked_row_body(title, subtitle, None, controls)
+    stacked_row_body(title, subtitle, None, false, controls)
+}
+
+/// A stacked row whose description is a rejected value, styled as an error.
+pub(super) fn stacked_row_error(
+    title: &str,
+    subtitle: &str,
+    controls: &impl IsA<gtk::Widget>,
+) -> adw::PreferencesRow {
+    stacked_row_body(title, subtitle, None, true, controls)
 }
 
 /// A stacked row whose thumbnail sits beside the text, so a picture does not
@@ -266,13 +275,14 @@ pub(super) fn stacked_row_with_prefix(
     prefix: &impl IsA<gtk::Widget>,
     controls: &impl IsA<gtk::Widget>,
 ) -> adw::PreferencesRow {
-    stacked_row_body(title, subtitle, Some(prefix.upcast_ref()), controls)
+    stacked_row_body(title, subtitle, Some(prefix.upcast_ref()), false, controls)
 }
 
 fn stacked_row_body(
     title: &str,
     subtitle: &str,
     prefix: Option<&gtk::Widget>,
+    error: bool,
     controls: &impl IsA<gtk::Widget>,
 ) -> adw::PreferencesRow {
     let row = adw::PreferencesRow::builder()
@@ -289,8 +299,12 @@ fn stacked_row_body(
     configure_wrapping_label(&heading);
     let description = gtk::Label::new(Some(subtitle));
     configure_wrapping_label(&description);
-    description.add_css_class("dim-label");
     description.add_css_class("caption");
+    if error {
+        description.add_css_class("error");
+    } else {
+        description.add_css_class("dim-label");
+    }
     content.append(&heading);
     content.append(&description);
     // Fill, so a wrapping control is measured for the width it is given and

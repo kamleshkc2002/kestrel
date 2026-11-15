@@ -34,7 +34,7 @@ pub use kestrel_core::{
     CaptureAfterScreenshot, ClipboardLayout, ClipboardPasteKeys, CloseAction, KeepAwakeDuration,
     MonitorReadout, NetworkRateUnit, UpdateCheck,
 };
-pub use kestrel_core::{Snippet, SnippetExpansionTiming, SnippetProviderPreference};
+pub use kestrel_core::{Snippet, SnippetProviderPreference};
 pub use kestrel_platform::capture::CaptureMode;
 pub use kestrel_platform::clipboard::ClipboardEntryKind;
 pub use kestrel_platform::quick_toggles::{QuickToggleId, QuickToggleMutation};
@@ -61,7 +61,7 @@ pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{
     ApplicationRuntime, ApplicationWindowDecision, CleanLinkOutcome, FeaturePreset,
-    HostCapabilities, OVERLAY_ID, run_process_action,
+    HostCapabilities, OVERLAY_ID, SnippetSaveError, run_process_action,
 };
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
@@ -78,9 +78,10 @@ pub use view_model::{
     QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls, RecordingExportViewModel,
     RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
     SetupPresetViewModel, SetupSensitiveViewModel, SetupViewModel, ShortcutsViewModel,
-    SnippetDraft, SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel,
-    UpdateAction, UpdateInstallViewModel, UpdateOfferViewModel, UpdatePhaseViewModel,
-    UpdatesViewModel, WhatsNewSection, WhatsNewViewModel, output_icon, shortcut_label,
+    SnippetDraft, SnippetDraftError, SnippetDraftField, SnippetDraftViewModel, SnippetsViewModel,
+    SpeedTestViewModel, TurnOnViewModel, UpdateAction, UpdateInstallViewModel,
+    UpdateOfferViewModel, UpdatePhaseViewModel, UpdatesViewModel, WhatsNewSection,
+    WhatsNewViewModel, output_icon, shortcut_label,
 };
 
 /// Command-bar action from the window.
@@ -750,7 +751,6 @@ pub enum ApplicationCommand {
     },
     /// Opens the floating shelf without closing it when it is already open.
     OpenShelfFloat,
-    SetSnippetExpansionTiming(SnippetExpansionTiming),
     /// Runs the command bar query whose results the window shows.
     CommandQuery(String),
     CommandBar(CommandBarCommand),

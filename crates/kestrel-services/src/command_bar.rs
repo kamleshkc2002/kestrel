@@ -13,6 +13,8 @@ use kestrel_platform::snippets::LocalTime;
 pub const FEATURE_ID: &str = "commands.bar";
 const SUBSTRING_BONUS: i64 = 20;
 const PREFIX_BONUS: i64 = 6;
+/// An exact trigger leads every fuzzy match; pins still win over it.
+const EXACT_TRIGGER_BONUS: i64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CommandSource {
@@ -110,6 +112,8 @@ pub struct CommandItem {
     pub title: String,
     pub subtitle: String,
     pub keywords: Vec<String>,
+    /// Unique snippet code, such as `;addr`; an exact query ranks it first.
+    pub trigger: Option<String>,
     pub action: CommandAction,
     pub swatch: Option<[u8; 3]>,
 }
@@ -128,6 +132,7 @@ impl CommandItem {
             title: title.into(),
             subtitle: subtitle.into(),
             keywords: Vec::new(),
+            trigger: None,
             action,
             swatch: None,
         }
@@ -143,6 +148,18 @@ impl CommandItem {
         self
     }
 
+    pub fn with_trigger(mut self, trigger: Option<String>) -> Self {
+        self.trigger = trigger;
+        self
+    }
+
+    /// A trigger matches as an alias, so a prefix of its code finds the item.
+    fn trigger_score(&self, needle: &str) -> Option<i64> {
+        self.trigger
+            .as_deref()
+            .and_then(|trigger| fuzzy_score(needle, trigger))
+    }
+
     fn score(&self, needle: &str) -> Option<(i64, &'static str)> {
         let mut best: Option<(i64, &'static str)> =
             fuzzy_score(needle, &self.title).map(|score| (score, "title"));
@@ -151,6 +168,11 @@ impl CommandItem {
                 if best.is_none_or(|(current, _)| score > current) {
                     best = Some((score, "alias"));
                 }
+            }
+        }
+        if let Some(score) = self.trigger_score(needle) {
+            if best.is_none_or(|(current, _)| score > current) {
+                best = Some((score, "trigger"));
             }
         }
         // A match inside the subtitle is weaker than a title or alias match.
@@ -1141,7 +1163,18 @@ impl CommandIndex {
         }
         if input.providers.snippets {
             for item in &self.snippets {
-                consider(item, 15);
+                let exact_trigger = item
+                    .trigger
+                    .as_deref()
+                    .is_some_and(|trigger| trigger.trim().eq_ignore_ascii_case(query));
+                consider(
+                    item,
+                    15 + if exact_trigger {
+                        EXACT_TRIGGER_BONUS
+                    } else {
+                        0
+                    },
+                );
             }
         }
         if input.providers.scripts {
@@ -1525,7 +1558,8 @@ mod tests {
                     "Contact",
                     CommandAction::InsertText("Street 1".to_string()),
                 )
-                .with_keywords(["snippet"]),
+                .with_keywords(["snippet"])
+                .with_trigger(Some(";addr".to_owned())),
             ],
             &[],
         )
@@ -1891,12 +1925,12 @@ mod tests {
     }
 
     #[test]
-    fn snippets_are_offered_only_while_their_provider_is_on() {
+    fn snippets_are_offered_by_name_or_trigger_only_while_their_provider_is_on() {
         let index = index();
         let ranking = empty_ranking();
-        let search = |snippets: bool| {
+        let search = |query: &str, snippets: bool| {
             index.search(SearchInput {
-                query: "address",
+                query,
                 max_results: 10,
                 providers: EnabledProviders {
                     snippets,
@@ -1914,16 +1948,31 @@ mod tests {
         };
 
         assert!(
-            search(true)
+            search("address", true)
                 .iter()
                 .any(|result| result.item.source == CommandSource::Snippet)
         );
-        assert!(
-            search(false)
-                .iter()
-                .all(|result| result.item.source != CommandSource::Snippet),
-            "a stopped snippet feature contributes no runnable results"
+        let exact = search(" ;ADDR ", true);
+        assert_eq!(
+            exact.first().map(|result| result.item.id.as_str()),
+            Some("snippet:Address"),
+            "an exact trigger ranks its snippet first"
         );
+        assert_eq!(exact[0].matched_on, "trigger");
+        assert!(
+            search(";ad", true)
+                .iter()
+                .any(|result| result.item.source == CommandSource::Snippet),
+            "a prefix of a trigger finds it"
+        );
+        for query in ["address", ";addr", ";ad"] {
+            assert!(
+                search(query, false)
+                    .iter()
+                    .all(|result| result.item.source != CommandSource::Snippet),
+                "a stopped snippet feature contributes no runnable results"
+            );
+        }
     }
 
     #[test]

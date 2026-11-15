@@ -2,8 +2,7 @@
 
 use kestrel_core::{
     AlertKind, AppearancePreference, ApplicationConfiguration, CapabilityStatus, CostLevel,
-    MonitorConfiguration, MonitorReadout, Permission, ResourceCost, SnippetExpansionTiming,
-    SnippetProviderPreference,
+    MonitorConfiguration, MonitorReadout, Permission, ResourceCost, SnippetProviderPreference,
 };
 use kestrel_platform::camera::CameraInfo;
 use kestrel_platform::capture::{CaptureErrorKind, CaptureMode, CaptureProvider};
@@ -139,8 +138,9 @@ pub use shortcuts::{
 };
 pub(crate) use snippets::{SNIPPETS_OFF, SnippetsPresentation};
 pub use snippets::{
-    SnippetBoundsViewModel, SnippetDraft, SnippetDraftViewModel, SnippetItemViewModel,
-    SnippetPolicyViewModel, SnippetQuery, SnippetsViewModel,
+    SnippetBoundsViewModel, SnippetDraft, SnippetDraftError, SnippetDraftField,
+    SnippetDraftViewModel, SnippetItemViewModel, SnippetPolicyViewModel, SnippetQuery,
+    SnippetsViewModel,
 };
 pub(crate) use speed_test::SpeedTestPresentation;
 pub use speed_test::SpeedTestViewModel;
@@ -452,11 +452,11 @@ mod tests {
                 unavailable_reason: None,
                 stopped_reason: None,
                 directory: None,
-                expansion_timing: kestrel_core::SnippetExpansionTiming::Manual,
                 provider_preference: kestrel_core::SnippetProviderPreference::Auto,
                 search_query: "",
                 matches: &[],
                 draft: None,
+                draft_error: None,
                 warnings: &[],
             },
             CommandBarPresentation::default(),
