@@ -1608,12 +1608,6 @@ impl ApplicationController {
         else {
             return;
         };
-        // The surface still has focus here, so Wayland can bind the activation
-        // token to it and give the replacing window keyboard focus.
-        let context = gtk::prelude::WidgetExt::display(&window).app_launch_context();
-        if let Some(token) = context.startup_notify_id(None::<&gtk::gio::AppInfo>, &[]) {
-            self.activation_token.replace(Some(token.to_string()));
-        }
         // The close handler releases the slot and ends the transient query.
         window.close();
         if self
@@ -1627,8 +1621,9 @@ impl ApplicationController {
     }
 
     fn present(self: &Rc<Self>, application: &adw::Application) {
-        // The main window takes over from a floating surface.
-        self.close_floating();
+        // GTK asks for the activation token from the focused surface, and
+        // compositors grant it only while that surface keeps the focus, so a
+        // floating surface closes after the window is shown.
         let existing = self
             .window
             .borrow()
@@ -1644,6 +1639,7 @@ impl ApplicationController {
             // restore a minimized X11 window.
             window.unminimize();
             window.present();
+            self.close_floating();
             return;
         }
 
@@ -1697,6 +1693,7 @@ impl ApplicationController {
             view.window.set_startup_id(token);
         }
         view.window.present();
+        self.close_floating();
         self.window.replace(Some(view));
         if self.setup_pending.replace(false) {
             let window = self
