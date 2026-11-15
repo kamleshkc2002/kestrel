@@ -352,25 +352,14 @@ impl ControllerState {
                 }
             }
             CommandAction::OpenFeature { feature_id } => {
-                let label = self
-                    .runtime
-                    .registrations()
-                    .find(|registration| registration.feature.id == *feature_id)
-                    .map_or_else(
-                        || feature_id.clone(),
-                        |registration| registration.feature.label.to_owned(),
-                    );
-                let target = feature_focus_target(feature_id);
-                if self
+                let queued = self
                     .commands
-                    .try_send(ApplicationCommand::Focus(target))
-                    .is_err()
-                {
-                    "The window could not be opened".to_owned()
-                } else if target == FocusTarget::FeatureHub {
-                    format!("{label} is in the Feature Hub")
+                    .try_send(ApplicationCommand::Focus(feature_focus_target(feature_id)))
+                    .is_ok();
+                if queued {
+                    String::new()
                 } else {
-                    format!("Opened {label}")
+                    "The window could not be opened".to_owned()
                 }
             }
             CommandAction::SetFeatureEnabled {
@@ -1609,7 +1598,31 @@ impl ApplicationController {
         controller
     }
 
+    /// Closes the floating command bar or quick panel; the main window replaces it.
+    fn close_floating(&self) {
+        let Some(window) = self
+            .floating
+            .borrow()
+            .as_ref()
+            .map(|surface| surface.window.clone())
+        else {
+            return;
+        };
+        // The close handler releases the slot and ends the transient query.
+        window.close();
+        if self
+            .floating
+            .borrow()
+            .as_ref()
+            .is_some_and(|surface| surface.window == window)
+        {
+            self.floating.borrow_mut().take();
+        }
+    }
+
     fn present(self: &Rc<Self>, application: &adw::Application) {
+        // The main window takes over from a floating surface.
+        self.close_floating();
         let existing = self
             .window
             .borrow()
@@ -2055,6 +2068,9 @@ impl ApplicationController {
             }
             return;
         }
+        // A plain operation can change any feature or preference, so nothing
+        // keeps its stale panel.
+        self.targeted.set(TargetedPanel::Full);
         self.start_operation(operation, worker_name);
     }
 
@@ -2275,6 +2291,15 @@ impl ApplicationController {
                 return;
             }
         }
+        // A run can switch features, apply presets, or change configuration,
+        // so it renders every panel; queries and ranking edits stay targeted.
+        if matches!(
+            &operation,
+            ControllerOperation::CommandBar(CommandBarCommand::Run(_))
+        ) {
+            self.request_operation(operation, worker_name);
+            return;
+        }
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Commands);
     }
 
@@ -2305,7 +2330,7 @@ impl ApplicationController {
             return;
         }
         self.targeted.set(panel);
-        self.request_operation(operation, worker_name);
+        self.start_operation(operation, worker_name);
     }
 
     /// Completes the running operation, then renders its result.
@@ -6652,10 +6677,61 @@ fn mark_inherited_fds_cloexec() {
 #[cfg(test)]
 mod tests {
     use super::{
-        CloseOutcome, close_outcome, load_startup_configuration, persist, shelf_capture_add,
+        ApplicationController, CloseOutcome, ControllerContext, RefreshResult, TargetedPanel,
+        TickUpdate, close_outcome, load_startup_configuration, persist, shelf_capture_add,
     };
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    struct SilentNotifier;
+
+    impl kestrel_platform::notifications::AlertNotifier for SilentNotifier {
+        fn notify(
+            &self,
+            _: &kestrel_platform::notifications::AlertNotification,
+        ) -> Result<(), kestrel_platform::notifications::NotificationError> {
+            Ok(())
+        }
+    }
+
+    /// Builds a controller with no window; workers publish to `refresh_results`.
+    fn controller_for(
+        configuration: &ApplicationConfiguration,
+        refresh_results: async_channel::Sender<RefreshResult>,
+    ) -> (
+        std::rc::Rc<ApplicationController>,
+        async_channel::Receiver<TickUpdate>,
+    ) {
+        let mut runtime = kestrel::ApplicationRuntime::new(configuration)
+            .expect("built-in features have valid IDs");
+        runtime.start();
+        let (commands, _command_receiver) = async_channel::unbounded();
+        let (tick_results, tick_receiver) = async_channel::unbounded();
+        let (update_results, _update_receiver) = async_channel::unbounded();
+        let (update_install_results, update_install_receiver) = async_channel::unbounded();
+        let controller = ApplicationController::new(
+            runtime,
+            configuration.clone(),
+            Vec::new(),
+            ControllerContext {
+                config_path: None,
+                offer_setup: false,
+                refresh_results,
+                tick_results,
+                update_results,
+                update_install_results,
+                update_install_receiver,
+                commands,
+                notifier: std::sync::Arc::new(SilentNotifier),
+                capture_notifier: std::sync::Arc::new(
+                    kestrel_platform::notifications::DesktopNotifier::new(),
+                ),
+                status_notifier: None,
+                appearance: std::rc::Rc::new(kestrel::appearance::AppearanceStyles::new()),
+            },
+        );
+        (controller, tick_receiver)
+    }
 
     #[test]
     fn screenshots_join_the_shelf_only_when_asked_and_running() {
@@ -6864,58 +6940,11 @@ mod tests {
     /// Disabled ticks spawn no worker or result; enabled ticks still sample.
     #[test]
     fn monitor_ticks_are_inert_while_the_feature_is_disabled() {
-        use super::{ApplicationController, ControllerContext};
-        use async_channel::Sender;
-        use kestrel::ApplicationRuntime;
-        use kestrel_platform::notifications::{
-            AlertNotification, AlertNotifier, DesktopNotifier, NotificationError,
-        };
         use kestrel_platform::system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID;
-        use std::rc::Rc;
-        use std::sync::Arc;
 
-        struct SilentNotifier;
-
-        impl AlertNotifier for SilentNotifier {
-            fn notify(&self, _: &AlertNotification) -> Result<(), NotificationError> {
-                Ok(())
-            }
-        }
-
-        fn controller_for(
-            configuration: &ApplicationConfiguration,
-            tick_results: Sender<super::TickUpdate>,
-        ) -> Rc<ApplicationController> {
-            let mut runtime =
-                ApplicationRuntime::new(configuration).expect("built-in features have valid IDs");
-            runtime.start();
-            let (commands, _command_receiver) = async_channel::unbounded();
-            let (refresh_results, _refresh_receiver) = async_channel::unbounded();
-            let (update_results, _update_receiver) = async_channel::unbounded();
-            let (update_install_results, update_install_receiver) = async_channel::unbounded();
-            ApplicationController::new(
-                runtime,
-                configuration.clone(),
-                Vec::new(),
-                ControllerContext {
-                    config_path: None,
-                    offer_setup: false,
-                    refresh_results,
-                    tick_results,
-                    update_results,
-                    update_install_results,
-                    update_install_receiver,
-                    commands,
-                    notifier: Arc::new(SilentNotifier),
-                    capture_notifier: Arc::new(DesktopNotifier::new()),
-                    status_notifier: None,
-                    appearance: Rc::new(kestrel::appearance::AppearanceStyles::new()),
-                },
-            )
-        }
-
-        let (disabled_results, disabled_receiver) = async_channel::unbounded();
-        let disabled = controller_for(&ApplicationConfiguration::default(), disabled_results);
+        let (disabled_refresh, _disabled_refresh_receiver) = async_channel::unbounded();
+        let (disabled, disabled_receiver) =
+            controller_for(&ApplicationConfiguration::default(), disabled_refresh);
         assert_eq!(
             disabled.request_tick(),
             super::TICK_IDLE_INTERVAL,
@@ -6935,8 +6964,8 @@ mod tests {
         configuration
             .set_feature_enabled(SYSTEM_MONITOR_ID, true)
             .expect("feature ID is valid");
-        let (enabled_results, enabled_receiver) = async_channel::unbounded();
-        let enabled = controller_for(&configuration, enabled_results);
+        let (enabled_refresh, _enabled_refresh_receiver) = async_channel::unbounded();
+        let (enabled, enabled_receiver) = controller_for(&configuration, enabled_refresh);
         // The first tick runs at the startup pace; later ones follow the
         // interval the previous sample reported.
         assert_eq!(enabled.request_tick(), super::TICK_INTERVAL);
@@ -6958,6 +6987,43 @@ mod tests {
             std::time::Duration::from_millis(500),
             "the configured monitoring interval paces the next tick"
         );
+    }
+
+    #[test]
+    fn command_runs_render_the_whole_window_and_queries_stay_targeted() {
+        let (refresh_results, refresh_receiver) = async_channel::unbounded();
+        let (controller, _tick_receiver) =
+            controller_for(&ApplicationConfiguration::default(), refresh_results);
+
+        controller.request_command_operation(
+            super::ControllerOperation::CommandBar(kestrel::CommandBarCommand::Run(
+                "kestrel:refresh".to_owned(),
+            )),
+            "kestrel-command-run",
+        );
+        assert_eq!(
+            controller.targeted.get(),
+            TargetedPanel::Full,
+            "a run can change any feature, so every panel follows it"
+        );
+        let _ = refresh_receiver
+            .recv_blocking()
+            .expect("the run publishes a result");
+        controller.refreshing.set(false);
+
+        controller.request_command_operation(
+            super::ControllerOperation::CommandQuery("refresh".to_owned()),
+            "kestrel-command-query",
+        );
+        assert_eq!(
+            controller.targeted.get(),
+            TargetedPanel::Commands,
+            "typing re-renders only the command bar panel"
+        );
+        let _ = refresh_receiver
+            .recv_blocking()
+            .expect("the query publishes a result");
+        controller.refreshing.set(false);
     }
 
     #[test]
