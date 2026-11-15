@@ -29,6 +29,10 @@ feature = "capture.recording"
 text = "A finished recording says which folder it was saved in."
 
 [[change]]
+feature = "capture.recording"
+text = "A running recording now shows its timer and a Stop button on screen, on the Overview Record tile, and in the tray menu."
+
+[[change]]
 feature = "snippets.text"
 text = "Typing a snippet's trigger, such as ;addr, in the command bar finds and inserts it, and the snippet editor explains each field."
 

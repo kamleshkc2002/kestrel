@@ -156,6 +156,7 @@ Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kest
 - **Configuration:** `[recording] framerate` (10–60; default 30), `cursor` (default true), `system_audio`, `system_audio_app` (an application identity; unset records all apps), `microphone` (default false), also editable in the panel.
 - Recordings are VP8 WebM files in `$XDG_VIDEOS_DIR/Kestrel` (usually `~/Videos/Kestrel`), written as a hidden `.partial` file (0600) and renamed only once complete. Discard, failures, and leftovers from a crash remove the partial file; earlier recordings are never touched. Pause leaves the paused time out of the file. Refresh in the header re-lists the folder, so recordings another program added or removed appear without a restart. See [What's stored and sent](privacy.md#whats-stored-and-sent).
 - Stop, disabling the feature, and quitting save the take; the desktop ending the share saves what was recorded and says so. Recording stops and saves when less than 512 MiB of disk space remains.
+- A running recording is visible and stoppable outside the Capture page: the status bar overlay and the Overview Record tile show its timer with Stop, and the tray menu's first item and tooltip show it too. A recording always shows its timer and Stop button while it runs, unless the overlay's Recording item is off.
 - **Trim:** each recent recording has Trim, which opens its timeline with Start and End handles and a preview of the frame at either point. Export writes the kept range, re-encoded as VP8/Opus WebM with every track, to a file you choose, through a hidden partial file renamed once complete. Cancelling or a failed export removes that file; the recording itself is never changed. Disabling the feature or quitting cancels a running export.
 
 ## Scratchpad — `notes.scratchpad`
@@ -220,7 +221,7 @@ Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kest
 
 - **Default:** disabled. Turn it on in the Feature Hub, and choose its modules under Settings → Status bar overlay.
 - A small pill at the top centre of the screen that appears only while one of its modules has something active, and disappears otherwise. It takes the keyboard only when you click into it, only its own area takes the pointer, and it reserves no screen space.
-- **Recording:** while a screen recording runs, its running time (or Paused) with Pause/Resume and Stop buttons.
+- **Recording:** while a screen recording runs, its running time (or Paused) with Pause/Resume and Stop buttons. A recording always shows its timer and Stop button while it runs, unless the overlay's Recording item is off, and it is the only item shown while the overlay itself is off.
 - **Alerts:** each active monitoring alert with its reading, such as "CPU is 95%"; clicking it opens the Monitoring page.
 - **Microphone muted:** shown while every microphone input is muted (needs `audio.microphone`); clicking it unmutes them.
 - **Volume:** after the active output's volume or mute changes, its type, a level slider, and mute; needs `audio.mixer`.

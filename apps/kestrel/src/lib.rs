@@ -66,7 +66,8 @@ pub use runtime::{
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
     FEATURE_ID as STATUS_NOTIFIER_ID, StatusNotifierIntegration, TrayKeepAwake, TrayKeepAwakeSink,
-    TrayReadout, TrayReadoutSink, TrayShelf, TrayShelfSink, TrayUpdate, TrayUpdateSink,
+    TrayReadout, TrayReadoutSink, TrayRecording, TrayRecordingSink, TrayShelf, TrayShelfSink,
+    TrayUpdate, TrayUpdateSink,
 };
 pub use view_model::{
     ApplicationViewModel, AudioOutputViewModel, AudioStreamViewModel, AudioViewModel,
@@ -74,14 +75,14 @@ pub use view_model::{
     ClipboardPinStoreViewModel, ClipboardPreviewViewModel, ClipboardViewModel, CommandBarViewModel,
     CommandProvider, ConfirmationViewModel, CoreGroupViewModel, DevicePriorityViewModel,
     FeatureViewModel, KeepAwakeStamp, ListenersViewModel, MicrophoneViewModel, MonitorViewModel,
-    OutputKind, OverviewTool, OverviewToolsViewModel, ProcessRowViewModel, ProcessesViewModel,
-    QuickToggleControlViewModel, QuickToggleViewModel, RecordingControls, RecordingExportViewModel,
-    RecordingViewModel, ScratchpadViewModel, ScreenToolResultViewModel, ScreenToolsViewModel,
-    SetupPresetViewModel, SetupSensitiveViewModel, SetupViewModel, ShortcutsViewModel,
-    SnippetDraft, SnippetDraftError, SnippetDraftField, SnippetDraftViewModel, SnippetsViewModel,
-    SpeedTestViewModel, TurnOnViewModel, UpdateAction, UpdateInstallViewModel,
-    UpdateOfferViewModel, UpdatePhaseViewModel, UpdatesViewModel, WhatsNewSection,
-    WhatsNewViewModel, output_icon, shortcut_label,
+    OutputKind, OverviewTool, OverviewToolAction, OverviewToolViewModel, OverviewToolsViewModel,
+    ProcessRowViewModel, ProcessesViewModel, QuickToggleControlViewModel, QuickToggleViewModel,
+    RecordingControls, RecordingExportViewModel, RecordingViewModel, ScratchpadViewModel,
+    ScreenToolResultViewModel, ScreenToolsViewModel, SetupPresetViewModel, SetupSensitiveViewModel,
+    SetupViewModel, ShortcutsViewModel, SnippetDraft, SnippetDraftError, SnippetDraftField,
+    SnippetDraftViewModel, SnippetsViewModel, SpeedTestViewModel, TurnOnViewModel, UpdateAction,
+    UpdateInstallViewModel, UpdateOfferViewModel, UpdatePhaseViewModel, UpdatesViewModel,
+    WhatsNewSection, WhatsNewViewModel, output_icon, shortcut_label,
 };
 
 /// Command-bar action from the window.
