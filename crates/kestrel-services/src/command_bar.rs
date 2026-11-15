@@ -93,13 +93,32 @@ impl CommandSource {
 pub enum CommandAction {
     Kestrel(String),
     InsertText(String),
-    RunScript { index: usize },
-    OpenApplication { index: usize },
-    OpenApplicationAction { index: usize, action_id: String },
+    RunScript {
+        index: usize,
+    },
+    OpenApplication {
+        index: usize,
+    },
+    OpenApplicationAction {
+        index: usize,
+        action_id: String,
+    },
     ActivateWindow(u64),
-    CopyClipboardEntry { item_id: u64 },
-    SetFeatureEnabled { feature_id: String, enabled: bool },
-    SetOutputPort { output_id: u32, port: String },
+    CopyClipboardEntry {
+        item_id: u64,
+    },
+    /// Opens the page that hosts a feature.
+    OpenFeature {
+        feature_id: String,
+    },
+    SetFeatureEnabled {
+        feature_id: String,
+        enabled: bool,
+    },
+    SetOutputPort {
+        output_id: u32,
+        port: String,
+    },
     OpenFile(PathBuf),
     OpenUrl(String),
 }
@@ -1148,7 +1167,13 @@ impl CommandIndex {
                     .iter()
                     .any(|keyword| keyword.to_lowercase().contains(&lowered_query));
             if names_feature {
-                consider(item, 40);
+                // The page result leads its switch, which stays next.
+                let bonus = if matches!(&item.action, CommandAction::OpenFeature { .. }) {
+                    41
+                } else {
+                    40
+                };
+                consider(item, bonus);
             }
         }
         if input.providers.windows {
@@ -2200,12 +2225,30 @@ mod tests {
             )
             .with_keywords(keywords)
         };
+        let open_feature = |id: &str, title: &str, keywords: [&'static str; 2]| {
+            CommandItem::new(
+                format!("feature-open:{id}"),
+                CommandSource::Feature,
+                title,
+                "Go to the page that hosts it",
+                CommandAction::OpenFeature {
+                    feature_id: id.to_owned(),
+                },
+            )
+            .with_keywords(keywords)
+        };
         let features = [
+            open_feature(
+                "clipboard.history",
+                "Open Clipboard history",
+                ["clipboard", "history"],
+            ),
             feature(
                 "clipboard.history",
                 "Turn off Clipboard history",
                 ["clipboard", "history"],
             ),
+            open_feature("session.lock", "Open Lock screen", ["lock", "screen"]),
             feature("session.lock", "Turn off Lock screen", ["lock", "screen"]),
         ];
         let search = |query| {
@@ -2224,7 +2267,8 @@ mod tests {
             })
         };
         let results = search("clipboard");
-        assert_eq!(results[0].item.id, "feature:clipboard.history");
+        assert_eq!(results[0].item.id, "feature-open:clipboard.history");
+        assert_eq!(results[1].item.id, "feature:clipboard.history");
         assert!(
             search("token")
                 .iter()

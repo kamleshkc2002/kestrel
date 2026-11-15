@@ -234,7 +234,51 @@ impl ControllerState {
             .command_search(&self.command_query.clone(), &now);
     }
 
-    fn run_command_result(&mut self, id: &str) -> String {
+    fn set_feature_enabled(
+        &mut self,
+        feature_id: String,
+        enabled: bool,
+        config_path: Option<&Path>,
+    ) -> Result<String, String> {
+        let label = self
+            .runtime
+            .registrations()
+            .find(|registration| registration.feature.id == feature_id)
+            .map_or_else(
+                || feature_id.clone(),
+                |registration| registration.feature.label.to_owned(),
+            );
+        let old = self.configuration.clone();
+        let mut candidate = old.clone();
+        if let Err(error) = candidate.set_feature_enabled(feature_id.clone(), enabled) {
+            return Err(format!("Could not change {label}: {error:?}"));
+        }
+        self.runtime
+            .apply_configuration(&candidate)
+            .map_err(|error| {
+                self.restore_configuration(old.clone());
+                format!("Could not apply the change to {label}: {error:?}")
+            })?;
+        if let Err(error) = persist(config_path, &candidate) {
+            self.restore_configuration(old);
+            return Err(format!("Feature change was not saved: {error}"));
+        }
+        self.configuration = candidate;
+        self.preset_snapshot = None;
+        Ok(format!("{label} is {}", if enabled { "on" } else { "off" }))
+    }
+
+    /// Runs one mixer command and reports its outcome.
+    fn execute_audio(&mut self, command: kestrel::AudioCommand) -> String {
+        let summary = audio_command_summary(&command);
+        match self.runtime.execute_audio_command(command) {
+            Some(Ok(_)) => format!("{summary} updated"),
+            Some(Err(failure)) => format!("{summary} failed: {}", failure.error),
+            None => "The audio mixer is not running; enable audio.mixer first".to_owned(),
+        }
+    }
+
+    fn run_command_result(&mut self, id: &str, config_path: Option<&Path>) -> String {
         use kestrel_services::command_bar::CommandAction;
         // Reject stale results before acting.
         if !self.runtime.command_bar_running() {
@@ -307,41 +351,28 @@ impl ControllerState {
                     None => "Clipboard history is not running".to_owned(),
                 }
             }
+            CommandAction::OpenFeature { feature_id } => {
+                let queued = self
+                    .commands
+                    .try_send(ApplicationCommand::Focus(feature_focus_target(feature_id)))
+                    .is_ok();
+                if queued {
+                    String::new()
+                } else {
+                    "The window could not be opened".to_owned()
+                }
+            }
             CommandAction::SetFeatureEnabled {
                 feature_id,
                 enabled,
-            } => {
-                let _ = self
-                    .commands
-                    .try_send(ApplicationCommand::SetFeatureEnabled {
-                        feature_id: feature_id.clone(),
-                        enabled: *enabled,
-                    });
-                format!(
-                    "{} {}",
-                    feature_id,
-                    if *enabled {
-                        "enable requested"
-                    } else {
-                        "disable requested"
-                    }
-                )
-            }
+            } => match self.set_feature_enabled(feature_id.clone(), *enabled, config_path) {
+                Ok(message) | Err(message) => message,
+            },
             CommandAction::SetOutputPort { output_id, port } => {
-                let queued = self
-                    .commands
-                    .try_send(ApplicationCommand::Audio(
-                        kestrel::AudioCommand::SetOutputPort {
-                            output_id: *output_id,
-                            port: port.clone(),
-                        },
-                    ))
-                    .is_ok();
-                if queued {
-                    "Port switch queued".to_owned()
-                } else {
-                    "Port switch could not be queued".to_owned()
-                }
+                self.execute_audio(kestrel::AudioCommand::SetOutputPort {
+                    output_id: *output_id,
+                    port: port.clone(),
+                })
             }
             CommandAction::OpenFile(path) => {
                 match self
@@ -356,7 +387,7 @@ impl ControllerState {
                 Ok(()) => format!("Opened {url}"),
                 Err(error) => format!("The link was not opened: {error}"),
             },
-            CommandAction::Kestrel(action) => match self.run_kestrel_command(action) {
+            CommandAction::Kestrel(action) => match self.run_kestrel_command(action, config_path) {
                 Some(message) => message,
                 None => format!("No action named \"{action}\""),
             },
@@ -411,12 +442,27 @@ impl ControllerState {
         }
     }
 
-    fn run_kestrel_command(&mut self, action: &str) -> Option<String> {
+    fn run_kestrel_command(&mut self, action: &str, config_path: Option<&Path>) -> Option<String> {
         if let Some(name) = action.strip_prefix("insert_snippet:") {
             return Some(self.start_snippet_insert(name));
         }
 
+        if let Some(feature_id) = action.strip_prefix("toggle:") {
+            let toggle = kestrel_platform::quick_toggles::ALL_QUICK_TOGGLES
+                .into_iter()
+                .find(|toggle| toggle.feature_id() == feature_id);
+            return Some(match toggle {
+                Some(toggle) => {
+                    self.execute_message(ControllerOperation::FlipQuickToggle(toggle), config_path)
+                }
+                None => format!("No action named \"{action}\""),
+            });
+        }
+
         if let Ok(command) = CommandLineAction::parse(action) {
+            if let Some(operation) = inline_command_operation(command) {
+                return Some(self.execute_message(operation, config_path));
+            }
             if command == CommandLineAction::CaptureEditLast {
                 let present = self
                     .commands
@@ -437,39 +483,65 @@ impl ControllerState {
             });
         }
 
-        let command = match action {
-            "open_window" => ApplicationCommand::PresentWindow,
-            "refresh" => ApplicationCommand::RefreshCapabilities,
+        let operation = match action {
+            "open_window" => {
+                let queued = self
+                    .commands
+                    .try_send(ApplicationCommand::PresentWindow)
+                    .is_ok();
+                return Some(if queued {
+                    format!("{action} queued")
+                } else {
+                    format!("{action} could not be queued")
+                });
+            }
+            "refresh" => ControllerOperation::Refresh,
             "preset_essentials" => {
-                ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Essentials)
+                ControllerOperation::ApplyPreset(kestrel::FeaturePreset::Essentials)
             }
-            "preset_balanced" => ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Balanced),
+            "preset_balanced" => ControllerOperation::ApplyPreset(kestrel::FeaturePreset::Balanced),
             "preset_everything" => {
-                ApplicationCommand::ApplyPreset(kestrel::FeaturePreset::Everything)
+                ControllerOperation::ApplyPreset(kestrel::FeaturePreset::Everything)
             }
-            "undo_preset" => ApplicationCommand::UndoPreset,
+            "undo_preset" => ControllerOperation::UndoPreset,
             "wipe_clipboard" => {
-                ApplicationCommand::Clipboard(kestrel_services::clipboard::ClipboardCommand::Wipe)
+                ControllerOperation::Clipboard(kestrel_services::clipboard::ClipboardCommand::Wipe)
             }
-            "clear_selection" => ApplicationCommand::Clipboard(
+            "clear_selection" => ControllerOperation::Clipboard(
                 kestrel_services::clipboard::ClipboardCommand::ClearSelection,
             ),
-            "reset_ranking" => ApplicationCommand::ResetCommandRanking,
-            "microphone_toggle" => ApplicationCommand::Microphone(MicrophoneCommand::ToggleMute),
-            "speed_test" => ApplicationCommand::StartSpeedTest,
-            "clean_link" => ApplicationCommand::CleanClipboardLink,
-            "update.get" => ApplicationCommand::DownloadUpdate,
-            "update.cancel" => ApplicationCommand::CancelUpdateDownload,
-            "update.install" => ApplicationCommand::InstallUpdateAndRestart,
+            "reset_ranking" => ControllerOperation::ResetCommandRanking,
+            "microphone_toggle" => ControllerOperation::Microphone(MicrophoneCommand::ToggleMute),
+            "speed_test" => ControllerOperation::StartSpeedTest,
+            "clean_link" => ControllerOperation::CleanClipboardLink,
+            "update.get" | "update.cancel" | "update.install" => {
+                let command = match action {
+                    "update.get" => ApplicationCommand::DownloadUpdate,
+                    "update.cancel" => ApplicationCommand::CancelUpdateDownload,
+                    _ => ApplicationCommand::InstallUpdateAndRestart,
+                };
+                let queued = self.commands.try_send(command).is_ok();
+                return Some(if queued {
+                    format!("{action} queued")
+                } else {
+                    format!("{action} could not be queued")
+                });
+            }
             _ => return None,
         };
 
-        let queued = self.commands.try_send(command).is_ok();
-        Some(if queued {
-            format!("{action} queued")
-        } else {
-            format!("{action} could not be queued")
-        })
+        Some(self.execute_message(operation, config_path))
+    }
+
+    /// Runs one worker operation in place and returns its message or error.
+    fn execute_message(
+        &mut self,
+        operation: ControllerOperation,
+        config_path: Option<&Path>,
+    ) -> String {
+        match self.execute(operation, config_path) {
+            Ok(message) | Err(message) => message,
+        }
     }
 
     fn refresh_snippet_matches(&mut self) {
@@ -487,6 +559,104 @@ impl ControllerState {
             Some(Ok(matches)) => self.clipboard_matches = matches,
             Some(Err(_)) | None => self.clipboard_matches.clear(),
         }
+    }
+}
+
+/// Command line actions the worker runs in place; the rest need the GTK thread.
+fn inline_command_operation(action: CommandLineAction) -> Option<ControllerOperation> {
+    Some(match action {
+        CommandLineAction::RefreshCapabilities => ControllerOperation::Refresh,
+        CommandLineAction::NextOutput => {
+            ControllerOperation::Audio(kestrel::AudioCommand::CycleOutput {
+                direction: kestrel::AudioCycleDirection::Next,
+            })
+        }
+        CommandLineAction::PreviousOutput => {
+            ControllerOperation::Audio(kestrel::AudioCommand::CycleOutput {
+                direction: kestrel::AudioCycleDirection::Previous,
+            })
+        }
+        CommandLineAction::NextOutputPort => {
+            ControllerOperation::Audio(kestrel::AudioCommand::CycleOutputPort)
+        }
+        CommandLineAction::ToggleMicrophoneMute => {
+            ControllerOperation::Microphone(MicrophoneCommand::ToggleMute)
+        }
+        CommandLineAction::MuteMicrophone => {
+            ControllerOperation::Microphone(MicrophoneCommand::SetMuted(true))
+        }
+        CommandLineAction::UnmuteMicrophone => {
+            ControllerOperation::Microphone(MicrophoneCommand::SetMuted(false))
+        }
+        CommandLineAction::StartSpeedTest => ControllerOperation::StartSpeedTest,
+        CommandLineAction::CancelSpeedTest => ControllerOperation::CancelSpeedTest,
+        CommandLineAction::CaptureScreenshot => {
+            ControllerOperation::Capture(CaptureOperation::Begin(None))
+        }
+        CommandLineAction::CaptureScreen => ControllerOperation::Capture(CaptureOperation::Begin(
+            Some(kestrel::CaptureMode::Screen),
+        )),
+        CommandLineAction::WipeClipboard => {
+            ControllerOperation::Clipboard(kestrel_services::clipboard::ClipboardCommand::Wipe)
+        }
+        CommandLineAction::ClearClipboardSelection => ControllerOperation::Clipboard(
+            kestrel_services::clipboard::ClipboardCommand::ClearSelection,
+        ),
+        CommandLineAction::AddDesktopEntry => ControllerOperation::AddDesktopEntry,
+        CommandLineAction::RemoveDesktopEntry => ControllerOperation::RemoveDesktopEntry,
+        CommandLineAction::ApplyPreset(preset) => ControllerOperation::ApplyPreset(preset),
+        CommandLineAction::UndoPreset => ControllerOperation::UndoPreset,
+        CommandLineAction::QuickToggle(id) => ControllerOperation::FlipQuickToggle(id),
+        CommandLineAction::StartKeepAwake(duration) => {
+            ControllerOperation::StartKeepAwake(duration)
+        }
+        CommandLineAction::StopKeepAwake => ControllerOperation::StopKeepAwake,
+        CommandLineAction::ShelfClear => ControllerOperation::Shelf(ShelfOperation::Clear {
+            include_pinned: false,
+        }),
+        CommandLineAction::ShelfAddClipboard => {
+            ControllerOperation::Shelf(ShelfOperation::AddClipboard)
+        }
+        CommandLineAction::ShowWindow
+        | CommandLineAction::OpenCommandBar
+        | CommandLineAction::OpenQuickPanel
+        | CommandLineAction::QuickPaste
+        | CommandLineAction::ScratchpadOpen
+        | CommandLineAction::ShelfOpen
+        | CommandLineAction::ShelfPage
+        | CommandLineAction::ProcessesOpen
+        | CommandLineAction::Quit
+        | CommandLineAction::CaptureEditLast
+        | CommandLineAction::ScreenTool(_)
+        | CommandLineAction::RecordingStart
+        | CommandLineAction::RecordingStop => return None,
+    })
+}
+
+/// The page and section that hosts a configurable feature.
+fn feature_focus_target(feature_id: &str) -> FocusTarget {
+    match feature_id {
+        kestrel_platform::system_monitor::FEATURE_ID => FocusTarget::Monitoring,
+        kestrel_platform::audio::FEATURE_ID | kestrel_platform::audio::MICROPHONE_FEATURE_ID => {
+            FocusTarget::Audio
+        }
+        kestrel_platform::speed_test::FEATURE_ID => FocusTarget::SpeedTest,
+        kestrel_platform::capture::FEATURE_ID
+        | kestrel_platform::recording::FEATURE_ID
+        | kestrel_platform::screen_tools::TEXT_FEATURE_ID
+        | kestrel_platform::screen_tools::QR_FEATURE_ID
+        | kestrel_platform::screen_tools::COLOR_FEATURE_ID => FocusTarget::Capture,
+        kestrel_platform::camera::FEATURE_ID => FocusTarget::Camera,
+        kestrel_platform::processes::FEATURE_ID
+        | kestrel_platform::processes::LISTENERS_FEATURE_ID => FocusTarget::Processes,
+        kestrel_platform::clipboard::FEATURE_ID => FocusTarget::Clipboard,
+        kestrel_platform::applications::FEATURE_ID => FocusTarget::Commands,
+        kestrel_platform::snippets::FEATURE_ID => FocusTarget::Snippets,
+        kestrel::SCRATCHPAD_ID => FocusTarget::Scratchpad,
+        kestrel_platform::file_actions::FEATURE_ID => FocusTarget::Shelf,
+        kestrel_platform::global_shortcuts::FEATURE_ID => FocusTarget::Shortcuts,
+        kestrel::OVERLAY_ID => FocusTarget::Settings,
+        _ => FocusTarget::FeatureHub,
     }
 }
 
@@ -1428,7 +1598,32 @@ impl ApplicationController {
         controller
     }
 
+    /// Closes the floating command bar or quick panel; the main window replaces it.
+    fn close_floating(&self) {
+        let Some(window) = self
+            .floating
+            .borrow()
+            .as_ref()
+            .map(|surface| surface.window.clone())
+        else {
+            return;
+        };
+        // The close handler releases the slot and ends the transient query.
+        window.close();
+        if self
+            .floating
+            .borrow()
+            .as_ref()
+            .is_some_and(|surface| surface.window == window)
+        {
+            self.floating.borrow_mut().take();
+        }
+    }
+
     fn present(self: &Rc<Self>, application: &adw::Application) {
+        // GTK asks for the activation token from the focused surface, and
+        // compositors grant it only while that surface keeps the focus, so a
+        // floating surface closes after the window is shown.
         let existing = self
             .window
             .borrow()
@@ -1444,6 +1639,7 @@ impl ApplicationController {
             // restore a minimized X11 window.
             window.unminimize();
             window.present();
+            self.close_floating();
             return;
         }
 
@@ -1497,6 +1693,7 @@ impl ApplicationController {
             view.window.set_startup_id(token);
         }
         view.window.present();
+        self.close_floating();
         self.window.replace(Some(view));
         if self.setup_pending.replace(false) {
             let window = self
@@ -1874,6 +2071,9 @@ impl ApplicationController {
             }
             return;
         }
+        // A plain operation can change any feature or preference, so nothing
+        // keeps its stale panel.
+        self.targeted.set(TargetedPanel::Full);
         self.start_operation(operation, worker_name);
     }
 
@@ -2094,6 +2294,15 @@ impl ApplicationController {
                 return;
             }
         }
+        // A run can switch features, apply presets, or change configuration,
+        // so it renders every panel; queries and ranking edits stay targeted.
+        if matches!(
+            &operation,
+            ControllerOperation::CommandBar(CommandBarCommand::Run(_))
+        ) {
+            self.request_operation(operation, worker_name);
+            return;
+        }
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Commands);
     }
 
@@ -2124,7 +2333,7 @@ impl ApplicationController {
             return;
         }
         self.targeted.set(panel);
-        self.request_operation(operation, worker_name);
+        self.start_operation(operation, worker_name);
     }
 
     /// Completes the running operation, then renders its result.
@@ -3770,6 +3979,16 @@ impl ApplicationController {
 
 impl ControllerState {
     fn run(&mut self, operation: ControllerOperation, config_path: Option<&Path>) -> RefreshResult {
+        let message = self.execute(operation, config_path)?;
+        Ok((self.view_model(), message))
+    }
+
+    /// Runs one operation and returns its message; the caller renders the view.
+    fn execute(
+        &mut self,
+        operation: ControllerOperation,
+        config_path: Option<&Path>,
+    ) -> Result<String, String> {
         let logging_before = self.configuration.logging;
         let message = match operation {
             ControllerOperation::Refresh => {
@@ -3811,34 +4030,7 @@ impl ControllerState {
             ControllerOperation::SetFeatureEnabled {
                 feature_id,
                 enabled,
-            } => {
-                let label = self
-                    .runtime
-                    .registrations()
-                    .find(|registration| registration.feature.id == feature_id)
-                    .map_or_else(
-                        || feature_id.clone(),
-                        |registration| registration.feature.label.to_owned(),
-                    );
-                let old = self.configuration.clone();
-                let mut candidate = old.clone();
-                if let Err(error) = candidate.set_feature_enabled(feature_id.clone(), enabled) {
-                    return Err(format!("Could not change {label}: {error:?}"));
-                }
-                self.runtime
-                    .apply_configuration(&candidate)
-                    .map_err(|error| {
-                        self.restore_configuration(old.clone());
-                        format!("Could not apply the change to {label}: {error:?}")
-                    })?;
-                if let Err(error) = persist(config_path, &candidate) {
-                    self.restore_configuration(old);
-                    return Err(format!("Feature change was not saved: {error}"));
-                }
-                self.configuration = candidate;
-                self.preset_snapshot = None;
-                format!("{label} is {}", if enabled { "on" } else { "off" })
-            }
+            } => self.set_feature_enabled(feature_id, enabled, config_path)?,
             ControllerOperation::ApplyPreset(preset) => {
                 let old = self.configuration.clone();
                 let snapshot = self
@@ -4018,10 +4210,7 @@ impl ControllerState {
             ControllerOperation::SetMonitorSetting(setting) => {
                 let mut candidate = self.configuration.clone();
                 if !setting.apply(&mut candidate.monitoring) {
-                    return Ok((
-                        self.view_model(),
-                        "Monitoring settings unchanged".to_owned(),
-                    ));
+                    return Ok("Monitoring settings unchanged".to_owned());
                 }
                 self.commit_configuration(
                     candidate,
@@ -4036,9 +4225,9 @@ impl ControllerState {
             ControllerOperation::MoveMonitorReadout { readout, direction } => {
                 let mut candidate = self.configuration.clone();
                 if !kestrel::move_entry(&mut candidate.monitoring.readouts, &readout, direction) {
-                    return Ok((
-                        self.view_model(),
-                        format!("{} readout is already at that boundary", readout.label()),
+                    return Ok(format!(
+                        "{} readout is already at that boundary",
+                        readout.label()
                     ));
                 }
                 self.commit_configuration(
@@ -4078,14 +4267,7 @@ impl ControllerState {
                     format!("{} alert duration updated", kind.label()),
                 )?
             }
-            ControllerOperation::Audio(command) => {
-                let summary = audio_command_summary(&command);
-                match self.runtime.execute_audio_command(command) {
-                    Some(Ok(_)) => format!("{summary} updated"),
-                    Some(Err(failure)) => format!("{summary} failed: {}", failure.error),
-                    None => "The audio mixer is not running; enable audio.mixer first".to_owned(),
-                }
-            }
+            ControllerOperation::Audio(command) => self.execute_audio(command),
             ControllerOperation::Microphone(command) => {
                 match self.runtime.execute_microphone_command(command) {
                     Some(Ok(_)) => "Microphone state updated".to_owned(),
@@ -4213,7 +4395,7 @@ impl ControllerState {
             ControllerOperation::AudioPreference(edit) => {
                 let mut candidate = self.configuration.clone();
                 if !edit.apply(&mut candidate.audio) {
-                    return Ok((self.view_model(), "Audio preferences unchanged".to_owned()));
+                    return Ok("Audio preferences unchanged".to_owned());
                 }
                 self.commit_configuration(
                     candidate,
@@ -4884,14 +5066,10 @@ impl ControllerState {
             ControllerOperation::CommandQuery(query) => {
                 self.command_query = query.clone();
                 self.refresh_command_results();
-                if query.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("{} command results", self.command_results.len())
-                }
+                String::new()
             }
             ControllerOperation::CommandBar(command) => match command {
-                CommandBarCommand::Run(id) => self.run_command_result(&id),
+                CommandBarCommand::Run(id) => self.run_command_result(&id, config_path),
                 CommandBarCommand::Pin { id, pinned } => {
                     match self.runtime.set_command_pinned(&id, pinned) {
                         Ok(()) => {
@@ -5053,7 +5231,7 @@ impl ControllerState {
                 ));
             }
         }
-        Ok((self.view_model(), message))
+        Ok(message)
     }
     /// Starts one snippet insertion; the window hides once modifiers clear.
     fn start_snippet_insert(&mut self, name: &str) -> String {
@@ -6502,10 +6680,61 @@ fn mark_inherited_fds_cloexec() {
 #[cfg(test)]
 mod tests {
     use super::{
-        CloseOutcome, close_outcome, load_startup_configuration, persist, shelf_capture_add,
+        ApplicationController, CloseOutcome, ControllerContext, RefreshResult, TargetedPanel,
+        TickUpdate, close_outcome, load_startup_configuration, persist, shelf_capture_add,
     };
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    struct SilentNotifier;
+
+    impl kestrel_platform::notifications::AlertNotifier for SilentNotifier {
+        fn notify(
+            &self,
+            _: &kestrel_platform::notifications::AlertNotification,
+        ) -> Result<(), kestrel_platform::notifications::NotificationError> {
+            Ok(())
+        }
+    }
+
+    /// Builds a controller with no window; workers publish to `refresh_results`.
+    fn controller_for(
+        configuration: &ApplicationConfiguration,
+        refresh_results: async_channel::Sender<RefreshResult>,
+    ) -> (
+        std::rc::Rc<ApplicationController>,
+        async_channel::Receiver<TickUpdate>,
+    ) {
+        let mut runtime = kestrel::ApplicationRuntime::new(configuration)
+            .expect("built-in features have valid IDs");
+        runtime.start();
+        let (commands, _command_receiver) = async_channel::unbounded();
+        let (tick_results, tick_receiver) = async_channel::unbounded();
+        let (update_results, _update_receiver) = async_channel::unbounded();
+        let (update_install_results, update_install_receiver) = async_channel::unbounded();
+        let controller = ApplicationController::new(
+            runtime,
+            configuration.clone(),
+            Vec::new(),
+            ControllerContext {
+                config_path: None,
+                offer_setup: false,
+                refresh_results,
+                tick_results,
+                update_results,
+                update_install_results,
+                update_install_receiver,
+                commands,
+                notifier: std::sync::Arc::new(SilentNotifier),
+                capture_notifier: std::sync::Arc::new(
+                    kestrel_platform::notifications::DesktopNotifier::new(),
+                ),
+                status_notifier: None,
+                appearance: std::rc::Rc::new(kestrel::appearance::AppearanceStyles::new()),
+            },
+        );
+        (controller, tick_receiver)
+    }
 
     #[test]
     fn screenshots_join_the_shelf_only_when_asked_and_running() {
@@ -6714,58 +6943,11 @@ mod tests {
     /// Disabled ticks spawn no worker or result; enabled ticks still sample.
     #[test]
     fn monitor_ticks_are_inert_while_the_feature_is_disabled() {
-        use super::{ApplicationController, ControllerContext};
-        use async_channel::Sender;
-        use kestrel::ApplicationRuntime;
-        use kestrel_platform::notifications::{
-            AlertNotification, AlertNotifier, DesktopNotifier, NotificationError,
-        };
         use kestrel_platform::system_monitor::FEATURE_ID as SYSTEM_MONITOR_ID;
-        use std::rc::Rc;
-        use std::sync::Arc;
 
-        struct SilentNotifier;
-
-        impl AlertNotifier for SilentNotifier {
-            fn notify(&self, _: &AlertNotification) -> Result<(), NotificationError> {
-                Ok(())
-            }
-        }
-
-        fn controller_for(
-            configuration: &ApplicationConfiguration,
-            tick_results: Sender<super::TickUpdate>,
-        ) -> Rc<ApplicationController> {
-            let mut runtime =
-                ApplicationRuntime::new(configuration).expect("built-in features have valid IDs");
-            runtime.start();
-            let (commands, _command_receiver) = async_channel::unbounded();
-            let (refresh_results, _refresh_receiver) = async_channel::unbounded();
-            let (update_results, _update_receiver) = async_channel::unbounded();
-            let (update_install_results, update_install_receiver) = async_channel::unbounded();
-            ApplicationController::new(
-                runtime,
-                configuration.clone(),
-                Vec::new(),
-                ControllerContext {
-                    config_path: None,
-                    offer_setup: false,
-                    refresh_results,
-                    tick_results,
-                    update_results,
-                    update_install_results,
-                    update_install_receiver,
-                    commands,
-                    notifier: Arc::new(SilentNotifier),
-                    capture_notifier: Arc::new(DesktopNotifier::new()),
-                    status_notifier: None,
-                    appearance: Rc::new(kestrel::appearance::AppearanceStyles::new()),
-                },
-            )
-        }
-
-        let (disabled_results, disabled_receiver) = async_channel::unbounded();
-        let disabled = controller_for(&ApplicationConfiguration::default(), disabled_results);
+        let (disabled_refresh, _disabled_refresh_receiver) = async_channel::unbounded();
+        let (disabled, disabled_receiver) =
+            controller_for(&ApplicationConfiguration::default(), disabled_refresh);
         assert_eq!(
             disabled.request_tick(),
             super::TICK_IDLE_INTERVAL,
@@ -6785,8 +6967,8 @@ mod tests {
         configuration
             .set_feature_enabled(SYSTEM_MONITOR_ID, true)
             .expect("feature ID is valid");
-        let (enabled_results, enabled_receiver) = async_channel::unbounded();
-        let enabled = controller_for(&configuration, enabled_results);
+        let (enabled_refresh, _enabled_refresh_receiver) = async_channel::unbounded();
+        let (enabled, enabled_receiver) = controller_for(&configuration, enabled_refresh);
         // The first tick runs at the startup pace; later ones follow the
         // interval the previous sample reported.
         assert_eq!(enabled.request_tick(), super::TICK_INTERVAL);
@@ -6808,6 +6990,43 @@ mod tests {
             std::time::Duration::from_millis(500),
             "the configured monitoring interval paces the next tick"
         );
+    }
+
+    #[test]
+    fn command_runs_render_the_whole_window_and_queries_stay_targeted() {
+        let (refresh_results, refresh_receiver) = async_channel::unbounded();
+        let (controller, _tick_receiver) =
+            controller_for(&ApplicationConfiguration::default(), refresh_results);
+
+        controller.request_command_operation(
+            super::ControllerOperation::CommandBar(kestrel::CommandBarCommand::Run(
+                "kestrel:refresh".to_owned(),
+            )),
+            "kestrel-command-run",
+        );
+        assert_eq!(
+            controller.targeted.get(),
+            TargetedPanel::Full,
+            "a run can change any feature, so every panel follows it"
+        );
+        let _ = refresh_receiver
+            .recv_blocking()
+            .expect("the run publishes a result");
+        controller.refreshing.set(false);
+
+        controller.request_command_operation(
+            super::ControllerOperation::CommandQuery("refresh".to_owned()),
+            "kestrel-command-query",
+        );
+        assert_eq!(
+            controller.targeted.get(),
+            TargetedPanel::Commands,
+            "typing re-renders only the command bar panel"
+        );
+        let _ = refresh_receiver
+            .recv_blocking()
+            .expect("the query publishes a result");
+        controller.refreshing.set(false);
     }
 
     #[test]
@@ -6884,6 +7103,228 @@ mod tests {
         assert!(
             missing.spawn().is_err(),
             "a failed exec must not look like a started copy"
+        );
+    }
+
+    #[test]
+    fn running_a_feature_command_switches_and_saves_it() {
+        use super::{ControllerState, FocusTarget};
+        use kestrel::ApplicationRuntime;
+        use kestrel_platform::{applications::FEATURE_ID as COMMAND_BAR_ID, snippets};
+
+        let directory = tempfile::TempDir::new().expect("temporary configuration folder");
+        let path = directory.path().join("config.toml");
+
+        let mut configuration = ApplicationConfiguration::default();
+        configuration
+            .set_feature_enabled(COMMAND_BAR_ID, true)
+            .expect("the command bar feature ID is valid");
+        configuration
+            .set_feature_enabled(snippets::FEATURE_ID, true)
+            .expect("the snippets feature ID is valid");
+        let mut runtime =
+            ApplicationRuntime::new(&configuration).expect("built-in features have valid IDs");
+        runtime.start();
+
+        let (commands, _receiver) = async_channel::unbounded();
+        let mut state = ControllerState {
+            runtime,
+            commands,
+            configuration,
+            warnings: Vec::new(),
+            preset_snapshot: None,
+            clipboard_query: String::new(),
+            clipboard_matches: Vec::new(),
+            clipboard_preview: None,
+            clipboard_fingerprint: None,
+            speed_test_generation: 0,
+            shortcut_generation: 0,
+            capture_generation: 0,
+            last_capture_follow_up: None,
+            process_query: String::new(),
+            process_generation: 0,
+            listener_generation: 0,
+            screen_tools_generation: 0,
+            camera_generation: 0,
+            recording_generation: 0,
+            snippet_query: String::new(),
+            snippet_matches: Vec::new(),
+            snippet_draft: None,
+            snippet_draft_error: None,
+            command_query: "snippets".to_owned(),
+            command_results: Vec::new(),
+        };
+        state.refresh_command_results();
+        assert_eq!(
+            state.command_results[0].item.action,
+            kestrel_services::command_bar::CommandAction::OpenFeature {
+                feature_id: snippets::FEATURE_ID.to_owned(),
+            },
+            "the feature's page leads its switch"
+        );
+
+        let toggle_id = state
+            .command_results
+            .iter()
+            .find(|result| {
+                matches!(
+                    &result.item.action,
+                    kestrel_services::command_bar::CommandAction::SetFeatureEnabled {
+                        feature_id,
+                        enabled: false,
+                    } if feature_id == snippets::FEATURE_ID
+                )
+            })
+            .expect("the switch result is offered")
+            .item
+            .id
+            .clone();
+
+        assert_eq!(
+            state.run_command_result(&toggle_id, Some(&path)),
+            "Snippets is off"
+        );
+        assert!(!state.configuration.feature_enabled(snippets::FEATURE_ID));
+        let saved = kestrel::load(&path)
+            .expect("the saved configuration loads")
+            .configuration;
+        assert!(!saved.feature_enabled(snippets::FEATURE_ID));
+
+        let enable_id = state
+            .command_results
+            .iter()
+            .find(|result| {
+                matches!(
+                    &result.item.action,
+                    kestrel_services::command_bar::CommandAction::SetFeatureEnabled {
+                        feature_id,
+                        enabled: true,
+                    } if feature_id == snippets::FEATURE_ID
+                )
+            })
+            .expect("the switch back on is offered")
+            .item
+            .id
+            .clone();
+        assert_eq!(
+            state.run_command_result(&enable_id, Some(&path)),
+            "Snippets is on"
+        );
+        assert!(state.configuration.feature_enabled(snippets::FEATURE_ID));
+        let saved = kestrel::load(&path)
+            .expect("the saved configuration loads")
+            .configuration;
+        assert!(saved.feature_enabled(snippets::FEATURE_ID));
+        assert_eq!(
+            super::feature_focus_target(snippets::FEATURE_ID),
+            FocusTarget::Snippets
+        );
+    }
+
+    #[test]
+    fn every_configurable_feature_opens_a_page_or_the_feature_hub() {
+        use super::feature_focus_target;
+        use kestrel::ApplicationRuntime;
+        use kestrel::FocusTarget;
+        use kestrel_platform::quick_toggles::ALL_QUICK_TOGGLES;
+
+        let page_targets: [(&str, FocusTarget); 19] = [
+            (
+                kestrel_platform::system_monitor::FEATURE_ID,
+                FocusTarget::Monitoring,
+            ),
+            (kestrel_platform::audio::FEATURE_ID, FocusTarget::Audio),
+            (
+                kestrel_platform::audio::MICROPHONE_FEATURE_ID,
+                FocusTarget::Audio,
+            ),
+            (
+                kestrel_platform::speed_test::FEATURE_ID,
+                FocusTarget::SpeedTest,
+            ),
+            (kestrel_platform::capture::FEATURE_ID, FocusTarget::Capture),
+            (
+                kestrel_platform::recording::FEATURE_ID,
+                FocusTarget::Capture,
+            ),
+            (
+                kestrel_platform::screen_tools::TEXT_FEATURE_ID,
+                FocusTarget::Capture,
+            ),
+            (
+                kestrel_platform::screen_tools::QR_FEATURE_ID,
+                FocusTarget::Capture,
+            ),
+            (
+                kestrel_platform::screen_tools::COLOR_FEATURE_ID,
+                FocusTarget::Capture,
+            ),
+            (kestrel_platform::camera::FEATURE_ID, FocusTarget::Camera),
+            (
+                kestrel_platform::processes::FEATURE_ID,
+                FocusTarget::Processes,
+            ),
+            (
+                kestrel_platform::processes::LISTENERS_FEATURE_ID,
+                FocusTarget::Processes,
+            ),
+            (
+                kestrel_platform::clipboard::FEATURE_ID,
+                FocusTarget::Clipboard,
+            ),
+            (
+                kestrel_platform::applications::FEATURE_ID,
+                FocusTarget::Commands,
+            ),
+            (
+                kestrel_platform::snippets::FEATURE_ID,
+                FocusTarget::Snippets,
+            ),
+            (kestrel::SCRATCHPAD_ID, FocusTarget::Scratchpad),
+            (
+                kestrel_platform::file_actions::FEATURE_ID,
+                FocusTarget::Shelf,
+            ),
+            (
+                kestrel_platform::global_shortcuts::FEATURE_ID,
+                FocusTarget::Shortcuts,
+            ),
+            (kestrel::OVERLAY_ID, FocusTarget::Settings),
+        ];
+        let hub_fallbacks: Vec<&str> = ALL_QUICK_TOGGLES
+            .into_iter()
+            .map(|toggle| toggle.feature_id())
+            .chain([kestrel::STATUS_NOTIFIER_ID])
+            .collect();
+
+        let runtime = ApplicationRuntime::new(&ApplicationConfiguration::default())
+            .expect("built-in features have valid IDs");
+        let mut seen = Vec::new();
+        for registration in runtime
+            .registrations()
+            .filter(|registration| registration.feature.configurable)
+        {
+            let id = registration.feature.id;
+            seen.push(id);
+            let target = feature_focus_target(id);
+            if let Some((_, expected)) = page_targets.iter().find(|(page_id, _)| *page_id == id) {
+                assert_eq!(target, *expected, "{id} opens the wrong page");
+            } else {
+                assert!(
+                    hub_fallbacks.contains(&id),
+                    "{id} is neither mapped to a page nor listed as a Feature Hub fallback"
+                );
+                assert_eq!(
+                    target,
+                    FocusTarget::FeatureHub,
+                    "{id} falls back to the hub"
+                );
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            page_targets.len() + hub_fallbacks.len(),
+            "every configurable feature is classified once"
         );
     }
 }
