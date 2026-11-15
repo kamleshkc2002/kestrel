@@ -30,11 +30,44 @@ pub enum InsertionProvider {
     Xdotool,
 }
 
-impl InsertionProvider {
-    /// Providers in automatic preference order; `ydotool` is omitted.
-    pub const AUTO_ORDER: [InsertionProvider; 2] =
-        [InsertionProvider::Wtype, InsertionProvider::Xdotool];
+/// The graphical session a provider has to reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicalSession {
+    Wayland,
+    X11,
+}
 
+impl GraphicalSession {
+    /// Reads the session the process is attached to; names are not consulted.
+    pub fn detect() -> Option<Self> {
+        let set = |name: &str| env::var_os(name).is_some_and(|value| !value.is_empty());
+        if set("WAYLAND_DISPLAY") {
+            Some(Self::Wayland)
+        } else if set("DISPLAY") {
+            Some(Self::X11)
+        } else {
+            None
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Wayland => "Wayland",
+            Self::X11 => "X11",
+        }
+    }
+
+    /// The automatic provider for this session; `ydotool` needs deliberate
+    /// input-device access and is never chosen automatically.
+    pub const fn provider(self) -> InsertionProvider {
+        match self {
+            Self::Wayland => InsertionProvider::Wtype,
+            Self::X11 => InsertionProvider::Xdotool,
+        }
+    }
+}
+
+impl InsertionProvider {
     pub const fn executable(self) -> &'static str {
         match self {
             Self::Wtype => "wtype",
@@ -148,14 +181,19 @@ pub trait InsertionBackend: Send + 'static {
     }
 }
 
-/// `preferred` pins one provider; automatic search uses providers suitable for unattended access.
+/// `preferred` pins one provider; automatic search picks the provider that can
+/// reach the session passed in.
 pub fn discover_insertion_provider_with(
     preferred: SnippetProviderPreference,
     path_env: Option<&OsStr>,
+    session: Option<GraphicalSession>,
 ) -> Result<InsertionPath, InsertionError> {
     let candidates: Vec<InsertionProvider> = match InsertionProvider::from_preference(preferred) {
         Some(provider) => vec![provider],
-        None => InsertionProvider::AUTO_ORDER.to_vec(),
+        None => session
+            .map(GraphicalSession::provider)
+            .into_iter()
+            .collect(),
     };
     for provider in &candidates {
         if let Some(executable) =
@@ -174,7 +212,19 @@ pub fn discover_insertion_provider_with(
         .map(|provider| provider.executable())
         .collect::<Vec<_>>()
         .join(", ");
-    let mut message = format!("no verified insertion provider was found (checked {checked})");
+    let mut message = match session {
+        Some(session) if !checked.is_empty() => format!(
+            "no verified insertion provider was found for this {} session (checked {checked})",
+            session.label()
+        ),
+        Some(session) => format!(
+            "no verified insertion provider was found for this {} session",
+            session.label()
+        ),
+        None => "no verified insertion provider was found because no graphical session was \
+                 found"
+            .to_owned(),
+    };
     if preferred == SnippetProviderPreference::Auto
         && crate::applications::resolve_executable("ydotool", path_env).is_some()
     {
@@ -192,7 +242,11 @@ pub fn discover_insertion_provider_with(
 pub fn discover_insertion_provider(
     preferred: SnippetProviderPreference,
 ) -> Result<InsertionPath, InsertionError> {
-    discover_insertion_provider_with(preferred, env::var_os("PATH").as_deref())
+    discover_insertion_provider_with(
+        preferred,
+        env::var_os("PATH").as_deref(),
+        GraphicalSession::detect(),
+    )
 }
 
 /// Stdin keeps text out of `/proc/<pid>/cmdline`; discarded output bounds exposure.
@@ -596,8 +650,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ExecutableInsertionBackend, InsertionBackend, InsertionErrorKind, InsertionPath,
-        InsertionProvider, LocalTime, discover_insertion_provider_with,
+        ExecutableInsertionBackend, GraphicalSession, InsertionBackend, InsertionErrorKind,
+        InsertionPath, InsertionProvider, LocalTime, discover_insertion_provider_with,
         insertion_capability_report,
     };
 
@@ -616,32 +670,67 @@ mod tests {
     }
 
     #[test]
-    fn automatic_discovery_prefers_supported_provider_order() {
-        for (case, first, second, expected) in [
+    fn automatic_discovery_picks_the_provider_for_the_session() {
+        for (case, tools, session, expected) in [
             (
-                "X11 provider is preferred over uinput",
-                "xdotool",
-                "ydotool",
-                InsertionProvider::Xdotool,
+                "Wayland uses wtype",
+                &["wtype", "xdotool"][..],
+                Some(GraphicalSession::Wayland),
+                Ok(InsertionProvider::Wtype),
             ),
             (
-                "Wayland provider wins over X11",
-                "wtype",
-                "xdotool",
-                InsertionProvider::Wtype,
+                "X11 uses xdotool",
+                &["wtype", "xdotool"][..],
+                Some(GraphicalSession::X11),
+                Ok(InsertionProvider::Xdotool),
+            ),
+            (
+                "Wayland without wtype has no provider",
+                &["xdotool"][..],
+                Some(GraphicalSession::Wayland),
+                Err("Wayland"),
+            ),
+            (
+                "X11 without xdotool has no provider",
+                &["wtype"][..],
+                Some(GraphicalSession::X11),
+                Err("X11"),
+            ),
+            (
+                "no session has no provider",
+                &["wtype", "xdotool"][..],
+                None,
+                Err("no graphical session"),
+            ),
+            (
+                "a pinned provider overrides the session",
+                &["wtype", "xdotool"][..],
+                Some(GraphicalSession::X11),
+                Ok(InsertionProvider::Wtype),
             ),
         ] {
             let dir = TempDir::new().expect("temp dir");
-            stub(&dir, first, "#!/bin/sh\nexit 0\n");
-            stub(&dir, second, "#!/bin/sh\nexit 0\n");
-
-            let path = discover_insertion_provider_with(
-                SnippetProviderPreference::Auto,
-                Some(&path_env(&dir)),
-            )
-            .expect("a provider is discovered");
-
-            assert_eq!(path.provider(), expected, "{case}");
+            for tool in tools {
+                stub(&dir, tool, "#!/bin/sh\nexit 0\n");
+            }
+            let preferred = if case.starts_with("a pinned") {
+                SnippetProviderPreference::Wtype
+            } else {
+                SnippetProviderPreference::Auto
+            };
+            let result =
+                discover_insertion_provider_with(preferred, Some(&path_env(&dir)), session);
+            match expected {
+                Ok(provider) => assert_eq!(
+                    result.expect("a provider is discovered").provider(),
+                    provider,
+                    "{case}"
+                ),
+                Err(text) => {
+                    let error = result.expect_err("the session has no usable provider");
+                    assert!(error.message.contains(text), "{case}: {}", error.message);
+                }
+            }
         }
     }
 
@@ -653,6 +742,7 @@ mod tests {
         let error = discover_insertion_provider_with(
             SnippetProviderPreference::Auto,
             Some(&path_env(&dir)),
+            Some(GraphicalSession::Wayland),
         )
         .expect_err("the uinput provider is not selected automatically");
         assert_eq!(error.kind, InsertionErrorKind::MissingDependency);
@@ -665,6 +755,7 @@ mod tests {
         let path = discover_insertion_provider_with(
             SnippetProviderPreference::Ydotool,
             Some(&path_env(&dir)),
+            Some(GraphicalSession::Wayland),
         )
         .expect("an explicit preference is honoured");
         assert_eq!(path.provider(), InsertionProvider::Ydotool);
@@ -678,6 +769,7 @@ mod tests {
         let error = discover_insertion_provider_with(
             SnippetProviderPreference::Xdotool,
             Some(&path_env(&dir)),
+            Some(GraphicalSession::Wayland),
         )
         .expect_err("a pinned provider must exist");
 
@@ -688,9 +780,12 @@ mod tests {
     #[test]
     fn discovery_ignores_relative_entries() {
         let relative = std::ffi::OsString::from(".");
-        let error =
-            discover_insertion_provider_with(SnippetProviderPreference::Auto, Some(&relative))
-                .expect_err("relative PATH entries are not searched");
+        let error = discover_insertion_provider_with(
+            SnippetProviderPreference::Auto,
+            Some(&relative),
+            Some(GraphicalSession::Wayland),
+        )
+        .expect_err("relative PATH entries are not searched");
         assert_eq!(error.kind, InsertionErrorKind::MissingDependency);
     }
 
@@ -912,8 +1007,12 @@ mod tests {
 
     #[test]
     fn discovery_without_a_path_finds_nothing() {
-        let error = discover_insertion_provider_with(SnippetProviderPreference::Auto, None)
-            .expect_err("no PATH means no provider");
+        let error = discover_insertion_provider_with(
+            SnippetProviderPreference::Auto,
+            None,
+            Some(GraphicalSession::Wayland),
+        )
+        .expect_err("no PATH means no provider");
         assert_eq!(error.kind, InsertionErrorKind::MissingDependency);
     }
 }

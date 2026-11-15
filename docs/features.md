@@ -84,7 +84,8 @@ Entering commands from a terminal uses `flatpak run io.github.kamleshkc2002.Kest
 - **Configuration:** `[snippets] max_content_bytes` (1 B–1 MiB; default 64 KiB), `clipboard_variable_bytes` (64 B–64 KiB; default 4 KiB), `insert_timeout_millis` (250–10,000; default 2,000), and `preferred_provider` (`auto`, `wtype`, `ydotool`, or `xdotool`; default `auto`).
 - A trigger is an optional unique code that starts with a symbol, such as `;addr`. Typing it in the command bar finds the snippet, and Enter inserts it. A trigger never expands while you type in another app.
 - Snippets are stored atomically in a mode-0600 file in a mode-0700 directory; files keep the literal `{{...}}` variables.
-- The library and editor work without an insertion provider. Insert needs `wtype` (Wayland) or `xdotool` (X11); until one is found, the feature shows as limited and Insert stays greyed out with the reason.
+- The library and editor work without an insertion provider. Insert needs `wtype` on Wayland or `xdotool` on X11; automatic selection uses the provider for the session you are in. Until one is found, the feature shows as limited and Insert stays greyed out with the reason.
+- Insert hides Kestrel and types into the app you were using. If modifier keys stay held or Kestrel keeps the focus, nothing is typed and the window returns with the reason.
 - Alt+Up and Alt+Down move the current line or selected lines in the snippet editor; Ctrl+Z undoes a move.
 
 ## Command bar — `commands.bar`

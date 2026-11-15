@@ -1,6 +1,8 @@
 //! Snippet library panel and editor.
 
-use super::widgets::{SearchGuard, connect_line_movement, plain_row, turn_on_row};
+use super::widgets::{
+    SearchGuard, connect_line_movement, plain_row, stacked_row, stacked_row_error, turn_on_row,
+};
 use adw::prelude::*;
 use async_channel::Sender;
 use gtk::{Orientation, PolicyType, accessible::Property};
@@ -337,14 +339,10 @@ fn entry_row(
     if error.is_some() {
         entry.add_css_class("error");
     }
-    let row = adw::ActionRow::new();
-    row.set_title(title);
-    row.set_subtitle(description);
-    row.set_subtitle_lines(0);
-    if error.is_some() {
-        row.add_css_class("error");
-    }
-    row.add_suffix(&entry);
+    let row = match error {
+        Some(error) => stacked_row_error(title, error, &entry),
+        None => stacked_row(title, hint, &entry),
+    };
     panel.editor.append(&row);
     entry
 }
@@ -376,14 +374,10 @@ fn text_view_row(
         .min_content_height(96)
         .child(&view)
         .build();
-    let row = adw::ActionRow::new();
-    row.set_title("Content");
-    if let Some(error) = error {
-        row.set_subtitle(error);
-        row.set_subtitle_lines(0);
-        row.add_css_class("error");
-    }
-    row.add_suffix(&scroller);
+    let row = match error {
+        Some(error) => stacked_row_error("Content", error, &scroller),
+        None => stacked_row("Content", "", &scroller),
+    };
     panel.editor.append(&row);
     view
 }

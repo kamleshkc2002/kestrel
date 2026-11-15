@@ -3,10 +3,18 @@
 //! Expansion uses supplied context and bounded clipboard text; insertion requires
 //! a verified provider.
 
-use std::{error::Error, fmt, time::Duration};
+use std::{
+    error::Error,
+    fmt,
+    time::{Duration, Instant},
+};
 
 use kestrel_core::{Snippet, SnippetError, SnippetVariable};
 use kestrel_platform::snippets::{InsertionBackend, InsertionError, InsertionProvider, LocalTime};
+
+use crate::paste::{
+    FocusHandoff, HandoffAbandonReason, HandoffStage, PasteFailure, PasteObservation,
+};
 
 pub const CLIPBOARD_PLACEHOLDER: &str = "«clipboard»";
 pub const CLIPBOARD_EMPTY: &str = "«clipboard empty»";
@@ -365,6 +373,11 @@ impl<B: InsertionBackend> SnippetInsertionService<B> {
         self.unavailable.as_deref()
     }
 
+    /// The verified backend, for an operation that already waited for the handoff.
+    pub fn backend_mut(&mut self) -> Option<&mut B> {
+        self.backend.as_mut()
+    }
+
     /// Renders and inserts one snippet when a provider is available.
     pub fn insert(
         &mut self,
@@ -394,9 +407,148 @@ impl<B: InsertionBackend> SnippetInsertionService<B> {
     }
 }
 
+/// The handoff and send stages of one snippet insertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnippetInsertionStage {
+    WaitingForModifiers,
+    WaitingForFocus,
+    Ready,
+    Sending,
+    Done,
+    Abandoned(HandoffAbandonReason),
+    Failed(PasteFailure),
+}
+
+impl SnippetInsertionStage {
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Done | Self::Abandoned(_) | Self::Failed(_))
+    }
+
+    pub const fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+
+    pub fn message(&self) -> Option<String> {
+        match self {
+            Self::WaitingForModifiers => {
+                Some("Insertion: waiting for modifier keys to be released".to_owned())
+            }
+            Self::WaitingForFocus => {
+                Some("Insertion: waiting for the window to lose focus".to_owned())
+            }
+            Self::Ready | Self::Sending => None,
+            Self::Done => Some("Inserted into the previous application".to_owned()),
+            Self::Abandoned(HandoffAbandonReason::FocusTimeout) => {
+                Some("Kestrel kept the focus, so nothing was inserted.".to_owned())
+            }
+            Self::Abandoned(HandoffAbandonReason::ModifiersHeld) => {
+                Some("Modifier keys were still held, so nothing was inserted.".to_owned())
+            }
+            Self::Failed(failure) => Some(format!("Insertion failed: {}", failure.message)),
+        }
+    }
+}
+
+/// One snippet insertion; the caller hides Kestrel once the modifiers clear and
+/// sends only after the focus leaves.
+#[derive(Debug, Clone)]
+pub struct SnippetInsertionOperation {
+    snippet: Snippet,
+    policy: SnippetPolicy,
+    handoff: FocusHandoff,
+    stage: SnippetInsertionStage,
+}
+
+impl SnippetInsertionOperation {
+    pub fn new(snippet: Snippet, policy: SnippetPolicy, now: Instant) -> Self {
+        Self {
+            snippet,
+            policy,
+            handoff: FocusHandoff::new(
+                now,
+                crate::paste::DEFAULT_MODIFIER_TIMEOUT,
+                crate::paste::DEFAULT_FOCUS_TIMEOUT,
+            ),
+            stage: SnippetInsertionStage::WaitingForModifiers,
+        }
+    }
+
+    pub fn snippet(&self) -> &Snippet {
+        &self.snippet
+    }
+
+    pub fn stage(&self) -> &SnippetInsertionStage {
+        &self.stage
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        self.stage.is_terminal()
+    }
+
+    /// Advances the shared wait without sending anything.
+    pub fn advance(
+        &mut self,
+        now: Instant,
+        observation: PasteObservation,
+    ) -> &SnippetInsertionStage {
+        if matches!(self.stage, SnippetInsertionStage::Ready) {
+            return &self.stage;
+        }
+        match self.handoff.advance(now, observation) {
+            HandoffStage::WaitingForModifiers => {
+                self.stage = SnippetInsertionStage::WaitingForModifiers;
+            }
+            HandoffStage::WaitingForFocus => {
+                self.stage = SnippetInsertionStage::WaitingForFocus;
+            }
+            HandoffStage::Ready => self.stage = SnippetInsertionStage::Ready,
+            HandoffStage::Abandoned(reason) => {
+                self.stage = SnippetInsertionStage::Abandoned(reason);
+            }
+        }
+        &self.stage
+    }
+
+    /// Renders against the live context and types once, only after the focus
+    /// released. A terminal operation never sends again.
+    pub fn send<I: InsertionBackend + ?Sized>(
+        &mut self,
+        context: &RenderContext<'_>,
+        provider: &mut I,
+    ) -> Option<Result<InsertionReport, SnippetServiceError>> {
+        if !self.stage.is_ready() {
+            return None;
+        }
+        let rendered = render(&self.snippet, self.policy, context);
+        let bytes = rendered.text.len();
+        self.stage = SnippetInsertionStage::Sending;
+        Some(match provider.insert_text(&rendered.text) {
+            Ok(()) => {
+                self.stage = SnippetInsertionStage::Done;
+                Ok(InsertionReport {
+                    provider: provider.provider(),
+                    bytes,
+                    clipboard_truncated: rendered.clipboard_truncated,
+                    clipboard_empty: rendered.clipboard_empty,
+                })
+            }
+            Err(error) => {
+                self.stage = SnippetInsertionStage::Failed(PasteFailure::new(
+                    Some(provider.provider()),
+                    error.message.clone(),
+                ));
+                Err(SnippetServiceError::Insertion(error))
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
 
     use kestrel_core::{Snippet, SnippetError, SnippetVariable};
     use kestrel_platform::snippets::{
@@ -404,7 +556,8 @@ mod tests {
     };
 
     use super::{
-        CLIPBOARD_EMPTY, CLIPBOARD_PLACEHOLDER, RenderContext, SnippetInsertionService,
+        CLIPBOARD_EMPTY, CLIPBOARD_PLACEHOLDER, HandoffAbandonReason, PasteObservation,
+        RenderContext, SnippetInsertionOperation, SnippetInsertionService, SnippetInsertionStage,
         SnippetLibrary, SnippetPolicy, SnippetServiceError, clip_text, render,
     };
 
@@ -704,6 +857,103 @@ mod tests {
         assert_eq!(
             inserted.lock().expect("fake backend").as_slice(),
             &["2026-10-02 pasted value".to_string()]
+        );
+    }
+
+    fn handoff(focus_released: bool, modifiers_released: bool) -> PasteObservation {
+        PasteObservation {
+            focus_released,
+            modifiers_released,
+        }
+    }
+
+    #[test]
+    fn snippet_insertion_waits_for_the_handoff_and_types_once() {
+        let now = Instant::now();
+        let snippet = Snippet::new(
+            "Address",
+            None,
+            Some(";addr".to_string()),
+            "{{clipboard}} at {{date}}",
+        );
+        let mut operation = SnippetInsertionOperation::new(snippet, SnippetPolicy::default(), now);
+        let mut backend = FakeBackend::default();
+
+        assert_eq!(
+            operation.advance(now, handoff(true, false)),
+            &SnippetInsertionStage::WaitingForModifiers
+        );
+        assert!(
+            operation.send(&contexts(), &mut backend).is_none(),
+            "nothing is sent while a modifier remains"
+        );
+
+        assert_eq!(
+            operation.advance(now + Duration::from_millis(10), handoff(false, true)),
+            &SnippetInsertionStage::WaitingForFocus
+        );
+        assert!(
+            operation.send(&contexts(), &mut backend).is_none(),
+            "nothing is sent while Kestrel holds the focus"
+        );
+
+        assert_eq!(
+            operation.advance(now + Duration::from_millis(20), handoff(true, true)),
+            &SnippetInsertionStage::Ready
+        );
+        let report = operation
+            .send(&contexts(), &mut backend)
+            .expect("the ready operation sends")
+            .expect("the fake provider accepts");
+        assert_eq!(report.bytes, "pasted value at 2026-10-02".len());
+        assert_eq!(operation.stage(), &SnippetInsertionStage::Done);
+
+        assert!(
+            operation.send(&contexts(), &mut backend).is_none(),
+            "a terminal operation never sends again"
+        );
+        assert_eq!(
+            backend.inserted.lock().expect("fake backend").as_slice(),
+            &["pasted value at 2026-10-02".to_string()],
+            "the text is typed exactly once"
+        );
+    }
+
+    #[test]
+    fn snippet_insertion_timeouts_abandon_without_typing() {
+        let now = Instant::now();
+        let mut operation = SnippetInsertionOperation::new(
+            Snippet::new("Address", None, None, "Street"),
+            SnippetPolicy::default(),
+            now,
+        );
+        let mut backend = FakeBackend::default();
+
+        assert_eq!(
+            operation.advance(now + Duration::from_secs(3), handoff(true, false)),
+            &SnippetInsertionStage::Abandoned(HandoffAbandonReason::ModifiersHeld)
+        );
+        assert!(operation.send(&contexts(), &mut backend).is_none());
+        assert!(backend.inserted.lock().expect("fake backend").is_empty());
+
+        let now = Instant::now();
+        let mut operation = SnippetInsertionOperation::new(
+            Snippet::new("Address", None, None, "Street"),
+            SnippetPolicy::default(),
+            now,
+        );
+        assert_eq!(
+            operation.advance(now, handoff(false, true)),
+            &SnippetInsertionStage::WaitingForFocus
+        );
+        assert_eq!(
+            operation.advance(now + Duration::from_secs(3), handoff(false, true)),
+            &SnippetInsertionStage::Abandoned(HandoffAbandonReason::FocusTimeout)
+        );
+        assert!(operation.send(&contexts(), &mut backend).is_none());
+        assert!(
+            backend.inserted.lock().expect("fake backend").is_empty(),
+            "an abandoned insertion types nothing"
         );
     }
 
