@@ -66,24 +66,33 @@ impl ApplicationRuntime {
         registry
             .registrations()
             .filter(|registration| registration.feature.configurable)
-            .map(|registration| {
+            .flat_map(|registration| {
                 let enabled = registration.enabled;
-                let label = registration.feature.label.to_string();
-                CommandItem::new(
-                    format!("feature:{}", registration.feature.id),
-                    CommandSource::Feature,
-                    format!("Turn {} {label}", if enabled { "off" } else { "on" }),
-                    format!("Feature {}", registration.feature.id),
-                    kestrel_services::command_bar::CommandAction::SetFeatureEnabled {
-                        feature_id: registration.feature.id.to_owned(),
-                        enabled: !enabled,
-                    },
-                )
-                .with_keywords([
-                    "feature",
-                    registration.feature.id,
-                    registration.feature.label,
-                ])
+                let feature_id = registration.feature.id;
+                let label = registration.feature.label;
+                [
+                    CommandItem::new(
+                        format!("feature-open:{feature_id}"),
+                        CommandSource::Feature,
+                        format!("Open {label}"),
+                        "Go to the page that hosts it",
+                        kestrel_services::command_bar::CommandAction::OpenFeature {
+                            feature_id: feature_id.to_owned(),
+                        },
+                    )
+                    .with_keywords(["feature", feature_id, label, "open", "page", "settings"]),
+                    CommandItem::new(
+                        format!("feature:{feature_id}"),
+                        CommandSource::Feature,
+                        format!("Turn {} {label}", if enabled { "off" } else { "on" }),
+                        format!("Feature {feature_id}"),
+                        kestrel_services::command_bar::CommandAction::SetFeatureEnabled {
+                            feature_id: feature_id.to_owned(),
+                            enabled: !enabled,
+                        },
+                    )
+                    .with_keywords(["feature", feature_id, label]),
+                ]
             })
             .collect()
     }

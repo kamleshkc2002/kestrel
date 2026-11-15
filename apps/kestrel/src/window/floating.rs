@@ -38,6 +38,10 @@ pub struct FloatingSurface {
     results: gtk::ListBox,
     /// Result IDs in row order; empty for the quick panel and gated bar.
     result_ids: Rc<RefCell<Vec<String>>>,
+    /// The query the status line describes, so ticks keep a run outcome.
+    query: RefCell<String>,
+    /// Why the command bar cannot search, shown in place of the hint.
+    unavailable: Option<String>,
 }
 
 impl FloatingSurface {
@@ -66,6 +70,8 @@ impl FloatingSurface {
             status,
             results,
             result_ids: Rc::new(RefCell::new(Vec::new())),
+            query: RefCell::new(String::new()),
+            unavailable: gate.map(str::to_owned),
         };
 
         if gate.is_some() {
@@ -194,12 +200,14 @@ impl FloatingSurface {
             status,
             results,
             result_ids: Rc::new(RefCell::new(Vec::new())),
+            query: RefCell::new(String::new()),
+            unavailable: None,
         }
     }
 
     /// Replaces the command-bar results; the first result is preselected.
     pub fn set_command_bar(&self, model: &CommandBarViewModel) {
-        if self.kind != FocusTarget::CommandBar {
+        if self.kind != FocusTarget::CommandBar || self.unavailable.is_some() {
             return;
         }
         while let Some(child) = self.results.first_child() {
@@ -224,6 +232,22 @@ impl FloatingSurface {
             ids.push(result.id.clone());
         }
         self.results.set_visible(!ids.is_empty());
+        let query_changed = {
+            let mut last = self.query.borrow_mut();
+            let changed = *last != model.query;
+            if changed {
+                *last = model.query.clone();
+            }
+            changed
+        };
+        if query_changed {
+            self.status
+                .set_text(if ids.is_empty() && !model.query.trim().is_empty() {
+                    "No command results"
+                } else {
+                    COMMAND_BAR_HINT
+                });
+        }
         if let Some(first) = self.results.row_at_index(0) {
             self.results.select_row(Some(&first));
         }

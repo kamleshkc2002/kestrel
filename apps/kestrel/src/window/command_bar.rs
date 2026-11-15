@@ -166,7 +166,7 @@ pub(super) fn fill_command_panel(
             .title(if command_bar.query.trim().is_empty() {
                 "Type to search"
             } else {
-                "No results"
+                "No command results"
             })
             .subtitle(if command_bar.running {
                 "Actions, snippets, and the sources switched on below are searched together."
