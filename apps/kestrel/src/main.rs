@@ -1608,6 +1608,12 @@ impl ApplicationController {
         else {
             return;
         };
+        // The surface still has focus here, so Wayland can bind the activation
+        // token to it and give the replacing window keyboard focus.
+        let context = gtk::prelude::WidgetExt::display(&window).app_launch_context();
+        if let Some(token) = context.startup_notify_id(None::<&gtk::gio::AppInfo>, &[]) {
+            self.activation_token.replace(Some(token.to_string()));
+        }
         // The close handler releases the slot and ends the transient query.
         window.close();
         if self
