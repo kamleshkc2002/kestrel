@@ -500,6 +500,14 @@ impl SnippetInsertionOperation {
         }
     }
 
+    /// Ends a pending insertion as failed without typing; a finished one is
+    /// unchanged.
+    pub fn fail(&mut self, failure: PasteFailure) {
+        if !self.is_terminal() {
+            self.stage = SnippetInsertionStage::Failed(failure);
+        }
+    }
+
     /// Advances the shared wait without sending anything.
     pub fn advance(
         &mut self,
