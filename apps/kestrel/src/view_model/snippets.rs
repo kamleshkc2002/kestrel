@@ -210,7 +210,7 @@ impl SnippetsViewModel {
                 folder: draft.folder.clone(),
                 trigger: draft.trigger.clone(),
                 content: draft.content.clone(),
-                is_new: draft.name.trim().is_empty(),
+                is_new: presentation.library.get(draft.name.trim()).is_none(),
             }),
             draft_error: presentation.draft_error.cloned(),
             warnings: presentation
@@ -317,10 +317,20 @@ mod tests {
             assert_eq!(kept.folder, "");
             assert_eq!(kept.trigger, "addr");
             assert_eq!(kept.content, "Home address");
+            assert!(kept.is_new, "a rejected new snippet is still new");
             let shown = snippets.draft_error.as_ref().expect("the error is shown");
             assert_eq!(shown.field, field);
             assert_eq!(shown.message, message);
         }
+
+        let stored = SnippetDraft {
+            name: "Address".to_owned(),
+            ..draft
+        };
+        let mut presentation = snippet_presentation(&library, &matches);
+        presentation.draft = Some(&stored);
+        let snippets = SnippetsViewModel::from_presentation(presentation);
+        assert!(!snippets.draft.expect("the draft is shown").is_new);
     }
 
     #[test]
