@@ -416,6 +416,8 @@ pub enum SnippetInsertionStage {
     Sending,
     Done,
     Abandoned(HandoffAbandonReason),
+    /// Kestrel regained the focus after the handoff was ready, before sending.
+    FocusReturned,
     /// Snippets stopped before the text was sent.
     Cancelled,
     Failed(PasteFailure),
@@ -425,7 +427,11 @@ impl SnippetInsertionStage {
     pub const fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Done | Self::Abandoned(_) | Self::Cancelled | Self::Failed(_)
+            Self::Done
+                | Self::Abandoned(_)
+                | Self::FocusReturned
+                | Self::Cancelled
+                | Self::Failed(_)
         )
     }
 
@@ -448,6 +454,9 @@ impl SnippetInsertionStage {
             }
             Self::Abandoned(HandoffAbandonReason::ModifiersHeld) => {
                 Some("Modifier keys were still held, so nothing was inserted.".to_owned())
+            }
+            Self::FocusReturned => {
+                Some("Kestrel took the focus back, so nothing was inserted.".to_owned())
             }
             Self::Cancelled => {
                 Some("Snippets were turned off, so nothing was inserted.".to_owned())
@@ -515,6 +524,11 @@ impl SnippetInsertionOperation {
         observation: PasteObservation,
     ) -> &SnippetInsertionStage {
         if matches!(self.stage, SnippetInsertionStage::Ready) {
+            // Sending runs later on a worker; Kestrel taking the focus back in
+            // the meantime ends the insertion instead of typing into Kestrel.
+            if !observation.focus_released {
+                self.stage = SnippetInsertionStage::FocusReturned;
+            }
             return &self.stage;
         }
         match self.handoff.advance(now, observation) {
@@ -939,6 +953,33 @@ mod tests {
             backend.inserted.lock().expect("fake backend").as_slice(),
             &["pasted value at 2026-10-02".to_string()],
             "the text is typed exactly once"
+        );
+
+        // Kestrel regains the focus after the handoff is ready but before the
+        // worker sends.
+        let mut refocused = SnippetInsertionOperation::new(
+            Snippet::new("Address", None, None, "street"),
+            SnippetPolicy::default(),
+            now,
+        );
+        refocused.advance(now, handoff(false, true));
+        assert_eq!(
+            refocused.advance(now + Duration::from_millis(10), handoff(true, true)),
+            &SnippetInsertionStage::Ready
+        );
+        assert_eq!(
+            refocused.advance(now + Duration::from_millis(20), handoff(false, true)),
+            &SnippetInsertionStage::FocusReturned
+        );
+        assert!(refocused.is_terminal());
+        assert!(
+            refocused.send(&contexts(), &mut backend).is_none(),
+            "nothing is typed once Kestrel has the focus again"
+        );
+        assert_eq!(
+            backend.inserted.lock().expect("fake backend").len(),
+            1,
+            "only the first operation typed"
         );
     }
 
