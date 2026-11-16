@@ -29,6 +29,10 @@ feature = "capture.recording"
 text = "A finished recording says which folder it was saved in."
 
 [[change]]
+feature = "clipboard.history"
+text = "Paste can type the entry's text instead of sending a paste shortcut, for desktops where the shortcut arrives as a plain letter."
+
+[[change]]
 feature = "snippets.text"
 text = "Typing a snippet's trigger, such as ;addr, in the command bar finds and inserts it, and the snippet editor explains each field."
 

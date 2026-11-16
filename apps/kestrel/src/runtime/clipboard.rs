@@ -21,6 +21,7 @@ impl ApplicationRuntime {
             &configuration.clipboard,
             &configuration.url_cleanup,
         );
+        policy.type_text_max_bytes = configuration.snippets.max_content_bytes as usize;
         policy.pin_file = configuration
             .clipboard
             .keep_pinned

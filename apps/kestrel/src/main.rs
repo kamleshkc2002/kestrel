@@ -2198,10 +2198,11 @@ impl ApplicationController {
                                     PasteStage::WaitingForFocus
                                         | PasteStage::Sending
                                         | PasteStage::Done
+                                        | PasteStage::Typed
                                 ),
                                 false,
                                 stage.is_terminal(),
-                                matches!(stage, PasteStage::Done),
+                                matches!(stage, PasteStage::Done | PasteStage::Typed),
                                 stage.message(),
                             )
                         })
@@ -4437,7 +4438,7 @@ impl ControllerState {
                 self.commit_configuration(
                     candidate,
                     config_path,
-                    format!("Paste keystroke: {}", keys.label()),
+                    format!("Paste method: {}", keys.label()),
                 )?
             }
             ControllerOperation::ClipboardSearch(query) => {

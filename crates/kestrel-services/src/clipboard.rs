@@ -28,7 +28,9 @@ use kestrel_platform::snippets::InsertionBackend;
 use zeroize::Zeroizing;
 
 use crate::clipboard_pins::{PIN_RETRY_INTERVAL, PinPersistence};
-use crate::paste::{PasteObservation, PasteOperation, PasteSettings, PasteStage};
+use crate::paste::{
+    PasteAbandonReason, PasteObservation, PasteOperation, PasteSettings, PasteStage,
+};
 
 pub use crate::clipboard_pins::{
     PIN_STORE_REMEDY, PinSaveState, PinStoreState, PinStoreStatus, PinWipeReport,
@@ -63,8 +65,10 @@ pub struct ClipboardPolicy {
     pub selection_clear_after: Option<Duration>,
     pub filter_sensitive: bool,
     pub paste_plain_text: bool,
-    /// The keystroke a paste sends; content never reaches the provider.
+    /// How a paste reaches the previous application.
     pub paste_keys: ClipboardPasteKeys,
+    /// The largest text a typed paste will type, from the snippet content bound.
+    pub type_text_max_bytes: usize,
     /// Replaces a single copied link with its cleaned form.
     pub clean_links: bool,
     /// The same local rules the manual preview uses.
@@ -95,6 +99,7 @@ impl Default for ClipboardPolicy {
             filter_sensitive: false,
             paste_plain_text: true,
             paste_keys: ClipboardPasteKeys::CtrlV,
+            type_text_max_bytes: kestrel_core::DEFAULT_SNIPPET_CONTENT_BYTES as usize,
             clean_links: false,
             url_rules: UrlRules::default(),
             keep_pinned: false,
@@ -112,6 +117,7 @@ impl ClipboardPolicy {
             || self.max_file_entries == 0
             || self.max_items == 0
             || self.max_total_bytes == 0
+            || self.type_text_max_bytes == 0
             || self.max_age.is_zero()
             || self.poll_interval.is_zero()
             || self.image_poll_interval.is_zero()
@@ -174,6 +180,7 @@ impl ClipboardPolicy {
             filter_sensitive: configuration.filter_sensitive,
             paste_plain_text: configuration.paste_plain_text,
             paste_keys: configuration.paste_keys,
+            type_text_max_bytes: defaults.type_text_max_bytes,
             clean_links: url_cleanup.automatic,
             url_rules: UrlRules::from_configuration(url_cleanup),
             keep_pinned: configuration.keep_pinned,
@@ -604,7 +611,7 @@ pub enum ClipboardCommand {
         item_id: u64,
         plain_text: bool,
     },
-    /// Copies an entry, hides the window, and sends one paste keystroke.
+    /// Pastes an entry into the previous application by shortcut or by typing.
     PasteItem {
         item_id: u64,
         plain_text: bool,
@@ -655,6 +662,15 @@ pub enum ClipboardServiceError {
     PasteInProgress,
     /// No usable insertion provider, with the discovery reason.
     PasteUnavailable(String),
+    /// Type the text cannot type an image or file entry.
+    TypeTextUnsupported {
+        kind: ClipboardEntryKind,
+    },
+    /// The entry is above the bound for typing its text.
+    TypeTextTooLarge {
+        bytes: usize,
+        maximum: usize,
+    },
     /// The encrypted pin store failed.
     PinStore(PinStoreError),
     /// The Secret Service key store failed.
@@ -665,7 +681,17 @@ pub enum ClipboardServiceError {
 
 impl fmt::Display for ClipboardServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{self:?}")
+        match self {
+            Self::TypeTextUnsupported { .. } => formatter.write_str(
+                "Type the text pastes text entries only; this entry stays on the clipboard.",
+            ),
+            Self::TypeTextTooLarge { bytes, maximum } => write!(
+                formatter,
+                "Type the text types at most {maximum} bytes and this entry has {bytes}; copy it \
+                 and paste by hand."
+            ),
+            _ => write!(formatter, "{self:?}"),
+        }
     }
 }
 
@@ -2553,13 +2579,12 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         if paste.is_terminal() {
             return;
         }
-        let still_owned = self.owned.as_ref() == Some(paste.staged_selection());
+        let still_owned = paste
+            .staged_selection()
+            .is_some_and(|staged| self.owned.as_ref() == Some(staged));
         let observation = self.paste_observation;
         let Some(provider) = self.paste_provider.as_mut() else {
-            paste.fail(crate::paste::PasteFailure::new(
-                None,
-                "the insertion provider is no longer available".to_owned(),
-            ));
+            paste.fail_provider_lost();
             return;
         };
         paste.advance(
@@ -2578,6 +2603,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
             modifier_timeout: crate::paste::DEFAULT_MODIFIER_TIMEOUT,
             max_image_bytes: self.policy.max_image_bytes,
             max_file_entries: self.policy.max_file_entries,
+            type_text_max_bytes: self.policy.type_text_max_bytes,
         }
     }
 
@@ -2753,8 +2779,16 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         }
     }
 
-    /// Releases the owned selection and retained history.
+    /// Ends a pending paste without delivering it.
+    fn end_pending_paste(&mut self) {
+        if let Some(paste) = self.paste.as_mut() {
+            paste.abandon(PasteAbandonReason::Wiped);
+        }
+    }
+
+    /// Releases the owned selection and retained history, ending any paste.
     fn wipe_owned(&mut self) {
+        self.end_pending_paste();
         if let Some(owned) = self.owned.take() {
             if let Err(error) = self.backend.clear_if_matches(&owned) {
                 self.last_error = Some(error.message);
@@ -2837,6 +2871,53 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         Ok(owned)
     }
 
+    /// Holds a text entry for typing without touching the clipboard.
+    fn prepare_typed_paste(
+        &mut self,
+        item_id: u64,
+        plain_text: bool,
+        now: Instant,
+    ) -> Result<(), ClipboardServiceError> {
+        let normalize = plain_text || self.policy.paste_plain_text;
+        let start = match self
+            .history
+            .content(item_id)
+            .ok_or(ClipboardServiceError::UnknownItem { item_id })?
+        {
+            ClipboardEntryContent::Text(text) => {
+                let text = if normalize {
+                    crate::clipboard::plain_text(text)
+                } else {
+                    text.clone()
+                };
+                Ok(text)
+            }
+            other => Err(other.kind()),
+        };
+        match start {
+            Ok(text) => {
+                let bytes = text.len();
+                let maximum = self.policy.type_text_max_bytes;
+                if bytes > maximum {
+                    return Err(ClipboardServiceError::TypeTextTooLarge { bytes, maximum });
+                }
+                self.history.promote(item_id, now);
+                self.paste = Some(PasteOperation::typed(
+                    item_id,
+                    Unlogged::new(text.to_string()),
+                    self.paste_settings(),
+                    now,
+                ));
+                Ok(())
+            }
+            Err(kind) => {
+                // Copy the entry the way Copy does, so it can be pasted by hand.
+                self.stage_item(item_id, plain_text, now)?;
+                Err(ClipboardServiceError::TypeTextUnsupported { kind })
+            }
+        }
+    }
+
     fn execute(
         &mut self,
         command: ClipboardCommand,
@@ -2868,13 +2949,17 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                         }),
                     ));
                 }
-                let staged = self.stage_item(item_id, plain_text, now)?;
-                self.paste = Some(PasteOperation::staged(
-                    item_id,
-                    staged,
-                    self.paste_settings(),
-                    now,
-                ));
+                if self.policy.paste_keys == ClipboardPasteKeys::TypeText {
+                    self.prepare_typed_paste(item_id, plain_text, now)?;
+                } else {
+                    let staged = self.stage_item(item_id, plain_text, now)?;
+                    self.paste = Some(PasteOperation::staged(
+                        item_id,
+                        staged,
+                        self.paste_settings(),
+                        now,
+                    ));
+                }
                 self.paste_observation = PasteObservation::default();
             }
             ClipboardCommand::DeleteItems { item_ids } => {
@@ -2912,6 +2997,9 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 through_id,
                 keep_pinned,
             } => {
+                if !keep_pinned {
+                    self.end_pending_paste();
+                }
                 let removed = self.history.clear_through(through_id, keep_pinned);
                 if !keep_pinned {
                     let holds_removed = self.owned.as_ref().is_some_and(|owned| {
@@ -3271,6 +3359,7 @@ mod tests {
             filter_sensitive: false,
             paste_plain_text: false,
             paste_keys: kestrel_core::ClipboardPasteKeys::CtrlV,
+            type_text_max_bytes: 16,
             clean_links: false,
             url_rules: UrlRules::default(),
             keep_pinned: false,
@@ -4605,8 +4694,10 @@ mod tests {
         snapshot.items.iter().map(|item| item.id).collect()
     }
 
+    #[derive(Default)]
     struct FakeProvider {
         keys: Arc<Mutex<Vec<kestrel_core::ClipboardPasteKeys>>>,
+        texts: Arc<Mutex<Vec<String>>>,
     }
 
     impl kestrel_platform::snippets::InsertionBackend for FakeProvider {
@@ -4618,7 +4709,7 @@ mod tests {
             &mut self,
             text: &str,
         ) -> Result<(), kestrel_platform::snippets::InsertionError> {
-            let _ = text;
+            self.texts.lock().expect("fake texts").push(text.to_owned());
             Ok(())
         }
 
@@ -4646,6 +4737,7 @@ mod tests {
         service.set_paste_provider(
             Some(Box::new(FakeProvider {
                 keys: Arc::clone(&keys),
+                ..FakeProvider::default()
             })),
             None,
         );
@@ -4761,7 +4853,13 @@ mod tests {
         wait_for_items(&service, 1);
         let item_id = service.latest().items[0].id;
         let keys = Arc::new(Mutex::new(Vec::new()));
-        service.set_paste_provider(Some(Box::new(FakeProvider { keys })), None);
+        service.set_paste_provider(
+            Some(Box::new(FakeProvider {
+                keys,
+                ..FakeProvider::default()
+            })),
+            None,
+        );
 
         service
             .execute(ClipboardCommand::PasteItem {
@@ -4779,6 +4877,240 @@ mod tests {
             super::ClipboardServiceError::PasteInProgress
         );
         service.stop();
+    }
+
+    #[test]
+    fn type_text_types_the_entry_once_and_leaves_the_clipboard_alone() {
+        let mut paste_policy = long_lived();
+        paste_policy.paste_keys = kestrel_core::ClipboardPasteKeys::TypeText;
+        paste_policy.paste_plain_text = true;
+        let original = "\u{1b}[1mtype me\u{1b}[0m  \n".to_string();
+        let (mut service, state, _) =
+            start_fake(paste_policy, Some(FakeSelection::Text(original.clone())));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        let writes_before = state.lock().expect("fake state").writes.len();
+        let provider = FakeProvider::default();
+        let texts = Arc::clone(&provider.texts);
+        let chords = Arc::clone(&provider.keys);
+        service.set_paste_provider(Some(Box::new(provider)), None);
+
+        let snapshot = service
+            .execute(ClipboardCommand::PasteItem {
+                item_id,
+                plain_text: false,
+            })
+            .expect("a typed paste needs no staging");
+        assert!(
+            matches!(
+                snapshot.paste,
+                Some(super::PasteStage::Prepared | super::PasteStage::WaitingForModifiers)
+            ),
+            "the text is held before the window hides: {:?}",
+            snapshot.paste
+        );
+        assert!(texts.lock().expect("fake texts").is_empty());
+
+        service.observe_paste(super::PasteObservation {
+            focus_released: false,
+            modifiers_released: false,
+        });
+        wait_for(&service, |snapshot| {
+            snapshot.paste == Some(super::PasteStage::WaitingForModifiers)
+        });
+        assert!(
+            texts.lock().expect("fake texts").is_empty(),
+            "a held modifier types nothing"
+        );
+
+        service.observe_paste(super::PasteObservation {
+            focus_released: false,
+            modifiers_released: true,
+        });
+        wait_for(&service, |snapshot| {
+            snapshot.paste == Some(super::PasteStage::WaitingForFocus)
+        });
+        assert!(
+            texts.lock().expect("fake texts").is_empty(),
+            "the text waits for the focus to leave"
+        );
+
+        service.observe_paste(super::PasteObservation {
+            focus_released: true,
+            modifiers_released: true,
+        });
+        let snapshot = wait_for(&service, |snapshot| {
+            snapshot
+                .paste
+                .as_ref()
+                .is_some_and(|paste| paste.is_terminal())
+        });
+        assert_eq!(snapshot.paste, Some(super::PasteStage::Typed));
+        assert_eq!(
+            texts.lock().expect("fake texts").as_slice(),
+            ["type me"],
+            "the plain-text form is typed once"
+        );
+        assert!(
+            chords.lock().expect("fake chords").is_empty(),
+            "a typed paste never sends a shortcut"
+        );
+        assert_eq!(
+            state.lock().expect("fake state").writes.len(),
+            writes_before,
+            "a typed paste never writes the clipboard"
+        );
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Text(original)),
+            "the live clipboard is untouched"
+        );
+        service.stop();
+    }
+
+    #[test]
+    fn type_text_refuses_an_image_and_copies_it_for_a_manual_paste() {
+        let mut paste_policy = long_lived();
+        paste_policy.paste_keys = kestrel_core::ClipboardPasteKeys::TypeText;
+        let (mut service, state, _) =
+            start_fake(paste_policy, Some(FakeSelection::Image(PNG_2X2.to_vec())));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        let writes_before = state.lock().expect("fake state").writes.len();
+        let provider = FakeProvider::default();
+        let texts = Arc::clone(&provider.texts);
+        let chords = Arc::clone(&provider.keys);
+        service.set_paste_provider(Some(Box::new(provider)), None);
+
+        assert_eq!(
+            service
+                .execute(ClipboardCommand::PasteItem {
+                    item_id,
+                    plain_text: false,
+                })
+                .expect_err("images have no text to type"),
+            super::ClipboardServiceError::TypeTextUnsupported {
+                kind: ClipboardEntryKind::Image
+            }
+        );
+        assert_eq!(
+            state.lock().expect("fake state").writes.len(),
+            writes_before + 1,
+            "the entry is copied so it can be pasted by hand"
+        );
+        assert_eq!(
+            state.lock().expect("fake state").current,
+            Some(FakeSelection::Image(PNG_2X2.to_vec()))
+        );
+        assert!(texts.lock().expect("fake texts").is_empty());
+        assert!(chords.lock().expect("fake chords").is_empty());
+        assert!(service.latest().paste.is_none());
+        service.stop();
+    }
+
+    #[test]
+    fn type_text_refuses_an_entry_above_the_typing_bound() {
+        let mut paste_policy = long_lived();
+        paste_policy.paste_keys = kestrel_core::ClipboardPasteKeys::TypeText;
+        paste_policy.type_text_max_bytes = 4;
+        let (mut service, state, _) =
+            start_fake(paste_policy, Some(FakeSelection::Text("12345".to_string())));
+        wait_for_items(&service, 1);
+        let item_id = service.latest().items[0].id;
+        let writes_before = state.lock().expect("fake state").writes.len();
+        let provider = FakeProvider::default();
+        let texts = Arc::clone(&provider.texts);
+        service.set_paste_provider(Some(Box::new(provider)), None);
+
+        assert_eq!(
+            service
+                .execute(ClipboardCommand::PasteItem {
+                    item_id,
+                    plain_text: false,
+                })
+                .expect_err("typing a large entry would take too long"),
+            super::ClipboardServiceError::TypeTextTooLarge {
+                bytes: 5,
+                maximum: 4
+            }
+        );
+        assert_eq!(
+            state.lock().expect("fake state").writes.len(),
+            writes_before,
+            "a refused typed paste writes nothing"
+        );
+        assert!(texts.lock().expect("fake texts").is_empty());
+        assert!(service.latest().paste.is_none());
+        service.stop();
+    }
+
+    #[test]
+    fn a_wipe_ends_a_pending_paste_without_delivering_it() {
+        for keys in [
+            kestrel_core::ClipboardPasteKeys::CtrlV,
+            kestrel_core::ClipboardPasteKeys::TypeText,
+        ] {
+            let mut paste_policy = long_lived();
+            paste_policy.paste_keys = keys;
+            let (mut service, _, events) = start_fake(
+                paste_policy,
+                Some(FakeSelection::Text("secret".to_string())),
+            );
+            wait_for_items(&service, 1);
+            let item_id = service.latest().items[0].id;
+            let provider = FakeProvider::default();
+            let texts = Arc::clone(&provider.texts);
+            let chords = Arc::clone(&provider.keys);
+            service.set_paste_provider(Some(Box::new(provider)), None);
+
+            let snapshot = service
+                .execute(ClipboardCommand::PasteItem {
+                    item_id,
+                    plain_text: false,
+                })
+                .expect("paste starts");
+            assert!(
+                !snapshot
+                    .paste
+                    .as_ref()
+                    .is_some_and(|paste| paste.is_terminal()),
+                "{keys:?}"
+            );
+
+            events
+                .lock()
+                .expect("fake events")
+                .push(SessionPrivacyEvent::Locked);
+            wait_for_items(&service, 0);
+
+            // A stale released observation must not deliver after the wipe.
+            service.observe_paste(super::PasteObservation {
+                focus_released: true,
+                modifiers_released: true,
+            });
+            let snapshot = wait_for(&service, |snapshot| {
+                snapshot
+                    .paste
+                    .as_ref()
+                    .is_some_and(|paste| paste.is_terminal())
+            });
+            assert_eq!(
+                snapshot.paste,
+                Some(super::PasteStage::Abandoned(
+                    super::PasteAbandonReason::Wiped
+                )),
+                "{keys:?}"
+            );
+            assert!(
+                texts.lock().expect("fake texts").is_empty(),
+                "a wipe types nothing: {keys:?}"
+            );
+            assert!(
+                chords.lock().expect("fake chords").is_empty(),
+                "a wipe sends no shortcut: {keys:?}"
+            );
+            service.stop();
+        }
     }
 
     #[derive(Default)]

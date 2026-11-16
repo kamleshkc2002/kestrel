@@ -344,10 +344,10 @@ pub(super) fn add_clipboard_limits_group(
 
     let combinations = kestrel::ClipboardPasteKeys::ALL;
     let paste_keys = adw::ComboRow::builder()
-        .title("Paste keystroke")
+        .title("Paste method")
         .subtitle(
-            "The keystroke sent after the window hides, so the previous application pastes; \
-             the entry itself is never sent.",
+            "How the previous application receives the entry after the window hides: a paste \
+             shortcut, or the entry's text typed directly.",
         )
         .model(&gtk::StringList::new(
             &combinations
