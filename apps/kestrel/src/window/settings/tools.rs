@@ -345,10 +345,7 @@ pub(super) fn add_clipboard_limits_group(
     let combinations = kestrel::ClipboardPasteKeys::ALL;
     let paste_keys = adw::ComboRow::builder()
         .title("Paste method")
-        .subtitle(
-            "How the previous application receives the entry after the window hides: a paste \
-             shortcut, or the entry's text typed directly.",
-        )
+        .subtitle(clipboard.policy.paste_keys.description())
         .model(&gtk::StringList::new(
             &combinations
                 .iter()
@@ -365,6 +362,9 @@ pub(super) fn add_clipboard_limits_group(
     let sender = commands.clone();
     paste_keys.connect_selected_notify(move |row| {
         if let Some(keys) = combinations.get(row.selected() as usize) {
+            // The subtitle explains the method in effect, including the
+            // typed method's terminal warning.
+            row.set_subtitle(keys.description());
             let _ = sender.try_send(ApplicationCommand::SetClipboardPasteKeys(*keys));
         }
     });
