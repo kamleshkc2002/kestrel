@@ -2908,6 +2908,7 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                     self.paste_settings(),
                     now,
                 ));
+                log::debug!(target: "clipboard.history", "typed paste prepared");
                 Ok(())
             }
             Err(kind) => {
@@ -2935,6 +2936,11 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 item_id,
                 plain_text,
             } => {
+                log::debug!(
+                    target: "clipboard.history",
+                    "paste requested with {:?}",
+                    self.policy.paste_keys
+                );
                 if self
                     .paste
                     .as_ref()

@@ -423,6 +423,11 @@ impl PasteOperation {
             }
             PastePayload::Typed(text) => {
                 self.stage = PasteStage::Sending;
+                log::debug!(
+                    target: "clipboard.history",
+                    "typing the paste text through {}",
+                    provider.provider().label()
+                );
                 self.stage = match provider.insert_text(text.expose()) {
                     Ok(()) => PasteStage::Typed,
                     Err(error) => PasteStage::Failed(PasteFailure::typing(

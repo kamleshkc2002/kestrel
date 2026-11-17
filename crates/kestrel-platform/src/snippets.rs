@@ -415,12 +415,12 @@ impl ExecutableInsertionBackend {
                 format!("{} did not expose an input pipe", self.provider.label()),
             ));
         };
-        let payload = text.as_bytes().to_vec();
+        let payload = zeroize::Zeroizing::new(text.as_bytes().to_vec());
         thread::Builder::new()
             .name("kestrel-insert-input".to_string())
             .spawn(move || {
                 // Early pipe closure is reported by the provider's exit status.
-                let _ = stdin.write_all(&payload);
+                let _ = stdin.write_all(payload.as_slice());
             })
             .map(|_| ())
             .map_err(|error| {

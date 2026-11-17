@@ -936,11 +936,12 @@ fn deliver_alerts(
 
 /// Focus and held modifiers, observed on the GTK thread while a paste waits.
 fn paste_observation(application: &gtk::Application) -> kestrel_services::paste::PasteObservation {
-    // A hidden window keeps its last active state, and it cannot hold the focus.
+    // A layer surface can keep keyboard input while GTK reports it inactive, so
+    // only a hidden window proves that the previous application owns the keys.
     let focus_released = application
         .windows()
         .iter()
-        .all(|window| !window.is_visible() || !window.is_active());
+        .all(|window| !window.is_visible());
     let held = gtk::gdk::Display::default()
         .and_then(|display| display.default_seat())
         .and_then(|seat| seat.keyboard())
@@ -2229,6 +2230,16 @@ impl ApplicationController {
             };
             let Some((hides, ready, terminal, done, message)) = tick else {
                 controller.end_handoff(kind);
+                if kind == HandoffKind::ClipboardPaste {
+                    // Nothing was staged, so no observation can finish the paste.
+                    if let Some(application) = gtk::gio::Application::default()
+                        .and_then(|application| application.downcast::<adw::Application>().ok())
+                    {
+                        controller.present(&application);
+                    }
+                    controller
+                        .show_message("The paste did not start; the entry stays on the clipboard.");
+                }
                 return glib::ControlFlow::Break;
             };
             if hides && !hidden {
@@ -4427,9 +4438,19 @@ impl ControllerState {
                     },
                 ) {
                     Some(Ok(_)) => String::new(),
-                    Some(Err(error)) => format!("Paste failed: {error}"),
-                    None => "Clipboard history is not running; enable clipboard.history first"
-                        .to_owned(),
+                    Some(Err(error)) => {
+                        log::debug!(
+                            target: "clipboard.history",
+                            "paste did not start: {error:?}"
+                        );
+                        return Err(format!("Paste failed: {error}"));
+                    }
+                    None => {
+                        return Err(
+                            "Clipboard history is not running; enable clipboard.history first"
+                                .to_owned(),
+                        );
+                    }
                 }
             }
             ControllerOperation::SetClipboardPasteKeys(keys) => {
