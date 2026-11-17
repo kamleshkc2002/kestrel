@@ -43,7 +43,8 @@ use kestrel_core::{ApplicationConfiguration, FeatureConfigurationSnapshot};
 use kestrel_platform::cancellation::CancellationToken;
 use kestrel_platform::install_handoff::{InstallTarget, Provider};
 use kestrel_platform::notifications::{
-    AlertNotification, AlertNotifier, CaptureNotificationAction, DesktopNotifier, NotificationEvent,
+    AlertNotification, AlertNotifier, CaptureNotificationAction, DesktopNotifier,
+    NotificationError, NotificationEvent,
 };
 use kestrel_platform::update_install::{DownloadedUpdate, UpdateInstallErrorKind};
 use kestrel_services::alerts::notification_text;
@@ -1048,6 +1049,25 @@ fn clipboard_tick_update(
 enum HandoffKind {
     ClipboardPaste,
     SnippetInsert,
+}
+
+/// What a manual-copy reminder does once its notification attempt finishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManualCopyFollowUp {
+    /// The notification reached the desktop; the window stays hidden.
+    StayHidden,
+    /// The window comes back with this in-window message.
+    Present(Option<String>),
+}
+
+fn manual_copy_follow_up(
+    notification: &Result<(), NotificationError>,
+    message: Option<String>,
+) -> ManualCopyFollowUp {
+    match notification {
+        Ok(()) => ManualCopyFollowUp::StayHidden,
+        Err(_) => ManualCopyFollowUp::Present(message),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2355,18 +2375,7 @@ impl ApplicationController {
     ) {
         self.end_handoff(kind);
         if let Some(entry_kind) = manual_copy {
-            if let Err(error) = self
-                .notifier
-                .notify(&Self::manual_paste_notification(entry_kind))
-            {
-                log::warn!(
-                    target: "clipboard.history",
-                    "manual paste notification failed: {error}"
-                );
-                if let Some(message) = message {
-                    self.show_message(&message);
-                }
-            }
+            self.send_manual_paste_notification(entry_kind, message);
             return;
         }
         if !done {
@@ -2386,6 +2395,59 @@ impl ApplicationController {
                 HandoffKind::SnippetInsert => TargetedPanel::Snippets,
             };
             apply_targeted_panel(view, &view_model, panel);
+        }
+    }
+
+    /// Sends the manual-copy reminder on a worker; a failure brings the window
+    /// back so the reminder is visible.
+    fn send_manual_paste_notification(
+        self: &Rc<Self>,
+        entry_kind: kestrel::ClipboardEntryKind,
+        message: Option<String>,
+    ) {
+        let notification = Self::manual_paste_notification(entry_kind);
+        let (results, receiver) = async_channel::bounded(1);
+        let notifier = Arc::clone(&self.notifier);
+        let spawned = thread::Builder::new()
+            .name("kestrel-paste-notify".to_owned())
+            .spawn(move || {
+                let _ = results.send_blocking(notifier.notify(&notification));
+            });
+        if spawned.is_err() {
+            log::warn!(target: "clipboard.history", "kestrel-paste-notify could not start");
+            self.present_after_manual_copy(message);
+            return;
+        }
+        let controller = Rc::clone(self);
+        glib::spawn_future_local(async move {
+            let Ok(result) = receiver.recv().await else {
+                controller.present_after_manual_copy(message);
+                return;
+            };
+            match manual_copy_follow_up(&result, message) {
+                ManualCopyFollowUp::StayHidden => {}
+                ManualCopyFollowUp::Present(message) => {
+                    if let Err(error) = result {
+                        log::warn!(
+                            target: "clipboard.history",
+                            "manual paste notification failed: {error}"
+                        );
+                    }
+                    controller.present_after_manual_copy(message);
+                }
+            }
+        });
+    }
+
+    /// Brings the window back before the in-window reminder, so the user sees it.
+    fn present_after_manual_copy(self: &Rc<Self>, message: Option<String>) {
+        if let Some(application) = gtk::gio::Application::default()
+            .and_then(|application| application.downcast::<adw::Application>().ok())
+        {
+            self.present(&application);
+        }
+        if let Some(message) = message {
+            self.show_message(&message);
         }
     }
 
@@ -6795,9 +6857,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        ApplicationController, CloseOutcome, ControllerContext, HiddenSettle, RefreshResult,
-        TargetedPanel, TickUpdate, close_outcome, load_startup_configuration, persist,
-        shelf_capture_add,
+        ApplicationController, CloseOutcome, ControllerContext, HiddenSettle, ManualCopyFollowUp,
+        RefreshResult, TargetedPanel, TickUpdate, close_outcome, load_startup_configuration,
+        manual_copy_follow_up, persist, shelf_capture_add,
     };
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
@@ -6828,7 +6890,7 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_copy_hides_the_window_and_keeps_it_hidden() {
+    fn a_manual_copy_hides_until_its_notification_is_missing() {
         use kestrel::ClipboardEntryKind;
         use kestrel_services::paste::{PasteAbandonReason, PasteStage};
 
@@ -6853,6 +6915,21 @@ mod tests {
         assert!(
             !ApplicationController::paste_stage_hides(&PasteStage::Prepared),
             "a typed paste keeps the window while modifiers are held"
+        );
+
+        let reminder = Some("the copy reminder".to_owned());
+        assert_eq!(
+            manual_copy_follow_up(&Ok(()), reminder.clone()),
+            ManualCopyFollowUp::StayHidden,
+            "a delivered notification keeps the window hidden"
+        );
+        let unavailable = Err(kestrel_platform::notifications::NotificationError {
+            message: "no notification service".to_owned(),
+        });
+        assert_eq!(
+            manual_copy_follow_up(&unavailable, reminder.clone()),
+            ManualCopyFollowUp::Present(reminder),
+            "a failed notification presents the window with the reminder"
         );
     }
 
