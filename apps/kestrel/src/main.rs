@@ -934,14 +934,47 @@ fn deliver_alerts(
     guard.runtime.monitor_view_model(&guard.configuration)
 }
 
+/// How long every Kestrel surface must stay hidden before delivery, so the
+/// compositor has moved keyboard focus to the previous application.
+const HANDOFF_SETTLE: Duration = Duration::from_millis(150);
+
+/// Reports focus released only after every surface has stayed hidden for the
+/// settle period.
+struct HiddenSettle {
+    settle: Duration,
+    hidden_since: Option<Instant>,
+}
+
+impl HiddenSettle {
+    fn new(settle: Duration) -> Self {
+        Self {
+            settle,
+            hidden_since: None,
+        }
+    }
+
+    fn observe(&mut self, all_hidden: bool, now: Instant) -> bool {
+        if !all_hidden {
+            self.hidden_since = None;
+            return false;
+        }
+        let since = *self.hidden_since.get_or_insert(now);
+        now.saturating_duration_since(since) >= self.settle
+    }
+}
+
 /// Focus and held modifiers, observed on the GTK thread while a paste waits.
-fn paste_observation(application: &gtk::Application) -> kestrel_services::paste::PasteObservation {
+fn paste_observation(
+    application: &gtk::Application,
+    settle: &mut HiddenSettle,
+) -> kestrel_services::paste::PasteObservation {
     // A layer surface can keep keyboard input while GTK reports it inactive, so
-    // only a hidden window proves that the previous application owns the keys.
-    let focus_released = application
+    // hiding is the precondition; the settle covers the compositor's focus move.
+    let all_hidden = application
         .windows()
         .iter()
         .all(|window| !window.is_visible());
+    let focus_released = settle.observe(all_hidden, Instant::now());
     let held = gtk::gdk::Display::default()
         .and_then(|display| display.default_seat())
         .and_then(|seat| seat.keyboard())
@@ -2183,8 +2216,9 @@ impl ApplicationController {
         let state = Arc::clone(&self.state);
         let mut hidden = false;
         let mut sent = false;
+        let mut settle = HiddenSettle::new(HANDOFF_SETTLE);
         glib::timeout_add_local(Duration::from_millis(40), move || {
-            let observation = paste_observation(&application);
+            let observation = paste_observation(&application, &mut settle);
             let tick = {
                 let mut guard = state
                     .lock()
@@ -6701,12 +6735,40 @@ fn mark_inherited_fds_cloexec() {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::{
-        ApplicationController, CloseOutcome, ControllerContext, RefreshResult, TargetedPanel,
-        TickUpdate, close_outcome, load_startup_configuration, persist, shelf_capture_add,
+        ApplicationController, CloseOutcome, ControllerContext, HiddenSettle, RefreshResult,
+        TargetedPanel, TickUpdate, close_outcome, load_startup_configuration, persist,
+        shelf_capture_add,
     };
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    #[test]
+    fn handing_focus_over_waits_for_the_settle_after_every_surface_hides() {
+        let start = Instant::now();
+        let settle = Duration::from_millis(150);
+
+        let mut hidden = HiddenSettle::new(settle);
+        assert!(
+            !hidden.observe(true, start),
+            "hiding alone does not move the compositor's focus"
+        );
+        assert!(!hidden.observe(true, start + Duration::from_millis(149)));
+        assert!(hidden.observe(true, start + Duration::from_millis(150)));
+
+        let mut hidden = HiddenSettle::new(settle);
+        assert!(!hidden.observe(false, start));
+        assert!(!hidden.observe(true, start + Duration::from_millis(10)));
+        assert!(
+            !hidden.observe(false, start + Duration::from_millis(60)),
+            "a surface reappearing restarts the settle"
+        );
+        assert!(!hidden.observe(true, start + Duration::from_millis(70)));
+        assert!(!hidden.observe(true, start + Duration::from_millis(219)));
+        assert!(hidden.observe(true, start + Duration::from_millis(220)));
+    }
 
     struct SilentNotifier;
 
