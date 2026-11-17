@@ -47,3 +47,7 @@ text = "Typing a feature's name in the command bar offers to open its page, the 
 [[change]]
 feature = "clipboard.history"
 text = "Copying or pasting an entry replaces the clipboard directly, so it no longer empties it for a moment, which on some desktops lost the copy or made a paste report that the clipboard changed."
+
+[[change]]
+feature = "clipboard.history"
+text = "The paste shortcut now reaches apps on desktops that dropped its Ctrl or Shift key, so pasting into the previous app works for text, images, and files there."
