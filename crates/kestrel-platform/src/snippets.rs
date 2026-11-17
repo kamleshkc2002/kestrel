@@ -259,11 +259,12 @@ pub struct ExecutableInsertionBackend {
 /// Linux input event keycodes for each paste combination.
 ///
 /// ydotool 1.x takes `keycode:state` pairs, with 1 for press and 0 for release.
-fn keycodes(keys: ClipboardPasteKeys) -> &'static [&'static str] {
+fn keycodes(keys: ClipboardPasteKeys) -> Option<&'static [&'static str]> {
     match keys {
-        ClipboardPasteKeys::CtrlV => &["29:1", "47:1", "47:0", "29:0"],
-        ClipboardPasteKeys::CtrlShiftV => &["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
-        ClipboardPasteKeys::ShiftInsert => &["42:1", "110:1", "110:0", "42:0"],
+        ClipboardPasteKeys::CtrlV => Some(&["29:1", "47:1", "47:0", "29:0"]),
+        ClipboardPasteKeys::CtrlShiftV => Some(&["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]),
+        ClipboardPasteKeys::ShiftInsert => Some(&["42:1", "110:1", "110:0", "42:0"]),
+        ClipboardPasteKeys::TypeText => None,
     }
 }
 
@@ -322,7 +323,7 @@ impl ExecutableInsertionBackend {
     }
 
     /// Provider arguments for one paste keystroke; no stdin is used.
-    fn key_arguments(&self, keys: ClipboardPasteKeys) -> Vec<OsString> {
+    fn key_arguments(&self, keys: ClipboardPasteKeys) -> Option<Vec<OsString>> {
         match self.provider {
             // wtype presses and releases keysyms in the given modifier order.
             InsertionProvider::Wtype => {
@@ -337,29 +338,33 @@ impl ExecutableInsertionBackend {
                     ClipboardPasteKeys::ShiftInsert => {
                         arguments.extend(["-M", "shift", "-k", "Insert", "-m", "shift"]);
                     }
+                    ClipboardPasteKeys::TypeText => return None,
                 }
-                arguments.into_iter().map(OsString::from).collect()
+                Some(arguments.into_iter().map(OsString::from).collect())
             }
             InsertionProvider::Ydotool => {
                 // Linux input keycodes are hardware independent.
                 let mut arguments = vec![OsString::from("key")];
                 arguments.extend(
-                    keycodes(keys)
+                    keycodes(keys)?
                         .iter()
                         .map(|argument| OsString::from(*argument)),
                 );
-                arguments
+                Some(arguments)
             }
             InsertionProvider::Xdotool => {
                 let combination = match keys {
                     ClipboardPasteKeys::CtrlV => "ctrl+v",
                     ClipboardPasteKeys::CtrlShiftV => "ctrl+shift+v",
                     ClipboardPasteKeys::ShiftInsert => "shift+Insert",
+                    ClipboardPasteKeys::TypeText => return None,
                 };
-                ["key", "--clearmodifiers", combination]
-                    .into_iter()
-                    .map(OsString::from)
-                    .collect()
+                Some(
+                    ["key", "--clearmodifiers", combination]
+                        .into_iter()
+                        .map(OsString::from)
+                        .collect(),
+                )
             }
         }
     }
@@ -410,12 +415,12 @@ impl ExecutableInsertionBackend {
                 format!("{} did not expose an input pipe", self.provider.label()),
             ));
         };
-        let payload = text.as_bytes().to_vec();
+        let payload = zeroize::Zeroizing::new(text.as_bytes().to_vec());
         thread::Builder::new()
             .name("kestrel-insert-input".to_string())
             .spawn(move || {
                 // Early pipe closure is reported by the provider's exit status.
-                let _ = stdin.write_all(&payload);
+                let _ = stdin.write_all(payload.as_slice());
             })
             .map(|_| ())
             .map_err(|error| {
@@ -449,7 +454,13 @@ impl InsertionBackend for ExecutableInsertionBackend {
     }
 
     fn press_keys(&mut self, keys: ClipboardPasteKeys) -> Result<(), InsertionError> {
-        let mut child = self.spawn_provider(self.key_arguments(keys))?;
+        let Some(arguments) = self.key_arguments(keys) else {
+            return Err(InsertionError::new(
+                InsertionErrorKind::Rejected,
+                "typing the entry's text is not a paste keystroke",
+            ));
+        };
+        let mut child = self.spawn_provider(arguments)?;
         // No stdin: the provider receives only the key combination.
         drop(child.stdin.take());
         self.wait_for(child)

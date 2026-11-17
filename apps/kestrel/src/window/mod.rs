@@ -567,6 +567,18 @@ impl WindowView {
                 self.select_page(SidebarPage::FeatureHub);
                 true
             }
+            FocusTarget::Commands => {
+                self.select_page(SidebarPage::CommandBar);
+                true
+            }
+            FocusTarget::Shortcuts => {
+                self.select_page(SidebarPage::Shortcuts);
+                true
+            }
+            FocusTarget::Settings => {
+                self.select_page(SidebarPage::Settings);
+                true
+            }
         }
     }
 

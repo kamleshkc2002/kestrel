@@ -1837,7 +1837,7 @@ pub struct ClipboardConfiguration {
     pub pinned_max_age_days: u32,
 }
 
-/// The keystroke a history entry's paste operation sends.
+/// How a history entry's paste operation reaches the previous application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClipboardPasteKeys {
@@ -1845,21 +1845,24 @@ pub enum ClipboardPasteKeys {
     CtrlV,
     CtrlShiftV,
     ShiftInsert,
+    TypeText,
 }
 
 impl ClipboardPasteKeys {
-    pub const ALL: [ClipboardPasteKeys; 3] = [
+    pub const ALL: [ClipboardPasteKeys; 4] = [
         ClipboardPasteKeys::CtrlV,
         ClipboardPasteKeys::CtrlShiftV,
         ClipboardPasteKeys::ShiftInsert,
+        ClipboardPasteKeys::TypeText,
     ];
 
-    /// The configured spelling of this combination.
+    /// The configured spelling of this method.
     pub const fn configuration_name(self) -> &'static str {
         match self {
             Self::CtrlV => "ctrl_v",
             Self::CtrlShiftV => "ctrl_shift_v",
             Self::ShiftInsert => "shift_insert",
+            Self::TypeText => "type_text",
         }
     }
 
@@ -1868,15 +1871,21 @@ impl ClipboardPasteKeys {
             Self::CtrlV => "Ctrl+V",
             Self::CtrlShiftV => "Ctrl+Shift+V",
             Self::ShiftInsert => "Shift+Insert",
+            Self::TypeText => "Type the text",
         }
     }
 
-    /// Why the combination is a sensible choice.
+    /// Why the method is a sensible choice.
     pub const fn description(self) -> &'static str {
         match self {
             Self::CtrlV => "Most applications paste with Ctrl+V.",
             Self::CtrlShiftV => "Terminals and some editors paste with Ctrl+Shift+V.",
             Self::ShiftInsert => "Terminals and legacy applications paste with Shift+Insert.",
+            Self::TypeText => {
+                "Types the entry into the app instead of sending a paste shortcut. Use it when \
+                 the paste shortcut arrives as a plain letter. Text only; multi-line text is \
+                 typed line by line, so each line runs in a terminal."
+            }
         }
     }
 }

@@ -7,11 +7,13 @@
 
 use std::time::{Duration, Instant};
 
-use kestrel_core::ClipboardPasteKeys;
+use kestrel_core::{ClipboardPasteKeys, DEFAULT_SNIPPET_CONTENT_BYTES};
 use kestrel_platform::clipboard::{
     ClipboardBackend, ClipboardError, ClipboardErrorKind, OwnedSelection,
 };
 use kestrel_platform::snippets::{InsertionBackend, InsertionProvider};
+
+use crate::clipboard::Unlogged;
 
 pub const DEFAULT_FOCUS_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_MODIFIER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -24,6 +26,8 @@ pub struct PasteSettings {
     pub modifier_timeout: Duration,
     pub max_image_bytes: usize,
     pub max_file_entries: usize,
+    /// The largest text a typed paste will type.
+    pub type_text_max_bytes: usize,
 }
 
 impl Default for PasteSettings {
@@ -34,6 +38,7 @@ impl Default for PasteSettings {
             modifier_timeout: DEFAULT_MODIFIER_TIMEOUT,
             max_image_bytes: super::clipboard::DEFAULT_MAX_IMAGE_BYTES,
             max_file_entries: super::clipboard::DEFAULT_MAX_FILE_ENTRIES,
+            type_text_max_bytes: DEFAULT_SNIPPET_CONTENT_BYTES as usize,
         }
     }
 }
@@ -131,6 +136,8 @@ pub enum PasteAbandonReason {
     ClipboardUnreadable,
     /// The backend cannot report selection contents.
     ClipboardReadUnsupported,
+    /// A privacy wipe or history stop ended the paste.
+    Wiped,
 }
 
 impl PasteAbandonReason {
@@ -153,88 +160,129 @@ impl PasteAbandonReason {
             Self::ClipboardReadUnsupported => {
                 "This clipboard backend cannot report its contents, so the paste was not sent."
             }
+            Self::Wiped => "The clipboard was wiped, so nothing was pasted.",
         }
     }
 }
 
-/// Why the provider could not send the keystroke.
+/// Why the provider could not deliver the paste.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasteFailure {
     pub provider: Option<InsertionProvider>,
     pub message: String,
+    typed: bool,
 }
 
 impl PasteFailure {
     pub fn new(provider: Option<InsertionProvider>, message: String) -> Self {
-        Self { provider, message }
+        Self {
+            provider,
+            message,
+            typed: false,
+        }
+    }
+
+    /// A failure while typing the entry's text.
+    pub fn typing(provider: Option<InsertionProvider>, message: String) -> Self {
+        Self {
+            provider,
+            message,
+            typed: true,
+        }
     }
 
     pub fn message(&self) -> String {
-        format!("The paste keystroke failed: {}", self.message)
+        let action = if self.typed {
+            "Typing the text failed"
+        } else {
+            "The paste keystroke failed"
+        };
+        format!("{action}: {}", self.message)
     }
 }
 
 /// The operation's typed lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteStage {
-    /// The entry is on the clipboard and the window still holds focus.
+    /// A chord paste put the entry on the clipboard; the window still holds focus.
     Staged,
+    /// A typed paste holds the text; the window still holds focus.
+    Prepared,
     /// The shortcut's modifiers must clear while the window keeps the focus.
     WaitingForModifiers,
     /// The window may hide now; the previous application has to take the focus.
     WaitingForFocus,
     Sending,
+    /// The paste shortcut was sent.
     Done,
+    /// The entry's text was typed.
+    Typed,
     Abandoned(PasteAbandonReason),
     Failed(PasteFailure),
 }
 
 impl PasteStage {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Done | Self::Abandoned(_) | Self::Failed(_))
+        matches!(
+            self,
+            Self::Done | Self::Typed | Self::Abandoned(_) | Self::Failed(_)
+        )
     }
 
     /// Compact number used to detect snapshot changes.
     pub const fn code(&self) -> u8 {
         match self {
-            Self::Staged => 1,
+            Self::Staged | Self::Prepared => 1,
             Self::WaitingForModifiers => 2,
             Self::WaitingForFocus => 3,
             Self::Sending => 4,
             Self::Done => 5,
             Self::Abandoned(_) => 6,
             Self::Failed(_) => 7,
+            Self::Typed => 8,
         }
     }
 
     /// What the window says about the operation, when it says anything.
     pub fn message(&self) -> Option<String> {
         match self {
-            Self::Staged | Self::Sending => None,
+            Self::Staged | Self::Prepared | Self::Sending => None,
             Self::WaitingForFocus => Some("Paste: waiting for the window to lose focus".to_owned()),
             Self::WaitingForModifiers => {
                 Some("Paste: waiting for modifier keys to be released".to_owned())
             }
             Self::Done => Some("Pasted into the previous application".to_owned()),
+            Self::Typed => Some("Typed into the previous application".to_owned()),
             Self::Abandoned(reason) => Some(reason.message().to_owned()),
             Self::Failed(failure) => Some(failure.message()),
         }
     }
 }
 
+/// What a paste will deliver once the handoff is ready.
+#[derive(Debug, Clone)]
+enum PastePayload {
+    /// A staged selection the paste shortcut will act on.
+    Staged(OwnedSelection),
+    /// The entry's text, typed directly.
+    Typed(Unlogged<String>),
+    /// A wipe dropped the payload; nothing more can be delivered.
+    Cleared,
+}
+
 /// A single paste; a terminal operation never sends a second keystroke.
 #[derive(Debug, Clone)]
 pub struct PasteOperation {
     item_id: u64,
-    staged: OwnedSelection,
+    payload: PastePayload,
     stage: PasteStage,
     settings: PasteSettings,
     handoff: FocusHandoff,
 }
 
 impl PasteOperation {
-    /// Starts the bounded wait; the caller hides its window once the modifiers
-    /// clear.
+    /// Starts the bounded wait for a paste shortcut; the caller hides its window
+    /// once the modifiers clear.
     pub fn staged(
         item_id: u64,
         staged: OwnedSelection,
@@ -243,8 +291,24 @@ impl PasteOperation {
     ) -> Self {
         Self {
             item_id,
-            staged,
+            payload: PastePayload::Staged(staged),
             stage: PasteStage::Staged,
+            settings,
+            handoff: FocusHandoff::new(now, settings.modifier_timeout, settings.focus_timeout),
+        }
+    }
+
+    /// Starts the bounded wait for typing `text`; the clipboard stays untouched.
+    pub fn typed(
+        item_id: u64,
+        text: Unlogged<String>,
+        settings: PasteSettings,
+        now: Instant,
+    ) -> Self {
+        Self {
+            item_id,
+            payload: PastePayload::Typed(text),
+            stage: PasteStage::Prepared,
             settings,
             handoff: FocusHandoff::new(now, settings.modifier_timeout, settings.focus_timeout),
         }
@@ -262,26 +326,50 @@ impl PasteOperation {
         self.stage.is_terminal()
     }
 
-    pub fn staged_selection(&self) -> &OwnedSelection {
-        &self.staged
+    /// The staged selection, absent for a typed paste.
+    pub fn staged_selection(&self) -> Option<&OwnedSelection> {
+        match &self.payload {
+            PastePayload::Staged(staged) => Some(staged),
+            PastePayload::Typed(_) | PastePayload::Cleared => None,
+        }
     }
 
-    /// Ends the operation without a keystroke.
+    /// Ends the operation without delivering anything.
     pub fn fail(&mut self, failure: PasteFailure) {
         if !self.is_terminal() {
             self.stage = PasteStage::Failed(failure);
+            self.payload = PastePayload::Cleared;
+        }
+    }
+
+    /// Ends the operation when its insertion provider disappeared.
+    pub fn fail_provider_lost(&mut self) {
+        let message = "the insertion provider is no longer available".to_owned();
+        let failure = if matches!(self.payload, PastePayload::Typed(_)) {
+            PasteFailure::typing(None, message)
+        } else {
+            PasteFailure::new(None, message)
+        };
+        self.fail(failure);
+    }
+
+    /// Ends the operation after a privacy wipe and drops any held text.
+    pub fn abandon(&mut self, reason: PasteAbandonReason) {
+        if !self.is_terminal() {
+            self.stage = PasteStage::Abandoned(reason);
+            self.payload = PastePayload::Cleared;
         }
     }
 
     /// Advances the wait with the observations and, once both holds are gone,
-    /// confirms the staged selection through `backend` before sending.
+    /// delivers the paste.
     ///
     /// Modifier release is observed while the window still holds the focus; the
     /// caller hides once the stage reaches [`PasteStage::WaitingForFocus`].
     ///
     /// `still_owned` is whether Kestrel still tracks the staged selection as the
-    /// one it owns; a newer copy clears it before this call. The backend also
-    /// confirms the live selection, so a takeover with matching bytes aborts.
+    /// one it owns; a newer copy clears it before this call. A typed paste did
+    /// not stage anything, so it ignores this and the clipboard checks.
     pub fn advance<B: ClipboardBackend, I: InsertionBackend + ?Sized>(
         &mut self,
         now: Instant,
@@ -293,7 +381,7 @@ impl PasteOperation {
         if self.stage.is_terminal() {
             return &self.stage;
         }
-        if matches!(self.stage, PasteStage::Staged) {
+        if matches!(self.stage, PasteStage::Staged | PasteStage::Prepared) {
             self.stage = PasteStage::WaitingForModifiers;
         }
         match self.handoff.advance(now, observation) {
@@ -313,6 +401,7 @@ impl PasteOperation {
                     HandoffAbandonReason::FocusTimeout => PasteAbandonReason::FocusTimeout,
                     HandoffAbandonReason::ModifiersHeld => PasteAbandonReason::ModifiersHeld,
                 });
+                self.payload = PastePayload::Cleared;
             }
             HandoffStage::Ready => self.send(still_owned, backend, provider),
         }
@@ -325,13 +414,48 @@ impl PasteOperation {
         backend: &mut B,
         provider: &mut I,
     ) {
+        if self.stage.is_terminal() {
+            return;
+        }
+        match std::mem::replace(&mut self.payload, PastePayload::Cleared) {
+            PastePayload::Staged(staged) => {
+                self.send_chord(&staged, still_owned, backend, provider);
+            }
+            PastePayload::Typed(text) => {
+                self.stage = PasteStage::Sending;
+                log::debug!(
+                    target: "clipboard.history",
+                    "typing the paste text through {}",
+                    provider.provider().label()
+                );
+                self.stage = match provider.insert_text(text.expose()) {
+                    Ok(()) => PasteStage::Typed,
+                    Err(error) => PasteStage::Failed(PasteFailure::typing(
+                        Some(provider.provider()),
+                        error.message,
+                    )),
+                };
+            }
+            PastePayload::Cleared => {
+                self.stage = PasteStage::Abandoned(PasteAbandonReason::Wiped);
+            }
+        }
+    }
+
+    fn send_chord<B: ClipboardBackend, I: InsertionBackend + ?Sized>(
+        &mut self,
+        staged: &OwnedSelection,
+        still_owned: bool,
+        backend: &mut B,
+        provider: &mut I,
+    ) {
         if !still_owned {
             self.stage = PasteStage::Abandoned(PasteAbandonReason::ClipboardChanged);
             return;
         }
         // The cached ownership predates this tick, and a takeover may offer the
         // same bytes, so the backend confirms the live selection first.
-        match backend.owns_selection(&self.staged) {
+        match backend.owns_selection(staged) {
             Ok(true) => {}
             Ok(false) => {
                 self.stage = PasteStage::Abandoned(PasteAbandonReason::ClipboardChanged);
@@ -342,7 +466,7 @@ impl PasteOperation {
                 return;
             }
         }
-        match holds_staged(backend, &self.staged, &self.settings) {
+        match holds_staged(backend, staged, &self.settings) {
             Ok(true) => {
                 self.stage = PasteStage::Sending;
                 self.stage = match provider.press_keys(self.settings.keys) {
@@ -401,6 +525,8 @@ mod tests {
     use kestrel_platform::snippets::{
         InsertionBackend, InsertionError, InsertionErrorKind, InsertionProvider,
     };
+
+    use crate::clipboard::Unlogged;
 
     use super::{PasteAbandonReason, PasteObservation, PasteOperation, PasteSettings, PasteStage};
 
@@ -468,6 +594,7 @@ mod tests {
     #[derive(Default)]
     struct FakeProvider {
         keys: Vec<ClipboardPasteKeys>,
+        texts: Vec<String>,
         error: Option<InsertionError>,
     }
 
@@ -477,7 +604,7 @@ mod tests {
         }
 
         fn insert_text(&mut self, text: &str) -> Result<(), InsertionError> {
-            let _ = text;
+            self.texts.push(text.to_owned());
             Ok(())
         }
 
@@ -497,6 +624,7 @@ mod tests {
             modifier_timeout: Duration::from_millis(500),
             max_image_bytes: 1024,
             max_file_entries: 4,
+            type_text_max_bytes: 64,
         }
     }
 
@@ -743,5 +871,103 @@ mod tests {
             &PasteStage::Done
         );
         assert_eq!(provider.keys, [ClipboardPasteKeys::CtrlV]);
+    }
+
+    fn typed_text(text: &str, now: Instant) -> (PasteOperation, FakeBackend, FakeProvider) {
+        (
+            PasteOperation::typed(
+                7,
+                Unlogged::new(text.to_owned()),
+                settings(ClipboardPasteKeys::TypeText),
+                now,
+            ),
+            FakeBackend::default(),
+            FakeProvider::default(),
+        )
+    }
+
+    #[test]
+    fn a_typed_paste_types_once_after_both_holds_clear() {
+        let now = Instant::now();
+        let (mut operation, mut backend, mut provider) = typed_text("one", now);
+        assert_eq!(operation.stage(), &PasteStage::Prepared);
+
+        assert_eq!(
+            operation.advance(
+                now,
+                PasteObservation {
+                    focus_released: true,
+                    modifiers_released: false,
+                },
+                true,
+                &mut backend,
+                &mut provider
+            ),
+            &PasteStage::WaitingForModifiers
+        );
+        assert!(
+            provider.texts.is_empty(),
+            "nothing is typed while a modifier remains"
+        );
+
+        assert_eq!(
+            operation.advance(
+                now + Duration::from_millis(10),
+                PasteObservation {
+                    focus_released: false,
+                    modifiers_released: true,
+                },
+                true,
+                &mut backend,
+                &mut provider,
+            ),
+            &PasteStage::WaitingForFocus
+        );
+        assert!(
+            provider.texts.is_empty(),
+            "nothing is typed while the window holds the focus"
+        );
+
+        let typed_at = now + Duration::from_millis(20);
+        assert_eq!(
+            operation.advance(typed_at, released(), true, &mut backend, &mut provider),
+            &PasteStage::Typed
+        );
+        assert_eq!(provider.texts, ["one"]);
+        assert!(provider.keys.is_empty(), "a typed paste sends no chord");
+
+        operation.advance(
+            typed_at + Duration::from_secs(1),
+            released(),
+            true,
+            &mut backend,
+            &mut provider,
+        );
+        assert_eq!(operation.stage(), &PasteStage::Typed);
+        assert_eq!(provider.texts.len(), 1, "the text is typed once");
+    }
+
+    #[test]
+    fn a_typed_paste_ignores_clipboard_ownership_and_a_wipe_stops_it() {
+        let now = Instant::now();
+        let (mut operation, mut backend, mut provider) = typed_text("one", now);
+        backend.read_error = Some(ClipboardErrorKind::ReadFailed);
+        backend.owner = FOREIGN_OWNER;
+
+        assert_eq!(
+            operation.advance(now, released(), false, &mut backend, &mut provider),
+            &PasteStage::Typed,
+            "nothing was staged, so the clipboard checks do not apply"
+        );
+        assert_eq!(provider.texts, ["one"]);
+
+        let (mut operation, mut backend, mut provider) = typed_text("two", now);
+        operation.abandon(PasteAbandonReason::Wiped);
+        assert_eq!(
+            operation.advance(now, released(), true, &mut backend, &mut provider),
+            &PasteStage::Abandoned(PasteAbandonReason::Wiped)
+        );
+        assert!(provider.texts.is_empty(), "a wiped paste types nothing");
+        assert!(provider.keys.is_empty());
     }
 }

@@ -237,6 +237,7 @@ fn command_action_label(action: &kestrel_services::command_bar::CommandAction) -
         CommandAction::OpenApplicationAction { .. } => "Run action",
         CommandAction::ActivateWindow(_) => "Activate",
         CommandAction::CopyClipboardEntry { .. } => "Copy",
+        CommandAction::OpenFeature { .. } => "Open",
         CommandAction::SetFeatureEnabled { .. } => "Toggle",
         CommandAction::SetOutputPort { .. } => "Switch",
         CommandAction::OpenFile(_) => "Open file",

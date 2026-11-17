@@ -61,7 +61,7 @@ pub use kestrel_services::screen_tools::Selection;
 pub use kestrel_services::snippets::{InsertionReport, SnippetMatch};
 pub use runtime::{
     ApplicationRuntime, ApplicationWindowDecision, CleanLinkOutcome, FeaturePreset,
-    HostCapabilities, OVERLAY_ID, SnippetSaveError, run_process_action,
+    HostCapabilities, OVERLAY_ID, SCRATCHPAD_ID, SnippetSaveError, run_process_action,
 };
 pub use snippets::{load_snippets, save_snippets, snippet_path};
 pub use status_notifier::{
@@ -447,6 +447,12 @@ pub enum FocusTarget {
     Camera,
     /// The Feature Hub, where features are switched.
     FeatureHub,
+    /// The Command bar page, where command sources are configured.
+    Commands,
+    /// The Shortcuts page, where keybindings are edited.
+    Shortcuts,
+    /// The Settings page, where general and overlay settings live.
+    Settings,
 }
 
 /// A process action the user can confirm.

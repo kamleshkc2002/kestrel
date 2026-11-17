@@ -69,7 +69,7 @@ Include the desktop and its version, the session type, the feature ID, and the s
 
 | Feature | COSMIC | Sway | Hyprland | KDE Plasma | GNOME | X11 |
 |---|---|---|---|---|---|---|
-| Clipboard history (`clipboard.history`) | Untested | Tested (headless Sway, CI) | Untested | Untested | Unsupported (no wlr-data-control, not an X11 session) | Tested (Xvfb, CI) |
+| Clipboard history (`clipboard.history`) | Reported (maintainer, Pop!_OS 24.04 COSMIC; "Type the text" works, while the paste shortcut arrives as a plain letter because a compositor bug ignores virtual-keyboard modifiers) | Tested (headless Sway, CI) | Untested | Untested | Unsupported (no wlr-data-control, not an X11 session) | Tested (Xvfb, CI) |
 | Clean links (Clipboard page) | Untested | Untested | Untested | Untested | Untested | Untested |
 | Snippets (`snippets.text`) | Untested | Untested | Untested | Untested | Untested | Untested |
 | Scratchpad (`notes.scratchpad`) | Untested | Untested | Untested | Untested | Untested | Untested |

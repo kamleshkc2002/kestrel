@@ -29,6 +29,10 @@ feature = "capture.recording"
 text = "A finished recording says which folder it was saved in."
 
 [[change]]
+feature = "clipboard.history"
+text = "Paste can type the entry's text instead of sending a paste shortcut, for desktops where the shortcut arrives as a plain letter."
+
+[[change]]
 feature = "capture.recording"
 text = "A running recording now shows its timer and a Stop button on screen, on the Overview Record tile, and in the tray menu."
 
@@ -39,3 +43,7 @@ text = "Typing a snippet's trigger, such as ;addr, in the command bar finds and 
 [[change]]
 feature = "snippets.text"
 text = "With both wtype and xdotool installed, Kestrel picks the one that works in your session."
+
+[[change]]
+feature = "commands.bar"
+text = "Typing a feature's name in the command bar offers to open its page, the on and off results really switch the feature, and the bar no longer flashes a result count while you type."
