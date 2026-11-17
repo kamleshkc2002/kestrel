@@ -30,7 +30,7 @@ text = "A finished recording says which folder it was saved in."
 
 [[change]]
 feature = "clipboard.history"
-text = "Paste can type the entry's text instead of sending a paste shortcut, for desktops where the shortcut arrives as a plain letter."
+text = "Paste can type the entry's text instead of sending a paste shortcut, for desktops where the shortcut arrives as a plain letter; images and files are copied instead, with a reminder to press Ctrl+V."
 
 [[change]]
 feature = "snippets.text"

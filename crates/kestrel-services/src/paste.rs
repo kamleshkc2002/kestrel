@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use kestrel_core::{ClipboardPasteKeys, DEFAULT_SNIPPET_CONTENT_BYTES};
 use kestrel_platform::clipboard::{
-    ClipboardBackend, ClipboardError, ClipboardErrorKind, OwnedSelection,
+    ClipboardBackend, ClipboardEntryKind, ClipboardError, ClipboardErrorKind, OwnedSelection,
 };
 use kestrel_platform::snippets::{InsertionBackend, InsertionProvider};
 
@@ -217,6 +217,11 @@ pub enum PasteStage {
     Done,
     /// The entry's text was typed.
     Typed,
+    /// The method cannot deliver this kind by itself; the entry is on the
+    /// clipboard and the user sends the paste shortcut.
+    CopiedForManualPaste {
+        kind: ClipboardEntryKind,
+    },
     Abandoned(PasteAbandonReason),
     Failed(PasteFailure),
 }
@@ -225,7 +230,11 @@ impl PasteStage {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Done | Self::Typed | Self::Abandoned(_) | Self::Failed(_)
+            Self::Done
+                | Self::Typed
+                | Self::CopiedForManualPaste { .. }
+                | Self::Abandoned(_)
+                | Self::Failed(_)
         )
     }
 
@@ -240,6 +249,7 @@ impl PasteStage {
             Self::Abandoned(_) => 6,
             Self::Failed(_) => 7,
             Self::Typed => 8,
+            Self::CopiedForManualPaste { .. } => 9,
         }
     }
 
@@ -253,6 +263,14 @@ impl PasteStage {
             }
             Self::Done => Some("Pasted into the previous application".to_owned()),
             Self::Typed => Some("Typed into the previous application".to_owned()),
+            Self::CopiedForManualPaste { kind } => Some(
+                match kind {
+                    ClipboardEntryKind::Image => "Image copied. Press Ctrl+V to paste it.",
+                    ClipboardEntryKind::Files => "Files copied. Press Ctrl+V to paste it.",
+                    ClipboardEntryKind::Text => "Copied. Press Ctrl+V to paste it.",
+                }
+                .to_owned(),
+            ),
             Self::Abandoned(reason) => Some(reason.message().to_owned()),
             Self::Failed(failure) => Some(failure.message()),
         }
@@ -309,6 +327,23 @@ impl PasteOperation {
             item_id,
             payload: PastePayload::Typed(text),
             stage: PasteStage::Prepared,
+            settings,
+            handoff: FocusHandoff::new(now, settings.modifier_timeout, settings.focus_timeout),
+        }
+    }
+
+    /// Ends immediately: the entry is already on the clipboard and the user
+    /// sends the paste shortcut, so nothing waits and nothing is sent.
+    pub fn copied_for_manual_paste(
+        item_id: u64,
+        kind: ClipboardEntryKind,
+        settings: PasteSettings,
+        now: Instant,
+    ) -> Self {
+        Self {
+            item_id,
+            payload: PastePayload::Cleared,
+            stage: PasteStage::CopiedForManualPaste { kind },
             settings,
             handoff: FocusHandoff::new(now, settings.modifier_timeout, settings.focus_timeout),
         }
@@ -969,5 +1004,45 @@ mod tests {
         );
         assert!(provider.texts.is_empty(), "a wiped paste types nothing");
         assert!(provider.keys.is_empty());
+    }
+
+    #[test]
+    fn a_copied_paste_is_terminal_and_delivers_nothing() {
+        let now = Instant::now();
+        let mut operation = PasteOperation::copied_for_manual_paste(
+            5,
+            ClipboardEntryKind::Image,
+            settings(ClipboardPasteKeys::TypeText),
+            now,
+        );
+        let mut backend = FakeBackend::default();
+        let mut provider = FakeProvider::default();
+
+        assert_eq!(
+            operation.stage(),
+            &PasteStage::CopiedForManualPaste {
+                kind: ClipboardEntryKind::Image
+            }
+        );
+        assert!(operation.is_terminal());
+        assert!(operation.staged_selection().is_none());
+        assert_eq!(
+            operation.advance(
+                now + Duration::from_secs(1),
+                released(),
+                true,
+                &mut backend,
+                &mut provider,
+            ),
+            &PasteStage::CopiedForManualPaste {
+                kind: ClipboardEntryKind::Image
+            }
+        );
+        assert!(provider.texts.is_empty(), "nothing is typed");
+        assert!(provider.keys.is_empty(), "no shortcut is sent");
+        assert!(
+            backend.text.is_none(),
+            "the operation itself writes nothing"
+        );
     }
 }

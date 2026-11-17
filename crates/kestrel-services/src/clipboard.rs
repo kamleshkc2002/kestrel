@@ -662,10 +662,6 @@ pub enum ClipboardServiceError {
     PasteInProgress,
     /// No usable insertion provider, with the discovery reason.
     PasteUnavailable(String),
-    /// Type the text cannot type an image or file entry.
-    TypeTextUnsupported {
-        kind: ClipboardEntryKind,
-    },
     /// The entry is above the bound for typing its text.
     TypeTextTooLarge {
         bytes: usize,
@@ -682,9 +678,6 @@ pub enum ClipboardServiceError {
 impl fmt::Display for ClipboardServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TypeTextUnsupported { .. } => formatter.write_str(
-                "Type the text pastes text entries only; this entry stays on the clipboard.",
-            ),
             Self::TypeTextTooLarge { bytes, maximum } => write!(
                 formatter,
                 "Type the text types at most {maximum} bytes and this entry has {bytes}; copy it \
@@ -2871,7 +2864,8 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
         Ok(owned)
     }
 
-    /// Holds a text entry for typing without touching the clipboard.
+    /// Holds a text entry for typing without touching the clipboard; other
+    /// kinds are copied and the paste ends for the user to send the shortcut.
     fn prepare_typed_paste(
         &mut self,
         item_id: u64,
@@ -2912,9 +2906,19 @@ impl<B: ClipboardBackend, P: PrivacyEventSource> WorkerState<B, P> {
                 Ok(())
             }
             Err(kind) => {
-                // Copy the entry the way Copy does, so it can be pasted by hand.
+                // Copy the entry the way Copy does; the user sends the shortcut.
                 self.stage_item(item_id, plain_text, now)?;
-                Err(ClipboardServiceError::TypeTextUnsupported { kind })
+                self.paste = Some(PasteOperation::copied_for_manual_paste(
+                    item_id,
+                    kind,
+                    self.paste_settings(),
+                    now,
+                ));
+                log::debug!(
+                    target: "clipboard.history",
+                    "copied a {kind:?} entry for a manual paste"
+                );
+                Ok(())
             }
         }
     }
@@ -4975,43 +4979,85 @@ mod tests {
     }
 
     #[test]
-    fn type_text_refuses_an_image_and_copies_it_for_a_manual_paste() {
-        let mut paste_policy = long_lived();
-        paste_policy.paste_keys = kestrel_core::ClipboardPasteKeys::TypeText;
-        let (mut service, state, _) =
-            start_fake(paste_policy, Some(FakeSelection::Image(PNG_2X2.to_vec())));
-        wait_for_items(&service, 1);
-        let item_id = service.latest().items[0].id;
-        let writes_before = state.lock().expect("fake state").writes.len();
-        let provider = FakeProvider::default();
-        let texts = Arc::clone(&provider.texts);
-        let chords = Arc::clone(&provider.keys);
-        service.set_paste_provider(Some(Box::new(provider)), None);
+    fn type_text_copies_an_image_or_file_entry_for_a_manual_paste() {
+        for (selection, kind) in [
+            (
+                FakeSelection::Image(PNG_2X2.to_vec()),
+                ClipboardEntryKind::Image,
+            ),
+            (
+                FakeSelection::Files(vec!["/tmp/one.pdf".to_string()]),
+                ClipboardEntryKind::Files,
+            ),
+        ] {
+            let mut paste_policy = long_lived();
+            paste_policy.paste_keys = kestrel_core::ClipboardPasteKeys::TypeText;
+            let (mut service, state, _) = start_fake(paste_policy, Some(selection.clone()));
+            wait_for_items(&service, 1);
+            let item_id = service.latest().items[0].id;
+            let writes_before = state.lock().expect("fake state").writes.len();
+            let provider = FakeProvider::default();
+            let texts = Arc::clone(&provider.texts);
+            let chords = Arc::clone(&provider.keys);
+            service.set_paste_provider(Some(Box::new(provider)), None);
 
-        assert_eq!(
-            service
+            let snapshot = service
                 .execute(ClipboardCommand::PasteItem {
                     item_id,
                     plain_text: false,
                 })
-                .expect_err("images have no text to type"),
-            super::ClipboardServiceError::TypeTextUnsupported {
-                kind: ClipboardEntryKind::Image
-            }
-        );
-        assert_eq!(
-            state.lock().expect("fake state").writes.len(),
-            writes_before + 1,
-            "the entry is copied so it can be pasted by hand"
-        );
-        assert_eq!(
-            state.lock().expect("fake state").current,
-            Some(FakeSelection::Image(PNG_2X2.to_vec()))
-        );
-        assert!(texts.lock().expect("fake texts").is_empty());
-        assert!(chords.lock().expect("fake chords").is_empty());
-        assert!(service.latest().paste.is_none());
-        service.stop();
+                .expect("the entry is copied for a manual paste");
+            assert_eq!(
+                snapshot.paste,
+                Some(super::PasteStage::CopiedForManualPaste { kind }),
+                "{kind:?} paste outcome"
+            );
+            assert_eq!(
+                state.lock().expect("fake state").writes.len(),
+                writes_before + 1,
+                "the entry is copied once: {kind:?}"
+            );
+            assert_eq!(
+                state.lock().expect("fake state").current,
+                Some(selection.clone()),
+                "the clipboard holds the entry: {kind:?}"
+            );
+            assert!(
+                texts.lock().expect("fake texts").is_empty(),
+                "nothing is typed: {kind:?}"
+            );
+            assert!(
+                chords.lock().expect("fake chords").is_empty(),
+                "no shortcut is sent: {kind:?}"
+            );
+
+            // The outcome is terminal, so a released focus delivers nothing.
+            service.observe_paste(super::PasteObservation {
+                focus_released: true,
+                modifiers_released: true,
+            });
+            let snapshot = wait_for(&service, |snapshot| {
+                snapshot.paste == Some(super::PasteStage::CopiedForManualPaste { kind })
+            });
+            assert_eq!(
+                state.lock().expect("fake state").writes.len(),
+                writes_before + 1,
+                "no second copy follows: {kind:?}"
+            );
+            assert!(
+                texts.lock().expect("fake texts").is_empty(),
+                "nothing is typed after the handoff: {kind:?}"
+            );
+            assert!(
+                chords.lock().expect("fake chords").is_empty(),
+                "no shortcut is sent after the handoff: {kind:?}"
+            );
+            assert_eq!(
+                snapshot.items[0].id, item_id,
+                "the copied entry is promoted: {kind:?}"
+            );
+            service.stop();
+        }
     }
 
     #[test]

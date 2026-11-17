@@ -1882,9 +1882,10 @@ impl ClipboardPasteKeys {
             Self::CtrlShiftV => "Terminals and some editors paste with Ctrl+Shift+V.",
             Self::ShiftInsert => "Terminals and legacy applications paste with Shift+Insert.",
             Self::TypeText => {
-                "Types the entry into the app instead of sending a paste shortcut. Use it when \
-                 the paste shortcut arrives as a plain letter. Text only; multi-line text is \
-                 typed line by line, so each line runs in a terminal."
+                "Types text entries into the app instead of sending a paste shortcut; images \
+                 and files are copied so you can press Ctrl+V. Use it when the paste shortcut \
+                 arrives as a plain letter. Multi-line text is typed line by line, so each line \
+                 runs in a terminal."
             }
         }
     }

@@ -47,6 +47,7 @@ use kestrel_platform::notifications::{
 };
 use kestrel_platform::update_install::{DownloadedUpdate, UpdateInstallErrorKind};
 use kestrel_services::alerts::notification_text;
+use kestrel_services::paste::PasteStage;
 use kestrel_services::update_install::InstallPhase;
 
 use window::{FloatingSurface, QuickPanelEntry, ShelfSurface, StatusOverlay, WindowView};
@@ -2198,10 +2199,44 @@ impl ApplicationController {
         }
     }
 
+    /// Whether the paste stage must hide every Kestrel surface so the previous
+    /// application takes the focus; a manual copy needs no focus wait.
+    fn paste_stage_hides(stage: &PasteStage) -> bool {
+        matches!(
+            stage,
+            PasteStage::WaitingForFocus
+                | PasteStage::Sending
+                | PasteStage::Done
+                | PasteStage::Typed
+                | PasteStage::CopiedForManualPaste { .. }
+        )
+    }
+
+    /// Whether the paste ended successfully, so the window stays hidden.
+    fn paste_stage_succeeds(stage: &PasteStage) -> bool {
+        matches!(
+            stage,
+            PasteStage::Done | PasteStage::Typed | PasteStage::CopiedForManualPaste { .. }
+        )
+    }
+
+    /// The reminder for a manual copy; it never names the copied content.
+    fn manual_paste_notification(kind: kestrel::ClipboardEntryKind) -> AlertNotification {
+        let summary = match kind {
+            kestrel::ClipboardEntryKind::Image => "Image copied",
+            kestrel::ClipboardEntryKind::Files => "Files copied",
+            kestrel::ClipboardEntryKind::Text => "Copied",
+        };
+        AlertNotification {
+            summary: summary.to_owned(),
+            body: "Press Ctrl+V to paste it.".to_owned(),
+        }
+    }
+
     /// Waits for held modifiers to clear while the window keeps the focus, hides
     /// every Kestrel window, then reports the focus until the operation ends.
     fn begin_handoff_observation(&self, kind: HandoffKind) {
-        use kestrel_services::{paste::PasteStage, snippets::SnippetInsertionStage};
+        use kestrel_services::snippets::SnippetInsertionStage;
 
         let Some(application) = gtk::gio::Application::default()
             .and_then(|application| application.downcast::<gtk::Application>().ok())
@@ -2227,18 +2262,17 @@ impl ApplicationController {
                     HandoffKind::ClipboardPaste => {
                         guard.runtime.observe_clipboard_paste(observation);
                         guard.runtime.clipboard_snapshot().paste.map(|stage| {
+                            let manual_copy = match stage {
+                                PasteStage::CopiedForManualPaste { kind } => Some(kind),
+                                _ => None,
+                            };
                             (
-                                matches!(
-                                    stage,
-                                    PasteStage::WaitingForFocus
-                                        | PasteStage::Sending
-                                        | PasteStage::Done
-                                        | PasteStage::Typed
-                                ),
+                                Self::paste_stage_hides(&stage),
                                 false,
                                 stage.is_terminal(),
-                                matches!(stage, PasteStage::Done | PasteStage::Typed),
+                                Self::paste_stage_succeeds(&stage),
                                 stage.message(),
+                                manual_copy,
                             )
                         })
                     }
@@ -2258,11 +2292,12 @@ impl ApplicationController {
                                 stage.is_terminal(),
                                 matches!(stage, SnippetInsertionStage::Done),
                                 stage.message(),
+                                None,
                             )
                         }),
                 }
             };
-            let Some((hides, ready, terminal, done, message)) = tick else {
+            let Some((hides, ready, terminal, done, message, manual_copy)) = tick else {
                 controller.end_handoff(kind);
                 if kind == HandoffKind::ClipboardPaste {
                     // Nothing was staged, so no observation can finish the paste.
@@ -2298,7 +2333,7 @@ impl ApplicationController {
             if !terminal {
                 return glib::ControlFlow::Continue;
             }
-            controller.finish_handoff(kind, done, message);
+            controller.finish_handoff(kind, done, message, manual_copy);
             glib::ControlFlow::Break
         });
     }
@@ -2309,9 +2344,31 @@ impl ApplicationController {
         }
     }
 
-    /// Reports the outcome; a failed or abandoned operation brings the window back.
-    fn finish_handoff(self: &Rc<Self>, kind: HandoffKind, done: bool, message: Option<String>) {
+    /// Reports the outcome; a failed or abandoned operation brings the window
+    /// back. A manual copy stays hidden and shows a notification instead.
+    fn finish_handoff(
+        self: &Rc<Self>,
+        kind: HandoffKind,
+        done: bool,
+        message: Option<String>,
+        manual_copy: Option<kestrel::ClipboardEntryKind>,
+    ) {
         self.end_handoff(kind);
+        if let Some(entry_kind) = manual_copy {
+            if let Err(error) = self
+                .notifier
+                .notify(&Self::manual_paste_notification(entry_kind))
+            {
+                log::warn!(
+                    target: "clipboard.history",
+                    "manual paste notification failed: {error}"
+                );
+                if let Some(message) = message {
+                    self.show_message(&message);
+                }
+            }
+            return;
+        }
         if !done {
             if let Some(application) = gtk::gio::Application::default()
                 .and_then(|application| application.downcast::<adw::Application>().ok())
@@ -6768,6 +6825,35 @@ mod tests {
         assert!(!hidden.observe(true, start + Duration::from_millis(70)));
         assert!(!hidden.observe(true, start + Duration::from_millis(219)));
         assert!(hidden.observe(true, start + Duration::from_millis(220)));
+    }
+
+    #[test]
+    fn a_manual_copy_hides_the_window_and_keeps_it_hidden() {
+        use kestrel::ClipboardEntryKind;
+        use kestrel_services::paste::{PasteAbandonReason, PasteStage};
+
+        for kind in [ClipboardEntryKind::Image, ClipboardEntryKind::Files] {
+            let stage = PasteStage::CopiedForManualPaste { kind };
+            assert!(
+                ApplicationController::paste_stage_hides(&stage),
+                "a manual copy hides every surface: {kind:?}"
+            );
+            assert!(
+                ApplicationController::paste_stage_succeeds(&stage),
+                "the window stays hidden after a manual copy: {kind:?}"
+            );
+            assert!(stage.is_terminal(), "{kind:?}");
+        }
+        assert!(
+            !ApplicationController::paste_stage_succeeds(&PasteStage::Abandoned(
+                PasteAbandonReason::ClipboardChanged
+            )),
+            "an abandoned paste brings the window back"
+        );
+        assert!(
+            !ApplicationController::paste_stage_hides(&PasteStage::Prepared),
+            "a typed paste keeps the window while modifiers are held"
+        );
     }
 
     struct SilentNotifier;
