@@ -73,6 +73,19 @@ const TEXT_MIMES: [&str; 4] = [
 const OWNERSHIP_RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 const RELEASE_POLL: Duration = Duration::from_millis(2);
 
+/// Waits briefly for a serving loop to end after its source was replaced or
+/// cleared, then joins it; a loop still running is detached and exits once it
+/// observes the takeover.
+fn reap_serving(handle: JoinHandle<()>) {
+    let deadline = Instant::now() + OWNERSHIP_RELEASE_TIMEOUT;
+    while !handle.is_finished() && Instant::now() < deadline {
+        thread::sleep(RELEASE_POLL);
+    }
+    if handle.is_finished() {
+        let _ = handle.join();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardProvider {
     WaylandDataControl,
@@ -524,6 +537,7 @@ impl ArboardClipboardBackend {
     }
 
     /// Releases rich selections, waiting briefly for takeover observation.
+    /// Only ownership-checked wipes call this; it empties the live selection.
     fn release_served(&mut self) {
         let Some(mut served) = self.served.take() else {
             return;
@@ -532,17 +546,24 @@ impl ArboardClipboardBackend {
             WaylandCopyClipboardType::Regular,
             wl_clipboard_rs::copy::Seat::All,
         );
-        let Some(handle) = served.handle.take() else {
-            return;
-        };
-        let deadline = Instant::now() + OWNERSHIP_RELEASE_TIMEOUT;
-        while !handle.is_finished() && Instant::now() < deadline {
-            thread::sleep(RELEASE_POLL);
+        if let Some(handle) = served.handle.take() {
+            reap_serving(handle);
         }
-        if handle.is_finished() {
-            let _ = handle.join();
+    }
+
+    /// Puts `owned` on the clipboard in place of whatever Kestrel served, with
+    /// no empty selection in between: the new source takes over, so the
+    /// compositor cancels the previous one and its loop ends.
+    fn replace_served(&mut self, owned: OwnedSelection) -> Result<(), ClipboardError> {
+        let previous = self.served.take();
+        if let Err(error) = self.serve(owned) {
+            self.served = previous;
+            return Err(error);
         }
-        // Detach a still-running loop; it exits after observing takeover.
+        if let Some(handle) = previous.and_then(|mut previous| previous.handle.take()) {
+            reap_serving(handle);
+        }
+        Ok(())
     }
 
     /// Serves `owned` until another source replaces the selection.
@@ -703,13 +724,9 @@ impl ClipboardBackend for ArboardClipboardBackend {
     }
 
     fn write_text(&mut self, text: &str) -> Result<(), ClipboardError> {
-        // Taking ownership ends any rich selection Kestrel served.
-        if self.served.is_some() {
-            self.release_served();
-        }
         if self.provider == ClipboardProvider::WaylandDataControl {
-            // Serve and release every Wayland kind through one mechanism.
-            return self.serve(OwnedSelection::Text(text.to_owned()));
+            // Serve and replace every Wayland kind through one mechanism.
+            return self.replace_served(OwnedSelection::Text(text.to_owned()));
         }
         self.clipboard.set_text(text.to_owned()).map_err(|error| {
             ClipboardError::new(
@@ -794,8 +811,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
                 "only well-formed PNG payloads can be placed on the clipboard",
             ));
         }
-        self.release_served();
-        self.serve(OwnedSelection::ImagePng(bytes.to_vec()))
+        self.replace_served(OwnedSelection::ImagePng(bytes.to_vec()))
     }
 
     fn read_file_list(
@@ -831,8 +847,7 @@ impl ClipboardBackend for ArboardClipboardBackend {
                 "an empty file list cannot be placed on the clipboard",
             ));
         }
-        self.release_served();
-        self.serve(OwnedSelection::Files(paths.to_vec()))
+        self.replace_served(OwnedSelection::Files(paths.to_vec()))
     }
 
     fn owns_selection(&mut self, expected: &OwnedSelection) -> Result<bool, ClipboardError> {
