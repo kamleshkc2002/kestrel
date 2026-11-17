@@ -402,6 +402,11 @@ pub(super) fn add_clipboard_limits_group(
         layout.upcast(),
         "clipboard history layout list cards".to_owned(),
     ));
+    filter_rows.push((
+        paste_keys.upcast(),
+        "paste method type the text shortcut keystroke ctrl v shift insert previous application"
+            .to_owned(),
+    ));
     group.add(&clipboard_group);
 }
 
