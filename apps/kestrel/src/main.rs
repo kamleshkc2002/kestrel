@@ -1427,6 +1427,10 @@ struct ApplicationController {
     recording_apps_last_refresh: Cell<Instant>,
     /// Keeps only the newest query received while a worker is busy.
     pending_command_query: RefCell<Option<String>>,
+    /// The newest clipboard search received while a worker is busy.
+    pending_clipboard_query: RefCell<Option<String>>,
+    /// The newest snippet search received while a worker is busy.
+    pending_snippet_query: RefCell<Option<String>>,
     notifier: Arc<dyn AlertNotifier>,
     capture_notifier: Arc<DesktopNotifier>,
     notification_captures: RefCell<HashMap<u32, CaptureId>>,
@@ -1590,6 +1594,8 @@ impl ApplicationController {
             keep_awake_last_refresh: Cell::new(Instant::now()),
             recording_apps_last_refresh: Cell::new(Instant::now()),
             pending_command_query: RefCell::new(None),
+            pending_clipboard_query: RefCell::new(None),
+            pending_snippet_query: RefCell::new(None),
             notifier,
             capture_notifier,
             notification_captures: RefCell::new(HashMap::new()),
@@ -2159,6 +2165,14 @@ impl ApplicationController {
         operation: ControllerOperation,
         worker_name: &'static str,
     ) {
+        // A search is refreshed state, not an action: the newest one waits for
+        // the running operation instead of being refused.
+        if let ControllerOperation::ClipboardSearch(query) = &operation {
+            if self.refreshing.get() {
+                *self.pending_clipboard_query.borrow_mut() = Some(query.clone());
+                return;
+            }
+        }
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Clipboard);
     }
 
@@ -2359,17 +2373,40 @@ impl ApplicationController {
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Commands);
     }
 
-    fn dispatch_pending_command_query(&self) {
-        let Some(query) = self.pending_command_query.borrow_mut().take() else {
-            return;
-        };
-        self.request_command_operation(
-            ControllerOperation::CommandQuery(query),
-            "kestrel-command-query",
-        );
+    /// Starts each parked search in turn; one that finds a worker busy again
+    /// parks again and runs after it, so each slot is released before its
+    /// search is requested.
+    fn dispatch_pending_searches(&self) {
+        let clipboard = self.pending_clipboard_query.borrow_mut().take();
+        if let Some(query) = clipboard {
+            self.request_clipboard_operation(
+                ControllerOperation::ClipboardSearch(query),
+                "kestrel-clipboard-search",
+            );
+        }
+        let snippet = self.pending_snippet_query.borrow_mut().take();
+        if let Some(query) = snippet {
+            self.request_snippet_operation(
+                ControllerOperation::SnippetSearch(query),
+                "kestrel-snippet-search",
+            );
+        }
+        let command = self.pending_command_query.borrow_mut().take();
+        if let Some(query) = command {
+            self.request_command_operation(
+                ControllerOperation::CommandQuery(query),
+                "kestrel-command-query",
+            );
+        }
     }
 
     fn request_snippet_operation(&self, operation: ControllerOperation, worker_name: &'static str) {
+        if let ControllerOperation::SnippetSearch(query) = &operation {
+            if self.refreshing.get() {
+                *self.pending_snippet_query.borrow_mut() = Some(query.clone());
+                return;
+            }
+        }
         self.request_targeted_operation(operation, worker_name, TargetedPanel::Snippets);
     }
 
@@ -2407,7 +2444,7 @@ impl ApplicationController {
             let _ = self.commands.try_send(ApplicationCommand::Quit);
         }
         self.dispatch_pending_close_action();
-        self.dispatch_pending_command_query();
+        self.dispatch_pending_searches();
     }
 
     /// Renders a result; operation state stays with `finish_refresh`.
@@ -7132,6 +7169,55 @@ mod tests {
         let _ = refresh_receiver
             .recv_blocking()
             .expect("the query publishes a result");
+        controller.refreshing.set(false);
+
+        // Searches arriving while an operation runs wait for it; none is
+        // refused, and only the newest of each kind runs.
+        controller.refreshing.set(true);
+        for query in ["first", "newest"] {
+            controller.request_clipboard_operation(
+                super::ControllerOperation::ClipboardSearch(query.to_owned()),
+                "kestrel-clipboard-search",
+            );
+        }
+        controller.request_snippet_operation(
+            super::ControllerOperation::SnippetSearch(String::new()),
+            "kestrel-snippet-search",
+        );
+        assert!(
+            refresh_receiver.is_empty(),
+            "a busy worker starts nothing new"
+        );
+        assert_eq!(
+            controller.pending_clipboard_query.borrow().as_deref(),
+            Some("newest")
+        );
+        assert_eq!(
+            controller.pending_snippet_query.borrow().as_deref(),
+            Some("")
+        );
+
+        controller.refreshing.set(false);
+        controller.dispatch_pending_searches();
+        assert_eq!(controller.targeted.get(), TargetedPanel::Clipboard);
+        assert!(
+            controller.pending_clipboard_query.borrow().is_none(),
+            "the clipboard search started"
+        );
+        assert_eq!(
+            controller.pending_snippet_query.borrow().as_deref(),
+            Some(""),
+            "the snippet search waits for the clipboard search"
+        );
+        let _ = refresh_receiver
+            .recv_blocking()
+            .expect("the parked clipboard search publishes a result");
+        controller.refreshing.set(false);
+        controller.dispatch_pending_searches();
+        assert_eq!(controller.targeted.get(), TargetedPanel::Snippets);
+        let _ = refresh_receiver
+            .recv_blocking()
+            .expect("the parked snippet search publishes a result");
         controller.refreshing.set(false);
     }
 
