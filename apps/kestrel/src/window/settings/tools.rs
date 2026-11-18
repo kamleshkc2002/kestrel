@@ -344,11 +344,8 @@ pub(super) fn add_clipboard_limits_group(
 
     let combinations = kestrel::ClipboardPasteKeys::ALL;
     let paste_keys = adw::ComboRow::builder()
-        .title("Paste keystroke")
-        .subtitle(
-            "The keystroke sent after the window hides, so the previous application pastes; \
-             the entry itself is never sent.",
-        )
+        .title("Paste method")
+        .subtitle(clipboard.policy.paste_keys.description())
         .model(&gtk::StringList::new(
             &combinations
                 .iter()
@@ -365,6 +362,9 @@ pub(super) fn add_clipboard_limits_group(
     let sender = commands.clone();
     paste_keys.connect_selected_notify(move |row| {
         if let Some(keys) = combinations.get(row.selected() as usize) {
+            // The subtitle explains the method in effect, including the
+            // typed method's terminal warning.
+            row.set_subtitle(keys.description());
             let _ = sender.try_send(ApplicationCommand::SetClipboardPasteKeys(*keys));
         }
     });
@@ -401,6 +401,11 @@ pub(super) fn add_clipboard_limits_group(
     filter_rows.push((
         layout.upcast(),
         "clipboard history layout list cards".to_owned(),
+    ));
+    filter_rows.push((
+        paste_keys.upcast(),
+        "paste method type the text shortcut keystroke ctrl v shift insert previous application"
+            .to_owned(),
     ));
     group.add(&clipboard_group);
 }

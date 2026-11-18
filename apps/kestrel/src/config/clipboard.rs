@@ -11,8 +11,8 @@ use super::{LoadedConfiguration, fields::Section};
 const IGNORED_MESSAGE: &str = "The value is invalid and was ignored";
 const HISTORY_LAYOUT_MESSAGE: &str =
     "History layout must be \"list\" or \"cards\"; the list was retained.";
-const PASTE_KEYS_MESSAGE: &str = "Paste keystroke must be \"ctrl_v\", \"ctrl_shift_v\", or \
-                                  \"shift_insert\"; Ctrl+V was retained.";
+const PASTE_KEYS_MESSAGE: &str = "Paste method must be \"ctrl_v\", \"ctrl_shift_v\", \
+                                  \"shift_insert\", or \"type_text\"; Ctrl+V was retained.";
 const BOUND_PREFIX: &str = "The value must be";
 
 pub(super) fn parse_clipboard(loaded: &mut LoadedConfiguration, value: Option<&toml::Value>) {
@@ -149,6 +149,7 @@ mod tests {
                 "shift_insert",
                 kestrel_core::ClipboardPasteKeys::ShiftInsert,
             ),
+            ("type_text", kestrel_core::ClipboardPasteKeys::TypeText),
         ] {
             let loaded = parse(&format!(
                 "schema_version = 3\n[clipboard]\npaste_keys = \"{value}\"\n"
@@ -324,10 +325,12 @@ max_item_bytes = 1048576
         configuration.clipboard.filter_sensitive = true;
         configuration.clipboard.keep_pinned = true;
         configuration.clipboard.pinned_max_age_days = 30;
+        configuration.clipboard.paste_keys = kestrel_core::ClipboardPasteKeys::TypeText;
 
         let exported = export_string(&configuration).expect("configuration exports");
         assert!(exported.contains("[clipboard]"));
         assert!(exported.contains("max_items = 12"));
+        assert!(exported.contains("paste_keys = \"type_text\""));
         assert!(exported.contains("keep_pinned = true"));
         assert!(exported.contains("pinned_max_age_days = 30"));
 

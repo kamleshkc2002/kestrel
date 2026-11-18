@@ -127,3 +127,11 @@ run_lifecycle_test -u DISPLAY -u WAYLAND_SOCKET \
   WAYLAND_DISPLAY="$wayland_display" \
   XDG_SESSION_TYPE=wayland \
   KESTREL_EXPECT_CLIPBOARD_PROVIDER=wayland
+# Replacing an owned selection must never leave an empty one in between.
+env -u DISPLAY -u WAYLAND_SOCKET \
+  XDG_RUNTIME_DIR="$wayland_runtime_dir" \
+  WAYLAND_DISPLAY="$wayland_display" \
+  XDG_SESSION_TYPE=wayland \
+  KESTREL_EXPECT_CLIPBOARD_PROVIDER=wayland \
+  cargo test --quiet --manifest-path "$workspace_manifest" -p kestrel-platform \
+    --test clipboard_replace -- --exact replacing_an_owned_selection_never_empties_the_clipboard

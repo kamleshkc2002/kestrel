@@ -137,7 +137,7 @@ pub struct ClipboardPolicyViewModel {
     pub clear_seconds: u64,
     pub filter_sensitive: bool,
     pub paste_plain_text: bool,
-    /// The keystroke a paste sends.
+    /// How a paste reaches the previous application.
     pub paste_keys: kestrel_core::ClipboardPasteKeys,
     /// The second opt-in for keeping pinned text across restarts.
     pub keep_pinned: bool,
