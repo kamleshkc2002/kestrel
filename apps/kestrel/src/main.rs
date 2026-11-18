@@ -1441,6 +1441,8 @@ struct ApplicationController {
     tray_update: RefCell<Option<kestrel::TrayUpdateSink>>,
     /// Pushes the Shelf item to the same tray.
     tray_shelf: RefCell<Option<kestrel::TrayShelfSink>>,
+    /// Pushes the recording stop item and tooltip to the same tray.
+    tray_recording: RefCell<Option<kestrel::TrayRecordingSink>>,
     /// One update check runs at a time; its result returns to this thread.
     update_checking: Cell<bool>,
     /// The running check, cancelled and joined outside the state lock on
@@ -1610,6 +1612,11 @@ impl ApplicationController {
                 status_notifier
                     .as_ref()
                     .and_then(StatusNotifierIntegration::shelf_sink),
+            ),
+            tray_recording: RefCell::new(
+                status_notifier
+                    .as_ref()
+                    .and_then(StatusNotifierIntegration::recording_sink),
             ),
             update_checking: Cell::new(false),
             update_worker: RefCell::new(None),
@@ -2439,6 +2446,7 @@ impl ApplicationController {
         self.publish_tray_keep_awake(&view_model);
         self.publish_tray_update(&view_model);
         self.publish_tray_shelf(&view_model);
+        self.publish_tray_recording(&view_model.recording);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -2462,6 +2470,7 @@ impl ApplicationController {
             let keep_awake = integration.keep_awake_sink();
             let update = integration.update_sink();
             let shelf = integration.shelf_sink();
+            let recording = integration.recording_sink();
             if sink.is_none() {
                 log::warn!(
                     target: kestrel::STATUS_NOTIFIER_ID,
@@ -2472,6 +2481,7 @@ impl ApplicationController {
             *self.tray_keep_awake.borrow_mut() = keep_awake;
             *self.tray_update.borrow_mut() = update;
             *self.tray_shelf.borrow_mut() = shelf;
+            *self.tray_recording.borrow_mut() = recording;
             *self.status_notifier.borrow_mut() = Some(integration);
         } else if !wanted && present {
             let _ = self.stop_tray();
@@ -2500,6 +2510,14 @@ impl ApplicationController {
             return;
         };
         sink.publish(kestrel::TrayShelf::from_view_model(view_model));
+    }
+
+    /// Pushes the stop item and tooltip, only when the recording phase changes.
+    fn publish_tray_recording(&self, recording: &kestrel::RecordingViewModel) {
+        let Some(sink) = self.tray_recording.borrow().clone() else {
+            return;
+        };
+        sink.publish(kestrel::TrayRecording::from_recording(recording));
     }
 
     /// Whether `stamp` is not older than the keep-awake state already shown.
@@ -2554,6 +2572,7 @@ impl ApplicationController {
         let keep_awake = self.tray_keep_awake.borrow_mut().take();
         let update = self.tray_update.borrow_mut().take();
         let shelf = self.tray_shelf.borrow_mut().take();
+        let recording = self.tray_recording.borrow_mut().take();
         let integration = self.status_notifier.borrow_mut().take();
         thread::Builder::new()
             .name("kestrel-tray-stop".to_owned())
@@ -2564,6 +2583,7 @@ impl ApplicationController {
                 drop(keep_awake);
                 drop(update);
                 drop(shelf);
+                drop(recording);
                 drop(integration);
             })
             .ok()
@@ -3422,6 +3442,7 @@ impl ApplicationController {
         }
         if let Some(recording) = &recording {
             self.overlay.set_recording(recording);
+            self.publish_tray_recording(recording);
         }
         if let Some(monitor) = &monitor {
             self.overlay.set_monitor(monitor);
@@ -3567,6 +3588,7 @@ impl ApplicationController {
         };
         self.recording_running.set(recording.running);
         self.overlay.set_recording(&recording);
+        self.publish_tray_recording(&recording);
         if !recording.choosing_area {
             self.recording_area_open.set(false);
         }

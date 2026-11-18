@@ -16,7 +16,7 @@ use kestrel_platform::{
     speed_test::FEATURE_ID as SPEED_TEST_FEATURE_ID,
     system_monitor::FEATURE_ID as SYSTEM_MONITOR_FEATURE_ID,
 };
-use kestrel_services::quick_toggles::KeepAwakeSession;
+use kestrel_services::{quick_toggles::KeepAwakeSession, recording::RecordingClock};
 
 /// What a feature costs while it is not being used: background work and how
 /// often it wakes up on its own.
@@ -353,12 +353,54 @@ pub enum OverviewTool {
     Processes,
 }
 
+/// What clicking an Overview tool does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverviewToolAction {
+    /// Its usual action.
+    #[default]
+    Run,
+    /// Completes the running recording.
+    StopRecording,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverviewToolViewModel {
     pub tool: OverviewTool,
-    pub label: &'static str,
+    pub label: String,
     pub icon: &'static str,
     pub feature_id: &'static str,
+    pub action: OverviewToolAction,
+    /// A running recording's clock; the label follows it while it goes.
+    pub clock: Option<RecordingClock>,
+}
+
+impl OverviewToolViewModel {
+    /// The Record tile's label, action, and clock for `recording`.
+    pub fn recording_state(
+        recording: &RecordingViewModel,
+    ) -> (String, OverviewToolAction, Option<RecordingClock>) {
+        match recording.controls {
+            RecordingControls::Recording { paused: true } => (
+                "Stop recording (paused)".to_owned(),
+                OverviewToolAction::StopRecording,
+                None,
+            ),
+            RecordingControls::Recording { paused: false } => {
+                let clock = recording.clock;
+                let label = clock.map_or_else(
+                    || "Stop recording".to_owned(),
+                    |clock| Self::recording_label(&clock),
+                );
+                (label, OverviewToolAction::StopRecording, clock)
+            }
+            _ => ("Record".to_owned(), OverviewToolAction::Run, None),
+        }
+    }
+
+    /// The Record tile's label while its clock runs.
+    pub fn recording_label(clock: &RecordingClock) -> String {
+        format!("Stop recording · {}", format_clock(clock.elapsed()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -367,7 +409,7 @@ pub struct OverviewToolsViewModel {
 }
 
 impl OverviewToolsViewModel {
-    pub fn from_features(features: &[FeatureViewModel]) -> Self {
+    pub fn from_features(features: &[FeatureViewModel], recording: &RecordingViewModel) -> Self {
         const TOOLS: [(OverviewTool, &str, &str, &str); 14] = [
             (
                 OverviewTool::Screenshot,
@@ -463,11 +505,21 @@ impl OverviewToolsViewModel {
                         .find(|feature| feature.id == feature_id)
                         // A tool that cannot run here keeps its reason in the hub.
                         .filter(|feature| feature.enabled && feature.available)
-                        .map(|_| OverviewToolViewModel {
-                            tool,
-                            label,
-                            icon,
-                            feature_id,
+                        .map(|_| {
+                            let (label, action, clock) = match tool {
+                                OverviewTool::Record => {
+                                    OverviewToolViewModel::recording_state(recording)
+                                }
+                                _ => (label.to_owned(), OverviewToolAction::Run, None),
+                            };
+                            OverviewToolViewModel {
+                                tool,
+                                label,
+                                icon,
+                                feature_id,
+                                action,
+                                clock,
+                            }
                         })
                 })
                 .collect(),
@@ -1043,12 +1095,13 @@ mod tests {
             .iter()
             .map(FeatureViewModel::from)
             .collect::<Vec<_>>();
-        let tools = OverviewToolsViewModel::from_features(&features);
+        let idle = RecordingViewModel::default();
+        let tools = OverviewToolsViewModel::from_features(&features, &idle);
         assert_eq!(
             tools
                 .tools
                 .iter()
-                .map(|tool| tool.label)
+                .map(|tool| tool.label.as_str())
                 .collect::<Vec<_>>(),
             [
                 "Screenshot",
@@ -1065,6 +1118,32 @@ mod tests {
                 "Audio mixer",
             ]
         );
+        let record = |recording: &RecordingViewModel| {
+            OverviewToolsViewModel::from_features(&features, recording)
+                .tools
+                .into_iter()
+                .find(|tool| tool.tool == OverviewTool::Record)
+                .expect("the Record tool is on")
+        };
+        let idle_record = record(&idle);
+        assert_eq!(idle_record.action, OverviewToolAction::Run);
+        assert!(idle_record.clock.is_none());
+        let running = record(&RecordingViewModel {
+            controls: RecordingControls::Recording { paused: false },
+            clock: Some(RecordingClock::default()),
+            ..RecordingViewModel::default()
+        });
+        assert_eq!(running.label, "Stop recording · 0:00");
+        assert_eq!(running.action, OverviewToolAction::StopRecording);
+        assert!(running.clock.is_some());
+        let paused = record(&RecordingViewModel {
+            controls: RecordingControls::Recording { paused: true },
+            clock: Some(RecordingClock::default()),
+            ..RecordingViewModel::default()
+        });
+        assert_eq!(paused.label, "Stop recording (paused)");
+        assert_eq!(paused.action, OverviewToolAction::StopRecording);
+        assert!(paused.clock.is_none());
         assert_eq!(
             tools.intro(),
             "Your tools are below. The Feature Hub turns on more, and each feature says what it needs."

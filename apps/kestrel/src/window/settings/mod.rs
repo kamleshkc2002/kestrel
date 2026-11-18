@@ -318,7 +318,8 @@ fn add_overlay_group(
         overlay,
         (
             "Recording",
-            "While a screen recording runs: its time, with pause and stop.",
+            "A recording always shows its timer and Stop button while it runs, unless the \
+             overlay's Recording item is off.",
         ),
         (overlay.modules.recording, kestrel::OverlayModule::Recording),
         "status overlay recording time pause stop",
