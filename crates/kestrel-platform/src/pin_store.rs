@@ -182,7 +182,7 @@ fn encode(key: &PinKey, pins: &[SavedPin]) -> Result<Zeroizing<Vec<u8>>, PinStor
         XChaCha20Poly1305::new_from_slice(key.expose()).map_err(|_| PinStoreError::Entropy)?;
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            &XNonce::from(nonce),
             Payload {
                 msg: &plaintext,
                 aad: &header,
@@ -211,12 +211,13 @@ fn decode(key: &PinKey, bytes: &[u8]) -> Result<Vec<SavedPin>, PinStoreError> {
         return Err(PinStoreError::UnsupportedVersion);
     }
     let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
+    let nonce = <&XNonce>::try_from(nonce).map_err(|_| PinStoreError::Unreadable)?;
     let cipher =
         XChaCha20Poly1305::new_from_slice(key.expose()).map_err(|_| PinStoreError::Unreadable)?;
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(
-                XNonce::from_slice(nonce),
+                nonce,
                 Payload {
                     msg: ciphertext,
                     aad: header,
@@ -357,6 +358,20 @@ mod tests {
             assert_eq!(decoded.pinned_at_unix(), original.pinned_at_unix());
         }
         assert_eq!(format!("{:?}", decoded[0]), "SavedPin(..)");
+    }
+
+    #[test]
+    fn pins_saved_by_earlier_releases_still_decrypt() {
+        // Written by a release built against the previous cipher crate, with
+        // key(3) and the pins() fixture.
+        let saved = include_bytes!("../tests/fixtures/saved-pins-format-1.bin");
+        let decoded = decode(&key(3), saved).expect("an earlier release's file decrypts");
+        let original = pins();
+        assert_eq!(decoded.len(), original.len());
+        for (decoded, original) in decoded.iter().zip(&original) {
+            assert_eq!(decoded.text(), original.text());
+            assert_eq!(decoded.pinned_at_unix(), original.pinned_at_unix());
+        }
     }
 
     #[test]
