@@ -326,17 +326,42 @@ impl ExecutableInsertionBackend {
     fn key_arguments(&self, keys: ClipboardPasteKeys) -> Option<Vec<OsString>> {
         match self.provider {
             // wtype presses and releases keysyms in the given modifier order.
+            // The leading release is the first key event, so a compositor that
+            // switches to the virtual keyboard's keymap on its first key does so
+            // before the modifier is set, and the modifier survives the switch.
             InsertionProvider::Wtype => {
                 let mut arguments = Vec::new();
                 match keys {
                     ClipboardPasteKeys::CtrlV => {
-                        arguments.extend(["-M", "ctrl", "-k", "v", "-m", "ctrl"]);
+                        arguments.extend([
+                            "-p",
+                            "Control_L",
+                            "-M",
+                            "ctrl",
+                            "-k",
+                            "v",
+                            "-m",
+                            "ctrl",
+                        ]);
                     }
                     ClipboardPasteKeys::CtrlShiftV => arguments.extend([
-                        "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl",
+                        "-p",
+                        "Control_L",
+                        "-M",
+                        "ctrl",
+                        "-M",
+                        "shift",
+                        "-k",
+                        "v",
+                        "-m",
+                        "shift",
+                        "-m",
+                        "ctrl",
                     ]),
                     ClipboardPasteKeys::ShiftInsert => {
-                        arguments.extend(["-M", "shift", "-k", "Insert", "-m", "shift"]);
+                        arguments.extend([
+                            "-p", "Shift_L", "-M", "shift", "-k", "Insert", "-m", "shift",
+                        ]);
                     }
                     ClipboardPasteKeys::TypeText => return None,
                 }
@@ -657,7 +682,7 @@ impl InsertionError {
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
-    use kestrel_core::{CapabilityStatus, SnippetProviderPreference};
+    use kestrel_core::{CapabilityStatus, ClipboardPasteKeys, SnippetProviderPreference};
     use tempfile::TempDir;
 
     use super::{
@@ -833,6 +858,32 @@ mod tests {
         let typed = fs::read_to_string(&input).expect("the stub recorded its input");
         assert_eq!(typed, "multi\nline text");
         assert_eq!(backend.provider(), InsertionProvider::Wtype);
+
+        // Each chord opens with a release of its modifier, so the modifier
+        // survives a compositor activating the device keymap on the first key.
+        for (keys, expected) in [
+            (
+                ClipboardPasteKeys::CtrlV,
+                "-p Control_L -M ctrl -k v -m ctrl",
+            ),
+            (
+                ClipboardPasteKeys::CtrlShiftV,
+                "-p Control_L -M ctrl -M shift -k v -m shift -m ctrl",
+            ),
+            (
+                ClipboardPasteKeys::ShiftInsert,
+                "-p Shift_L -M shift -k Insert -m shift",
+            ),
+        ] {
+            backend
+                .press_keys(keys)
+                .expect("the stub accepts the chord");
+            let args = fs::read_to_string(&record).expect("the stub recorded the chord");
+            assert_eq!(
+                args.split_whitespace().collect::<Vec<_>>().join(" "),
+                expected
+            );
+        }
     }
 
     #[test]

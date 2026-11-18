@@ -417,20 +417,27 @@ pub struct OverlaySources<'a> {
     pub keep_awake: Option<&'a QuickToggleViewModel>,
 }
 
-/// What the overlay shows, in order; empty while it is off, so it hides.
+/// What the overlay shows, in order. A running recording's chip is the one
+/// item that shows while the overlay itself is off; everything else needs it
+/// on. Empty hides the window.
 pub fn overlay_items(overlay: &OverlayViewModel, sources: &OverlaySources<'_>) -> Vec<OverlayItem> {
     let mut items = Vec::new();
-    if !overlay.running {
-        return items;
-    }
     let modules = overlay.modules;
-    if let Some(recording) = sources.recording.filter(|_| modules.recording) {
+    // Only this item's own module and this session's placement decide it;
+    // without placement the tray and Overview still show the recording.
+    if let Some(recording) = sources
+        .recording
+        .filter(|_| modules.recording && overlay.available)
+    {
         if let RecordingControls::Recording { paused } = recording.controls {
             items.push(OverlayItem::Recording {
                 paused,
                 clock: recording.clock.unwrap_or_default(),
             });
         }
+    }
+    if !overlay.running {
+        return items;
     }
     if modules.alerts {
         items.extend(
@@ -777,6 +784,48 @@ mod tests {
             )
         };
         let playing = RecordingControls::Recording { paused: true };
+
+        let off = overlay(CapabilityStatus::Supported, false);
+        assert_eq!(
+            shown(&off, playing, controls),
+            [OverlayItem::Recording {
+                paused: true,
+                clock: RecordingClock::default()
+            }],
+            "a running recording shows its chip while the overlay is off"
+        );
+        assert!(
+            overlay_items(
+                &off,
+                &OverlaySources {
+                    recording: None,
+                    alerts: Some(&alerts),
+                    microphone: Some(&microphone(Some(true))),
+                    accessories: Some(&battery),
+                    shown_accessories: &changed,
+                    controls,
+                    keep_awake: None,
+                },
+            )
+            .is_empty(),
+            "without a recording an overlay that is off shows nothing"
+        );
+        let mut recording_hidden = off.clone();
+        recording_hidden.modules.recording = false;
+        assert!(
+            shown(&recording_hidden, playing, controls).is_empty(),
+            "the Recording module still hides its own item"
+        );
+        let unsupported = overlay(
+            CapabilityStatus::Unsupported {
+                reason: "No layer-shell placement.".to_owned(),
+            },
+            true,
+        );
+        assert!(
+            shown(&unsupported, playing, controls).is_empty(),
+            "without placement the overlay stays out of the way"
+        );
 
         assert_eq!(
             shown(&running, playing, controls),

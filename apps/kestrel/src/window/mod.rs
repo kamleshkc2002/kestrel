@@ -41,10 +41,11 @@ use gtk::{Align, Orientation, PolicyType, accessible::Property};
 use kestrel::{
     ApplicationCommand, ApplicationViewModel, AudioViewModel, CameraFrameSlot, CaptureRequest,
     CaptureViewModel, FocusTarget, MicrophoneViewModel, MonitorViewModel, OverviewTool,
-    OverviewToolsViewModel, RecordingRequest, RecordingSource, ScreenToolRequest,
-    ShortcutsViewModel, SpeedTestViewModel, UpdateAction, UpdatePhaseViewModel, UpdatesViewModel,
-    view_model::accessory_module_status,
+    OverviewToolAction, OverviewToolViewModel, OverviewToolsViewModel, RecordingRequest,
+    RecordingSource, ScreenToolRequest, ShortcutsViewModel, SpeedTestViewModel, UpdateAction,
+    UpdatePhaseViewModel, UpdatesViewModel, view_model::accessory_module_status,
 };
+use kestrel_services::recording::RecordingClock;
 use monitor::{build_monitor_group, build_speed_test_group};
 use processes::{ProcessesPanel, build_processes_panel};
 use recording::build_recording_group;
@@ -56,6 +57,7 @@ use snippets::{SnippetPanel, build_snippet_panel, fill_snippet_panel};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    time::Duration,
 };
 use widgets::{FilterRows, configure_wrapping_label, plain_row};
 
@@ -193,6 +195,8 @@ pub struct WindowView {
     update_banner_container: std::cell::RefCell<Option<gtk::Box>>,
     /// Overview's keep-awake row, updated while its countdown runs.
     keep_awake_row: std::cell::RefCell<Option<adw::ActionRow>>,
+    /// Overview's Record tile, following a running recording's clock.
+    overview_record: std::cell::RefCell<Option<OverviewRecordTile>>,
 }
 
 impl WindowView {
@@ -378,6 +382,7 @@ impl WindowView {
             update_actions_row: std::cell::RefCell::new(build.update_actions_row),
             update_banner_container: std::cell::RefCell::new(build.update_banner_container),
             keep_awake_row: std::cell::RefCell::new(build.keep_awake_row),
+            overview_record: std::cell::RefCell::new(build.overview_record),
         }
     }
 
@@ -471,6 +476,7 @@ impl WindowView {
             SidebarPage::Overview => {
                 *self.keep_awake_row.borrow_mut() = build.keep_awake_row;
                 *self.update_banner_container.borrow_mut() = build.update_banner_container;
+                *self.overview_record.borrow_mut() = build.overview_record;
             }
             SidebarPage::FeatureHub => {}
         }
@@ -718,6 +724,9 @@ impl WindowView {
     }
 
     pub fn set_recording(&self, recording: &kestrel::RecordingViewModel) {
+        if let Some(tile) = self.overview_record.borrow().as_ref() {
+            tile.follow(recording);
+        }
         let Some(container) = self.recording_container.borrow().as_ref().cloned() else {
             return;
         };
@@ -849,6 +858,72 @@ impl UpdateActionsRow {
     }
 }
 
+/// The Overview Record tile, updated in place as the recording changes.
+struct OverviewRecordTile {
+    button: gtk::Button,
+    label: gtk::Label,
+    /// True while a click stops the running recording.
+    stopping: Rc<Cell<bool>>,
+    /// The clock the label follows; `None` while idle or paused.
+    clock: Rc<RefCell<Option<RecordingClock>>>,
+    /// One tick runs while a clock is followed.
+    ticking: Rc<Cell<bool>>,
+}
+
+impl OverviewRecordTile {
+    fn new(
+        button: gtk::Button,
+        label: gtk::Label,
+        stopping: Rc<Cell<bool>>,
+        clock: Option<RecordingClock>,
+    ) -> Self {
+        let tile = Self {
+            button,
+            label,
+            stopping,
+            clock: Rc::new(RefCell::new(clock)),
+            ticking: Rc::new(Cell::new(false)),
+        };
+        tile.tick();
+        tile
+    }
+
+    /// Takes the Record tile's label and action from `recording`.
+    fn follow(&self, recording: &kestrel::RecordingViewModel) {
+        let (text, action, clock) = OverviewToolViewModel::recording_state(recording);
+        self.stopping
+            .set(action == OverviewToolAction::StopRecording);
+        self.label.set_text(&text);
+        self.button.set_tooltip_text(Some(&text));
+        *self.clock.borrow_mut() = clock;
+        self.tick();
+    }
+
+    /// Follows the clock with one 500 ms tick, or none while idle or paused.
+    fn tick(&self) {
+        if self.clock.borrow().is_none() || self.ticking.replace(true) {
+            return;
+        }
+        // The label holds the timer: once the tile is rebuilt or replaced,
+        // the next tick finds no label and stops.
+        let weak = self.label.downgrade();
+        let clock = Rc::clone(&self.clock);
+        let ticking = Rc::clone(&self.ticking);
+        gtk::glib::timeout_add_local(Duration::from_millis(500), move || {
+            let Some(label) = weak.upgrade() else {
+                ticking.set(false);
+                return gtk::glib::ControlFlow::Break;
+            };
+            let Some(clock) = *clock.borrow() else {
+                ticking.set(false);
+                return gtk::glib::ControlFlow::Break;
+            };
+            label.set_text(&OverviewToolViewModel::recording_label(&clock));
+            gtk::glib::ControlFlow::Continue
+        });
+    }
+}
+
 struct PageBuild {
     scrolled: gtk::ScrolledWindow,
     monitor_container: Option<gtk::Box>,
@@ -875,6 +950,8 @@ struct PageBuild {
     update_banner_container: Option<gtk::Box>,
     /// The keep-awake row, updated while its countdown runs.
     keep_awake_row: Option<adw::ActionRow>,
+    /// The Record tile, updated while a recording runs.
+    overview_record: Option<OverviewRecordTile>,
     filter_rows: FilterRows,
 }
 
@@ -978,6 +1055,7 @@ impl Default for PageBuild {
             update_actions_row: None,
             update_banner_container: None,
             keep_awake_row: None,
+            overview_record: None,
             filter_rows: FilterRows::new(),
         }
     }
@@ -1032,13 +1110,14 @@ impl PageBuild {
             .update_banner_container
             .take()
             .or(other.update_banner_container);
+        self.overview_record = self.overview_record.take().or(other.overview_record);
     }
 }
 
 fn build_overview_tools_group(
     tools: &OverviewToolsViewModel,
     commands: &Sender<ApplicationCommand>,
-) -> adw::PreferencesGroup {
+) -> (adw::PreferencesGroup, Option<OverviewRecordTile>) {
     let group = adw::PreferencesGroup::builder()
         .title("Tools")
         .description(if tools.tools.is_empty() {
@@ -1055,14 +1134,16 @@ fn build_overview_tools_group(
         .min_children_per_line(1)
         .homogeneous(false)
         .build();
+    let mut record_tile = None;
     for tool in &tools.tools {
         let button = gtk::Button::new();
         button.add_css_class("flat");
         let content = gtk::Box::new(Orientation::Horizontal, 6);
         content.append(&gtk::Image::from_icon_name(tool.icon));
-        content.append(&gtk::Label::new(Some(tool.label)));
+        let label = gtk::Label::new(Some(&tool.label));
+        content.append(&label);
         button.set_child(Some(&content));
-        button.set_tooltip_text(Some(tool.label));
+        button.set_tooltip_text(Some(&tool.label));
         let sender = commands.clone();
         match tool.tool {
             OverviewTool::Screenshot => button.connect_clicked(move |_| {
@@ -1083,11 +1164,25 @@ fn build_overview_tools_group(
                     kestrel::ScreenTool::Color,
                 )));
             }),
-            OverviewTool::Record => button.connect_clicked(move |_| {
-                let _ = sender.try_send(ApplicationCommand::Recording(RecordingRequest::Start(
-                    RecordingSource::Screen,
-                )));
-            }),
+            OverviewTool::Record => {
+                let stopping = Rc::new(Cell::new(tool.action == OverviewToolAction::StopRecording));
+                let clicked = Rc::clone(&stopping);
+                let id = button.connect_clicked(move |_| {
+                    let request = if clicked.get() {
+                        RecordingRequest::Stop
+                    } else {
+                        RecordingRequest::Start(RecordingSource::Screen)
+                    };
+                    let _ = sender.try_send(ApplicationCommand::Recording(request));
+                });
+                record_tile = Some(OverviewRecordTile::new(
+                    button.clone(),
+                    label,
+                    stopping,
+                    tool.clock,
+                ));
+                id
+            }
             OverviewTool::Scratchpad => button.connect_clicked(move |_| {
                 let _ = sender.try_send(ApplicationCommand::Focus(FocusTarget::Scratchpad));
             }),
@@ -1125,7 +1220,7 @@ fn build_overview_tools_group(
     more.set_action_name(Some("win.navigate-feature-hub"));
     group.add(&flow);
     group.add(&more);
-    group
+    (group, record_tile)
 }
 
 /// The one-time offer to name Kestrel in launchers and screen-sharing dialogs.
@@ -1367,10 +1462,10 @@ fn build_page(
         if view_model.updates.show_consent_card {
             body.append(&build_update_consent_card(commands));
         }
-        body.append(&build_overview_tools_group(
-            &view_model.overview_tools,
-            commands,
-        ));
+        let (tools_group, record_tile) =
+            build_overview_tools_group(&view_model.overview_tools, commands);
+        body.append(&tools_group);
+        build.overview_record = record_tile;
         if !view_model.quick_toggles.is_empty() {
             let (group, keep_awake_row) =
                 build_quick_toggle_group(&view_model.quick_toggles, window, commands);

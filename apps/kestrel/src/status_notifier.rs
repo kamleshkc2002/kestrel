@@ -1,6 +1,6 @@
 use crate::{
     ApplicationCommand, ApplicationViewModel, FocusTarget, KeepAwakeStamp, QuickToggleId,
-    QuickToggleViewModel,
+    QuickToggleViewModel, RecordingRequest, RecordingViewModel,
     tray_icon::{application_icons as application_icon_pixmaps, readout_icon},
 };
 use async_channel::Sender;
@@ -33,6 +33,7 @@ impl StatusNotifierIntegration {
             keep_awake: TrayKeepAwake::default(),
             update: TrayUpdate::default(),
             shelf: TrayShelf::default(),
+            recording: TrayRecording::default(),
             icons: application_icon_pixmaps()
                 .into_iter()
                 .map(|pixels| Icon {
@@ -131,6 +132,14 @@ impl StatusNotifierIntegration {
     /// Publishes whether the Shelf item shows; `None` without a tray host.
     pub fn shelf_sink(&self) -> Option<TrayShelfSink> {
         self.handle.as_ref().map(|handle| TrayShelfSink {
+            handle: handle.clone(),
+            published: Arc::default(),
+        })
+    }
+
+    /// Publishes the recording tooltip and stop item; `None` without a tray host.
+    pub fn recording_sink(&self) -> Option<TrayRecordingSink> {
+        self.handle.as_ref().map(|handle| TrayRecordingSink {
             handle: handle.clone(),
             published: Arc::default(),
         })
@@ -483,12 +492,73 @@ impl TrayShelfSink {
     }
 }
 
+/// Whether a recording runs or is paused, for the tooltip and stop item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrayRecording {
+    pub phase: TrayRecordingPhase,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TrayRecordingPhase {
+    #[default]
+    Idle,
+    Recording,
+    Paused,
+}
+
+impl TrayRecording {
+    /// Reads the phase a recording view model reports.
+    pub fn from_recording(recording: &RecordingViewModel) -> Self {
+        Self {
+            phase: match recording.controls {
+                crate::RecordingControls::Recording { paused: false } => {
+                    TrayRecordingPhase::Recording
+                }
+                crate::RecordingControls::Recording { paused: true } => TrayRecordingPhase::Paused,
+                _ => TrayRecordingPhase::Idle,
+            },
+        }
+    }
+
+    /// The tooltip's description; the time lives on the overlay and Overview.
+    fn description(self) -> &'static str {
+        match self.phase {
+            TrayRecordingPhase::Idle => "Open the capability and feature status window.",
+            TrayRecordingPhase::Recording => "Recording",
+            TrayRecordingPhase::Paused => "Recording paused",
+        }
+    }
+}
+
+/// Pushes the recording tooltip and stop item to an open tray.
+#[derive(Clone)]
+pub struct TrayRecordingSink {
+    handle: Handle<KestrelTray>,
+    published: Arc<Mutex<TrayRecording>>,
+}
+
+impl TrayRecordingSink {
+    /// Skips an update that repeats the phase the tray already shows.
+    pub fn publish(&self, state: TrayRecording) {
+        let mut published = self
+            .published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *published == state {
+            return;
+        }
+        *published = state;
+        self.handle.update(move |tray| tray.recording = state);
+    }
+}
+
 #[derive(Debug)]
 struct KestrelTray {
     sender: Sender<ApplicationCommand>,
     keep_awake: TrayKeepAwake,
     update: TrayUpdate,
     shelf: TrayShelf,
+    recording: TrayRecording,
     /// The application logo at several panel sizes.
     icons: Vec<Icon>,
     /// The bundled icon theme inside an AppImage mount.
@@ -541,7 +611,7 @@ impl Tray for KestrelTray {
         ToolTip {
             icon_name: self.icon_name(),
             title: self.title(),
-            description: "Open the capability and feature status window.".to_owned(),
+            description: self.recording.description().to_owned(),
             ..ToolTip::default()
         }
     }
@@ -551,7 +621,11 @@ impl Tray for KestrelTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let mut items: Vec<MenuItem<Self>> = vec![
+        let mut items: Vec<MenuItem<Self>> = Vec::new();
+        if let Some(stop) = stop_recording_item(&self.sender, &self.recording) {
+            items.push(stop);
+        }
+        items.extend([
             open_item(&self.sender),
             StandardItem {
                 label: "Refresh capabilities".to_owned(),
@@ -576,7 +650,7 @@ impl Tray for KestrelTray {
                 ..StandardItem::default()
             }
             .into(),
-        ];
+        ]);
         if let Some(update) = update_item(&self.sender, &self.update) {
             items.push(update);
         }
@@ -693,6 +767,31 @@ fn keep_awake_item<T: Tray>(
     )
 }
 
+/// Stops and saves the running recording; absent while none runs.
+fn stop_recording_item<T: Tray>(
+    sender: &Sender<ApplicationCommand>,
+    state: &TrayRecording,
+) -> Option<MenuItem<T>> {
+    if state.phase == TrayRecordingPhase::Idle {
+        return None;
+    }
+    let sender = sender.clone();
+    Some(
+        StandardItem {
+            label: "Stop recording".to_owned(),
+            icon_name: "media-playback-stop-symbolic".to_owned(),
+            activate: Box::new(move |_: &mut T| {
+                send(
+                    &sender,
+                    ApplicationCommand::Recording(RecordingRequest::Stop),
+                )
+            }),
+            ..StandardItem::default()
+        }
+        .into(),
+    )
+}
+
 /// A tray item whose icon shows one readout's label and value.
 #[derive(Debug)]
 struct ReadoutTray {
@@ -777,10 +876,12 @@ mod tests {
     use kestrel_core::CapabilityStatus;
 
     use super::{
-        FEATURE_ID, Published, TrayKeepAwake, TrayUpdate, accept, application_icon_theme_path,
-        send_present, unavailable_capability, update_item_command,
+        FEATURE_ID, KestrelTray, Published, TrayKeepAwake, TrayRecording, TrayRecordingPhase,
+        TrayUpdate, accept, application_icon_theme_path, send_present, stop_recording_item,
+        unavailable_capability, update_item_command,
     };
     use crate::{ApplicationCommand, FocusTarget, KeepAwakeStamp};
+    use ksni::MenuItem;
     use std::{ffi::OsStr, time::Duration};
 
     fn stamp(revision: u64, observed_at: u64) -> Option<KeepAwakeStamp> {
@@ -885,6 +986,33 @@ mod tests {
             update_item_command(&state),
             ApplicationCommand::OpenUri("https://example.invalid/release".to_owned())
         );
+    }
+
+    #[test]
+    fn the_tray_stop_item_and_tooltip_follow_the_recording_phase() {
+        let (sender, _receiver) = async_channel::unbounded();
+        let idle = TrayRecording::default();
+        assert!(stop_recording_item::<KestrelTray>(&sender, &idle).is_none());
+        assert_eq!(
+            idle.description(),
+            "Open the capability and feature status window."
+        );
+
+        let running = TrayRecording {
+            phase: TrayRecordingPhase::Recording,
+        };
+        let item = stop_recording_item::<KestrelTray>(&sender, &running).expect("stop item");
+        assert!(matches!(
+            item,
+            MenuItem::Standard(item) if item.label == "Stop recording"
+        ));
+        assert_eq!(running.description(), "Recording");
+
+        let paused = TrayRecording {
+            phase: TrayRecordingPhase::Paused,
+        };
+        assert!(stop_recording_item::<KestrelTray>(&sender, &paused).is_some());
+        assert_eq!(paused.description(), "Recording paused");
     }
 
     #[test]
