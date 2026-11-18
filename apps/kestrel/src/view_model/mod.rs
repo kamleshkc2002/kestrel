@@ -91,7 +91,7 @@ pub use desktop_entry::DesktopEntryViewModel;
 pub use features::{
     CapabilityKind, CapabilityStatusViewModel, CapabilityViewModel, ConfigurationWarningViewModel,
     ConfirmationViewModel, FeatureHubSection, FeatureIndicator, FeatureLifecycleViewModel,
-    FeatureViewModel, KeepAwakeControlsViewModel, KeepAwakeStamp, OverviewTool,
+    FeatureViewModel, KeepAwakeControlsViewModel, KeepAwakeStamp, OverviewTool, OverviewToolAction,
     OverviewToolViewModel, OverviewToolsViewModel, QuickToggleActionViewModel,
     QuickToggleControlViewModel, QuickToggleViewModel, RemediationViewModel, ResourceCostViewModel,
     TurnOnViewModel, disabled_status_for, turn_on_for,
@@ -404,7 +404,7 @@ impl ApplicationViewModel {
         {
             self.shelf.status = status;
         }
-        self.overview_tools = OverviewToolsViewModel::from_features(features);
+        self.overview_tools = OverviewToolsViewModel::from_features(features, &self.recording);
     }
 }
 

@@ -69,9 +69,9 @@ Include the desktop and its version, the session type, the feature ID, and the s
 
 | Feature | COSMIC | Sway | Hyprland | KDE Plasma | GNOME | X11 |
 |---|---|---|---|---|---|---|
-| Clipboard history (`clipboard.history`) | Untested | Tested (headless Sway, CI) | Untested | Untested | Unsupported (no wlr-data-control, not an X11 session) | Tested (Xvfb, CI) |
+| Clipboard history (`clipboard.history`) | Reported (maintainer, Pop!_OS 24.04 COSMIC; paste into the previous application works for text and images with the Ctrl+V method, and "Type the text" works for text) | Tested (headless Sway, CI) | Untested | Untested | Unsupported (no wlr-data-control, not an X11 session) | Tested (Xvfb, CI) |
 | Clean links (Clipboard page) | Untested | Untested | Untested | Untested | Untested | Untested |
-| Snippets (`snippets.text`) | Untested | Untested | Untested | Untested | Untested | Untested |
+| Snippets (`snippets.text`) | Reported (maintainer, Pop!_OS 24.04 COSMIC; insert from the Snippets page and by trigger in the command bar) | Untested | Untested | Untested | Untested | Untested |
 | Scratchpad (`notes.scratchpad`) | Untested | Untested | Untested | Untested | Untested | Untested |
 | Shelf (`files.shelf`) | Untested | Untested | Untested | Untested | Untested | Untested |
 

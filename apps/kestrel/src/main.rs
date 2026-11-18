@@ -934,13 +934,47 @@ fn deliver_alerts(
     guard.runtime.monitor_view_model(&guard.configuration)
 }
 
+/// How long every Kestrel surface must stay hidden before delivery, so the
+/// compositor has moved keyboard focus to the previous application.
+const HANDOFF_SETTLE: Duration = Duration::from_millis(150);
+
+/// Reports focus released only after every surface has stayed hidden for the
+/// settle period.
+struct HiddenSettle {
+    settle: Duration,
+    hidden_since: Option<Instant>,
+}
+
+impl HiddenSettle {
+    fn new(settle: Duration) -> Self {
+        Self {
+            settle,
+            hidden_since: None,
+        }
+    }
+
+    fn observe(&mut self, all_hidden: bool, now: Instant) -> bool {
+        if !all_hidden {
+            self.hidden_since = None;
+            return false;
+        }
+        let since = *self.hidden_since.get_or_insert(now);
+        now.saturating_duration_since(since) >= self.settle
+    }
+}
+
 /// Focus and held modifiers, observed on the GTK thread while a paste waits.
-fn paste_observation(application: &gtk::Application) -> kestrel_services::paste::PasteObservation {
-    // A hidden window keeps its last active state, and it cannot hold the focus.
-    let focus_released = application
+fn paste_observation(
+    application: &gtk::Application,
+    settle: &mut HiddenSettle,
+) -> kestrel_services::paste::PasteObservation {
+    // A layer surface can keep keyboard input while GTK reports it inactive, so
+    // hiding is the precondition; the settle covers the compositor's focus move.
+    let all_hidden = application
         .windows()
         .iter()
-        .all(|window| !window.is_visible() || !window.is_active());
+        .all(|window| !window.is_visible());
+    let focus_released = settle.observe(all_hidden, Instant::now());
     let held = gtk::gdk::Display::default()
         .and_then(|display| display.default_seat())
         .and_then(|seat| seat.keyboard())
@@ -1407,6 +1441,8 @@ struct ApplicationController {
     tray_update: RefCell<Option<kestrel::TrayUpdateSink>>,
     /// Pushes the Shelf item to the same tray.
     tray_shelf: RefCell<Option<kestrel::TrayShelfSink>>,
+    /// Pushes the recording stop item and tooltip to the same tray.
+    tray_recording: RefCell<Option<kestrel::TrayRecordingSink>>,
     /// One update check runs at a time; its result returns to this thread.
     update_checking: Cell<bool>,
     /// The running check, cancelled and joined outside the state lock on
@@ -1576,6 +1612,11 @@ impl ApplicationController {
                 status_notifier
                     .as_ref()
                     .and_then(StatusNotifierIntegration::shelf_sink),
+            ),
+            tray_recording: RefCell::new(
+                status_notifier
+                    .as_ref()
+                    .and_then(StatusNotifierIntegration::recording_sink),
             ),
             update_checking: Cell::new(false),
             update_worker: RefCell::new(None),
@@ -2182,8 +2223,9 @@ impl ApplicationController {
         let state = Arc::clone(&self.state);
         let mut hidden = false;
         let mut sent = false;
+        let mut settle = HiddenSettle::new(HANDOFF_SETTLE);
         glib::timeout_add_local(Duration::from_millis(40), move || {
-            let observation = paste_observation(&application);
+            let observation = paste_observation(&application, &mut settle);
             let tick = {
                 let mut guard = state
                     .lock()
@@ -2198,10 +2240,11 @@ impl ApplicationController {
                                     PasteStage::WaitingForFocus
                                         | PasteStage::Sending
                                         | PasteStage::Done
+                                        | PasteStage::Typed
                                 ),
                                 false,
                                 stage.is_terminal(),
-                                matches!(stage, PasteStage::Done),
+                                matches!(stage, PasteStage::Done | PasteStage::Typed),
                                 stage.message(),
                             )
                         })
@@ -2228,6 +2271,16 @@ impl ApplicationController {
             };
             let Some((hides, ready, terminal, done, message)) = tick else {
                 controller.end_handoff(kind);
+                if kind == HandoffKind::ClipboardPaste {
+                    // Nothing was staged, so no observation can finish the paste.
+                    if let Some(application) = gtk::gio::Application::default()
+                        .and_then(|application| application.downcast::<adw::Application>().ok())
+                    {
+                        controller.present(&application);
+                    }
+                    controller
+                        .show_message("The paste did not start; the entry stays on the clipboard.");
+                }
                 return glib::ControlFlow::Break;
             };
             if hides && !hidden {
@@ -2393,6 +2446,7 @@ impl ApplicationController {
         self.publish_tray_keep_awake(&view_model);
         self.publish_tray_update(&view_model);
         self.publish_tray_shelf(&view_model);
+        self.publish_tray_recording(&view_model.recording);
         let window = self.window.borrow();
         let Some(view) = window.as_ref() else {
             return;
@@ -2416,6 +2470,7 @@ impl ApplicationController {
             let keep_awake = integration.keep_awake_sink();
             let update = integration.update_sink();
             let shelf = integration.shelf_sink();
+            let recording = integration.recording_sink();
             if sink.is_none() {
                 log::warn!(
                     target: kestrel::STATUS_NOTIFIER_ID,
@@ -2426,6 +2481,7 @@ impl ApplicationController {
             *self.tray_keep_awake.borrow_mut() = keep_awake;
             *self.tray_update.borrow_mut() = update;
             *self.tray_shelf.borrow_mut() = shelf;
+            *self.tray_recording.borrow_mut() = recording;
             *self.status_notifier.borrow_mut() = Some(integration);
         } else if !wanted && present {
             let _ = self.stop_tray();
@@ -2454,6 +2510,14 @@ impl ApplicationController {
             return;
         };
         sink.publish(kestrel::TrayShelf::from_view_model(view_model));
+    }
+
+    /// Pushes the stop item and tooltip, only when the recording phase changes.
+    fn publish_tray_recording(&self, recording: &kestrel::RecordingViewModel) {
+        let Some(sink) = self.tray_recording.borrow().clone() else {
+            return;
+        };
+        sink.publish(kestrel::TrayRecording::from_recording(recording));
     }
 
     /// Whether `stamp` is not older than the keep-awake state already shown.
@@ -2508,6 +2572,7 @@ impl ApplicationController {
         let keep_awake = self.tray_keep_awake.borrow_mut().take();
         let update = self.tray_update.borrow_mut().take();
         let shelf = self.tray_shelf.borrow_mut().take();
+        let recording = self.tray_recording.borrow_mut().take();
         let integration = self.status_notifier.borrow_mut().take();
         thread::Builder::new()
             .name("kestrel-tray-stop".to_owned())
@@ -2518,6 +2583,7 @@ impl ApplicationController {
                 drop(keep_awake);
                 drop(update);
                 drop(shelf);
+                drop(recording);
                 drop(integration);
             })
             .ok()
@@ -3376,6 +3442,7 @@ impl ApplicationController {
         }
         if let Some(recording) = &recording {
             self.overlay.set_recording(recording);
+            self.publish_tray_recording(recording);
         }
         if let Some(monitor) = &monitor {
             self.overlay.set_monitor(monitor);
@@ -3521,6 +3588,7 @@ impl ApplicationController {
         };
         self.recording_running.set(recording.running);
         self.overlay.set_recording(&recording);
+        self.publish_tray_recording(&recording);
         if !recording.choosing_area {
             self.recording_area_open.set(false);
         }
@@ -4426,9 +4494,19 @@ impl ControllerState {
                     },
                 ) {
                     Some(Ok(_)) => String::new(),
-                    Some(Err(error)) => format!("Paste failed: {error}"),
-                    None => "Clipboard history is not running; enable clipboard.history first"
-                        .to_owned(),
+                    Some(Err(error)) => {
+                        log::debug!(
+                            target: "clipboard.history",
+                            "paste did not start: {error:?}"
+                        );
+                        return Err(format!("Paste failed: {error}"));
+                    }
+                    None => {
+                        return Err(
+                            "Clipboard history is not running; enable clipboard.history first"
+                                .to_owned(),
+                        );
+                    }
                 }
             }
             ControllerOperation::SetClipboardPasteKeys(keys) => {
@@ -4437,7 +4515,7 @@ impl ControllerState {
                 self.commit_configuration(
                     candidate,
                     config_path,
-                    format!("Paste keystroke: {}", keys.label()),
+                    format!("Paste method: {}", keys.label()),
                 )?
             }
             ControllerOperation::ClipboardSearch(query) => {
@@ -6679,12 +6757,40 @@ fn mark_inherited_fds_cloexec() {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use super::{
-        ApplicationController, CloseOutcome, ControllerContext, RefreshResult, TargetedPanel,
-        TickUpdate, close_outcome, load_startup_configuration, persist, shelf_capture_add,
+        ApplicationController, CloseOutcome, ControllerContext, HiddenSettle, RefreshResult,
+        TargetedPanel, TickUpdate, close_outcome, load_startup_configuration, persist,
+        shelf_capture_add,
     };
     use kestrel::{MonitorReadout, PanelMoveDirection};
     use kestrel_core::{ApplicationConfiguration, CloseAction};
+
+    #[test]
+    fn handing_focus_over_waits_for_the_settle_after_every_surface_hides() {
+        let start = Instant::now();
+        let settle = Duration::from_millis(150);
+
+        let mut hidden = HiddenSettle::new(settle);
+        assert!(
+            !hidden.observe(true, start),
+            "hiding alone does not move the compositor's focus"
+        );
+        assert!(!hidden.observe(true, start + Duration::from_millis(149)));
+        assert!(hidden.observe(true, start + Duration::from_millis(150)));
+
+        let mut hidden = HiddenSettle::new(settle);
+        assert!(!hidden.observe(false, start));
+        assert!(!hidden.observe(true, start + Duration::from_millis(10)));
+        assert!(
+            !hidden.observe(false, start + Duration::from_millis(60)),
+            "a surface reappearing restarts the settle"
+        );
+        assert!(!hidden.observe(true, start + Duration::from_millis(70)));
+        assert!(!hidden.observe(true, start + Duration::from_millis(219)));
+        assert!(hidden.observe(true, start + Duration::from_millis(220)));
+    }
 
     struct SilentNotifier;
 
