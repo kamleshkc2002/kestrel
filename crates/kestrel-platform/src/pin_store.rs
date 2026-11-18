@@ -375,6 +375,13 @@ mod tests {
     }
 
     #[test]
+    fn the_cipher_wipes_its_key_copy_when_dropped() {
+        // Fails to compile if a cipher update stops zeroizing the key on drop.
+        fn wiped_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        wiped_on_drop::<chacha20poly1305::XChaCha20Poly1305>();
+    }
+
+    #[test]
     fn a_wrong_key_truncated_file_or_unknown_version_is_unreadable() {
         let encoded = encode(&key(3), &pins()).expect("encryption succeeds");
         assert_eq!(
