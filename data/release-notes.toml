@@ -55,3 +55,7 @@ text = "Copying or pasting an entry replaces the clipboard directly, so it no lo
 [[change]]
 feature = "clipboard.history"
 text = "The paste shortcut now reaches apps on desktops that dropped its Ctrl or Shift key, so pasting into the previous app works for text, images, and files there."
+
+[[change]]
+feature = "kestrel"
+text = "Opening Kestrel with something already on the clipboard no longer shows \"Another operation is still running\"; clipboard and snippet searches now wait their turn instead of being dropped."

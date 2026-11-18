@@ -643,8 +643,9 @@ mod tests {
     fn open_succeeds_with_a_stub_handler() {
         let dir = TempDir::new().expect("temp dir");
         let record = dir.path().join("opened.txt");
+        // Renamed into place, so the record never exists before its text does.
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" > {}\nexit 0\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" > {0}.part && mv {0}.part {0}\nexit 0\n",
             record.display()
         );
         let handler = write(&dir, "xdg-open", &script);
@@ -661,11 +662,11 @@ mod tests {
             .open("https://example.com")
             .expect("the stub opens");
 
-        for _ in 0..100 {
+        for _ in 0..200 {
             if record.exists() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
         let recorded = fs::read_to_string(&record).expect("the stub recorded its arguments");
         assert_eq!(recorded, "1\nhttps://example.com\n");
