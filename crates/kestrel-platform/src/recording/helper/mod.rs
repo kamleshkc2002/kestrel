@@ -259,10 +259,11 @@ impl RecordingHelper {
                 command.pre_exec(move || inherit_fd(fd));
             }
         }
-        let mut child = command.spawn().map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => RecorderProblem::Missing,
-            _ => RecorderProblem::Failed,
-        })?;
+        let mut child =
+            crate::spawn_with_busy_retry(&mut command).map_err(|error| match error.kind() {
+                io::ErrorKind::NotFound => RecorderProblem::Missing,
+                _ => RecorderProblem::Failed,
+            })?;
         let stdin = child.stdin.take().ok_or(RecorderProblem::Failed)?;
         let stdout = child
             .stdout
@@ -581,13 +582,7 @@ mod tests {
 
     #[test]
     fn a_helper_that_exits_without_a_reply_is_unavailable() {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::TempDir::new().expect("temp dir");
-        let path = directory.path().join("kestrel-record");
-        std::fs::write(&path, "#!/bin/sh\nexit 127\n").expect("write helper");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make helper executable");
-        let helper = RecordingHelper::at(path);
+        let (_directory, helper) = scripted_program("exit 127");
         assert_eq!(helper.probe(), Err(RecorderProblem::Failed));
         let error = helper
             .gstreamer_missing(RecordingSource::Screen, &[], &SystemAudioSource::Output)
@@ -610,17 +605,7 @@ mod tests {
 
     /// A stand-in helper that prints `lines` and then waits for EOF.
     fn scripted_helper(lines: &str) -> (tempfile::TempDir, RecordingHelper) {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::TempDir::new().expect("temp dir");
-        let path = directory.path().join("kestrel-record");
-        std::fs::write(
-            &path,
-            format!("#!/bin/sh\nprintf '%s\\n' {lines}\ncat >/dev/null\n"),
-        )
-        .expect("write helper");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make helper executable");
-        (directory, RecordingHelper::at(path))
+        scripted_program(&format!("printf '%s\\n' {lines}"))
     }
 
     #[test]
@@ -651,14 +636,32 @@ mod tests {
     }
 
     /// A stand-in helper that runs `body`, then keeps both streams open.
+    ///
+    /// A separate shell writes the script and exits before it runs. A file the
+    /// test process held open for writing could be inherited by another test
+    /// thread's fork, and executing it then fails with `ETXTBSY`; with the write
+    /// confined to a child that has already exited, nothing can hold it open.
     fn scripted_program(body: &str) -> (tempfile::TempDir, RecordingHelper) {
-        use std::os::unix::fs::PermissionsExt;
+        use std::io::Write;
+        use std::process::{Command, Stdio};
         let directory = tempfile::TempDir::new().expect("temp dir");
         let path = directory.path().join("kestrel-record");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\ncat >/dev/null\n"))
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("the script writer starts");
+        writer
+            .stdin
+            .take()
+            .expect("the writer's input is piped")
+            .write_all(format!("#!/bin/sh\n{body}\ncat >/dev/null\n").as_bytes())
             .expect("write helper");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("make helper executable");
+        assert!(
+            writer.wait().expect("the script writer exits").success(),
+            "the helper script is written and executable"
+        );
         (directory, RecordingHelper::at(path))
     }
 
