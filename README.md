@@ -25,9 +25,12 @@ compositor rather than replacing it.
 
 ## Status
 
-In preview: an x86_64 AppImage tagged `x.y.z-preview.N` on GitHub Releases,
-with a SHA-256 file. GNOME, KDE Plasma, Hyprland, and X11 are supported by
-design with little real use so far, so reports are welcome.
+Kestrel 1.0 ships as an x86_64 AppImage and a Flatpak bundle on GitHub
+Releases, each with a SHA-256 file. Your configuration, commands, and saved data
+carry over across every 1.x update ([stability promise](docs/stability.md)).
+It runs on COSMIC, GNOME, KDE Plasma, Hyprland, Sway, and X11 desktops, and each
+feature says what it needs on yours. Tell us how it works on your desktop: every
+report fills in the [compatibility table](docs/compatibility.md).
 
 **Where it runs**
 
@@ -35,17 +38,15 @@ design with little real use so far, so reports are welcome.
 - **Should run:** glibc 2.35 or newer: Ubuntu 22.04+, Linux Mint 21+, Debian 12+, Fedora 38+, and Arch (untested).
 - **Won't start:** systems with glibc older than 2.35, such as Ubuntu 20.04 and Debian 11.
 
-Which features work on each desktop is in the
-[compatibility table](docs/compatibility.md). Known limits are listed in
-[docs/features.md](docs/features.md#known-limits).
+Known limits are listed in [docs/features.md](docs/features.md#known-limits).
 
 ## Install
 
-The AppImage is the current channel. Set `VERSION` to the latest preview on
+The AppImage is the main channel. Set `VERSION` to the latest release on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
-VERSION="0.9.0-preview.1"
+VERSION="1.0.0"
 FILE="Kestrel-$VERSION-x86_64.AppImage"
 URL="https://github.com/kamleshkc2002/kestrel/releases/download/v$VERSION"
 curl -LO "$URL/$FILE"
@@ -80,7 +81,7 @@ Full detail is in [Privacy](docs/privacy.md).
 
 ## Feedback
 
-Feedback on the preview is welcome in
+Feedback is welcome in
 [issue #331](https://github.com/kamleshkc2002/kestrel/issues/331); for a bug,
 use the [bug report form](https://github.com/kamleshkc2002/kestrel/issues/new?template=bug_report.yml).
 To say whether a feature works on your desktop, use the

@@ -54,11 +54,11 @@ command bar, and status overlay sit above tiled windows without taking a tile.
 
 ## Install
 
-Set `VERSION` to the latest preview on
+Set `VERSION` to the latest release on
 [GitHub Releases](https://github.com/kamleshkc2002/kestrel/releases), then:
 
 ```bash
-VERSION="0.9.0-preview.1"
+VERSION="1.0.0"
 FILE="Kestrel-$VERSION-x86_64.AppImage"
 URL="https://github.com/kamleshkc2002/kestrel/releases/download/v$VERSION"
 curl -LO "$URL/$FILE"
