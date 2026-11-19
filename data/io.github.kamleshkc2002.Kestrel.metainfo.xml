@@ -34,12 +34,14 @@
     </screenshot>
   </screenshots>
 
+  <!-- "~" marks a pre-release in AppStream's version order, so 1.0.0~rc.2 sorts before 1.0.0. -->
   <releases>
-    <release version="1.0.0-rc.2" type="development" date="2026-11-10"/>
-    <release version="1.0.0-rc.1" type="development" date="2026-11-09"/>
-    <release version="0.9.0-preview.1" date="2026-11-08"/>
-    <release version="0.7.0-preview.1" date="2026-11-08"/>
-    <release version="0.6.0-preview.6" date="2026-11-06"/>
+    <release version="1.0.0" date="2026-11-18"/>
+    <release version="1.0.0~rc.2" type="development" date="2026-11-10"/>
+    <release version="1.0.0~rc.1" type="development" date="2026-11-09"/>
+    <release version="0.9.0~preview.1" type="development" date="2026-11-08"/>
+    <release version="0.7.0~preview.1" type="development" date="2026-11-08"/>
+    <release version="0.6.0~preview.6" type="development" date="2026-11-06"/>
   </releases>
 
   <content_rating type="oars-1.1"/>
