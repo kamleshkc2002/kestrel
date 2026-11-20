@@ -295,8 +295,8 @@ pub(super) fn add_clipboard_limits_group(
     let paste = plain_row()
         .title("Quick paste as plain text")
         .subtitle(
-            "Copying an entry strips ANSI escapes and trailing whitespace; file entries copy \
-             as their paths.",
+            "Copying an entry strips ANSI escapes, extra spacing, and shared indentation; file \
+             entries copy as their paths.",
         )
         .subtitle_lines(0)
         .build();

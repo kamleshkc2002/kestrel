@@ -435,42 +435,88 @@ fn has_long_mixed_token(text: &str) -> bool {
     run >= 48 && has_digit && has_upper && has_lower
 }
 
-/// Removes ANSI escape sequences and trailing whitespace for plain-text pasting.
+/// The plain-text paste form: ANSI escapes removed, line endings as `\n`, no
+/// trailing spaces on any line, no shared indentation, and at most one blank
+/// line between paragraphs.
 pub fn plain_text(text: &str) -> Zeroizing<String> {
     let bytes = text.as_bytes();
-    let mut output = String::with_capacity(text.len());
+    let mut clean = Zeroizing::new(String::with_capacity(text.len()));
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == 0x1b {
-            index += 1;
-            match bytes.get(index) {
-                Some(b'[') => {
-                    index += 1;
-                    while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
+        match bytes[index] {
+            0x1b => {
+                index += 1;
+                match bytes.get(index) {
+                    Some(b'[') => {
+                        index += 1;
+                        while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
+                            index += 1;
+                        }
                         index += 1;
                     }
-                    index += 1;
+                    Some(b']') => {
+                        index += 1;
+                        while index < bytes.len() && bytes[index] != 0x07 && bytes[index] != 0x1b {
+                            index += 1;
+                        }
+                        if bytes.get(index) == Some(&0x1b) {
+                            index += 1;
+                        }
+                        index += 1;
+                    }
+                    _ => {}
                 }
-                Some(b']') => {
-                    index += 1;
-                    while index < bytes.len() && bytes[index] != 0x07 && bytes[index] != 0x1b {
-                        index += 1;
-                    }
-                    if bytes.get(index) == Some(&0x1b) {
-                        index += 1;
-                    }
-                    index += 1;
-                }
-                _ => {}
             }
+            b'\r' => {
+                clean.push('\n');
+                index += 1;
+                if bytes.get(index) == Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            _ => {
+                let character = text[index..].chars().next().unwrap_or_default();
+                clean.push(character);
+                index += character.len_utf8();
+            }
+        }
+    }
+    let mut indent: Option<&str> = None;
+    for line in clean.split('\n').map(str::trim_end) {
+        if line.is_empty() {
             continue;
         }
-        let character = text[index..].chars().next().unwrap_or_default();
-        output.push(character);
-        index += character.len_utf8();
+        let lead = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
+        indent = Some(match indent {
+            None => lead,
+            Some(shared) => {
+                let common = shared
+                    .bytes()
+                    .zip(lead.bytes())
+                    .take_while(|(left, right)| left == right)
+                    .count();
+                &shared[..common]
+            }
+        });
     }
-    let trimmed = output.trim_end();
-    Zeroizing::new(trimmed.to_string())
+    let indent = indent.map_or(0, str::len);
+    let mut output = Zeroizing::new(String::with_capacity(clean.len()));
+    let mut blank_before = false;
+    for line in clean.split('\n').map(str::trim_end) {
+        if line.is_empty() {
+            blank_before = !output.is_empty();
+            continue;
+        }
+        if !output.is_empty() {
+            output.push('\n');
+            if blank_before {
+                output.push('\n');
+            }
+        }
+        blank_before = false;
+        output.push_str(&line[indent..]);
+    }
+    output
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3761,12 +3807,20 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_strips_escape_sequences_and_trailing_whitespace() {
+    fn plain_text_strips_escape_sequences_and_padding() {
         for (input, expected) in [
             ("\u{1b}[31mred\u{1b}[0m text  \n\n", "red text"),
             ("\u{1b}]0;title\u{7}body", "body"),
             ("no escapes", "no escapes"),
             ("µnicode ✓  ", "µnicode ✓"),
+            (
+                "\r\n\r\n  Title \u{a0}\r\n\r\n\r\n\r\n  Body line\t\r\n    indented\r\n\r\n",
+                "Title\n\nBody line\n  indented",
+            ),
+            ("    let x = 1;   ", "let x = 1;"),
+            ("\tfirst\n\n\n\tsecond\rthird", "\tfirst\n\n\tsecond\nthird"),
+            ("one\n\ntwo", "one\n\ntwo"),
+            (" \n\t\n", ""),
         ] {
             assert_eq!(plain_text(input).as_str(), expected, "{input:?}");
         }
