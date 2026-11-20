@@ -3,3 +3,7 @@
 #
 # One [[change]] per user-visible change: `feature` is a registered feature ID
 # (or "kestrel" for app-wide changes) and `text` is one plain sentence.
+
+[[change]]
+feature = "clipboard.history"
+text = "Pasting an entry as plain text drops the extra blank lines, trailing spaces, and shared indentation that web pages and documents add to copied text."
